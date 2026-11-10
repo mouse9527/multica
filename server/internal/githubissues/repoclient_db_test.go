@@ -3,6 +3,7 @@ package githubissues
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"testing"
@@ -49,7 +50,12 @@ func TestRepoClientAgainstDatabase(t *testing.T) {
 	api.setName("acme/widgets", 42)
 	api.setName("acme/secret", 77)
 	svc := newTestService(t, api.server.URL, "2027-03-01")
-	svc.store = queries
+	// Production wiring: main.go passes the pool as Options.DB.
+	wired := New(svc.cfg, Options{DB: pool, APIBase: api.server.URL, Logger: slog.New(slog.DiscardHandler)})
+	if wired == nil || wired.store == nil {
+		t.Fatal("New must back RepoClient with Options.DB")
+	}
+	svc.store = wired.store
 	svc.state.markAccepted("octocat", testNow)
 	wsID := util.MustParseUUID(ws)
 
