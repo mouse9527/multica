@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -118,8 +119,9 @@ var bypassRules = []bypassRule{
 	},
 }
 
-// scanForBypass returns one finding per forbidden construct in src. allowAll
-// is false for ghsnapshot files, where no rule has an exception.
+// scanForBypass returns one finding per forbidden construct in src.
+// Exceptions match path relative to this package, so a subpackage file named
+// transport.go gets none; allowExceptions is false for ghsnapshot files.
 func scanForBypass(t *testing.T, path, src string, allowExceptions bool) []string {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -127,7 +129,7 @@ func scanForBypass(t *testing.T, path, src string, allowExceptions bool) []strin
 	if err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}
-	base := filepath.Base(path)
+	rel := filepath.Clean(path)
 	var findings []string
 	ast.Inspect(file, func(n ast.Node) bool {
 		if n == nil {
@@ -137,7 +139,7 @@ func scanForBypass(t *testing.T, path, src string, allowExceptions bool) []strin
 			if !rule.match(n) {
 				continue
 			}
-			if allowExceptions && rule.allowedIn == base {
+			if allowExceptions && rule.allowedIn == rel {
 				continue
 			}
 			findings = append(findings, fset.Position(n.Pos()).String()+": "+rule.what)
@@ -147,17 +149,21 @@ func scanForBypass(t *testing.T, path, src string, allowExceptions bool) []strin
 	return findings
 }
 
+// goSources lists the non-test Go files under dir, including subpackages.
 func goSources(t *testing.T, dir string) []string {
 	t.Helper()
-	paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	var out []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
+			out = append(out, path)
+		}
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	var out []string
-	for _, p := range paths {
-		if !strings.HasSuffix(p, "_test.go") {
-			out = append(out, p)
-		}
 	}
 	sort.Strings(out)
 	return out
@@ -174,8 +180,8 @@ func readSource(t *testing.T, path string) string {
 
 // TestNothingBypassesRepoClient keeps every GitHub request and every token
 // read in transport.go and config.go, so RepoClient stays the only way to a
-// repository. It covers this package and every ghsnapshot file the fork
-// changed.
+// repository. It covers this package with its subpackages and every
+// ghsnapshot file the fork changed.
 func TestNothingBypassesRepoClient(t *testing.T) {
 	var findings []string
 	own := goSources(t, ".")
@@ -197,7 +203,7 @@ func TestNothingBypassesRepoClient(t *testing.T) {
 	if len(forkChanged) == 0 {
 		t.Fatal("found no fork-changed ghsnapshot file; the marker or the path moved")
 	}
-	t.Logf("scanned %d githubissues files and fork-changed ghsnapshot files %v", len(own), forkChanged)
+	t.Logf("scanned githubissues files %v and fork-changed ghsnapshot files %v", own, forkChanged)
 
 	for _, f := range findings {
 		t.Errorf("bypasses RepoClient: %s", f)
@@ -256,5 +262,11 @@ import "net/http"
 func f() { _, _ = http.NewRequest("GET", "u", nil) }
 `, false); len(got) == 0 {
 		t.Error("a ghsnapshot file named transport.go must not inherit the exception")
+	}
+	if got := scanForBypass(t, filepath.Join("issuekey", transportFile), `package x
+import "net/http"
+func f() { _, _ = http.NewRequest("GET", "u", nil) }
+`, true); len(got) == 0 {
+		t.Error("a subpackage file named transport.go must not inherit the exception")
 	}
 }

@@ -103,7 +103,7 @@
 ### 令牌不出包
 
 - 构造请求、读令牌只在 `transport.go` 一个文件里（`newRequest`、`exchange`，都不导出）；从环境变量读令牌只在 `config.go`。`Repo`、`Service` 不导出任何字段，导出方法不返回 `*http.Client`、`*http.Request` 或 `http.RoundTripper`；`Repo` 在 `fmt`、`slog` 下只显示 id 和名字。
-- `scan_test.go` 用语法树扫描本包全部非测试文件，以及 `ghsnapshot` 目录下所有带 fork 修改声明（`mouse9527/multica fork`）的文件，发现下面任何一项就失败：`http.NewRequest*`、`http.Get/Post/DefaultClient` 等默认客户端、`.token` 字段读取、`"Authorization"` 头、`EnvToken` 或 `"MULTICA_GITHUB_TOKEN"`、`os.Getenv/LookupEnv/Environ`、对 `*httpClient` 直接调用 `Do`。前三类与 `.Do` 只允许出现在 `transport.go`，令牌变量只允许出现在 `config.go`；`ghsnapshot` 里的文件没有例外。以后修改上游 `ghsnapshot` 文件时，按许可证要加修改声明，这个文件就会自动进入扫描。
+- `scan_test.go` 用语法树扫描本包及其子包（如 `issuekey`）的全部非测试文件，以及 `ghsnapshot` 目录下所有带 fork 修改声明（`mouse9527/multica fork`）的文件，发现下面任何一项就失败：`http.NewRequest*`、`http.Get/Post/DefaultClient` 等默认客户端、`.token` 字段读取、`"Authorization"` 头、`EnvToken` 或 `"MULTICA_GITHUB_TOKEN"`、`os.Getenv/LookupEnv/Environ`、对 `*httpClient` 直接调用 `Do`。前三类与 `.Do` 只允许出现在本包顶层的 `transport.go`，令牌变量只允许出现在 `config.go`；`ghsnapshot` 里的文件没有例外。以后修改上游 `ghsnapshot` 文件时，按许可证要加修改声明，这个文件就会自动进入扫描。
 
 ### 已知限制
 
