@@ -1,0 +1,142 @@
+# Fork-only workflow (not present upstream). Builds the self-hosted backend and
+# web images for this fork and pushes them to GHCR.
+#
+# Tags:
+#   - main:        `latest` and `sha-<full commit SHA>`; `latest` always tracks
+#                  the most recent main build.
+#   - v*.*.* tags: only the version tag; `latest` is left untouched.
+#
+# Only linux/amd64 is built. Pull requests never push images.
+name: Build Image
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*.*.*"
+      - "!v*-dirty*"
+  workflow_dispatch:
+
+permissions: {}
+
+# Serialize runs per ref without cancelling: GitHub keeps only the newest
+# pending run, so the last run to push `latest` is always the newest main.
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (${{ matrix.image }})
+    # A manual run on any other branch would publish unreviewed code.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: multica-backend
+            dockerfile: Dockerfile
+            title: Multica Backend
+            description: Multica self-hosted backend
+          - image: multica-web
+            dockerfile: Dockerfile.web
+            title: Multica Web
+            description: Multica self-hosted web frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=long,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=tag
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.description=${{ matrix.description }}
+
+      # Same build args as upstream release.yml. Main builds keep the
+      # Dockerfile's `dev` default so the UI hides the version row instead of
+      # showing a non-release string.
+      - name: Compute build args
+        id: args
+        env:
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
+          REF_NAME: ${{ github.ref_name }}
+          IMAGE: ${{ matrix.image }}
+        run: |
+          version=dev
+          if [ "$IS_TAG" = "true" ]; then
+            version="$REF_NAME"
+          fi
+          {
+            echo "build_args<<EOF"
+            if [ "$IMAGE" = "multica-backend" ]; then
+              echo "VERSION=$version"
+              echo "COMMIT=$GITHUB_SHA"
+            else
+              echo "REMOTE_API_URL=http://backend:8080"
+              echo "NEXT_PUBLIC_APP_VERSION=$version"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          pull: true
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ steps.args.outputs.build_args }}
+          cache-from: type=gha,scope=build-image-${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=build-image-${{ matrix.image }}
+
+      - name: Verify LICENSE and NOTICE are in the image
+        env:
+          IMAGE_REF: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}@${{ steps.build.outputs.digest }}
+        run: |
+          docker pull --platform linux/amd64 "$IMAGE_REF"
+          docker run --rm --entrypoint sh "$IMAGE_REF" -c 'test -s LICENSE && test -s NOTICE'
+
+      - name: Summary
+        env:
+          IMAGE: ${{ matrix.image }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### $IMAGE"
+            echo
+            echo "Digest: \`$DIGEST\`"
+            echo
+            echo '```'
+            echo "$TAGS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
