@@ -1401,6 +1401,12 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			run:  func() error { return qtx.DeleteWorkspaceConnections(ctx, requester.WorkspaceID) },
 		},
 		{
+			// Modified for the mouse9527/multica fork: GitHub-native issue
+			// side tables (migration 9000).
+			name: "delete github issue data",
+			run:  func() error { return qtx.DeleteWorkspaceGithubIssueData(ctx, requester.WorkspaceID) },
+		},
+		{
 			name: "delete squads and skills",
 			run:  func() error { return qtx.DeleteWorkspaceSquadsAndSkills(ctx, requester.WorkspaceID) },
 		},
