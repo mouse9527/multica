@@ -11,6 +11,51 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const discardExternalCommentWakeupReceipts = `-- name: DiscardExternalCommentWakeupReceipts :execrows
+DELETE FROM issue_wakeup_receipt
+WHERE wakeup_id IN (SELECT w.id FROM issue_wakeup w WHERE w.issue_id = $1)
+  AND processed_at IS NULL
+  AND task_id IS NULL
+  AND event_type IN ('comment.created', 'comment.updated')
+  AND payload->>'comment_id' = $2::text
+  AND COALESCE((payload->>'coalesced_count')::bigint, 1) = 1
+`
+
+type DiscardExternalCommentWakeupReceiptsParams struct {
+	IssueID   pgtype.UUID `json:"issue_id"`
+	CommentID string      `json:"comment_id"`
+}
+
+// A comment written on GitHub by someone outside the workspace must not wake
+// an agent (docs/github-issues.md). The comment trigger records a receipt for
+// each event subscription on the issue; this removes the receipts that only
+// this comment produced, inside the transaction that wrote it, before any
+// dispatcher can see them. A receipt merged with an earlier pending event
+// (coalesced_count > 1) wakes for that earlier event and is kept.
+func (q *Queries) DiscardExternalCommentWakeupReceipts(ctx context.Context, arg DiscardExternalCommentWakeupReceiptsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, discardExternalCommentWakeupReceipts, arg.IssueID, arg.CommentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getGitHubSyncDefaultOwner = `-- name: GetGitHubSyncDefaultOwner :one
+SELECT user_id FROM member
+WHERE workspace_id = $1 AND role = 'owner'
+ORDER BY created_at, user_id
+LIMIT 1
+`
+
+// The default creator of issues opened on GitHub by people outside the
+// workspace: the workspace's earliest owner.
+func (q *Queries) GetGitHubSyncDefaultOwner(ctx context.Context, workspaceID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getGitHubSyncDefaultOwner, workspaceID)
+	var user_id pgtype.UUID
+	err := row.Scan(&user_id)
+	return user_id, err
+}
+
 const gitHubTokenExpiryReminderSent = `-- name: GitHubTokenExpiryReminderSent :one
 SELECT EXISTS (
     SELECT 1 FROM inbox_item
@@ -156,6 +201,35 @@ func (q *Queries) ListWorkspaceGitHubRepoRefs(ctx context.Context, workspaceID p
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockCommentExternalByExternalID = `-- name: LockCommentExternalByExternalID :one
+SELECT comment_id, workspace_id, external_id, login, avatar_url, external_updated_at, created_at, updated_at FROM comment_external
+WHERE workspace_id = $1 AND external_id = $2
+FOR UPDATE
+`
+
+type LockCommentExternalByExternalIDParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ExternalID  int64       `json:"external_id"`
+}
+
+// Serializes syncs of one GitHub comment, so a refresh compares and rewrites
+// the stored text against the newest snapshot only.
+func (q *Queries) LockCommentExternalByExternalID(ctx context.Context, arg LockCommentExternalByExternalIDParams) (CommentExternal, error) {
+	row := q.db.QueryRow(ctx, lockCommentExternalByExternalID, arg.WorkspaceID, arg.ExternalID)
+	var i CommentExternal
+	err := row.Scan(
+		&i.CommentID,
+		&i.WorkspaceID,
+		&i.ExternalID,
+		&i.Login,
+		&i.AvatarUrl,
+		&i.ExternalUpdatedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const moveGithubRepoPin = `-- name: MoveGithubRepoPin :one

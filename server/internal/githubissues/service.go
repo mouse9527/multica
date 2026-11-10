@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -27,8 +29,16 @@ type Options struct {
 	APIBase string
 	Now     func() time.Time
 	Logger  *slog.Logger
-	// Queries backs RepoClient's allowlist and repository pins.
-	Queries *db.Queries
+	// DB is the primary database (a *pgxpool.Pool in production).
+	DB Database
+	// Bus receives the events of synced content.
+	Bus *events.Bus
+}
+
+// Database is the part of a connection pool the Service uses.
+type Database interface {
+	db.DBTX
+	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
 // Service is the running GitHub-native issues feature. It is created only
@@ -41,8 +51,12 @@ type Service struct {
 	apiBase        string
 	now            func() time.Time
 	logger         *slog.Logger
-	store          repoStore
 	state          tokenState
+	db             Database
+	bus            *events.Bus
+	// store backs RepoClient's allowlist and repository pins: db.New(db),
+	// or a fake in tests.
+	store repoStore
 	// failures counts consecutive inconclusive checks for the retry backoff.
 	// Only the validation loop touches it.
 	failures int
@@ -65,6 +79,8 @@ func New(cfg Config, opts Options) *Service {
 		apiBase:    strings.TrimRight(opts.APIBase, "/"),
 		now:        opts.Now,
 		logger:     logger,
+		db:         opts.DB,
+		bus:        opts.Bus,
 	}
 	if s.httpClient == nil {
 		s.httpClient = &http.Client{Timeout: requestTimeout}
@@ -76,11 +92,18 @@ func New(cfg Config, opts Options) *Service {
 		s.now = time.Now
 	}
 	s.repoHTTPClient = noRedirectClient(s.httpClient)
-	// A nil *db.Queries must stay a nil interface, not a typed nil.
-	if opts.Queries != nil {
-		s.store = opts.Queries
+	// A nil DB must leave store a nil interface, not a typed nil.
+	if opts.DB != nil {
+		s.store = db.New(opts.DB)
 	}
 	return s
+}
+
+func (s *Service) queries() (*db.Queries, error) {
+	if s.db == nil {
+		return nil, ErrNoDatabase
+	}
+	return db.New(s.db), nil
 }
 
 // Start validates the token in the background, then re-validates it daily,

@@ -17,6 +17,10 @@ const (
 	// EnvTokenExpiresAt is the token's expiry date as registered on GitHub:
 	// YYYY-MM-DD, or "never" for a token created without an expiry.
 	EnvTokenExpiresAt = "MULTICA_GITHUB_TOKEN_EXPIRES_AT"
+	// EnvSyncAccount names the Multica account recorded as the creator of
+	// issues opened by other people on GitHub: "member:<user-uuid>" or
+	// "agent:<agent-uuid>". Unset selects each workspace's first owner.
+	EnvSyncAccount = "MULTICA_GITHUB_SYNC_ACCOUNT"
 
 	tokenNeverExpires = "never"
 	expiryDateLayout  = time.DateOnly
@@ -36,6 +40,9 @@ type Config struct {
 	// expiresAt is midnight UTC of the expiry date; zero when the token never
 	// expires.
 	expiresAt time.Time
+	// syncAccount is the configured creator of external issues; zero when
+	// unset.
+	syncAccount SyncAccount
 }
 
 // LoadConfig reads the configuration through getenv (os.Getenv in
@@ -63,6 +70,13 @@ func LoadConfig(getenv func(string) string) Config {
 			return disabled(EnvTokenExpiresAt + " is neither a YYYY-MM-DD date nor never")
 		}
 		cfg.expiresAt = expiresAt
+	}
+	if raw := strings.TrimSpace(getenv(EnvSyncAccount)); raw != "" {
+		account, ok := parseSyncAccount(raw)
+		if !ok {
+			return disabled(EnvSyncAccount + " is neither member:<uuid> nor agent:<uuid>")
+		}
+		cfg.syncAccount = account
 	}
 	return cfg
 }

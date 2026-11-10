@@ -56,3 +56,33 @@ WHERE workspace_id = @workspace_id
   AND owner = @from_owner
   AND name = @from_name
 RETURNING *;
+
+-- name: LockCommentExternalByExternalID :one
+-- Serializes syncs of one GitHub comment, so a refresh compares and rewrites
+-- the stored text against the newest snapshot only.
+SELECT * FROM comment_external
+WHERE workspace_id = $1 AND external_id = $2
+FOR UPDATE;
+
+-- name: DiscardExternalCommentWakeupReceipts :execrows
+-- A comment written on GitHub by someone outside the workspace must not wake
+-- an agent (docs/github-issues.md). The comment trigger records a receipt for
+-- each event subscription on the issue; this removes the receipts that only
+-- this comment produced, inside the transaction that wrote it, before any
+-- dispatcher can see them. A receipt merged with an earlier pending event
+-- (coalesced_count > 1) wakes for that earlier event and is kept.
+DELETE FROM issue_wakeup_receipt
+WHERE wakeup_id IN (SELECT w.id FROM issue_wakeup w WHERE w.issue_id = @issue_id)
+  AND processed_at IS NULL
+  AND task_id IS NULL
+  AND event_type IN ('comment.created', 'comment.updated')
+  AND payload->>'comment_id' = @comment_id::text
+  AND COALESCE((payload->>'coalesced_count')::bigint, 1) = 1;
+
+-- name: GetGitHubSyncDefaultOwner :one
+-- The default creator of issues opened on GitHub by people outside the
+-- workspace: the workspace's earliest owner.
+SELECT user_id FROM member
+WHERE workspace_id = $1 AND role = 'owner'
+ORDER BY created_at, user_id
+LIMIT 1;
