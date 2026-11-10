@@ -82,6 +82,35 @@ func TestRepoClientAgainstDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A second project registers the new name while the first keeps the old
+	// one. The new name is refused and never takes the old name's pin, in
+	// any order of calls.
+	f.WorkspaceID = ws
+	second := f.Project(t, "Second")
+	secondResource := f.Insert(t, "project_resource", testutil.Cols{
+		"project_id":    second,
+		"workspace_id":  ws,
+		"resource_type": "github_repo",
+		"resource_ref":  `{"url":"https://github.com/acme/gadgets"}`,
+	})
+	for round := range 2 {
+		if _, err := svc.RepoClient(ctx, wsID, "acme", "gadgets"); !errors.Is(err, ErrRepoAmbiguous) {
+			t.Fatalf("round %d, new name next to the old one: err = %v", round, err)
+		}
+		if repo, err := svc.RepoClient(ctx, wsID, "acme", "widgets"); err != nil || repo.ID() != 42 {
+			t.Fatalf("round %d, old name next to the new one: %v %v", round, repo, err)
+		}
+	}
+	if pin, err := queries.GetGithubRepoSync(ctx, db.GetGithubRepoSyncParams{WorkspaceID: wsID, RepoID: 42}); err != nil || pin.Name != "widgets" {
+		t.Fatalf("pin after both names = %+v, err = %v", pin, err)
+	}
+	if _, err := queries.GetGithubRepoSync(ctx, db.GetGithubRepoSyncParams{WorkspaceID: wsID, RepoID: 99}); err == nil {
+		t.Fatal("the repository squatting on the old name was pinned")
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM project_resource WHERE id = $1`, secondResource); err != nil {
+		t.Fatal(err)
+	}
+
 	// The Owner points the resource at the new name: same id, same row.
 	if _, err := pool.Exec(ctx, `UPDATE project_resource SET resource_ref = '{"url":"https://github.com/acme/gadgets"}' WHERE id = $1`, resource); err != nil {
 		t.Fatal(err)

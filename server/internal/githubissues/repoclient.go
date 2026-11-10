@@ -30,6 +30,12 @@ var (
 	// ErrTokenNotUsable means the token is invalid or expired. No request
 	// was sent, or GitHub has just rejected the token.
 	ErrTokenNotUsable = errors.New("githubissues: github token is not usable")
+	// ErrRepoAmbiguous means the name resolves to a repository that is
+	// already pinned under another name the workspace still registers (for
+	// example both the old and the new name after a rename). The existing
+	// pin is kept and this name is refused until one of the two resources
+	// is removed.
+	ErrRepoAmbiguous = errors.New("githubissues: repository is registered under another name in this workspace")
 )
 
 // Is lets callers outside the package test a rejection with
@@ -65,7 +71,9 @@ type Repo struct {
 // projects. A repository outside it gets ErrRepoNotRegistered without any
 // request. The first use of a registered name resolves it to a repository id
 // with GET /repos/{owner}/{repo} and pins the id in github_repo_sync; later
-// calls use the pinned id and send nothing until Do.
+// calls use the pinned id and send nothing until Do. A pin row holds one name,
+// so a pin whose name is still registered is never taken over by another
+// name: that name gets ErrRepoAmbiguous instead.
 func (s *Service) RepoClient(ctx context.Context, workspaceID pgtype.UUID, owner, repo string) (*Repo, error) {
 	if s == nil {
 		return nil, ErrFeatureOff
@@ -77,11 +85,11 @@ func (s *Service) RepoClient(ctx context.Context, workspaceID pgtype.UUID, owner
 	if !ok {
 		return nil, ErrRepoNotRegistered
 	}
-	registered, err := s.isRegistered(ctx, workspaceID, name)
+	registered, err := s.registeredNames(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	if !registered {
+	if !containsName(registered, name) {
 		return nil, ErrRepoNotRegistered
 	}
 	if !s.Usable() {
@@ -102,8 +110,17 @@ func (s *Service) RepoClient(ctx context.Context, workspaceID pgtype.UUID, owner
 	if err != nil {
 		return nil, err
 	}
-	// Keyed by (workspace, repo id): a repository registered again under a
-	// new name keeps its row and cursors and only takes the new name.
+	for _, pin := range pins {
+		pinned := repoName{owner: pin.Owner, name: pin.Name}
+		if pin.RepoID == id && containsName(registered, pinned) {
+			s.logger.Warn("github repository registered under two names; refusing the unpinned one",
+				"repo", name.String(), "pinned_as", pinned.String(), "repo_id", id)
+			return nil, ErrRepoAmbiguous
+		}
+	}
+	// Keyed by (workspace, repo id): a repository whose resource moved to a
+	// new name keeps its row and cursors and only takes the new name. The
+	// check above makes sure the old name is no longer registered.
 	if _, err := s.store.UpsertGithubRepoSync(ctx, db.UpsertGithubRepoSyncParams{
 		WorkspaceID: workspaceID, RepoID: id, Owner: name.owner, Name: name.name,
 	}); err != nil {
@@ -113,17 +130,29 @@ func (s *Service) RepoClient(ctx context.Context, workspaceID pgtype.UUID, owner
 	return &Repo{svc: s, workspaceID: workspaceID, id: id, name: name}, nil
 }
 
-func (s *Service) isRegistered(ctx context.Context, workspaceID pgtype.UUID, name repoName) (bool, error) {
+// registeredNames lists the github.com repositories registered on the
+// workspace's projects.
+func (s *Service) registeredNames(ctx context.Context, workspaceID pgtype.UUID) ([]repoName, error) {
 	refs, err := s.store.ListWorkspaceGitHubRepoRefs(ctx, workspaceID)
 	if err != nil {
-		return false, fmt.Errorf("githubissues: list registered repositories: %w", err)
+		return nil, fmt.Errorf("githubissues: list registered repositories: %w", err)
 	}
+	names := make([]repoName, 0, len(refs))
 	for _, ref := range refs {
-		if candidate, ok := repoNameFromResourceRef(ref); ok && candidate.sameAs(name) {
-			return true, nil
+		if name, ok := repoNameFromResourceRef(ref); ok {
+			names = append(names, name)
 		}
 	}
-	return false, nil
+	return names, nil
+}
+
+func containsName(names []repoName, name repoName) bool {
+	for _, candidate := range names {
+		if candidate.sameAs(name) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveRepoID asks GitHub which repository a registered name is. A renamed

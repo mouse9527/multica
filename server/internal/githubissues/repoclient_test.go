@@ -37,6 +37,19 @@ func (f *fakeRepoStore) register(ws pgtype.UUID, url string) {
 	f.refs[ws] = append(f.refs[ws], []byte(`{"url":"`+url+`"}`))
 }
 
+func (f *fakeRepoStore) unregister(ws pgtype.UUID, url string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ref := `{"url":"` + url + `"}`
+	kept := f.refs[ws][:0]
+	for _, r := range f.refs[ws] {
+		if string(r) != ref {
+			kept = append(kept, r)
+		}
+	}
+	f.refs[ws] = kept
+}
+
 func (f *fakeRepoStore) unregisterAll(ws pgtype.UUID) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -307,6 +320,82 @@ func TestRepoClientKeepsRepoIDAcrossRename(t *testing.T) {
 	}
 	if got := fx.api.seen(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests = %v, want %v", got, want)
+	}
+}
+
+// Review R1: project A keeps the old name, project B registers the new one.
+// The old name's pin must survive any order of calls; the new name, which
+// GitHub resolves to the same repository, is refused instead of taking the
+// pin over (taking it over sent the old name to the squatter, id 99).
+func TestRepoClientKeepsPinWhileBothNamesAreRegistered(t *testing.T) {
+	fx := newRepoFixture(t)
+	ctx := context.Background()
+	fx.store.register(fx.ws, "https://github.com/acme/widgets") // project A
+	fx.api.setName("acme/widgets", 42)
+	if repo, err := fx.RepoClient(ctx, fx.ws, "acme", "widgets"); err != nil || repo.ID() != 42 {
+		t.Fatalf("pin old name: %v %v", repo, err)
+	}
+
+	fx.api.setName("acme/gadgets", 42)                          // renamed
+	fx.api.setName("acme/widgets", 99)                          // old name taken by another repository
+	fx.store.register(fx.ws, "https://github.com/acme/gadgets") // project B
+
+	for round := range 3 {
+		if _, err := fx.RepoClient(ctx, fx.ws, "acme", "gadgets"); !errors.Is(err, ErrRepoAmbiguous) {
+			t.Fatalf("round %d, new name: err = %v, want ErrRepoAmbiguous", round, err)
+		}
+		repo, err := fx.RepoClient(ctx, fx.ws, "acme", "widgets")
+		if err != nil || repo.ID() != 42 {
+			t.Fatalf("round %d, old name: %v %v, want 42", round, repo, err)
+		}
+		if _, err := repo.Do(ctx, http.MethodGet, "/issues", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pins, _ := fx.store.ListGithubRepoSyncsByWorkspace(ctx, fx.ws)
+	if len(pins) != 1 || pins[0].RepoID != 42 || pins[0].Name != "widgets" {
+		t.Fatalf("pins = %+v, want only 42 still named widgets", pins)
+	}
+	for _, req := range fx.api.seen() {
+		if strings.Contains(req, "/repositories/99") {
+			t.Fatalf("reached the repository squatting on the old name: %s", req)
+		}
+	}
+
+	// Project A drops the old name: the new name takes the pin over.
+	fx.store.unregister(fx.ws, "https://github.com/acme/widgets")
+	repo, err := fx.RepoClient(ctx, fx.ws, "acme", "gadgets")
+	if err != nil || repo.ID() != 42 {
+		t.Fatalf("new name after the old one is gone: %v %v", repo, err)
+	}
+	pins, _ = fx.store.ListGithubRepoSyncsByWorkspace(ctx, fx.ws)
+	if len(pins) != 1 || pins[0].RepoID != 42 || pins[0].Name != "gadgets" {
+		t.Fatalf("pins = %+v, want 42 renamed to gadgets", pins)
+	}
+}
+
+// The reverse order: the new name is pinned first, then a project registers
+// the old name, which GitHub still redirects to the same repository.
+func TestRepoClientRefusesOldNameRedirectingToAPinnedRepository(t *testing.T) {
+	fx := newRepoFixture(t)
+	ctx := context.Background()
+	fx.store.register(fx.ws, "https://github.com/acme/gadgets")
+	fx.api.setName("acme/gadgets", 42)
+	fx.api.setName("acme/widgets", -42)
+	if _, err := fx.RepoClient(ctx, fx.ws, "acme", "gadgets"); err != nil {
+		t.Fatal(err)
+	}
+	fx.store.register(fx.ws, "https://github.com/acme/widgets")
+	if _, err := fx.RepoClient(ctx, fx.ws, "acme", "widgets"); !errors.Is(err, ErrRepoAmbiguous) {
+		t.Fatalf("old name: err = %v, want ErrRepoAmbiguous", err)
+	}
+	repo, err := fx.RepoClient(ctx, fx.ws, "acme", "gadgets")
+	if err != nil || repo.ID() != 42 {
+		t.Fatalf("pinned name: %v %v", repo, err)
+	}
+	pins, _ := fx.store.ListGithubRepoSyncsByWorkspace(ctx, fx.ws)
+	if len(pins) != 1 || pins[0].Name != "gadgets" {
+		t.Fatalf("pins = %+v", pins)
 	}
 }
 
