@@ -224,7 +224,7 @@ func (h *Handler) advanceRunStep(ctx context.Context, run *db.AgentTaskQueue, pr
 func (h *Handler) stepMovedError(ctx context.Context, issue db.Issue, step string) error {
 	resolver := issuestatus.NewResolver(issue.WorkspaceID)
 	out := &issueworkflow.StepMovedError{
-		IssueIdentifier: h.getIssuePrefix(ctx, issue.WorkspaceID) + "-" + strconv.Itoa(int(issue.Number)),
+		IssueIdentifier: h.issueKey(ctx, issue), // GitHub-native issues (fork)
 		Step:            step,
 		StepName:        resolver.Name(ctx, h.Queries, step),
 		Current:         issue.Status,
@@ -264,7 +264,7 @@ func (h *Handler) workflowBriefInput(ctx context.Context, issue db.Issue, def is
 		Workflow:        def,
 		ProjectName:     project.Title,
 		StatusKey:       issue.Status,
-		IssueIdentifier: h.getIssuePrefix(ctx, issue.WorkspaceID) + "-" + strconv.Itoa(int(issue.Number)),
+		IssueIdentifier: h.issueKey(ctx, issue), // GitHub-native issues (fork)
 		StatusName: func(key string) string {
 			return resolver.Name(ctx, h.Queries, key)
 		},

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -13,6 +12,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -664,6 +664,13 @@ func (h *Handler) ListSquadMemberStatus(w http.ResponseWriter, r *http.Request) 
 	}
 
 	prefix := h.getIssuePrefix(r.Context(), squad.WorkspaceID)
+	squadIssueIDs := make([]pgtype.UUID, 0, len(rows)) // GitHub-native issues (fork)
+	for _, row := range rows {
+		if row.TaskIssueID.Valid {
+			squadIssueIDs = append(squadIssueIDs, row.TaskIssueID)
+		}
+	}
+	squadKeys := h.loadIssueKeys(r.Context(), squad.WorkspaceID, squadIssueIDs)
 	now := time.Now()
 
 	// Group rows by member_id while preserving the SQL ORDER BY (squad_member
@@ -715,7 +722,7 @@ func (h *Handler) ListSquadMemberStatus(w http.ResponseWriter, r *http.Request) 
 			if row.TaskIssueID.Valid {
 				brief := SquadActiveIssueBrief{
 					IssueID:    uuidToString(row.TaskIssueID),
-					Identifier: prefix + "-" + strconv.Itoa(int(row.IssueNumber.Int32)),
+					Identifier: service.IssueKey(squadKeys, row.TaskIssueID, prefix, row.IssueNumber.Int32), // GitHub-native issues (fork)
 					Title:      row.IssueTitle.String,
 					IssueStatus: func() string {
 						if row.IssueStatus.Valid {

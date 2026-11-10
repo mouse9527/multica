@@ -4030,7 +4030,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 						})
 						if perr == nil && parent.ID.Valid {
 							if ws, werr := h.Queries.GetWorkspace(r.Context(), wsUUID); werr == nil {
-								resp.ParentIssueIdentifier = ws.IssuePrefix + "-" + strconv.Itoa(int(parent.Number))
+								resp.ParentIssueIdentifier = service.LookupIssueIdentifier(r.Context(), h.Queries, wsUUID, parent.ID, ws.IssuePrefix, parent.Number) // GitHub-native issues (fork)
 							}
 						} else if qc.SourceContextID != "" && errors.Is(perr, pgx.ErrNoRows) {
 							// A contextual quick-create already owns an immutable
@@ -4107,10 +4107,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	if ws, err := h.Queries.GetWorkspace(r.Context(), parseUUID(resp.WorkspaceID)); err == nil {
 		resp.WorkspaceSlug = ws.Slug
 		if issueNumber > 0 {
-			resp.IssueIdentifier = service.IssueIdentifier(ws.IssuePrefix, issueNumber)
+			resp.IssueIdentifier = service.LookupIssueIdentifier(r.Context(), h.Queries, ws.ID, task.IssueID, ws.IssuePrefix, issueNumber) // GitHub-native issues (fork)
 		}
 		if resp.ParentIssue != nil && parentIssueNumber > 0 {
-			resp.ParentIssue.Identifier = service.IssueIdentifier(ws.IssuePrefix, parentIssueNumber)
+			resp.ParentIssue.Identifier = service.LookupIssueIdentifier(r.Context(), h.Queries, ws.ID, parseUUIDOrZero(resp.ParentIssue.ID), ws.IssuePrefix, parentIssueNumber) // GitHub-native issues (fork)
 		}
 		if ws.Context.Valid {
 			resp.WorkspaceContext = ws.Context.String
@@ -6367,6 +6367,11 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 			rows = rows[:familyActiveRunCap]
 			w.Header().Set(HeaderActiveRunsTruncated, "true")
 		}
+		familyIDs := make([]pgtype.UUID, len(rows)) // GitHub-native issues (fork)
+		for i, row := range rows {
+			familyIDs[i] = row.IssueID
+		}
+		familyKeys := h.loadIssueKeys(r.Context(), issue.WorkspaceID, familyIDs)
 		summaries := make([]ActiveRunSummary, len(rows))
 		for i, row := range rows {
 			summaries[i] = ActiveRunSummary{
@@ -6374,7 +6379,7 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 				IssueID: uuidToString(row.IssueID),
 				// Rows span several issues here, so each one has to carry the
 				// issue it belongs to — a caller cannot label it from the task.
-				IssueIdentifier: service.IssueIdentifier(row.IssuePrefix, row.IssueNumber),
+				IssueIdentifier: service.IssueKey(familyKeys, row.IssueID, row.IssuePrefix, row.IssueNumber), // GitHub-native issues (fork)
 				IssueTitle:      row.IssueTitle,
 				AgentID:         uuidToString(row.AgentID),
 				Status:          row.Status,
@@ -6398,10 +6403,15 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 			RootIssueID: issue.ID, WorkspaceID: issue.WorkspaceID, ActiveOnly: activeOnly,
 		})
 		err = queryErr
+		subtreeIDs := make([]pgtype.UUID, len(rows)) // GitHub-native issues (fork)
+		for i, row := range rows {
+			subtreeIDs[i] = row.AgentTaskQueue.IssueID
+		}
+		subtreeKeys := h.loadIssueKeys(r.Context(), issue.WorkspaceID, subtreeIDs)
 		for _, row := range rows {
 			tasks = append(tasks, row.AgentTaskQueue)
 			labels[uuidToString(row.AgentTaskQueue.IssueID)] = issueLabel{
-				identifier: service.IssueIdentifier(row.IssuePrefix, row.IssueNumber), title: row.IssueTitle,
+				identifier: service.IssueKey(subtreeKeys, row.AgentTaskQueue.IssueID, row.IssuePrefix, row.IssueNumber), title: row.IssueTitle, // GitHub-native issues (fork)
 			}
 		}
 	} else if activeOnly {
