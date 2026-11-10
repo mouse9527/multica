@@ -2,8 +2,9 @@
 # web images for this fork and pushes them to GHCR.
 #
 # Tags:
-#   - main:        `latest` and `sha-<full commit SHA>`; `latest` always tracks
-#                  the most recent main build.
+#   - main:        `sha-<full commit SHA>`, then `latest` is moved to the same
+#                  digest only if the commit is still the tip of main, so a
+#                  late or re-run build of an older commit never rolls it back.
 #   - v*.*.* tags: only the version tag; `latest` is left untouched.
 #
 # Only linux/amd64 is built. Pull requests never push images.
@@ -19,11 +20,9 @@ on:
 
 permissions: {}
 
-# Serialize runs per ref without cancelling: GitHub keeps only the newest
-# pending run, so the last run to push `latest` is always the newest main.
-concurrency:
-  group: build-image-${{ github.ref }}
-  cancel-in-progress: false
+# No workflow-level concurrency: a concurrency group keeps only one pending run
+# and cancels the rest, so a re-run of an old commit could displace the newest
+# commit's build. Ordering of `latest` is enforced by the tip check below.
 
 jobs:
   build:
@@ -60,7 +59,6 @@ jobs:
           flavor: |
             latest=false
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,format=long,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' }}
             type=ref,event=tag
           labels: |
@@ -112,6 +110,9 @@ jobs:
           pull: true
           push: true
           platforms: linux/amd64
+          # Keeps the pushed digest an image index, which `imagetools create`
+          # copies as-is, so `latest` and `sha-*` share one digest.
+          provenance: mode=min
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: ${{ steps.args.outputs.build_args }}
@@ -124,6 +125,28 @@ jobs:
         run: |
           docker pull --platform linux/amd64 "$IMAGE_REF"
           docker run --rm --entrypoint sh "$IMAGE_REF" -c 'test -s LICENSE && test -s NOTICE'
+
+      # Checked after the push, immediately before tagging, so the window in
+      # which a newer main build could finish first is seconds, not the length
+      # of a build. Re-runs of older commits see a newer tip and skip.
+      - name: Move latest to this build if it is still the tip of main
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          tip="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          if [ "$tip" != "$GITHUB_SHA" ]; then
+            echo "::notice::main is now at $tip; latest left unchanged for $GITHUB_SHA"
+            exit 0
+          fi
+          docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE@$DIGEST"
+          got="$(docker buildx imagetools inspect "$IMAGE:latest" --format '{{json .Manifest}}' | jq -r .digest)"
+          if [ "$got" != "$DIGEST" ]; then
+            echo "::error::latest points to $got, expected $DIGEST"
+            exit 1
+          fi
 
       - name: Summary
         env:
