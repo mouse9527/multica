@@ -534,6 +534,11 @@ SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
 			DirectChildCount: row.childCount,
 		}
 	}
+	tableKeys := make([]*IssueResponse, len(responseRows)) // GitHub-native issues (fork)
+	for index := range responseRows {
+		tableKeys[index] = &responseRows[index].Issue
+	}
+	baseHandler.fillIssueKeys(r.Context(), compiled.workspaceID, tableKeys...)
 
 	response := issueTableRowsResponse{
 		QueryFingerprint: compiled.fingerprint,

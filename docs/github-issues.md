@@ -71,6 +71,39 @@
 | `server/internal/integrations/ghsnapshot/ratelimit_export.go` | 新文件，导出限流判断与退避，供本功能复用 |
 | `server/pkg/db/queries/githubissues.sql` | 新文件：提醒收件人与去重查询（只读现有表，不改表结构） |
 
+## 标识
+
+### 规则
+
+- 有 `issue_external` 行的 issue 是 github issue，标识为 `owner/repo#N`（`external_repo` 加 GitHub 上的编号）；没有的就是 local issue，标识仍是 `PREFIX-N`，与上游一致。
+- issue 响应（HTTP 与事件载荷）多一个 `provider` 字段：`local` 或 `github`。`number` 仍是 Multica 内的编号，github issue 的 `PREFIX-N` 也能继续用来查找。
+- 标识跟随功能开关：`main.go` 启动时按 `githubissues.Config.Enabled()` 调 `issuekey.SetEnabled`。开关关闭（默认）时不读 `issue_external`、不解析 `owner/repo#N`，所有 issue 按 local 渲染，与上游一致；开启期间写下的关联行保留，重新开启后恢复 `owner/repo#N`。
+- 解析（仅开关开启时）：`/api/issues/{id}` 接受 `owner/repo#N`（含百分号转义的 `owner%2Frepo%23N`，CLI 就是这样发的），仓库名不区分大小写；CLI 的 `multica issue ... owner/repo#N` 交给服务端解析。
+- 删除 issue 时在同一事务里删除它的 `issue_external` 行（表没有外键）；这一步不看开关，免得关闭期间删除的 issue 留下孤儿行。工作区删除由 `DeleteWorkspaceGithubIssueData` 清理。
+
+### 实现
+
+- 格式、解析与批量读取在 `server/internal/githubissues/issuekey/`。它只依赖生成的查询代码，`service`、`handler`、CLI 都能引用，不会形成循环依赖（`githubissues` 经 `scheduler` 依赖 `service`）。
+- `service.IssueIdentifier` 仍只渲染 local 标识，不改签名；按是否存在 `issue_external` 分支的是 `service.IssueKey`（已读好的一批）和 `service.LookupIssueIdentifier`（单条，多一次查询）。
+- 列表与详情：纯函数构造器先按 local 渲染，`handler.fillIssueKeys` 再用**一页一次** `ListIssueExternalsByIssueIDs` 改写 `identifier`、`provider` 和 `duplicate_of.identifier`。列表接口因此只多 1 次查询，`issue_key_test.go` 用计数的 `DBTX` 断言。
+- 读取 `issue_external` 失败时记一条警告、按 local 渲染，与标签加载失败时的处理一致。
+
+### 对上游文件的钩子
+
+| 文件 | 改动 |
+|---|---|
+| `server/internal/handler/issue.go` | `IssueResponse.Provider`；三个构造器填 `local`；`fillStatusCategory(ies)`、搜索、open 列表、分组、子 issue、创建、批量更新后调 `fillIssueKeys`；删除事务删 `issue_external` |
+| `server/internal/handler/handler.go` | `resolveIssueByIdentifier` 先试 `owner/repo#N` |
+| `server/internal/handler/{issue_table_rows,search_index,issue_duplicate,plugin_action}.go` | 构造完一页后调 `fillIssueKeys` |
+| `server/internal/handler/{daemon,issue_workflow_entry,issue_system_wakeup,squad}.go` | 认领、工作流提示词、等待中的子 issue、squad 活跃 issue 的标识改用 `issueKey` / `service.IssueKey` |
+| `server/internal/service/{task,source_context}.go` | `IssueToMap` 带 `provider`，`IssueToMapResolved` 改写标识；quick-create 活动记录、来源快照的标识 |
+| `server/cmd/server/main.go` | 启动时 `issuekey.SetEnabled(config.Enabled())` |
+| `server/cmd/server/activity_listeners.go` | 活动记录里的 issue 标识 |
+| `server/cmd/multica/{cmd_id_resolver,cmd_issue}.go` | 接受 `owner/repo#N`；`--fields` 加 `provider` |
+| `server/pkg/db/queries/github_issue.sql` | 新查询 `GetIssueExternalByRepoName`（只读 fork 表） |
+
+没改的：PR 关联按 `PREFIX-N` 匹配（`handler/github.go`，任务 M 处理）、插件上下文和 IM 渠道回复里的标识（`service/plugin_action.go`、`channel/engine/router.go`）。
+
 ## 外部作者
 
 GitHub 上工作区以外的人写的评论和新建的 issue，在 Multica 里归到固定身份，GitHub 作者写在正文前缀里。**不改任何现有表约束**（Owner 选定，见 #26）。代码在 `external_author.go`、`external_comment.go`、`sync_account.go`，由轮询（#16）调用。

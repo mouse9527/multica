@@ -178,6 +178,11 @@ func (h *Handler) ListIssueDuplicates(w http.ResponseWriter, r *http.Request) {
 		fill(&resp)
 		duplicates = append(duplicates, resp)
 	}
+	duplicateKeys := []*IssueResponse{duplicateOf} // GitHub-native issues (fork)
+	for i := range duplicates {
+		duplicateKeys = append(duplicateKeys, &duplicates[i])
+	}
+	h.fillIssueKeys(r.Context(), issue.WorkspaceID, duplicateKeys...)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"duplicate_of": duplicateOf,

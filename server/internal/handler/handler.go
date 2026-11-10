@@ -1134,6 +1134,9 @@ func (h *Handler) loadIssueForUser(w http.ResponseWriter, r *http.Request, issue
 // interchangeable — which makes the identifier URL `/{ws}/issues/{key}`
 // unusable as a canonical link.
 func (h *Handler) resolveIssueByIdentifier(ctx context.Context, id, workspaceID string) (db.Issue, bool) {
+	if issue, ok := h.resolveIssueByGitHubKey(ctx, id, workspaceID); ok { // GitHub-native issues (fork)
+		return issue, true
+	}
 	parts := splitIdentifier(id)
 	if parts == nil {
 		return db.Issue{}, false

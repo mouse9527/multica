@@ -39,6 +39,18 @@ WHERE workspace_id = $1
   AND external_repo_id = $3
   AND external_number = $4;
 
+-- name: GetIssueExternalByRepoName :one
+-- Resolves an "owner/repo#N" key. GitHub matches repository names without
+-- regard to case; if a rename left two rows under one name, the most recently
+-- synced one is the repository that holds the name now.
+SELECT * FROM issue_external
+WHERE workspace_id = sqlc.arg('workspace_id')
+  AND provider = sqlc.arg('provider')
+  AND lower(external_repo) = lower(sqlc.arg('external_repo'))
+  AND external_number = sqlc.arg('external_number')
+ORDER BY external_synced_at DESC
+LIMIT 1;
+
 -- name: ListIssueExternalsByIssueIDs :many
 -- Batch lookup for list/identifier rendering. Issues missing from the result
 -- are local.

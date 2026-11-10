@@ -22,6 +22,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/dbstartup"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/githubissues"
+	"github.com/multica-ai/multica/server/internal/githubissues/issuekey"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -683,7 +684,9 @@ func main() {
 
 	// Modified by the mouse9527/multica fork: GitHub-native issues, off by
 	// default (server/internal/githubissues, docs/github-issues.md).
-	gitHubIssues := githubissues.New(githubissues.LoadConfig(os.Getenv), githubissues.Options{DB: pool, Bus: bus})
+	gitHubIssuesConfig := githubissues.LoadConfig(os.Getenv)
+	issuekey.SetEnabled(gitHubIssuesConfig.Enabled())
+	gitHubIssues := githubissues.New(gitHubIssuesConfig, githubissues.Options{DB: pool, Bus: bus})
 	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
 		GitHubIssues:        gitHubIssues,
 		HTTPMetrics:         httpMetrics,
