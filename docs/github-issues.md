@@ -69,7 +69,49 @@
 | `server/cmd/server/main.go` | 读配置建 `githubissues.Service`，传给路由；开启时启动校验并注册 `github_token_expiry` |
 | `server/cmd/server/router.go` | `RouterOptions.GitHubIssues` 字段；开启时注册状态接口 |
 | `server/internal/integrations/ghsnapshot/ratelimit_export.go` | 新文件，导出限流判断与退避，供本功能复用 |
-| `server/pkg/db/queries/githubissues.sql` | 新文件：提醒收件人与去重查询（只读现有表，不改表结构） |
+| `server/pkg/db/queries/githubissues.sql` | 新文件：提醒收件人与去重查询、`RepoClient` 白名单查询（只读现有表）与绑定的条件写入（只写 fork 表 `github_repo_sync`），不改表结构 |
+
+## 访问仓库：`RepoClient` 与白名单
+
+本功能对 GitHub 仓库的所有请求（轮询、按需刷新、双写、PR 轮询）都经过 `Service.RepoClient(ctx, workspaceID, owner, repo)`，这是唯一入口。
+
+### 白名单
+
+- 白名单 = 该工作区所有项目上登记的 `github_repo` 资源（`project_resource`）的并集，每次调用现查，删掉资源立即生效。
+- 只认 `github.com`（含 `www.github.com`）的地址：`https://github.com/owner/name`、`ssh://git@github.com/owner/name.git`、`git@github.com:owner/name.git`，可带 `.git` 与结尾 `/`。其他主机、带端口、带查询串、多于两段路径的地址都不进白名单。名字比较不区分大小写。
+- 不在白名单（含名字不合法）：返回 `ErrRepoNotRegistered`，**不发任何请求**，也不写库。
+- 令牌不是 `ok`（失效或到期）：返回 `ErrTokenNotUsable`，不发请求。先查白名单，再看令牌。
+
+### 固定 `repo_id`
+
+- 某个登记名第一次使用时，调 `GET /repos/{owner}/{repo}` 取得仓库 id，写入 `github_repo_sync`（以 `(workspace_id, repo_id)` 为键，`owner`、`name` 记登记名）。之后同名调用直接用这个 id，不再按名字查。
+- `Repo.Do` 的请求一律发到 `/repositories/{repo_id}/...`，不按名字寻址。所以：
+  - 仓库改名或转移后，仍登记旧名的资源继续命中原仓库（同一个 id）；
+  - 有人在旧名下新建仓库，也不会被命中；
+  - Owner 把资源改成新名后，新名解析出同一个 id，沿用原来那一行（游标不丢），只更新名字。
+- 新名在资源改过来之前不在白名单，会被拒绝。
+- **一行只记一个名字，仍登记的名字的固定绑定不会被别的名字顶掉。** 如果某个名字解析出的 id 已经固定在另一个仍登记的名字上（例如项目 A 留着旧名、项目 B 登记了新名；或者新名已固定，又有人登记了仍被 GitHub 重定向过来的旧名），后来的这个名字返回 `ErrRepoAmbiguous`，不改那一行，并打一条警告。原来的名字继续命中原 id；即使旧名已被别人新建的仓库占用，也不会转到那个仓库。删掉其中一个资源后即恢复：留下的名字若是新名，下次调用时接管这一行（游标不丢）。
+- **绑定写入是条件写，并发也成立。** 新绑定用 `InsertGithubRepoPin`（`ON CONFLICT DO NOTHING`：这个 id 已有绑定就不写）；改名迁移用 `MoveGithubRepoPin`（只在这一行仍是刚读到的名字时才改）。写入落空说明别的调用者先写了，`RepoClient` 重新读取绑定再判断（最多 3 次），所以两个名字同时首次使用时，先写入的那个保留，另一个被拒绝（`ErrRepoAmbiguous`）。M-20 的 `UpsertGithubRepoSync` 会无条件覆盖名字，`RepoClient` 不用它，后续任务也不要用它改绑定。
+- 删除资源后该仓库立即不可用；`github_repo_sync` 里的那一行保留，不再作为授权依据。
+- 首次解析时跟随 GitHub 的改名重定向（只读的 GET），所以登记的是改名前的旧名也能解析到原仓库。
+
+### `Repo.Do`
+
+- 只允许 `GET`、`POST`、`PATCH`、`PUT`、`DELETE`。路径必须以 `/` 开头，可带查询串；拒绝 `..`、`.` 段（含 `%2e%2e`）、反斜杠、`//` 开头、带协议或主机、带 `#`。被拒的路径不发请求。
+- 不跟随重定向（按 id 寻址的仓库不应重定向；跟随会把写请求变成 GET，或落到别的仓库），3xx 原样交给调用方。
+- 每次发送前再看一次令牌状态。401 → 令牌置为 `invalid`，返回 `ErrTokenNotUsable`（可用 `errors.Is` 判断），之后所有 `RepoClient` 停止，直到每日校验重新接受令牌。限流 → `*ghsnapshot.RateLimitError`。非限流的 403 不改令牌状态，原样返回：在仓库接口上它可能只是这个仓库拒绝（SSO、权限）。
+- 响应体上限 8 MiB；错误里只有方法、路径和状态码，不带响应体，也不带令牌。
+
+### 令牌不出包
+
+- 构造请求、读令牌只在 `transport.go` 一个文件里（`newRequest`、`exchange`，都不导出）；从环境变量读令牌只在 `config.go`。`Repo`、`Service` 不导出任何字段，导出方法不返回 `*http.Client`、`*http.Request` 或 `http.RoundTripper`；`Repo` 在 `fmt`、`slog` 下只显示 id 和名字。
+- `scan_test.go` 用语法树扫描本包及其子包（如 `issuekey`）的全部非测试文件，以及 `ghsnapshot` 目录下所有带 fork 修改声明（`mouse9527/multica fork`）的文件，发现下面任何一项就失败：`http.NewRequest*`、`http.Get/Post/DefaultClient` 等默认客户端、`.token` 字段读取、`"Authorization"` 头、`EnvToken` 或 `"MULTICA_GITHUB_TOKEN"`、`os.Getenv/LookupEnv/Environ`、对 `*httpClient` 直接调用 `Do`。前三类与 `.Do` 只允许出现在本包顶层的 `transport.go`，令牌变量只允许出现在 `config.go`；`ghsnapshot` 里的文件没有例外。以后修改上游 `ghsnapshot` 文件时，按许可证要加修改声明，这个文件就会自动进入扫描。
+
+### 已知限制
+
+- classic PAT 的 `repo` 范围在 GitHub 一侧不能限定仓库。白名单是服务端的自我约束，挡不住令牌泄露后的外部使用。
+- 同一工作区同时登记同一个仓库的两个名字时，后来的名字不可用（`ErrRepoAmbiguous`），要删掉其中一个资源。「这个名字是否仍登记」读的是项目资源，与绑定写入不在同一条 SQL 里：只有在读和写之间恰好有人删改项目资源时才可能判断过时，不加锁。
+- `/repositories/{id}/...` 这种按 id 寻址的写法与 GitHub 对改名仓库返回的重定向地址一致，但没有在真实 GitHub 上验证全部子路径（issues、comments、pulls），需要 Owner 实测。
 
 ## 标识
 
@@ -159,7 +201,7 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 
 | 文件 | 改动 |
 |---|---|
-| `server/cmd/server/main.go` | 建 `githubissues.Service` 时传入数据库连接池和事件总线 |
+| `server/cmd/server/main.go` | 建 `githubissues.Service` 时传入数据库连接池和事件总线（`RepoClient` 也用这个连接池查白名单、写绑定） |
 | `server/cmd/server/router.go` | 功能开启时把 `Service` 设为 `Handler.ExternalComments` |
 | `server/internal/handler/handler.go` | `Handler.ExternalComments` 字段 |
 | `server/internal/handler/comment.go` | `UpdateComment`、`DeleteComment` 各一行只读检查 |

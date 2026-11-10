@@ -89,6 +89,49 @@ func (q *Queries) GitHubTokenExpiryReminderSent(ctx context.Context, arg GitHubT
 	return exists, err
 }
 
+const insertGithubRepoPin = `-- name: InsertGithubRepoPin :one
+INSERT INTO github_repo_sync (workspace_id, repo_id, owner, name)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (workspace_id, repo_id) DO NOTHING
+RETURNING workspace_id, repo_id, owner, name, issues_cursor, comments_cursor, pulls_cursor, last_full_reconcile_at, status, last_error, last_polled_at, created_at, updated_at
+`
+
+type InsertGithubRepoPinParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RepoID      int64       `json:"repo_id"`
+	Owner       string      `json:"owner"`
+	Name        string      `json:"name"`
+}
+
+// Pins a repository id to the first name RepoClient resolved it from. Returns
+// no row when another caller pinned the id first; RepoClient then re-reads
+// the pins instead of overwriting them.
+func (q *Queries) InsertGithubRepoPin(ctx context.Context, arg InsertGithubRepoPinParams) (GithubRepoSync, error) {
+	row := q.db.QueryRow(ctx, insertGithubRepoPin,
+		arg.WorkspaceID,
+		arg.RepoID,
+		arg.Owner,
+		arg.Name,
+	)
+	var i GithubRepoSync
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.RepoID,
+		&i.Owner,
+		&i.Name,
+		&i.IssuesCursor,
+		&i.CommentsCursor,
+		&i.PullsCursor,
+		&i.LastFullReconcileAt,
+		&i.Status,
+		&i.LastError,
+		&i.LastPolledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listGitHubTokenExpiryRecipients = `-- name: ListGitHubTokenExpiryRecipients :many
 
 SELECT DISTINCT m.workspace_id, m.user_id
@@ -131,6 +174,35 @@ func (q *Queries) ListGitHubTokenExpiryRecipients(ctx context.Context) ([]ListGi
 	return items, nil
 }
 
+const listWorkspaceGitHubRepoRefs = `-- name: ListWorkspaceGitHubRepoRefs :many
+SELECT resource_ref FROM project_resource
+WHERE workspace_id = $1
+  AND resource_type = 'github_repo'
+ORDER BY created_at, id
+`
+
+// The github_repo resources registered on any project of the workspace: the
+// allowlist behind githubissues.RepoClient. Read-only on project_resource.
+func (q *Queries) ListWorkspaceGitHubRepoRefs(ctx context.Context, workspaceID pgtype.UUID) ([][]byte, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceGitHubRepoRefs, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := [][]byte{}
+	for rows.Next() {
+		var resource_ref []byte
+		if err := rows.Scan(&resource_ref); err != nil {
+			return nil, err
+		}
+		items = append(items, resource_ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockCommentExternalByExternalID = `-- name: LockCommentExternalByExternalID :one
 SELECT comment_id, workspace_id, external_id, login, avatar_url, external_updated_at, created_at, updated_at FROM comment_external
 WHERE workspace_id = $1 AND external_id = $2
@@ -154,6 +226,57 @@ func (q *Queries) LockCommentExternalByExternalID(ctx context.Context, arg LockC
 		&i.Login,
 		&i.AvatarUrl,
 		&i.ExternalUpdatedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const moveGithubRepoPin = `-- name: MoveGithubRepoPin :one
+UPDATE github_repo_sync SET
+    owner      = $1,
+    name       = $2,
+    updated_at = now()
+WHERE workspace_id = $3
+  AND repo_id = $4
+  AND owner = $5
+  AND name = $6
+RETURNING workspace_id, repo_id, owner, name, issues_cursor, comments_cursor, pulls_cursor, last_full_reconcile_at, status, last_error, last_polled_at, created_at, updated_at
+`
+
+type MoveGithubRepoPinParams struct {
+	Owner       string      `json:"owner"`
+	Name        string      `json:"name"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RepoID      int64       `json:"repo_id"`
+	FromOwner   string      `json:"from_owner"`
+	FromName    string      `json:"from_name"`
+}
+
+// Moves a pin to a new name only if it still has the name RepoClient read
+// (compare-and-swap). Returns no row when the pin changed in between.
+func (q *Queries) MoveGithubRepoPin(ctx context.Context, arg MoveGithubRepoPinParams) (GithubRepoSync, error) {
+	row := q.db.QueryRow(ctx, moveGithubRepoPin,
+		arg.Owner,
+		arg.Name,
+		arg.WorkspaceID,
+		arg.RepoID,
+		arg.FromOwner,
+		arg.FromName,
+	)
+	var i GithubRepoSync
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.RepoID,
+		&i.Owner,
+		&i.Name,
+		&i.IssuesCursor,
+		&i.CommentsCursor,
+		&i.PullsCursor,
+		&i.LastFullReconcileAt,
+		&i.Status,
+		&i.LastError,
+		&i.LastPolledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

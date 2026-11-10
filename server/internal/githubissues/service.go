@@ -46,12 +46,17 @@ type Database interface {
 type Service struct {
 	cfg        Config
 	httpClient *http.Client
-	apiBase    string
-	now        func() time.Time
-	logger     *slog.Logger
-	state      tokenState
-	db         Database
-	bus        *events.Bus
+	// repoHTTPClient is httpClient without redirects, for Repo.Do.
+	repoHTTPClient *http.Client
+	apiBase        string
+	now            func() time.Time
+	logger         *slog.Logger
+	state          tokenState
+	db             Database
+	bus            *events.Bus
+	// store backs RepoClient's allowlist and repository pins: db.New(db),
+	// or a fake in tests.
+	store repoStore
 	// failures counts consecutive inconclusive checks for the retry backoff.
 	// Only the validation loop touches it.
 	failures int
@@ -85,6 +90,11 @@ func New(cfg Config, opts Options) *Service {
 	}
 	if s.now == nil {
 		s.now = time.Now
+	}
+	s.repoHTTPClient = noRedirectClient(s.httpClient)
+	// A nil DB must leave store a nil interface, not a typed nil.
+	if opts.DB != nil {
+		s.store = db.New(opts.DB)
 	}
 	return s
 }
