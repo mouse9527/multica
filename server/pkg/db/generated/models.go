@@ -706,6 +706,17 @@ type Comment struct {
 	SuppressedAgentIds []pgtype.UUID      `json:"suppressed_agent_ids"`
 }
 
+type CommentExternal struct {
+	CommentID         pgtype.UUID        `json:"comment_id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	ExternalID        int64              `json:"external_id"`
+	Login             string             `json:"login"`
+	AvatarUrl         pgtype.Text        `json:"avatar_url"`
+	ExternalUpdatedAt pgtype.Timestamptz `json:"external_updated_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
 type CommentReaction struct {
 	ID          pgtype.UUID        `json:"id"`
 	CommentID   pgtype.UUID        `json:"comment_id"`
@@ -886,6 +897,41 @@ type GithubPullRequestCheckSuite struct {
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
 
+type GithubRepoSync struct {
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	RepoID              int64              `json:"repo_id"`
+	Owner               string             `json:"owner"`
+	Name                string             `json:"name"`
+	IssuesCursor        pgtype.Timestamptz `json:"issues_cursor"`
+	CommentsCursor      pgtype.Timestamptz `json:"comments_cursor"`
+	PullsCursor         pgtype.Timestamptz `json:"pulls_cursor"`
+	LastFullReconcileAt pgtype.Timestamptz `json:"last_full_reconcile_at"`
+	Status              string             `json:"status"`
+	LastError           pgtype.Text        `json:"last_error"`
+	LastPolledAt        pgtype.Timestamptz `json:"last_polled_at"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+}
+
+type GithubWriteIntent struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Op             string             `json:"op"`
+	RepoID         int64              `json:"repo_id"`
+	ExternalRepo   string             `json:"external_repo"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	ExternalNumber pgtype.Int4        `json:"external_number"`
+	CommentID      pgtype.UUID        `json:"comment_id"`
+	PayloadDigest  string             `json:"payload_digest"`
+	ActorType      string             `json:"actor_type"`
+	ActorID        pgtype.UUID        `json:"actor_id"`
+	State          string             `json:"state"`
+	GithubID       pgtype.Int8        `json:"github_id"`
+	Error          pgtype.Text        `json:"error"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type InboxItem struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -966,6 +1012,22 @@ type IssueDependency struct {
 	IssueID          pgtype.UUID `json:"issue_id"`
 	DependsOnIssueID pgtype.UUID `json:"depends_on_issue_id"`
 	Type             string      `json:"type"`
+}
+
+type IssueExternal struct {
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	Provider          string             `json:"provider"`
+	ExternalRepoID    int64              `json:"external_repo_id"`
+	ExternalRepo      string             `json:"external_repo"`
+	ExternalNumber    int32              `json:"external_number"`
+	ExternalNodeID    string             `json:"external_node_id"`
+	State             string             `json:"state"`
+	StateReason       pgtype.Text        `json:"state_reason"`
+	ExternalUpdatedAt pgtype.Timestamptz `json:"external_updated_at"`
+	ExternalSyncedAt  pgtype.Timestamptz `json:"external_synced_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
 type IssueLabel struct {
@@ -1466,6 +1528,15 @@ type Project struct {
 	WorkflowID  pgtype.UUID        `json:"workflow_id"`
 	CreatorType pgtype.Text        `json:"creator_type"`
 	CreatorID   pgtype.UUID        `json:"creator_id"`
+}
+
+type ProjectGithubSetting struct {
+	ProjectID         pgtype.UUID        `json:"project_id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	DefaultResourceID pgtype.UUID        `json:"default_resource_id"`
+	StatusLabelMap    []byte             `json:"status_label_map"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
 type ProjectResource struct {
