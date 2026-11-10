@@ -136,3 +136,50 @@ func TestRepoClientAgainstDatabase(t *testing.T) {
 		t.Fatalf("removed resource: err = %v", err)
 	}
 }
+
+// TestRepoClientConcurrentFirstUseAgainstDatabase runs review R2's
+// interleaving on the real table: both names read the empty pins, then both
+// write. The conditional INSERT lets one land; the other re-reads and is
+// refused.
+func TestRepoClientConcurrentFirstUseAgainstDatabase(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("explicit disposable DATABASE_URL required")
+	}
+	pool := testutil.IsolatedDB(t, dsn)
+	f := testutil.New(pool, "", "")
+	queries := db.New(pool)
+	ctx := context.Background()
+
+	api := newFakeRepoAPI(t)
+	api.setName("acme/gadgets", 42)
+	api.setName("acme/widgets", -42)
+	svc := newTestService(t, api.server.URL, "2027-03-01")
+	svc.state.markAccepted("octocat", testNow)
+
+	for run := range 5 {
+		suffix := uuid.NewString()[:8]
+		ws := f.Workspace(t, "Concurrent", "repo-client-concurrent-"+suffix)
+		f.WorkspaceID = ws
+		for _, url := range []string{"https://github.com/acme/widgets", "https://github.com/acme/gadgets"} {
+			f.Insert(t, "project_resource", testutil.Cols{
+				"project_id":    f.Project(t, "Project "+url),
+				"workspace_id":  ws,
+				"resource_type": "github_repo",
+				"resource_ref":  `{"url":"` + url + `"}`,
+			})
+		}
+		wsID := util.MustParseUUID(ws)
+		svc.store = gatedStore{repoStore: queries, barrier: newListBarrier(2)}
+
+		winner, loser := concurrentFirstUse(t, svc.Service, wsID, [2]string{"widgets", "gadgets"})
+		pins, err := queries.ListGithubRepoSyncsByWorkspace(ctx, wsID)
+		if err != nil || len(pins) != 1 || pins[0].RepoID != 42 || pins[0].Name != winner {
+			t.Fatalf("run %d: pins = %+v, err = %v, want only 42 pinned as %s", run, pins, err, winner)
+		}
+		svc.store = queries
+		if _, err := svc.RepoClient(ctx, wsID, "acme", loser); !errors.Is(err, ErrRepoAmbiguous) {
+			t.Fatalf("run %d: loser %s: err = %v", run, loser, err)
+		}
+	}
+}

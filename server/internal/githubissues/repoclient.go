@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -46,8 +47,15 @@ func (e *tokenRejectedError) Is(target error) bool { return target == ErrTokenNo
 type repoStore interface {
 	ListWorkspaceGitHubRepoRefs(ctx context.Context, workspaceID pgtype.UUID) ([][]byte, error)
 	ListGithubRepoSyncsByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]db.GithubRepoSync, error)
-	UpsertGithubRepoSync(ctx context.Context, arg db.UpsertGithubRepoSyncParams) (db.GithubRepoSync, error)
+	InsertGithubRepoPin(ctx context.Context, arg db.InsertGithubRepoPinParams) (db.GithubRepoSync, error)
+	MoveGithubRepoPin(ctx context.Context, arg db.MoveGithubRepoPinParams) (db.GithubRepoSync, error)
 }
+
+// pinAttempts bounds how often RepoClient re-reads the pins after losing a
+// race to another caller. Each lost race means some pin changed, and the
+// next read sees it, so a second attempt already settles; the bound only
+// guards against a store that keeps changing underneath.
+const pinAttempts = 3
 
 // Repo is a GitHub repository the workspace has registered, pinned to its
 // GitHub repository id. Every request goes to /repositories/{id}/..., so a
@@ -73,7 +81,7 @@ type Repo struct {
 // with GET /repos/{owner}/{repo} and pins the id in github_repo_sync; later
 // calls use the pinned id and send nothing until Do. A pin row holds one name,
 // so a pin whose name is still registered is never taken over by another
-// name: that name gets ErrRepoAmbiguous instead.
+// name, not even by a concurrent first use: that name gets ErrRepoAmbiguous.
 func (s *Service) RepoClient(ctx context.Context, workspaceID pgtype.UUID, owner, repo string) (*Repo, error) {
 	if s == nil {
 		return nil, ErrFeatureOff
@@ -96,38 +104,62 @@ func (s *Service) RepoClient(ctx context.Context, workspaceID pgtype.UUID, owner
 		return nil, ErrTokenNotUsable
 	}
 
-	pins, err := s.store.ListGithubRepoSyncsByWorkspace(ctx, workspaceID)
-	if err != nil {
-		return nil, fmt.Errorf("githubissues: list pinned repositories: %w", err)
-	}
-	for _, pin := range pins {
-		if name.sameAs(repoName{owner: pin.Owner, name: pin.Name}) {
-			return &Repo{svc: s, workspaceID: workspaceID, id: pin.RepoID, name: name}, nil
+	// The pins are read, judged and then written with a conditional write:
+	// a new pin only if the id has none, a moved pin only if it still has
+	// the name read here. A write that finds the pin changed returns no row,
+	// and the loop judges again from a fresh read, so between concurrent
+	// callers the first write wins and the others see it.
+	var id int64
+	for attempt := 1; ; attempt++ {
+		pins, err := s.store.ListGithubRepoSyncsByWorkspace(ctx, workspaceID)
+		if err != nil {
+			return nil, fmt.Errorf("githubissues: list pinned repositories: %w", err)
 		}
-	}
+		for _, pin := range pins {
+			if name.sameAs(repoName{owner: pin.Owner, name: pin.Name}) {
+				return &Repo{svc: s, workspaceID: workspaceID, id: pin.RepoID, name: name}, nil
+			}
+		}
+		if id == 0 {
+			if id, err = s.resolveRepoID(ctx, name); err != nil {
+				return nil, err
+			}
+		}
 
-	id, err := s.resolveRepoID(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	for _, pin := range pins {
-		pinned := repoName{owner: pin.Owner, name: pin.Name}
-		if pin.RepoID == id && containsName(registered, pinned) {
-			s.logger.Warn("github repository registered under two names; refusing the unpinned one",
-				"repo", name.String(), "pinned_as", pinned.String(), "repo_id", id)
-			return nil, ErrRepoAmbiguous
+		var current *db.GithubRepoSync
+		for i := range pins {
+			if pins[i].RepoID == id {
+				current = &pins[i]
+			}
+		}
+		if current == nil {
+			_, err = s.store.InsertGithubRepoPin(ctx, db.InsertGithubRepoPinParams{
+				WorkspaceID: workspaceID, RepoID: id, Owner: name.owner, Name: name.name,
+			})
+		} else {
+			pinned := repoName{owner: current.Owner, name: current.Name}
+			if containsName(registered, pinned) {
+				s.logger.Warn("github repository registered under two names; refusing the unpinned one",
+					"repo", name.String(), "pinned_as", pinned.String(), "repo_id", id)
+				return nil, ErrRepoAmbiguous
+			}
+			// The pinned name is no longer registered: the resource moved to
+			// this name, and the row keeps its cursors.
+			_, err = s.store.MoveGithubRepoPin(ctx, db.MoveGithubRepoPinParams{
+				WorkspaceID: workspaceID, RepoID: id, Owner: name.owner, Name: name.name,
+				FromOwner: current.Owner, FromName: current.Name,
+			})
+		}
+		switch {
+		case err == nil:
+			s.logger.Info("github repository pinned", "repo", name.String(), "repo_id", id)
+			return &Repo{svc: s, workspaceID: workspaceID, id: id, name: name}, nil
+		case !errors.Is(err, pgx.ErrNoRows):
+			return nil, fmt.Errorf("githubissues: pin repository: %w", err)
+		case attempt == pinAttempts:
+			return nil, errors.New("githubissues: pin repository: pins kept changing concurrently")
 		}
 	}
-	// Keyed by (workspace, repo id): a repository whose resource moved to a
-	// new name keeps its row and cursors and only takes the new name. The
-	// check above makes sure the old name is no longer registered.
-	if _, err := s.store.UpsertGithubRepoSync(ctx, db.UpsertGithubRepoSyncParams{
-		WorkspaceID: workspaceID, RepoID: id, Owner: name.owner, Name: name.name,
-	}); err != nil {
-		return nil, fmt.Errorf("githubissues: pin repository: %w", err)
-	}
-	s.logger.Info("github repository pinned", "repo", name.String(), "repo_id", id)
-	return &Repo{svc: s, workspaceID: workspaceID, id: id, name: name}, nil
 }
 
 // registeredNames lists the github.com repositories registered on the

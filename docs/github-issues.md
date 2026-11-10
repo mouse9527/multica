@@ -68,7 +68,7 @@
 | `server/cmd/server/main.go` | 读配置建 `githubissues.Service`（传入 `queries`，供 `RepoClient` 查白名单），传给路由；开启时启动校验并注册 `github_token_expiry` |
 | `server/cmd/server/router.go` | `RouterOptions.GitHubIssues` 字段；开启时注册状态接口 |
 | `server/internal/integrations/ghsnapshot/ratelimit_export.go` | 新文件，导出限流判断与退避，供本功能复用 |
-| `server/pkg/db/queries/githubissues.sql` | 新文件：提醒收件人与去重查询、`RepoClient` 白名单查询（只读现有表，不改表结构） |
+| `server/pkg/db/queries/githubissues.sql` | 新文件：提醒收件人与去重查询、`RepoClient` 白名单查询（只读现有表）与绑定的条件写入（只写 fork 表 `github_repo_sync`），不改表结构 |
 
 ## 访问仓库：`RepoClient` 与白名单
 
@@ -90,6 +90,7 @@
   - Owner 把资源改成新名后，新名解析出同一个 id，沿用原来那一行（游标不丢），只更新名字。
 - 新名在资源改过来之前不在白名单，会被拒绝。
 - **一行只记一个名字，仍登记的名字的固定绑定不会被别的名字顶掉。** 如果某个名字解析出的 id 已经固定在另一个仍登记的名字上（例如项目 A 留着旧名、项目 B 登记了新名；或者新名已固定，又有人登记了仍被 GitHub 重定向过来的旧名），后来的这个名字返回 `ErrRepoAmbiguous`，不改那一行，并打一条警告。原来的名字继续命中原 id；即使旧名已被别人新建的仓库占用，也不会转到那个仓库。删掉其中一个资源后即恢复：留下的名字若是新名，下次调用时接管这一行（游标不丢）。
+- **绑定写入是条件写，并发也成立。** 新绑定用 `InsertGithubRepoPin`（`ON CONFLICT DO NOTHING`：这个 id 已有绑定就不写）；改名迁移用 `MoveGithubRepoPin`（只在这一行仍是刚读到的名字时才改）。写入落空说明别的调用者先写了，`RepoClient` 重新读取绑定再判断（最多 3 次），所以两个名字同时首次使用时，先写入的那个保留，另一个被拒绝（`ErrRepoAmbiguous`）。M-20 的 `UpsertGithubRepoSync` 会无条件覆盖名字，`RepoClient` 不用它，后续任务也不要用它改绑定。
 - 删除资源后该仓库立即不可用；`github_repo_sync` 里的那一行保留，不再作为授权依据。
 - 首次解析时跟随 GitHub 的改名重定向（只读的 GET），所以登记的是改名前的旧名也能解析到原仓库。
 
@@ -108,7 +109,7 @@
 ### 已知限制
 
 - classic PAT 的 `repo` 范围在 GitHub 一侧不能限定仓库。白名单是服务端的自我约束，挡不住令牌泄露后的外部使用。
-- 同一工作区同时登记同一个仓库的两个名字时，后来的名字不可用（`ErrRepoAmbiguous`），要删掉其中一个资源。「先查登记、再改名字」不是一条原子 SQL：只有在两次读之间恰好有人改项目资源时才可能判断过时，不加锁。
+- 同一工作区同时登记同一个仓库的两个名字时，后来的名字不可用（`ErrRepoAmbiguous`），要删掉其中一个资源。「这个名字是否仍登记」读的是项目资源，与绑定写入不在同一条 SQL 里：只有在读和写之间恰好有人删改项目资源时才可能判断过时，不加锁。
 - `/repositories/{id}/...` 这种按 id 寻址的写法与 GitHub 对改名仓库返回的重定向地址一致，但没有在真实 GitHub 上验证全部子路径（issues、comments、pulls），需要 Owner 实测。
 
 ## 标识

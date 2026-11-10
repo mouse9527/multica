@@ -34,3 +34,25 @@ SELECT resource_ref FROM project_resource
 WHERE workspace_id = $1
   AND resource_type = 'github_repo'
 ORDER BY created_at, id;
+
+-- name: InsertGithubRepoPin :one
+-- Pins a repository id to the first name RepoClient resolved it from. Returns
+-- no row when another caller pinned the id first; RepoClient then re-reads
+-- the pins instead of overwriting them.
+INSERT INTO github_repo_sync (workspace_id, repo_id, owner, name)
+VALUES (@workspace_id, @repo_id, @owner, @name)
+ON CONFLICT (workspace_id, repo_id) DO NOTHING
+RETURNING *;
+
+-- name: MoveGithubRepoPin :one
+-- Moves a pin to a new name only if it still has the name RepoClient read
+-- (compare-and-swap). Returns no row when the pin changed in between.
+UPDATE github_repo_sync SET
+    owner      = @owner,
+    name       = @name,
+    updated_at = now()
+WHERE workspace_id = @workspace_id
+  AND repo_id = @repo_id
+  AND owner = @from_owner
+  AND name = @from_name
+RETURNING *;

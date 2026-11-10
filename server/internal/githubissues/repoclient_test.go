@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -21,10 +22,10 @@ import (
 // fakeRepoStore stands in for *db.Queries: the registered resource refs of
 // one workspace and the pins RepoClient writes.
 type fakeRepoStore struct {
-	mu      sync.Mutex
-	refs    map[pgtype.UUID][][]byte
-	pins    map[pgtype.UUID][]db.GithubRepoSync
-	upserts int
+	mu     sync.Mutex
+	refs   map[pgtype.UUID][][]byte
+	pins   map[pgtype.UUID][]db.GithubRepoSync
+	writes int
 }
 
 func newFakeRepoStore() *fakeRepoStore {
@@ -68,19 +69,74 @@ func (f *fakeRepoStore) ListGithubRepoSyncsByWorkspace(_ context.Context, ws pgt
 	return append([]db.GithubRepoSync(nil), f.pins[ws]...), nil
 }
 
-func (f *fakeRepoStore) UpsertGithubRepoSync(_ context.Context, arg db.UpsertGithubRepoSyncParams) (db.GithubRepoSync, error) {
+// InsertGithubRepoPin and MoveGithubRepoPin keep the SQL's semantics: no
+// row (pgx.ErrNoRows) when the id is already pinned, or when the pin no
+// longer has the name the caller read.
+func (f *fakeRepoStore) InsertGithubRepoPin(_ context.Context, arg db.InsertGithubRepoPinParams) (db.GithubRepoSync, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.upserts++
-	row := db.GithubRepoSync{WorkspaceID: arg.WorkspaceID, RepoID: arg.RepoID, Owner: arg.Owner, Name: arg.Name}
-	for i, pin := range f.pins[arg.WorkspaceID] {
+	for _, pin := range f.pins[arg.WorkspaceID] {
 		if pin.RepoID == arg.RepoID {
-			f.pins[arg.WorkspaceID][i] = row
-			return row, nil
+			return db.GithubRepoSync{}, pgx.ErrNoRows
 		}
 	}
+	f.writes++
+	row := db.GithubRepoSync{WorkspaceID: arg.WorkspaceID, RepoID: arg.RepoID, Owner: arg.Owner, Name: arg.Name}
 	f.pins[arg.WorkspaceID] = append(f.pins[arg.WorkspaceID], row)
 	return row, nil
+}
+
+func (f *fakeRepoStore) MoveGithubRepoPin(_ context.Context, arg db.MoveGithubRepoPinParams) (db.GithubRepoSync, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, pin := range f.pins[arg.WorkspaceID] {
+		if pin.RepoID == arg.RepoID && pin.Owner == arg.FromOwner && pin.Name == arg.FromName {
+			f.writes++
+			f.pins[arg.WorkspaceID][i].Owner, f.pins[arg.WorkspaceID][i].Name = arg.Owner, arg.Name
+			return f.pins[arg.WorkspaceID][i], nil
+		}
+	}
+	return db.GithubRepoSync{}, pgx.ErrNoRows
+}
+
+// listBarrier holds the first n pin reads until all n have happened, so n
+// concurrent RepoClient calls all judge from the same (empty) snapshot before
+// any of them writes: the interleaving review R2 described.
+type listBarrier struct {
+	mu      sync.Mutex
+	waiting int
+	release chan struct{}
+}
+
+func newListBarrier(n int) *listBarrier {
+	return &listBarrier{waiting: n, release: make(chan struct{})}
+}
+
+func (b *listBarrier) arrive() {
+	b.mu.Lock()
+	if b.waiting == 0 {
+		b.mu.Unlock()
+		return
+	}
+	b.waiting--
+	if b.waiting == 0 {
+		close(b.release)
+	}
+	b.mu.Unlock()
+	<-b.release
+}
+
+// gatedStore passes every call to a repoStore but holds pin reads at a
+// barrier.
+type gatedStore struct {
+	repoStore
+	barrier *listBarrier
+}
+
+func (g gatedStore) ListGithubRepoSyncsByWorkspace(ctx context.Context, ws pgtype.UUID) ([]db.GithubRepoSync, error) {
+	rows, err := g.repoStore.ListGithubRepoSyncsByWorkspace(ctx, ws)
+	g.barrier.arrive()
+	return rows, err
 }
 
 // fakeRepoAPI is a GitHub API with repositories by name and by id. It
@@ -206,7 +262,7 @@ func TestRepoClientRejectsUnregisteredWithoutRequest(t *testing.T) {
 	if got := fx.api.seen(); len(got) != 0 {
 		t.Fatalf("unregistered repositories must not reach GitHub, saw %v", got)
 	}
-	if fx.store.upserts != 0 {
+	if fx.store.writes != 0 {
 		t.Fatalf("unregistered repositories must not be pinned")
 	}
 }
@@ -374,6 +430,110 @@ func TestRepoClientKeepsPinWhileBothNamesAreRegistered(t *testing.T) {
 	}
 }
 
+// concurrentFirstUse calls RepoClient for both names at once, after both
+// calls have read the same pins, and checks that exactly one name got the pin
+// and the other was refused. It returns the winner's and the loser's name.
+func concurrentFirstUse(t *testing.T, svc *Service, ws pgtype.UUID, names [2]string) (winner, loser string) {
+	t.Helper()
+	var repos [2]*Repo
+	var errs [2]error
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Go(func() { repos[i], errs[i] = svc.RepoClient(context.Background(), ws, "acme", name) })
+	}
+	wg.Wait()
+	won := -1
+	for i := range names {
+		switch {
+		case errs[i] == nil && repos[i].ID() == 42:
+			if won != -1 {
+				t.Fatalf("both names got a client: %v", repos)
+			}
+			won = i
+		case errors.Is(errs[i], ErrRepoAmbiguous):
+		default:
+			t.Fatalf("%s: %v %v", names[i], repos[i], errs[i])
+		}
+	}
+	if won == -1 {
+		t.Fatalf("neither name got a client: %v", errs)
+	}
+	return names[won], names[1-won]
+}
+
+// Review R2: old and new name are both registered and nothing is pinned yet;
+// two first uses read the empty pins together, both resolve to 42, and both
+// try to pin it. Only the first write may land: the other name must be
+// refused, and the winner keeps 42 even once its name is taken by another
+// repository. Repeated so both orders of the writes occur.
+func TestRepoClientConcurrentFirstUseKeepsOnePin(t *testing.T) {
+	for range 20 {
+		fx := newRepoFixture(t)
+		ctx := context.Background()
+		fx.store.register(fx.ws, "https://github.com/acme/widgets")
+		fx.store.register(fx.ws, "https://github.com/acme/gadgets")
+		fx.api.setName("acme/gadgets", 42)
+		fx.api.setName("acme/widgets", -42) // the old name redirects to 42
+		fx.Service.store = gatedStore{repoStore: fx.store, barrier: newListBarrier(2)}
+
+		winner, loser := concurrentFirstUse(t, fx.Service, fx.ws, [2]string{"widgets", "gadgets"})
+		pins, _ := fx.store.ListGithubRepoSyncsByWorkspace(ctx, fx.ws)
+		if len(pins) != 1 || pins[0].RepoID != 42 || pins[0].Name != winner {
+			t.Fatalf("pins = %+v, want only 42 pinned as %s", pins, winner)
+		}
+
+		fx.api.setName("acme/"+winner, 99)
+		if repo, err := fx.RepoClient(ctx, fx.ws, "acme", winner); err != nil || repo.ID() != 42 {
+			t.Fatalf("winner %s after its name was taken: %v %v", winner, repo, err)
+		}
+		if _, err := fx.RepoClient(ctx, fx.ws, "acme", loser); !errors.Is(err, ErrRepoAmbiguous) {
+			t.Fatalf("loser %s: err = %v, want ErrRepoAmbiguous", loser, err)
+		}
+		for _, req := range fx.api.seen() {
+			if strings.Contains(req, "/repositories/99") {
+				t.Fatalf("reached repository 99: %s", req)
+			}
+		}
+	}
+}
+
+// Moving a pin is conditional too: two first uses of the same new name, after
+// the old name's resource is gone, both move the pin; one write lands and the
+// other finds the pin already under the new name.
+func TestRepoClientConcurrentMoveOfAPin(t *testing.T) {
+	fx := newRepoFixture(t)
+	ctx := context.Background()
+	fx.store.register(fx.ws, "https://github.com/acme/widgets")
+	fx.api.setName("acme/widgets", 42)
+	if _, err := fx.RepoClient(ctx, fx.ws, "acme", "widgets"); err != nil {
+		t.Fatal(err)
+	}
+	fx.store.unregister(fx.ws, "https://github.com/acme/widgets")
+	fx.store.register(fx.ws, "https://github.com/acme/gadgets")
+	fx.api.setName("acme/gadgets", 42)
+	fx.Service.store = gatedStore{repoStore: fx.store, barrier: newListBarrier(2)}
+
+	var errs [2]error
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Go(func() {
+			var repo *Repo
+			repo, errs[i] = fx.RepoClient(ctx, fx.ws, "acme", "gadgets")
+			if errs[i] == nil && repo.ID() != 42 {
+				errs[i] = fmt.Errorf("repo id %d", repo.ID())
+			}
+		})
+	}
+	wg.Wait()
+	if errs[0] != nil || errs[1] != nil {
+		t.Fatalf("errs = %v", errs)
+	}
+	pins, _ := fx.store.ListGithubRepoSyncsByWorkspace(ctx, fx.ws)
+	if len(pins) != 1 || pins[0].Name != "gadgets" || fx.store.writes != 2 {
+		t.Fatalf("pins = %+v, writes = %d; want one row moved once after the first pin", pins, fx.store.writes)
+	}
+}
+
 // The reverse order: the new name is pinned first, then a project registers
 // the old name, which GitHub still redirects to the same repository.
 func TestRepoClientRefusesOldNameRedirectingToAPinnedRepository(t *testing.T) {
@@ -415,7 +575,7 @@ func TestRepoClientPinFailures(t *testing.T) {
 	if _, err := fx.RepoClient(context.Background(), fx.ws, "acme", "missing"); err == nil || !strings.Contains(err.Error(), "404") {
 		t.Fatalf("missing repository: err = %v", err)
 	}
-	if fx.store.upserts != 0 {
+	if fx.store.writes != 0 {
 		t.Fatal("a failed lookup must not pin anything")
 	}
 }
