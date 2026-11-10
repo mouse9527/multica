@@ -683,7 +683,7 @@ func main() {
 
 	// Modified by the mouse9527/multica fork: GitHub-native issues, off by
 	// default (server/internal/githubissues, docs/github-issues.md).
-	gitHubIssues := githubissues.New(githubissues.LoadConfig(os.Getenv), githubissues.Options{})
+	gitHubIssues := githubissues.New(githubissues.LoadConfig(os.Getenv), githubissues.Options{Queries: queries})
 	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
 		GitHubIssues:        gitHubIssues,
 		HTTPMetrics:         httpMetrics,

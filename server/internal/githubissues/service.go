@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 const (
@@ -26,6 +27,8 @@ type Options struct {
 	APIBase string
 	Now     func() time.Time
 	Logger  *slog.Logger
+	// Queries backs RepoClient's allowlist and repository pins.
+	Queries *db.Queries
 }
 
 // Service is the running GitHub-native issues feature. It is created only
@@ -33,10 +36,13 @@ type Options struct {
 type Service struct {
 	cfg        Config
 	httpClient *http.Client
-	apiBase    string
-	now        func() time.Time
-	logger     *slog.Logger
-	state      tokenState
+	// repoHTTPClient is httpClient without redirects, for Repo.Do.
+	repoHTTPClient *http.Client
+	apiBase        string
+	now            func() time.Time
+	logger         *slog.Logger
+	store          repoStore
+	state          tokenState
 	// failures counts consecutive inconclusive checks for the retry backoff.
 	// Only the validation loop touches it.
 	failures int
@@ -68,6 +74,11 @@ func New(cfg Config, opts Options) *Service {
 	}
 	if s.now == nil {
 		s.now = time.Now
+	}
+	s.repoHTTPClient = noRedirectClient(s.httpClient)
+	// A nil *db.Queries must stay a nil interface, not a typed nil.
+	if opts.Queries != nil {
+		s.store = opts.Queries
 	}
 	return s
 }

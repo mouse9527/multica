@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -82,21 +81,9 @@ func lacksRepoScope(h http.Header) bool {
 func (s *Service) fetchLogin(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.apiBase+"/user", nil)
+	resp, body, err := s.exchange(ctx, s.httpClient, "GET /user", http.MethodGet, s.apiBase+"/user", nil, maxUserBody)
 	if err != nil {
 		return "", err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+s.cfg.token)
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("github GET /user: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxUserBody+1))
-	if err != nil {
-		return "", errors.New("github GET /user: failed to read response")
 	}
 	if err := classifyFailure(resp, body, s.now()); err != nil {
 		return "", err
@@ -106,9 +93,6 @@ func (s *Service) fetchLogin(ctx context.Context) (string, error) {
 	}
 	if lacksRepoScope(resp.Header) {
 		return "", &tokenRejectedError{category: rejectMissingRepoScope}
-	}
-	if len(body) > maxUserBody {
-		return "", errors.New("github GET /user: response exceeds size limit")
 	}
 	var user struct {
 		Login string `json:"login"`

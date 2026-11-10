@@ -85,3 +85,32 @@ func (q *Queries) ListGitHubTokenExpiryRecipients(ctx context.Context) ([]ListGi
 	}
 	return items, nil
 }
+
+const listWorkspaceGitHubRepoRefs = `-- name: ListWorkspaceGitHubRepoRefs :many
+SELECT resource_ref FROM project_resource
+WHERE workspace_id = $1
+  AND resource_type = 'github_repo'
+ORDER BY created_at, id
+`
+
+// The github_repo resources registered on any project of the workspace: the
+// allowlist behind githubissues.RepoClient. Read-only on project_resource.
+func (q *Queries) ListWorkspaceGitHubRepoRefs(ctx context.Context, workspaceID pgtype.UUID) ([][]byte, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceGitHubRepoRefs, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := [][]byte{}
+	for rows.Next() {
+		var resource_ref []byte
+		if err := rows.Scan(&resource_ref); err != nil {
+			return nil, err
+		}
+		items = append(items, resource_ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

@@ -26,3 +26,11 @@ SELECT EXISTS (
       AND details->>'expires_at' = @expires_at::text
       AND details->>'threshold_days' = @threshold_days::text
 );
+
+-- name: ListWorkspaceGitHubRepoRefs :many
+-- The github_repo resources registered on any project of the workspace: the
+-- allowlist behind githubissues.RepoClient. Read-only on project_resource.
+SELECT resource_ref FROM project_resource
+WHERE workspace_id = $1
+  AND resource_type = 'github_repo'
+ORDER BY created_at, id;
