@@ -118,7 +118,7 @@
 `ghsnapshot` 读取 PR 的 CI 与可合并状态（`FetchPRSnapshot`），原来只能用 GitHub App 的安装令牌。现在 `ghsnapshot.Client` 另有一个静态令牌来源，用本功能的令牌读取；`snapshot.go`、`refresh.go`、`issue_pull_request`、前端 PR 卡片都不变，`handler/github.go` 的 `isGitHubConfigured()` 也不变。
 
 - **合成键：** 静态来源的安装 id 是 `ghsnapshot.StaticInstallationID`（`-1`）。刷新队列、限流暂停、PR 行都像真实安装 id 一样用它做键；GitHub 的安装 id 都是正数，不会冲突。用这个 id 的请求只走静态来源，不会回退到 App；其他 id 只走 App。
-- **令牌不进 `ghsnapshot`：** `githubissues` 导出 `Service.SnapshotTransport()`（一个 `http.RoundTripper`），`ghsnapshot` 用 `Client.WithStaticSource(transport)` 接上。`ghsnapshot` 只构造不带凭据的请求，由这个 transport 在放行时加上 `Authorization` 头。功能关闭（nil `Service`）时返回 nil，`WithStaticSource(nil)` 不改变客户端。
+- **令牌不进 `ghsnapshot`：** `githubissues` 导出 `Service.SnapshotTransport()`（一个 `http.RoundTripper`），`ghsnapshot` 用 `Client.WithStaticSource(transport)` 接上。`ghsnapshot` 只构造不带凭据的请求，由这个 transport 在放行时给请求的副本加上 `Authorization` 头；返回的响应里 `Response.Request` 指回调用方传入的原请求（`net/http` 默认会指向带令牌的那份副本），所以从响应上也拿不到令牌。功能关闭（nil `Service`）时返回 nil，`WithStaticSource(nil)` 不改变客户端。
 - **放行条件**（不满足就返回错误，不发请求）：
   - 只放行 `GET`，主机与协议必须是 GitHub API 根地址，不能带用户信息；
   - 路径只能是 `FetchPRSnapshot` 读的几种：`/repos/{owner}/{repo}/pulls/{n}`、`/repos/{owner}/{repo}/commits/{sha}/check-runs`、`.../commits/{sha}/status`、`/repos/{owner}/{repo}/actions/runs`（`sha` 只接受十六进制）；

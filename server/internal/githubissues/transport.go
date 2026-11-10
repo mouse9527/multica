@@ -65,11 +65,18 @@ func (s *Service) exchange(ctx context.Context, client *http.Client, op, method,
 
 // sendWithToken sends a copy of req with the token added and returns the
 // response as it is, redirects included, for SnapshotTransport. req itself is
-// never modified.
+// never modified. The response leaves the package, so it must point back at
+// req: net/http sets Response.Request to the request it sent, which carries
+// the token.
 func (s *Service) sendWithToken(req *http.Request) (*http.Response, error) {
 	out := req.Clone(req.Context())
 	out.Header.Set("Authorization", "Bearer "+s.cfg.token)
-	return s.repoHTTPClient.Do(out)
+	resp, err := s.repoHTTPClient.Do(out)
+	if err != nil {
+		return nil, err
+	}
+	resp.Request = req
+	return resp, nil
 }
 
 // noRedirectClient returns a client that hands redirects back to the caller.
