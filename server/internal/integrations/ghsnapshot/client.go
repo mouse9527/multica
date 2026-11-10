@@ -1,3 +1,6 @@
+// Modified by the mouse9527/multica fork: Client also has a static token
+// source next to the GitHub App (static_source.go).
+
 // Package ghsnapshot fetches a GitHub pull request's CI + mergeability state
 // from the GitHub API and treats that response as the single source of truth
 // for the PR card (MUL-5265, Plan C). Webhooks and page visits only trigger a
@@ -71,6 +74,8 @@ type Client struct {
 	// single HTTP call, so the N workers of one installation don't each mint a
 	// token on a cold cache or a simultaneous renew.
 	sf singleflight.Group
+	// static serves StaticInstallationID; its transport adds the credentials.
+	static *http.Client
 }
 
 type cachedToken struct {
@@ -106,8 +111,9 @@ func NewClientFromEnv() (*Client, error) {
 	}, nil
 }
 
-// Enabled reports whether the App API is configured. A nil client is disabled.
-func (c *Client) Enabled() bool { return c != nil && c.privateKey != nil }
+// Enabled reports whether the App API or a static token source is configured.
+// A nil client is disabled.
+func (c *Client) Enabled() bool { return c != nil && (c.privateKey != nil || c.static != nil) }
 
 // signAppJWT mints the short-lived RS256 JWT GitHub requires for
 // App-authenticated calls. iat is back-dated 60s to absorb clock skew and exp
@@ -214,7 +220,12 @@ func (c *Client) mintInstallationToken(ctx context.Context, installationID int64
 // tokenCanRead reports whether the installation's cached token was granted at
 // least read access to permission. It answers false until a request on this
 // installation has minted a token, so callers ask after their first request.
+// The static token's grants are unknown, so it may try every read; a refused
+// call (403) fails the snapshot like any other error.
 func (c *Client) tokenCanRead(installationID int64, permission string) bool {
+	if installationID == StaticInstallationID {
+		return true
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch c.tokens[installationID].permissions[permission] {
@@ -227,7 +238,7 @@ func (c *Client) tokenCanRead(installationID int64, permission string) bool {
 // restGet authenticates against a fixed API path. Response bodies and tokens
 // never appear in errors; permission failures must not pause an installation.
 func (c *Client) restGet(ctx context.Context, installationID int64, path string) (json.RawMessage, error) {
-	token, err := c.installationToken(ctx, installationID)
+	httpClient, token, err := c.credentials(ctx, installationID)
 	if err != nil {
 		return nil, err
 	}
@@ -237,9 +248,11 @@ func (c *Client) restGet(ctx context.Context, installationID int64, path string)
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := c.httpClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
