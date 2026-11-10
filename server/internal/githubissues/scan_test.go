@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -119,10 +120,26 @@ var bypassRules = []bypassRule{
 	},
 }
 
+// upstreamAppPath lists, per upstream ghsnapshot file the fork changed, the
+// upstream functions that authenticate as the GitHub App, with the rules each
+// may break to do so. They mint and send App installation tokens, never the
+// GitHub issues token. Everything else in these files is scanned in full,
+// and the static source's requests are covered by TestSnapshotTransport*.
+var upstreamAppPath = map[string]map[string][]string{
+	"client.go": {
+		"NewClientFromEnv":      {"environment read"},
+		"cachedToken":           {"token field read"},
+		"mintInstallationToken": {"http.NewRequest", "Authorization header", "raw client Do"},
+		// Sends both sources' requests; only App requests carry a token here.
+		"restGet": {"http.NewRequest", "Authorization header"},
+	},
+}
+
 // scanForBypass returns one finding per forbidden construct in src.
 // Exceptions match path relative to this package, so a subpackage file named
 // transport.go gets none; allowExceptions is false for ghsnapshot files.
-func scanForBypass(t *testing.T, path, src string, allowExceptions bool) []string {
+// appPath names the functions of src exempt from some rules, by rule.
+func scanForBypass(t *testing.T, path, src string, allowExceptions bool, appPath map[string][]string) []string {
 	t.Helper()
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, src, 0)
@@ -131,21 +148,27 @@ func scanForBypass(t *testing.T, path, src string, allowExceptions bool) []strin
 	}
 	rel := filepath.Clean(path)
 	var findings []string
-	ast.Inspect(file, func(n ast.Node) bool {
-		if n == nil {
-			return false
+	for _, decl := range file.Decls {
+		var exempt []string
+		if fn, ok := decl.(*ast.FuncDecl); ok {
+			exempt = appPath[fn.Name.Name]
 		}
-		for _, rule := range bypassRules {
-			if !rule.match(n) {
-				continue
+		ast.Inspect(decl, func(n ast.Node) bool {
+			if n == nil {
+				return false
 			}
-			if allowExceptions && rule.allowedIn == rel {
-				continue
+			for _, rule := range bypassRules {
+				if !rule.match(n) || slices.Contains(exempt, rule.what) {
+					continue
+				}
+				if allowExceptions && rule.allowedIn == rel {
+					continue
+				}
+				findings = append(findings, fset.Position(n.Pos()).String()+": "+rule.what)
 			}
-			findings = append(findings, fset.Position(n.Pos()).String()+": "+rule.what)
-		}
-		return true
-	})
+			return true
+		})
+	}
 	return findings
 }
 
@@ -189,7 +212,7 @@ func TestNothingBypassesRepoClient(t *testing.T) {
 		t.Fatal("no githubissues sources found")
 	}
 	for _, path := range own {
-		findings = append(findings, scanForBypass(t, path, readSource(t, path), true)...)
+		findings = append(findings, scanForBypass(t, path, readSource(t, path), true, nil)...)
 	}
 
 	var forkChanged []string
@@ -197,7 +220,7 @@ func TestNothingBypassesRepoClient(t *testing.T) {
 		src := readSource(t, path)
 		if strings.Contains(src, forkMarker) {
 			forkChanged = append(forkChanged, filepath.Base(path))
-			findings = append(findings, scanForBypass(t, path, src, false)...)
+			findings = append(findings, scanForBypass(t, path, src, false, upstreamAppPath[filepath.Base(path)])...)
 		}
 	}
 	if len(forkChanged) == 0 {
@@ -240,7 +263,7 @@ func (s *svc) message() string {
 	return fmt.Sprintf("set %s and restart", EnvToken)
 }
 `
-	findings := strings.Join(scanForBypass(t, "poller.go", src, true), "\n")
+	findings := strings.Join(scanForBypass(t, "poller.go", src, true, nil), "\n")
 	if strings.Contains(findings, "poller.go:25:") {
 		t.Errorf("naming the variable in a message was reported:\n%s", findings)
 	}
@@ -254,19 +277,41 @@ func (s *svc) message() string {
 	if got := scanForBypass(t, transportFile, `package x
 import "net/http"
 func f(s *svc) { r, _ := http.NewRequest("GET", "u", nil); r.Header.Set("Authorization", s.cfg.token) }
-`, true); len(got) != 0 {
+`, true, nil); len(got) != 0 {
 		t.Errorf("transport.go exceptions not honored: %v", got)
 	}
 	if got := scanForBypass(t, transportFile, `package x
 import "net/http"
 func f() { _, _ = http.NewRequest("GET", "u", nil) }
-`, false); len(got) == 0 {
+`, false, nil); len(got) == 0 {
 		t.Error("a ghsnapshot file named transport.go must not inherit the exception")
+	}
+	// The App path exemptions hold only in the named function, for the named
+	// rules.
+	appSrc := `package x
+import "net/http"
+func restGet(s *svc) { r, _ := http.NewRequest("GET", "u", nil); r.Header.Set("Authorization", s.cfg.token) }
+func staticGet() { _, _ = http.NewRequest("GET", "u", nil) }
+`
+	var inRestGet, inStaticGet []string
+	for _, f := range scanForBypass(t, "client.go", appSrc, false, upstreamAppPath["client.go"]) {
+		switch {
+		case strings.HasPrefix(f, "client.go:3:"):
+			inRestGet = append(inRestGet, f[strings.LastIndex(f, ": ")+2:])
+		case strings.HasPrefix(f, "client.go:4:"):
+			inStaticGet = append(inStaticGet, f[strings.LastIndex(f, ": ")+2:])
+		}
+	}
+	if !slices.Equal(inRestGet, []string{"token field read"}) {
+		t.Errorf("restGet findings = %v, want only the token field read", inRestGet)
+	}
+	if !slices.Equal(inStaticGet, []string{"http.NewRequest"}) {
+		t.Errorf("a function outside the App path must be scanned in full; findings = %v", inStaticGet)
 	}
 	if got := scanForBypass(t, filepath.Join("issuekey", transportFile), `package x
 import "net/http"
 func f() { _, _ = http.NewRequest("GET", "u", nil) }
-`, true); len(got) == 0 {
+`, true, nil); len(got) == 0 {
 		t.Error("a subpackage file named transport.go must not inherit the exception")
 	}
 }

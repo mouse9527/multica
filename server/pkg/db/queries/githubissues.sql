@@ -35,6 +35,13 @@ WHERE workspace_id = $1
   AND resource_type = 'github_repo'
 ORDER BY created_at, id;
 
+-- name: ListGitHubRepoRefs :many
+-- The github_repo resources registered on any project of any workspace: the
+-- allowlist behind githubissues.Service.SnapshotTransport, which serves the
+-- whole server. Read-only on project_resource.
+SELECT resource_ref FROM project_resource
+WHERE resource_type = 'github_repo';
+
 -- name: InsertGithubRepoPin :one
 -- Pins a repository id to the first name RepoClient resolved it from. Returns
 -- no row when another caller pinned the id first; RepoClient then re-reads

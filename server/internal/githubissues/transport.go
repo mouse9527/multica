@@ -13,7 +13,7 @@ import (
 // token. scan_test.go fails the build if http.NewRequest, the token field or
 // the Authorization header shows up anywhere else in the package, so every
 // call to GitHub goes through RepoClient (or, for GET /user, the validation
-// loop) and nothing outside the package can obtain the token or a client that
+// loop, and for PR snapshots, SnapshotTransport) and nothing outside the package can obtain the token or a client that
 // carries it.
 
 const apiVersion = "2022-11-28"
@@ -61,6 +61,15 @@ func (s *Service) exchange(ctx context.Context, client *http.Client, op, method,
 		return nil, nil, fmt.Errorf("github %s: response exceeds size limit", op)
 	}
 	return resp, data, nil
+}
+
+// sendWithToken sends a copy of req with the token added and returns the
+// response as it is, redirects included, for SnapshotTransport. req itself is
+// never modified.
+func (s *Service) sendWithToken(req *http.Request) (*http.Response, error) {
+	out := req.Clone(req.Context())
+	out.Header.Set("Authorization", "Bearer "+s.cfg.token)
+	return s.repoHTTPClient.Do(out)
 }
 
 // noRedirectClient returns a client that hands redirects back to the caller.

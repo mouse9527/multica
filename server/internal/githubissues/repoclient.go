@@ -43,9 +43,10 @@ var (
 // errors.Is(err, ErrTokenNotUsable).
 func (e *tokenRejectedError) Is(target error) bool { return target == ErrTokenNotUsable }
 
-// repoStore is the part of *db.Queries RepoClient needs.
+// repoStore is the part of *db.Queries RepoClient and SnapshotTransport need.
 type repoStore interface {
 	ListWorkspaceGitHubRepoRefs(ctx context.Context, workspaceID pgtype.UUID) ([][]byte, error)
+	ListGitHubRepoRefs(ctx context.Context) ([][]byte, error)
 	ListGithubRepoSyncsByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]db.GithubRepoSync, error)
 	InsertGithubRepoPin(ctx context.Context, arg db.InsertGithubRepoPinParams) (db.GithubRepoSync, error)
 	MoveGithubRepoPin(ctx context.Context, arg db.MoveGithubRepoPinParams) (db.GithubRepoSync, error)
@@ -223,11 +224,17 @@ func (s *Service) checkResponse(resp *http.Response, body []byte) error {
 		return ghsnapshot.RateLimitFromResponse(resp, s.now())
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
-		s.state.markRejected(s.now())
-		s.logger.Warn("github token invalid; github issues stopped", "category", rejectUnauthorized)
+		s.markUnauthorized()
 		return &tokenRejectedError{category: rejectUnauthorized}
 	}
 	return nil
+}
+
+// markUnauthorized records GitHub's 401: the token turns invalid until the
+// next validation accepts it again.
+func (s *Service) markUnauthorized() {
+	s.state.markRejected(s.now())
+	s.logger.Warn("github token invalid; github issues stopped", "category", rejectUnauthorized)
 }
 
 // Response is a GitHub answer to Repo.Do. Status codes other than 401 and

@@ -104,14 +104,29 @@
 
 ### 令牌不出包
 
-- 构造请求、读令牌只在 `transport.go` 一个文件里（`newRequest`、`exchange`，都不导出）；从环境变量读令牌只在 `config.go`。`Repo`、`Service` 不导出任何字段，导出方法不返回 `*http.Client`、`*http.Request` 或 `http.RoundTripper`；`Repo` 在 `fmt`、`slog` 下只显示 id 和名字。
-- `scan_test.go` 用语法树扫描本包及其子包（如 `issuekey`）的全部非测试文件，以及 `ghsnapshot` 目录下所有带 fork 修改声明（`mouse9527/multica fork`）的文件，发现下面任何一项就失败：`http.NewRequest*`、`http.Get/Post/DefaultClient` 等默认客户端、`.token` 字段读取、`"Authorization"` 头、`EnvToken` 或 `"MULTICA_GITHUB_TOKEN"`、`os.Getenv/LookupEnv/Environ`、对 `*httpClient` 直接调用 `Do`。前三类与 `.Do` 只允许出现在本包顶层的 `transport.go`，令牌变量只允许出现在 `config.go`；`ghsnapshot` 里的文件没有例外。以后修改上游 `ghsnapshot` 文件时，按许可证要加修改声明，这个文件就会自动进入扫描。
+- 构造请求、读令牌只在 `transport.go` 一个文件里（`newRequest`、`exchange`，都不导出）；从环境变量读令牌只在 `config.go`。`Repo`、`Service` 不导出任何字段，导出方法不返回 `*http.Client`、`*http.Request` 或 `http.RoundTripper`，唯一的例外是受限的 `SnapshotTransport`（见下文「PR 快照：静态令牌来源」）；`Repo` 在 `fmt`、`slog` 下只显示 id 和名字。
+- `scan_test.go` 用语法树扫描本包及其子包（如 `issuekey`）的全部非测试文件，以及 `ghsnapshot` 目录下所有带 fork 修改声明（`mouse9527/multica fork`）的文件，发现下面任何一项就失败：`http.NewRequest*`、`http.Get/Post/DefaultClient` 等默认客户端、`.token` 字段读取、`"Authorization"` 头、`EnvToken` 或 `"MULTICA_GITHUB_TOKEN"`、`os.Getenv/LookupEnv/Environ`、对 `*httpClient` 直接调用 `Do`。前三类与 `.Do` 只允许出现在本包顶层的 `transport.go`，令牌变量只允许出现在 `config.go`；`ghsnapshot` 里的文件没有文件级例外。以后修改上游 `ghsnapshot` 文件时，按许可证要加修改声明，这个文件就会自动进入扫描。上游文件里以 GitHub App 身份认证的函数按函数、按规则豁免（`scan_test.go` 的 `upstreamAppPath`）：`client.go` 的 `NewClientFromEnv`（读 App 的环境变量）、`cachedToken`（读 App 安装令牌）、`mintInstallationToken`（换取安装令牌）、`restGet`（构造请求、给 App 请求加安装令牌；不豁免读 `.token` 和直接调用 `httpClient.Do`）。这些函数只处理 App 的凭据，不接触本功能的令牌；文件里其余部分照常扫描。
 
 ### 已知限制
 
 - classic PAT 的 `repo` 范围在 GitHub 一侧不能限定仓库。白名单是服务端的自我约束，挡不住令牌泄露后的外部使用。
 - 同一工作区同时登记同一个仓库的两个名字时，后来的名字不可用（`ErrRepoAmbiguous`），要删掉其中一个资源。「这个名字是否仍登记」读的是项目资源，与绑定写入不在同一条 SQL 里：只有在读和写之间恰好有人删改项目资源时才可能判断过时，不加锁。
 - `/repositories/{id}/...` 这种按 id 寻址的写法与 GitHub 对改名仓库返回的重定向地址一致，但没有在真实 GitHub 上验证全部子路径（issues、comments、pulls），需要 Owner 实测。
+
+## PR 快照：静态令牌来源
+
+`ghsnapshot` 读取 PR 的 CI 与可合并状态（`FetchPRSnapshot`），原来只能用 GitHub App 的安装令牌。现在 `ghsnapshot.Client` 另有一个静态令牌来源，用本功能的令牌读取；`snapshot.go`、`refresh.go`、`issue_pull_request`、前端 PR 卡片都不变，`handler/github.go` 的 `isGitHubConfigured()` 也不变。
+
+- **合成键：** 静态来源的安装 id 是 `ghsnapshot.StaticInstallationID`（`-1`）。刷新队列、限流暂停、PR 行都像真实安装 id 一样用它做键；GitHub 的安装 id 都是正数，不会冲突。用这个 id 的请求只走静态来源，不会回退到 App；其他 id 只走 App。
+- **令牌不进 `ghsnapshot`：** `githubissues` 导出 `Service.SnapshotTransport()`（一个 `http.RoundTripper`），`ghsnapshot` 用 `Client.WithStaticSource(transport)` 接上。`ghsnapshot` 只构造不带凭据的请求，由这个 transport 在放行时加上 `Authorization` 头。功能关闭（nil `Service`）时返回 nil，`WithStaticSource(nil)` 不改变客户端。
+- **放行条件**（不满足就返回错误，不发请求）：
+  - 只放行 `GET`，主机与协议必须是 GitHub API 根地址，不能带用户信息；
+  - 路径只能是 `FetchPRSnapshot` 读的几种：`/repos/{owner}/{repo}/pulls/{n}`、`/repos/{owner}/{repo}/commits/{sha}/check-runs`、`.../commits/{sha}/status`、`/repos/{owner}/{repo}/actions/runs`（`sha` 只接受十六进制）；
+  - 令牌必须可用（`ok`），否则 `ErrTokenNotUsable`；
+  - 仓库必须登记为某个项目的 `github_repo` 资源，否则 `ErrRepoNotRegistered`。刷新队列不知道 PR 属于哪个工作区（只有安装 id、owner、repo、号），所以这里的白名单是**所有工作区的并集**（新查询 `ListGitHubRepoRefs`）；按工作区的约束由把 PR 放进队列的一方负责（任务 M 的 PR 轮询）。
+- **重定向：** transport 自己不跟随重定向，3xx 原样交回 `ghsnapshot` 的客户端；客户端跟随时新请求再次经过 transport，按同样条件检查。所以改名仓库重定向到 `/repositories/{id}/...` 时会被拒绝，快照失败，不会把令牌带到别的地址。
+- **权限：** `tokenCanRead` 对静态令牌恒为真（PAT 的权限无法逐项得知），所以存在失败的 Actions 检查时也会读 `actions/runs`。调用返回 403 就当不可用：这一次快照失败，保留上次的结果，错误里只有状态码；非限流的 403 不改令牌状态。401 → 令牌置为 `invalid`，与 `RepoClient` 相同。
+- **接线：** 本节只提供能力。把静态来源接到服务端的 `ghsnapshot` 客户端、并把 PR 以 `StaticInstallationID` 放进刷新队列，是任务 M（PR 轮询与关联）的范围。
 
 ## 标识
 

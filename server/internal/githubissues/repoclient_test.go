@@ -63,6 +63,16 @@ func (f *fakeRepoStore) ListWorkspaceGitHubRepoRefs(_ context.Context, ws pgtype
 	return append([][]byte(nil), f.refs[ws]...), nil
 }
 
+func (f *fakeRepoStore) ListGitHubRepoRefs(context.Context) ([][]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var all [][]byte
+	for _, refs := range f.refs {
+		all = append(all, refs...)
+	}
+	return all, nil
+}
+
 func (f *fakeRepoStore) ListGithubRepoSyncsByWorkspace(_ context.Context, ws pgtype.UUID) ([]db.GithubRepoSync, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -707,11 +717,14 @@ func TestRepoAndServiceExposeNoTokenOrClient(t *testing.T) {
 		reflect.TypeOf((*http.RoundTripper)(nil)).Elem(): true,
 		reflect.TypeOf(http.Header(nil)):                 false, // Response.Header is fine
 	}
+	// SnapshotTransport is the one gated exception: it carries only the PR
+	// snapshot reads of registered repositories (snapshot_transport_test.go).
+	gated := map[string]bool{"SnapshotTransport": true}
 	for _, typ := range []reflect.Type{reflect.TypeOf(fx.Service), reflect.TypeOf(repo)} {
 		for i := range typ.NumMethod() {
 			m := typ.Method(i)
 			for j := range m.Type.NumOut() {
-				if forbidden[m.Type.Out(j)] {
+				if forbidden[m.Type.Out(j)] && !(typ == reflect.TypeOf(fx.Service) && gated[m.Name]) {
 					t.Errorf("%s.%s returns %s", typ, m.Name, m.Type.Out(j))
 				}
 			}
