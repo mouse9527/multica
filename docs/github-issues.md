@@ -11,9 +11,63 @@
 | `MULTICA_GITHUB_TOKEN_EXPIRES_AT` | `YYYY-MM-DD` 或 `never` | 令牌在 GitHub 上登记的到期日；缺失或格式不对时功能关闭 |
 
 - 三个条件同时满足才开启。不满足时服务照常启动，只打一行 `github issues disabled (<原因>)`。原因只写变量名，不回显变量值。
-- 关闭时服务行为与上游一致：对上游文件的改动只有 `server/cmd/server/router.go` 里读配置并打日志的一行钩子。
+- 关闭时服务行为与上游一致：`githubissues.New` 返回 nil，不发任何 GitHub 请求，不注册路由，不注册调度任务。对上游文件的钩子见下面「对上游文件的钩子」。
 - 令牌只保存在 `githubissues.Config` 的未导出字段里。`Config` 在 `fmt`（含 `%#v`）、`slog`、`encoding/json` 下都不输出令牌，测试见 `config_test.go`。
 - 不建 `github_connection` 表，不需要主密钥。轮换令牌要改环境变量并重启。
+
+## 令牌状态、校验与到期提醒
+
+### 状态
+
+每个服务进程在内存里保存令牌状态，不建表：
+
+| 状态 | 含义 |
+|---|---|
+| `ok` | 最近一次 `GET /user` 被 GitHub 接受，且未到期 |
+| `invalid` | GitHub 拒绝了令牌，或本进程启动后还没拿到 GitHub 的结论 |
+| `expired` | 已到 `MULTICA_GITHUB_TOKEN_EXPIRES_AT` 登记的日期（UTC）。**到期日当天即视为到期**，按日期推算，不依赖调度任务 |
+
+只有 `ok` 时 `Service.Usable()` 为真。轮询、按需刷新、双写都必须先看它，为假就停。
+
+### 校验
+
+- 启动后在后台调 `GET /user`，之后每天再调一次。失败不影响服务启动。
+- 401 → `invalid`，类别 `unauthorized`。
+- 403 且是限流（`X-RateLimit-Remaining: 0`、`Retry-After`、secondary rate limit）或 429 → 按响应头退避后重试，不改变已有结论。判断与退避时长复用 `ghsnapshot`（`IsRateLimited`、`RateLimitFromResponse`，等待时长限制在 1 秒到 5 分钟）。
+- 403 非限流 → `invalid`，类别 `sso_required`（带 `X-GitHub-SSO` 头）或 `forbidden`。
+- 响应带 `X-OAuth-Scopes` 且不含 `repo` → `invalid`，类别 `missing_repo_scope`。**这个头是否总会出现未验证**，缺失时跳过此项检查。
+- 网络错误、5xx、其他状态码：说明不了令牌好坏，保留上一次结论，按 30 秒起翻倍、最长 10 分钟重试。
+- 已到期的令牌不再发给 GitHub。
+- 日志和错误只写类别或状态码，不写响应正文，也不写令牌。
+
+### 状态接口
+
+`GET /api/workspaces/{id}/github-issues/token-status`，只有该工作区的 owner、admin 能读；功能关闭时这个路由不存在（404）。响应只有四个字段：
+
+```json
+{"account_login": "octocat", "status": "ok", "expires_at": "2027-01-31", "validated_at": "2027-01-10T09:30:00Z"}
+```
+
+- `account_login`：GitHub 接受过令牌后才有，否则为 `null`。
+- `expires_at`：登记的到期日；`never` 时为 `null`。
+- `validated_at`：GitHub 最近一次给出结论（接受或拒绝）的时间；还没有结论时为 `null`。
+
+### 到期提醒
+
+- 调度任务 `github_token_expiry`，每天一次，写法同 `scheduler/jobs_issue_wakeup.go` 的 `JobSpec`。
+- 到期前 14、7、1 天各提醒一次，走收件箱，类型 `github_token_expiry`，严重度 `attention`。
+- 收件人：项目上登记了 GitHub 仓库（`project_resource.resource_type = 'github_repo'`，即任务 C 白名单的来源）的工作区里的 owner 和 admin。没有这样的工作区时只打一行警告。
+- 某天任务没跑时，下一次运行补发当前阶段的提醒（例如第 12 天补发 14 天提醒）；同一到期日、同一阶段对同一人只发一次，以收件箱里已有的记录为准，所以重试和多副本不会重复发。
+- 到期本身不靠这个任务：每个进程按日期自己算出 `expired`。
+
+### 对上游文件的钩子
+
+| 文件 | 改动 |
+|---|---|
+| `server/cmd/server/main.go` | 读配置建 `githubissues.Service`，传给路由；开启时启动校验并注册 `github_token_expiry` |
+| `server/cmd/server/router.go` | `RouterOptions.GitHubIssues` 字段；开启时注册状态接口 |
+| `server/internal/integrations/ghsnapshot/ratelimit_export.go` | 新文件，导出限流判断与退避，供本功能复用 |
+| `server/pkg/db/queries/githubissues.sql` | 新文件：提醒收件人与去重查询（只读现有表，不改表结构） |
 
 ## 迁移号段规则
 

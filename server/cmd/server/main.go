@@ -21,6 +21,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/dbreader"
 	"github.com/multica-ai/multica/server/internal/dbstartup"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/githubissues"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -680,7 +681,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Modified by the mouse9527/multica fork: GitHub-native issues, off by
+	// default (server/internal/githubissues, docs/github-issues.md).
+	gitHubIssues := githubissues.New(githubissues.LoadConfig(os.Getenv), githubissues.Options{})
 	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
+		GitHubIssues:        gitHubIssues,
 		HTTPMetrics:         httpMetrics,
 		BusinessMetrics:     businessMetrics,
 		ChannelLeaseMetrics: channelLeaseMetrics,
@@ -861,6 +866,12 @@ func main() {
 	// machinery. The job is inert while plugins_v1 is disabled.
 	if err := schedulerMgr.Register(scheduler.PluginHookScheduleDispatchJob(queries, h.PluginService)); err != nil {
 		slog.Warn("scheduler: failed to register plugin_hook_schedule_dispatch job", "error", err)
+	}
+	if gitHubIssues != nil {
+		gitHubIssues.Start(sweepCtx)
+		if err := schedulerMgr.Register(gitHubIssues.ExpiryReminderJob(queries, bus)); err != nil {
+			slog.Error("scheduler: register github token expiry reminders", "error", err)
+		}
 	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)
