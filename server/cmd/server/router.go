@@ -267,6 +267,9 @@ type RouterOptions struct {
 	// than read here, for the same fail-the-boot-in-main-only reason: the raw
 	// value is validated by parseLLMDisableThinking before the router exists.
 	LLMDisableThinking bool
+	// GitHubIssues is the fork's GitHub-native issues feature (mouse9527/multica);
+	// nil while it is off, which keeps its routes unregistered.
+	GitHubIssues *githubissues.Service
 }
 
 func buildChannelSupervisor(
@@ -457,9 +460,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		GitExtraCACerts:                gitca.Load(slog.Default()),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
-	// Modified by the mouse9527/multica fork: GitHub-native issues, off by
-	// default (server/internal/githubissues, docs/github-issues.md).
-	githubissues.LoadConfig(os.Getenv).LogStatus(slog.Default())
 	invitationRateLimits := handler.DefaultInvitationRateLimits()
 	invitationRateLimits.Actor.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_ACTOR_10M", invitationRateLimits.Actor.Limit)
 	invitationRateLimits.Workspace.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_WORKSPACE_24H", invitationRateLimits.Workspace.Limit)
@@ -1840,6 +1840,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 						r.Delete("/", h.DeleteMember)
 					})
 					r.Delete("/invitations/{invitationId}", h.RevokeInvitation)
+					// Modified by the mouse9527/multica fork: GitHub-native issues.
+					if opts.GitHubIssues != nil {
+						r.Get("/github-issues/token-status", opts.GitHubIssues.HandleTokenStatus)
+					}
 					// Curating the shared MCP library is an admin action.
 					// Creating an entry binds it to no agent; an agent owner
 					// adds it to their own agent through the agent routes.
