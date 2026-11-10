@@ -395,6 +395,52 @@ func (q *Queries) GetIssueExternalByNumber(ctx context.Context, arg GetIssueExte
 	return i, err
 }
 
+const getIssueExternalByRepoName = `-- name: GetIssueExternalByRepoName :one
+SELECT issue_id, workspace_id, provider, external_repo_id, external_repo, external_number, external_node_id, state, state_reason, external_updated_at, external_synced_at, created_at, updated_at FROM issue_external
+WHERE workspace_id = $1
+  AND provider = $2
+  AND lower(external_repo) = lower($3)
+  AND external_number = $4
+ORDER BY external_synced_at DESC
+LIMIT 1
+`
+
+type GetIssueExternalByRepoNameParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	Provider       string      `json:"provider"`
+	ExternalRepo   string      `json:"external_repo"`
+	ExternalNumber int32       `json:"external_number"`
+}
+
+// Resolves an "owner/repo#N" key. GitHub matches repository names without
+// regard to case; if a rename left two rows under one name, the most recently
+// synced one is the repository that holds the name now.
+func (q *Queries) GetIssueExternalByRepoName(ctx context.Context, arg GetIssueExternalByRepoNameParams) (IssueExternal, error) {
+	row := q.db.QueryRow(ctx, getIssueExternalByRepoName,
+		arg.WorkspaceID,
+		arg.Provider,
+		arg.ExternalRepo,
+		arg.ExternalNumber,
+	)
+	var i IssueExternal
+	err := row.Scan(
+		&i.IssueID,
+		&i.WorkspaceID,
+		&i.Provider,
+		&i.ExternalRepoID,
+		&i.ExternalRepo,
+		&i.ExternalNumber,
+		&i.ExternalNodeID,
+		&i.State,
+		&i.StateReason,
+		&i.ExternalUpdatedAt,
+		&i.ExternalSyncedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getProjectGithubSettings = `-- name: GetProjectGithubSettings :one
 
 SELECT project_id, workspace_id, default_resource_id, status_label_map, created_at, updated_at FROM project_github_settings

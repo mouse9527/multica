@@ -584,6 +584,11 @@ func (h *Handler) searchIndexIssues(ctx context.Context, wsUUID pgtype.UUID, iss
 			SearchUpdatedAt: is.UpdatedAt.Time.UTC().Format(time.RFC3339Nano),
 		})
 	}
+	indexKeys := make([]*IssueResponse, len(out)) // GitHub-native issues (fork)
+	for i := range out {
+		indexKeys[i] = &out[i].IssueResponse
+	}
+	h.fillIssueKeys(ctx, wsUUID, indexKeys...)
 	return out
 }
 

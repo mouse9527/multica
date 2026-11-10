@@ -22,6 +22,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/githubissues/issuekey"
 	"github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -7984,9 +7985,12 @@ func IssueToMapResolved(ctx context.Context, q IssueMapQuerier, issue db.Issue, 
 	category, name := issuestatus.CategoryAndName(ctx, q, issue.WorkspaceID, issue.Status)
 	m["status_category"] = issuestatus.WireCategory(issue.Status, category)
 	m["status_name"] = name
+	var original *pgtype.UUID
 	if ref := resolveDuplicateOf(ctx, q, issue, issuePrefix); ref != nil {
 		m["duplicate_of"] = ref
+		original = &issue.DuplicateOfIssueID
 	}
+	applyIssueKeyToMap(ctx, q, m, issue.WorkspaceID, issue.ID, issuePrefix, issue.Number, original) // GitHub-native issues (fork)
 	return m
 }
 
@@ -8022,6 +8026,7 @@ func IssueToMap(issue db.Issue, issuePrefix string) map[string]any {
 		"workspace_id": util.UUIDToString(issue.WorkspaceID),
 		"number":       issue.Number,
 		"identifier":   IssueIdentifier(issuePrefix, issue.Number),
+		"provider":     issuekey.ProviderLocal, // GitHub-native issues (fork): set by IssueToMapResolved
 		"title":        issue.Title,
 		"description":  util.TextToPtr(issue.Description),
 		"status":       issue.Status,
@@ -8235,7 +8240,7 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 	// agent-created sub-issues). Keeping a second write here would leave the
 	// same decision encoded in two places that can drift.
 	prefix := s.getIssuePrefix(workspaceID)
-	identifier := fmt.Sprintf("%s-%d", prefix, issue.Number)
+	identifier := LookupIssueIdentifier(ctx, s.Queries, issue.WorkspaceID, issue.ID, prefix, issue.Number)
 	details, _ := json.Marshal(map[string]any{
 		"task_id":         util.UUIDToString(task.ID),
 		"agent_id":        util.UUIDToString(task.AgentID),
