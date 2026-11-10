@@ -157,6 +157,13 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workspace":                          workspaceDelete,
 	"workspace_invitation":               workspaceDelete,
 	"workspace_share_link":               workspaceDelete,
+	// Modified for the mouse9527/multica fork: GitHub-native issue tables,
+	// deleted by DeleteWorkspaceGithubIssueData.
+	"issue_external":          workspaceDelete,
+	"github_repo_sync":        workspaceDelete,
+	"github_write_intent":     workspaceDelete,
+	"project_github_settings": workspaceDelete,
+	"comment_external":        workspaceDelete,
 }
 
 func TestWorkspaceDeletionManifestCoversPublicSchema(t *testing.T) {
