@@ -31,17 +31,17 @@ var githubIssueIndexes = []string{
 }
 
 var githubIssueUpMigrations = []string{
-	"9001_github_issue_tables.up.sql",
-	"9002_issue_external_number_idx.up.sql",
-	"9003_comment_external_id_idx.up.sql",
-	"9004_github_write_intent_open_idx.up.sql",
+	"9000_githubissues_tables.up.sql",
+	"9001_githubissues_issue_external_number_idx.up.sql",
+	"9002_githubissues_comment_external_id_idx.up.sql",
+	"9003_githubissues_write_intent_open_idx.up.sql",
 }
 
 var githubIssueDownMigrations = []string{
-	"9004_github_write_intent_open_idx.down.sql",
-	"9003_comment_external_id_idx.down.sql",
-	"9002_issue_external_number_idx.down.sql",
-	"9001_github_issue_tables.down.sql",
+	"9003_githubissues_write_intent_open_idx.down.sql",
+	"9002_githubissues_comment_external_id_idx.down.sql",
+	"9001_githubissues_issue_external_number_idx.down.sql",
+	"9000_githubissues_tables.down.sql",
 }
 
 // newGithubIssueSandbox returns a pool whose search_path is an empty schema,

@@ -8,9 +8,9 @@ package main
 // it; init merges them in, and the existing cleanup tests cover them exactly as
 // they cover upstream entries.
 var githubIssueConcurrentIndexCleanups = map[string]string{
-	"9002_issue_external_number_idx":    "idx_issue_external_number",
-	"9003_comment_external_id_idx":      "idx_comment_external_external_id",
-	"9004_github_write_intent_open_idx": "idx_github_write_intent_open",
+	"9001_githubissues_issue_external_number_idx":    "idx_issue_external_number",
+	"9002_githubissues_comment_external_id_idx":      "idx_comment_external_external_id",
+	"9003_githubissues_write_intent_open_idx": "idx_github_write_intent_open",
 }
 
 // Package-level vars, including preMigrationHooks, are initialized before

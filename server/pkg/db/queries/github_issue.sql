@@ -1,5 +1,5 @@
 -- Modified for the mouse9527/multica fork: GitHub-native issues.
--- Tables come from migration 9001; see it for column semantics.
+-- Tables come from migration 9000; see it for column semantics.
 
 -- ---------------------------------------------------------------------------
 -- issue_external

@@ -8,7 +8,7 @@
 -- DeleteWorkspaceGithubIssueData, and issue/comment deletion paths remove their
 -- side rows in application code. Each table has a workspace_id so teardown and
 -- workspace-scoped reads need no join. Secondary indexes are built
--- concurrently in 9002-9004; the tables start empty, so the window between
+-- concurrently in 9001-9003; the tables start empty, so the window between
 -- this migration and those indexes carries no load.
 --
 -- GitHub ids (repository, comment) are BIGINT: they are int64 in the REST API.
