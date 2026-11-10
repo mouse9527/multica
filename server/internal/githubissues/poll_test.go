@@ -1,0 +1,469 @@
+package githubissues
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/githubissues/issuekey"
+	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/pkg/protocol"
+)
+
+const pollRepoID = 42
+
+// fakeIssuesAPI serves one repository's issues and comments lists the way
+// GitHub documents them: ascending by updated_at, "since" inclusive, paged
+// by per_page and page. Items are replaced by id, so a test edits an issue
+// or comment by putting a new snapshot.
+type fakeIssuesAPI struct {
+	t      *testing.T
+	server *httptest.Server
+
+	mu       sync.Mutex
+	issues   map[int]map[string]any // by number
+	comments map[int64]map[string]any
+	requests []string
+	// throttle, when set, answers every list request with 429.
+	throttle string
+}
+
+func newFakeIssuesAPI(t *testing.T) *fakeIssuesAPI {
+	f := &fakeIssuesAPI{t: t, issues: map[int]map[string]any{}, comments: map[int64]map[string]any{}}
+	f.server = httptest.NewServer(http.HandlerFunc(f.serve))
+	t.Cleanup(f.server.Close)
+	return f
+}
+
+func (f *fakeIssuesAPI) putIssue(number int, login, title, body, state string, updated time.Time, extra map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	item := map[string]any{
+		"id": 1000 + number, "node_id": "I_" + strconv.Itoa(number), "number": number,
+		"title": title, "body": body, "state": state, "state_reason": nil,
+		"updated_at": updated.UTC().Format(time.RFC3339), "user": map[string]any{"login": login},
+	}
+	for k, v := range extra {
+		item[k] = v
+	}
+	f.issues[number] = item
+}
+
+func (f *fakeIssuesAPI) putComment(id int64, number int, login, body string, updated time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.comments[id] = map[string]any{
+		"id": id, "body": body, "updated_at": updated.UTC().Format(time.RFC3339),
+		"issue_url": fmt.Sprintf("https://api.github.com/repos/acme/widgets/issues/%d", number),
+		"user":      map[string]any{"login": login, "avatar_url": "https://avatars.example.com/" + login},
+	}
+}
+
+func (f *fakeIssuesAPI) seen() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.requests...)
+}
+
+func (f *fakeIssuesAPI) serve(w http.ResponseWriter, r *http.Request) {
+	if got := r.Header.Get("Authorization"); got != "Bearer "+fakeToken {
+		f.t.Errorf("Authorization = %q", got)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.requests = append(f.requests, r.URL.Path+"?"+r.URL.RawQuery)
+	w.Header().Set("Content-Type", "application/json")
+	if r.URL.Path == "/repos/acme/widgets" {
+		_, _ = w.Write([]byte(`{"id":` + strconv.Itoa(pollRepoID) + `}`))
+		return
+	}
+	if f.throttle != "" {
+		w.Header().Set("Retry-After", f.throttle)
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"message":"rate limited"}`))
+		return
+	}
+	var items []map[string]any
+	switch r.URL.Path {
+	case fmt.Sprintf("/repositories/%d/issues", pollRepoID):
+		if r.URL.Query().Get("state") != "all" {
+			f.t.Errorf("issues listed without state=all: %s", r.URL.RawQuery)
+		}
+		for _, it := range f.issues {
+			items = append(items, it)
+		}
+	case fmt.Sprintf("/repositories/%d/issues/comments", pollRepoID):
+		for _, it := range f.comments {
+			items = append(items, it)
+		}
+	default:
+		f.t.Errorf("unexpected request %s", r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	q := r.URL.Query()
+	if q.Get("sort") != "updated" || q.Get("direction") != "asc" {
+		f.t.Errorf("list not sorted by updated asc: %s", r.URL.RawQuery)
+	}
+	if since := q.Get("since"); since != "" {
+		at, err := time.Parse(time.RFC3339, since)
+		if err != nil {
+			f.t.Errorf("bad since %q", since)
+		}
+		kept := items[:0]
+		for _, it := range items {
+			if updated, _ := time.Parse(time.RFC3339, it["updated_at"].(string)); !updated.Before(at) {
+				kept = append(kept, it)
+			}
+		}
+		items = kept
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i]["updated_at"].(string), items[j]["updated_at"].(string)
+		if a != b {
+			return a < b
+		}
+		return fmt.Sprint(items[i]["id"]) < fmt.Sprint(items[j]["id"])
+	})
+	perPage, _ := strconv.Atoi(q.Get("per_page"))
+	page, _ := strconv.Atoi(q.Get("page"))
+	start := min((page-1)*perPage, len(items))
+	end := min(start+perPage, len(items))
+	_ = json.NewEncoder(w).Encode(items[start:end])
+}
+
+type pollEnv struct {
+	f       *testutil.Fixture
+	svc     *Service
+	api     *fakeIssuesAPI
+	now     *time.Time
+	ws      string
+	owner   string
+	project string
+
+	mu     sync.Mutex
+	events []events.Event
+}
+
+func newPollEnv(t *testing.T) *pollEnv {
+	t.Helper()
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("explicit disposable DATABASE_URL required")
+	}
+	// The poller reads registered repositories across workspaces, so it gets
+	// a database of its own.
+	pool := testutil.IsolatedDB(t, dsn)
+	f := testutil.New(pool, "", "")
+	suffix := uuid.NewString()[:8]
+	env := &pollEnv{f: f, api: newFakeIssuesAPI(t)}
+	env.owner = f.User(t, "Owner", "poll-owner-"+suffix+"@example.com")
+	env.ws = f.Workspace(t, "Poll", "poll-"+suffix)
+	f.WorkspaceID, f.UserID = env.ws, env.owner
+	f.Member(t, env.ws, env.owner, "owner")
+	env.project = f.Project(t, "Widgets")
+	f.Insert(t, "project_resource", testutil.Cols{
+		"project_id": env.project, "workspace_id": env.ws,
+		"resource_type": "github_repo", "resource_ref": `{"url":"https://github.com/acme/widgets"}`,
+	})
+
+	now := testNow
+	env.now = &now
+	bus := events.New()
+	for _, eventType := range []string{protocol.EventIssueCreated, protocol.EventIssueUpdated, protocol.EventCommentCreated} {
+		bus.Subscribe(eventType, func(e events.Event) {
+			env.mu.Lock()
+			env.events = append(env.events, e)
+			env.mu.Unlock()
+		})
+	}
+	cfg := LoadConfig(envOf(map[string]string{EnvEnabled: "true", EnvToken: fakeToken, EnvTokenExpiresAt: "never"}))
+	env.svc = New(cfg, Options{
+		DB: pool, Bus: bus, APIBase: env.api.server.URL,
+		Now: func() time.Time { return *env.now }, Logger: slog.New(slog.DiscardHandler),
+	})
+	env.svc.state.markAccepted("octocat", testNow)
+	return env
+}
+
+func (env *pollEnv) poll(t *testing.T) PollStats {
+	t.Helper()
+	stats, err := env.svc.PollOnce(context.Background())
+	if err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	return stats
+}
+
+func (env *pollEnv) count(t *testing.T, sql string, args ...any) int {
+	t.Helper()
+	return env.f.Count(t, sql, args...)
+}
+
+type polledIssue struct {
+	id, title, description, status, creatorType, creatorID, projectID, state string
+}
+
+func (env *pollEnv) issue(t *testing.T, number int) polledIssue {
+	t.Helper()
+	var got polledIssue
+	env.f.QueryRow(t, `
+		SELECT i.id::text, i.title, COALESCE(i.description, ''), i.status, i.creator_type, i.creator_id::text,
+		       COALESCE(i.project_id::text, ''), x.state
+		FROM issue_external x JOIN issue i ON i.id = x.issue_id
+		WHERE x.workspace_id = $1 AND x.external_repo_id = $2 AND x.external_number = $3`,
+		env.ws, pollRepoID, number).Scan(&got.id, &got.title, &got.description, &got.status,
+		&got.creatorType, &got.creatorID, &got.projectID, &got.state)
+	return got
+}
+
+// TestPollImportsIssuesAndCommentsWithinTwoCycles is the acceptance path:
+// an issue and a comment opened by someone else on GitHub are in Multica
+// after the cycle that follows them, pull requests and their comments stay
+// out, and polling the same data again writes no second row.
+func TestPollImportsIssuesAndCommentsWithinTwoCycles(t *testing.T) {
+	env := newPollEnv(t)
+	// main.go turns GitHub identifiers on together with the feature.
+	previous := issuekey.Enabled()
+	issuekey.SetEnabled(true)
+	t.Cleanup(func() { issuekey.SetEnabled(previous) })
+	t0 := testNow.Add(-time.Hour)
+	env.api.putIssue(1, "stranger", "Crash on start", "It crashes.", "open", t0, nil)
+	env.api.putIssue(2, "stranger", "Fix crash", "PR body", "open", t0.Add(time.Minute),
+		map[string]any{"pull_request": map[string]any{"url": "https://api.github.com/repos/acme/widgets/pulls/2"}})
+	env.api.putComment(501, 1, "stranger", "Same here", t0.Add(2*time.Minute))
+	env.api.putComment(502, 2, "reviewer", "LGTM", t0.Add(3*time.Minute))
+
+	stats := env.poll(t)
+	if stats.Repos != 1 || stats.Failed != 0 || stats.Synced != 2 {
+		t.Fatalf("first cycle stats = %+v", stats)
+	}
+	got := env.issue(t, 1)
+	if got.title != "Crash on start" || got.status != "backlog" || got.state != "open" {
+		t.Fatalf("imported issue = %+v", got)
+	}
+	if got.creatorType != "member" || got.creatorID != env.owner || got.projectID != env.project {
+		t.Fatalf("imported issue creator/project = %+v, want owner %s in project %s", got, env.owner, env.project)
+	}
+	if got.description != ExternalIssueDescription("stranger", "It crashes.") {
+		t.Fatalf("description = %q", got.description)
+	}
+	if n := env.count(t, `SELECT count(*) FROM issue_external WHERE workspace_id = $1`, env.ws); n != 1 {
+		t.Fatalf("issue_external rows = %d, want 1 (the pull request stays out)", n)
+	}
+	var author, content string
+	env.f.QueryRow(t, `SELECT c.author_type, c.content FROM comment c JOIN comment_external x ON x.comment_id = c.id
+		WHERE x.workspace_id = $1 AND x.external_id = 501`, env.ws).Scan(&author, &content)
+	if author != externalAuthorType || content != ExternalCommentContent("stranger", "Same here") {
+		t.Fatalf("imported comment = %s %q", author, content)
+	}
+	if n := env.count(t, `SELECT count(*) FROM comment_external WHERE workspace_id = $1`, env.ws); n != 1 {
+		t.Fatalf("comment_external rows = %d, want 1 (the pull request comment stays out)", n)
+	}
+
+	// The issue:created payload has no description, so the subscriber
+	// listener cannot read mention links out of GitHub text.
+	env.mu.Lock()
+	var created map[string]any
+	for _, e := range env.events {
+		if e.Type == protocol.EventIssueCreated {
+			created = e.Payload.(map[string]any)["issue"].(map[string]any)
+		}
+	}
+	env.mu.Unlock()
+	if created == nil || created["description"] != nil || created["identifier"] != "acme/widgets#1" || created["provider"] != "github" {
+		t.Fatalf("issue:created payload = %v", created)
+	}
+
+	// Between cycles someone opens issue 3 and comments on it.
+	env.api.putIssue(3, "stranger", "Docs typo", "", "open", testNow.Add(-30*time.Second), nil)
+	env.api.putComment(503, 3, "stranger", "Line 4", testNow.Add(-20*time.Second))
+	*env.now = testNow.Add(pollInterval)
+	if stats := env.poll(t); stats.Synced != 2 || stats.Failed != 0 {
+		t.Fatalf("second cycle stats = %+v", stats)
+	}
+	if got := env.issue(t, 3); got.description != ExternalIssueDescription("stranger", "") {
+		t.Fatalf("issue 3 = %+v", got)
+	}
+	if n := env.count(t, `SELECT count(*) FROM comment_external WHERE workspace_id = $1 AND external_id = 503`, env.ws); n != 1 {
+		t.Fatalf("comment on issue 3 not imported")
+	}
+
+	// Re-reading everything (the overlap, or a lost cursor) adds nothing.
+	env.f.Exec(t, `UPDATE github_repo_sync SET issues_cursor = NULL, comments_cursor = NULL WHERE workspace_id = $1`, env.ws)
+	if stats := env.poll(t); stats.Synced != 0 || stats.Failed != 0 {
+		t.Fatalf("re-poll stats = %+v, want nothing synced", stats)
+	}
+	if n := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws); n != 2 {
+		t.Fatalf("issues = %d, want 2", n)
+	}
+	if n := env.count(t, `SELECT count(*) FROM comment WHERE workspace_id = $1`, env.ws); n != 2 {
+		t.Fatalf("comments = %d, want 2", n)
+	}
+}
+
+// TestPollOrdersSnapshotsByExternalUpdatedAt replays an older snapshot of an
+// issue and of a comment inside the overlap window: neither rolls anything
+// back, and a newer one is applied.
+func TestPollOrdersSnapshotsByExternalUpdatedAt(t *testing.T) {
+	env := newPollEnv(t)
+	t0 := testNow.Add(-10 * time.Minute)
+	env.api.putIssue(1, "stranger", "New title", "New body", "open", t0, nil)
+	env.api.putComment(501, 1, "stranger", "Edited", t0)
+	env.poll(t)
+
+	// GitHub serves stale copies, updated a minute before the stored ones:
+	// within the two-minute overlap, so the next cycle reads them.
+	env.api.putIssue(1, "stranger", "Old title", "Old body", "closed", t0.Add(-time.Minute), nil)
+	env.api.putComment(501, 1, "stranger", "Original", t0.Add(-time.Minute))
+	*env.now = testNow.Add(pollInterval)
+	env.poll(t)
+	if got := env.issue(t, 1); got.title != "New title" || got.state != "open" ||
+		got.description != ExternalIssueDescription("stranger", "New body") {
+		t.Fatalf("stale snapshot was applied: %+v", got)
+	}
+	var content string
+	env.f.QueryRow(t, `SELECT c.content FROM comment c JOIN comment_external x ON x.comment_id = c.id
+		WHERE x.workspace_id = $1 AND x.external_id = 501`, env.ws).Scan(&content)
+	if content != ExternalCommentContent("stranger", "Edited") {
+		t.Fatalf("stale comment snapshot was applied: %q", content)
+	}
+
+	// A newer edit and close on GitHub is applied; the Multica status is the
+	// status mapping's business and does not move here.
+	env.mu.Lock()
+	env.events = nil
+	env.mu.Unlock()
+	env.api.putIssue(1, "stranger", "Renamed", "Body v2", "closed", testNow.Add(30*time.Second), nil)
+	*env.now = testNow.Add(2 * pollInterval)
+	env.poll(t)
+	got := env.issue(t, 1)
+	if got.title != "Renamed" || got.state != "closed" || got.status != "backlog" ||
+		got.description != ExternalIssueDescription("stranger", "Body v2") {
+		t.Fatalf("newer snapshot not applied: %+v", got)
+	}
+	env.mu.Lock()
+	defer env.mu.Unlock()
+	if len(env.events) != 1 || env.events[0].Type != protocol.EventIssueUpdated {
+		t.Fatalf("events = %v, want one issue:updated", env.events)
+	}
+	if payload := env.events[0].Payload.(map[string]any)["issue"].(map[string]any); payload["id"] != got.id || len(payload) != 2 {
+		t.Fatalf("issue:updated payload = %v, want only id and workspace_id", payload)
+	}
+}
+
+// TestPollPagesPastSharedTimestamps imports more issues than one page holds,
+// with the first page entirely on one second, in a single cycle.
+func TestPollPagesPastSharedTimestamps(t *testing.T) {
+	env := newPollEnv(t)
+	t0 := testNow.Add(-time.Hour)
+	for n := 1; n <= 250; n++ {
+		at := t0
+		if n > 120 {
+			at = t0.Add(time.Duration(n) * time.Second)
+		}
+		env.api.putIssue(n, "stranger", "Issue "+strconv.Itoa(n), "", "open", at, nil)
+	}
+	if stats := env.poll(t); stats.Synced != 250 || stats.Failed != 0 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if n := env.count(t, `SELECT count(DISTINCT external_number) FROM issue_external WHERE workspace_id = $1`, env.ws); n != 250 {
+		t.Fatalf("imported %d distinct issues, want 250", n)
+	}
+	if n := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws); n != 250 {
+		t.Fatalf("issues = %d, want 250", n)
+	}
+	var cursor time.Time
+	env.f.QueryRow(t, `SELECT issues_cursor FROM github_repo_sync WHERE workspace_id = $1`, env.ws).Scan(&cursor)
+	if !cursor.Equal(t0.Add(250 * time.Second)) {
+		t.Fatalf("issues_cursor = %v, want the newest updated_at", cursor)
+	}
+}
+
+// TestPollBacksOffWhenRateLimited stops the cycle at the first throttled
+// answer and sends nothing until GitHub's Retry-After has passed.
+func TestPollBacksOffWhenRateLimited(t *testing.T) {
+	env := newPollEnv(t)
+	env.api.putIssue(1, "stranger", "Crash", "", "open", testNow.Add(-time.Hour), nil)
+	env.api.mu.Lock()
+	env.api.throttle = "120"
+	env.api.mu.Unlock()
+
+	if stats := env.poll(t); !stats.RateLimited {
+		t.Fatalf("stats = %+v, want rate limited", stats)
+	}
+	sent := len(env.api.seen())
+	*env.now = testNow.Add(119 * time.Second)
+	env.poll(t)
+	if got := len(env.api.seen()); got != sent {
+		t.Fatalf("polled during the back-off: %v", env.api.seen()[sent:])
+	}
+
+	env.api.mu.Lock()
+	env.api.throttle = ""
+	env.api.mu.Unlock()
+	*env.now = testNow.Add(121 * time.Second)
+	if stats := env.poll(t); stats.RateLimited || stats.Synced != 1 {
+		t.Fatalf("after the back-off stats = %+v", stats)
+	}
+}
+
+// TestPollSendsNothingWithUnusableToken keeps an invalid token off GitHub.
+func TestPollSendsNothingWithUnusableToken(t *testing.T) {
+	env := newPollEnv(t)
+	env.svc.state.markRejected(testNow)
+	env.poll(t)
+	if got := env.api.seen(); len(got) != 0 {
+		t.Fatalf("requests with an unusable token: %v", got)
+	}
+}
+
+// TestPollRecordsRepositoryErrors keeps going after a repository fails and
+// leaves the error on its poll state until a clean poll clears it.
+func TestPollRecordsRepositoryErrors(t *testing.T) {
+	env := newPollEnv(t)
+	env.api.putIssue(1, "stranger", "Crash", "", "open", testNow.Add(-time.Hour), nil)
+	// The sync account is unavailable: no owner left in the workspace.
+	env.f.Exec(t, `UPDATE member SET role = 'member' WHERE workspace_id = $1`, env.ws)
+	if stats := env.poll(t); stats.Failed != 1 || stats.Synced != 0 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	var lastError string
+	env.f.QueryRow(t, `SELECT COALESCE(last_error, '') FROM github_repo_sync WHERE workspace_id = $1`, env.ws).Scan(&lastError)
+	if !strings.Contains(lastError, ErrSyncAccountUnavailable.Error()) {
+		t.Fatalf("last_error = %q", lastError)
+	}
+	// The failed issue was not skipped: the cursor did not move past it.
+	env.f.Exec(t, `UPDATE member SET role = 'owner' WHERE workspace_id = $1`, env.ws)
+	*env.now = testNow.Add(pollInterval)
+	if stats := env.poll(t); stats.Failed != 0 || stats.Synced != 1 {
+		t.Fatalf("retry stats = %+v", stats)
+	}
+	env.f.QueryRow(t, `SELECT COALESCE(last_error, '') FROM github_repo_sync WHERE workspace_id = $1`, env.ws).Scan(&lastError)
+	if lastError != "" {
+		t.Fatalf("last_error after a clean poll = %q", lastError)
+	}
+}
+
+func TestPollJobSpec(t *testing.T) {
+	job := (&Service{}).PollJob()
+	if job.Name != "github_issues_poll" || job.Cadence != time.Minute || job.RunTimeout >= job.StaleTimeout {
+		t.Fatalf("job = %+v", job)
+	}
+	scopes, err := job.Scopes(context.Background(), testNow)
+	if err != nil || len(scopes) != 1 || scopes[0].Kind != "global" {
+		t.Fatalf("scopes = %v, %v", scopes, err)
+	}
+}

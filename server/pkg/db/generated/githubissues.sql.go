@@ -40,6 +40,27 @@ func (q *Queries) DiscardExternalCommentWakeupReceipts(ctx context.Context, arg 
 	return result.RowsAffected(), nil
 }
 
+const finishGithubRepoPoll = `-- name: FinishGithubRepoPoll :exec
+UPDATE github_repo_sync SET
+    last_error     = $1,
+    last_polled_at = now(),
+    updated_at     = now()
+WHERE workspace_id = $2 AND repo_id = $3
+`
+
+type FinishGithubRepoPollParams struct {
+	LastError   pgtype.Text `json:"last_error"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RepoID      int64       `json:"repo_id"`
+}
+
+// Records the outcome of one poll of a repository: last_error is NULL after a
+// clean poll. status is left alone, so a paused repository stays paused.
+func (q *Queries) FinishGithubRepoPoll(ctx context.Context, arg FinishGithubRepoPollParams) error {
+	_, err := q.db.Exec(ctx, finishGithubRepoPoll, arg.LastError, arg.WorkspaceID, arg.RepoID)
+	return err
+}
+
 const getGitHubSyncDefaultOwner = `-- name: GetGitHubSyncDefaultOwner :one
 SELECT user_id FROM member
 WHERE workspace_id = $1 AND role = 'owner'
@@ -130,6 +151,82 @@ func (q *Queries) InsertGithubRepoPin(ctx context.Context, arg InsertGithubRepoP
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listAllGithubRepoSyncs = `-- name: ListAllGithubRepoSyncs :many
+SELECT workspace_id, repo_id, owner, name, issues_cursor, comments_cursor, pulls_cursor, last_full_reconcile_at, status, last_error, last_polled_at, created_at, updated_at FROM github_repo_sync
+ORDER BY last_polled_at ASC NULLS FIRST, workspace_id, repo_id
+`
+
+// Every pin with its poll state, across workspaces, for the poller.
+func (q *Queries) ListAllGithubRepoSyncs(ctx context.Context) ([]GithubRepoSync, error) {
+	rows, err := q.db.Query(ctx, listAllGithubRepoSyncs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GithubRepoSync{}
+	for rows.Next() {
+		var i GithubRepoSync
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.RepoID,
+			&i.Owner,
+			&i.Name,
+			&i.IssuesCursor,
+			&i.CommentsCursor,
+			&i.PullsCursor,
+			&i.LastFullReconcileAt,
+			&i.Status,
+			&i.LastError,
+			&i.LastPolledAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGitHubRepoResources = `-- name: ListGitHubRepoResources :many
+SELECT workspace_id, project_id, resource_ref FROM project_resource
+WHERE resource_type = 'github_repo'
+ORDER BY workspace_id, created_at, id
+`
+
+type ListGitHubRepoResourcesRow struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+	ResourceRef []byte      `json:"resource_ref"`
+}
+
+// Every github_repo resource of every workspace, for the poller: each
+// registered repository is polled once per workspace that registers it, and
+// issues opened on GitHub land in the project that registered it first.
+// Read-only on project_resource.
+func (q *Queries) ListGitHubRepoResources(ctx context.Context) ([]ListGitHubRepoResourcesRow, error) {
+	rows, err := q.db.Query(ctx, listGitHubRepoResources)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGitHubRepoResourcesRow{}
+	for rows.Next() {
+		var i ListGitHubRepoResourcesRow
+		if err := rows.Scan(&i.WorkspaceID, &i.ProjectID, &i.ResourceRef); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listGitHubTokenExpiryRecipients = `-- name: ListGitHubTokenExpiryRecipients :many
@@ -279,6 +376,72 @@ func (q *Queries) MoveGithubRepoPin(ctx context.Context, arg MoveGithubRepoPinPa
 		&i.LastPolledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateGitHubIssueContent = `-- name: UpdateGitHubIssueContent :one
+UPDATE issue SET
+    title            = $1,
+    description      = $2,
+    revision         = revision + 1,
+    last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now()),
+    updated_at       = now()
+WHERE id = $3
+  AND workspace_id = $4
+  AND (title IS DISTINCT FROM $1 OR description IS DISTINCT FROM $2)
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id
+`
+
+type UpdateGitHubIssueContentParams struct {
+	Title       string      `json:"title"`
+	Description pgtype.Text `json:"description"`
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Rewrites the title and description of a GitHub-backed issue from GitHub,
+// the only writer of both. Returns no row when neither changed, so a re-poll
+// of the same snapshot writes nothing and bumps no revision.
+func (q *Queries) UpdateGitHubIssueContent(ctx context.Context, arg UpdateGitHubIssueContentParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, updateGitHubIssueContent,
+		arg.Title,
+		arg.Description,
+		arg.ID,
+		arg.WorkspaceID,
+	)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+		&i.Revision,
+		&i.LastActivityAt,
+		&i.TriageState,
+		&i.DuplicateOfIssueID,
 	)
 	return i, err
 }

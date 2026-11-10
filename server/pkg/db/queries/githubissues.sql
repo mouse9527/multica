@@ -86,3 +86,41 @@ SELECT user_id FROM member
 WHERE workspace_id = $1 AND role = 'owner'
 ORDER BY created_at, user_id
 LIMIT 1;
+
+-- name: ListGitHubRepoResources :many
+-- Every github_repo resource of every workspace, for the poller: each
+-- registered repository is polled once per workspace that registers it, and
+-- issues opened on GitHub land in the project that registered it first.
+-- Read-only on project_resource.
+SELECT workspace_id, project_id, resource_ref FROM project_resource
+WHERE resource_type = 'github_repo'
+ORDER BY workspace_id, created_at, id;
+
+-- name: ListAllGithubRepoSyncs :many
+-- Every pin with its poll state, across workspaces, for the poller.
+SELECT * FROM github_repo_sync
+ORDER BY last_polled_at ASC NULLS FIRST, workspace_id, repo_id;
+
+-- name: FinishGithubRepoPoll :exec
+-- Records the outcome of one poll of a repository: last_error is NULL after a
+-- clean poll. status is left alone, so a paused repository stays paused.
+UPDATE github_repo_sync SET
+    last_error     = sqlc.narg('last_error'),
+    last_polled_at = now(),
+    updated_at     = now()
+WHERE workspace_id = @workspace_id AND repo_id = @repo_id;
+
+-- name: UpdateGitHubIssueContent :one
+-- Rewrites the title and description of a GitHub-backed issue from GitHub,
+-- the only writer of both. Returns no row when neither changed, so a re-poll
+-- of the same snapshot writes nothing and bumps no revision.
+UPDATE issue SET
+    title            = @title,
+    description      = sqlc.narg('description'),
+    revision         = revision + 1,
+    last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now()),
+    updated_at       = now()
+WHERE id = @id
+  AND workspace_id = @workspace_id
+  AND (title IS DISTINCT FROM @title OR description IS DISTINCT FROM sqlc.narg('description'))
+RETURNING *;

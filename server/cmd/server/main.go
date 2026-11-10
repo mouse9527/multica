@@ -875,6 +875,9 @@ func main() {
 		if err := schedulerMgr.Register(gitHubIssues.ExpiryReminderJob(queries, bus)); err != nil {
 			slog.Error("scheduler: register github token expiry reminders", "error", err)
 		}
+		if err := gitHubIssues.StartPolling(sweepCtx, pool); err != nil {
+			slog.Error("scheduler: register github issues poll", "error", err)
+		}
 	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)
