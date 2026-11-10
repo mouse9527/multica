@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/githubissues/issuekey"
 )
 
 const minShortIDPrefixLen = 4
@@ -197,6 +198,9 @@ func fetchIssueRef(ctx context.Context, client *cli.APIClient, ref string) (reso
 func looksLikeIssueIdentifier(input string) bool {
 	if input == "" {
 		return false
+	}
+	if _, _, ok := issuekey.ParseGitHub(input); ok { // GitHub-native issues (fork): "owner/repo#N"
+		return true
 	}
 	dash := strings.LastIndex(input, "-")
 	if dash <= 0 || dash >= len(input)-1 {
