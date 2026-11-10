@@ -686,7 +686,7 @@ func main() {
 	// default (server/internal/githubissues, docs/github-issues.md).
 	gitHubIssuesConfig := githubissues.LoadConfig(os.Getenv)
 	issuekey.SetEnabled(gitHubIssuesConfig.Enabled())
-	gitHubIssues := githubissues.New(gitHubIssuesConfig, githubissues.Options{})
+	gitHubIssues := githubissues.New(gitHubIssuesConfig, githubissues.Options{DB: pool, Bus: bus})
 	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
 		GitHubIssues:        gitHubIssues,
 		HTTPMetrics:         httpMetrics,

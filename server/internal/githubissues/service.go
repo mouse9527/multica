@@ -8,7 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 const (
@@ -26,6 +29,16 @@ type Options struct {
 	APIBase string
 	Now     func() time.Time
 	Logger  *slog.Logger
+	// DB is the primary database (a *pgxpool.Pool in production).
+	DB Database
+	// Bus receives the events of synced content.
+	Bus *events.Bus
+}
+
+// Database is the part of a connection pool the Service uses.
+type Database interface {
+	db.DBTX
+	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
 // Service is the running GitHub-native issues feature. It is created only
@@ -37,6 +50,8 @@ type Service struct {
 	now        func() time.Time
 	logger     *slog.Logger
 	state      tokenState
+	db         Database
+	bus        *events.Bus
 	// failures counts consecutive inconclusive checks for the retry backoff.
 	// Only the validation loop touches it.
 	failures int
@@ -59,6 +74,8 @@ func New(cfg Config, opts Options) *Service {
 		apiBase:    strings.TrimRight(opts.APIBase, "/"),
 		now:        opts.Now,
 		logger:     logger,
+		db:         opts.DB,
+		bus:        opts.Bus,
 	}
 	if s.httpClient == nil {
 		s.httpClient = &http.Client{Timeout: requestTimeout}
@@ -70,6 +87,13 @@ func New(cfg Config, opts Options) *Service {
 		s.now = time.Now
 	}
 	return s
+}
+
+func (s *Service) queries() (*db.Queries, error) {
+	if s.db == nil {
+		return nil, ErrNoDatabase
+	}
+	return db.New(s.db), nil
 }
 
 // Start validates the token in the background, then re-validates it daily,
