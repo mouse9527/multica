@@ -84,7 +84,7 @@ func (h *Handler) loadIssueKeys(ctx context.Context, wsID pgtype.UUID, ids []pgt
 // workspace. The key may arrive percent-encoded ("owner%2Frepo%23N"): the
 // router matches on the escaped path, so the URL param keeps the escapes.
 func (h *Handler) resolveIssueByGitHubKey(ctx context.Context, id, workspaceID string) (db.Issue, bool) {
-	if !strings.Contains(id, "#") && !strings.Contains(id, "%") {
+	if !issuekey.Enabled() || (!strings.Contains(id, "#") && !strings.Contains(id, "%")) {
 		return db.Issue{}, false
 	}
 	wsUUID, err := util.ParseUUID(workspaceID)

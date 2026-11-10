@@ -76,9 +76,9 @@
 
 - 有 `issue_external` 行的 issue 是 github issue，标识为 `owner/repo#N`（`external_repo` 加 GitHub 上的编号）；没有的就是 local issue，标识仍是 `PREFIX-N`，与上游一致。
 - issue 响应（HTTP 与事件载荷）多一个 `provider` 字段：`local` 或 `github`。`number` 仍是 Multica 内的编号，github issue 的 `PREFIX-N` 也能继续用来查找。
-- 标识按数据判断，不看功能开关：开关关闭时没有任何流程写 `issue_external`，所有 issue 都是 local。
-- 解析：`/api/issues/{id}` 接受 `owner/repo#N`（含百分号转义的 `owner%2Frepo%23N`，CLI 就是这样发的），仓库名不区分大小写；CLI 的 `multica issue ... owner/repo#N` 交给服务端解析。
-- 删除 issue 时在同一事务里删除它的 `issue_external` 行（表没有外键）。工作区删除由 `DeleteWorkspaceGithubIssueData` 清理。
+- 标识跟随功能开关：`main.go` 启动时按 `githubissues.Config.Enabled()` 调 `issuekey.SetEnabled`。开关关闭（默认）时不读 `issue_external`、不解析 `owner/repo#N`，所有 issue 按 local 渲染，与上游一致；开启期间写下的关联行保留，重新开启后恢复 `owner/repo#N`。
+- 解析（仅开关开启时）：`/api/issues/{id}` 接受 `owner/repo#N`（含百分号转义的 `owner%2Frepo%23N`，CLI 就是这样发的），仓库名不区分大小写；CLI 的 `multica issue ... owner/repo#N` 交给服务端解析。
+- 删除 issue 时在同一事务里删除它的 `issue_external` 行（表没有外键）；这一步不看开关，免得关闭期间删除的 issue 留下孤儿行。工作区删除由 `DeleteWorkspaceGithubIssueData` 清理。
 
 ### 实现
 
@@ -96,6 +96,7 @@
 | `server/internal/handler/{issue_table_rows,search_index,issue_duplicate,plugin_action}.go` | 构造完一页后调 `fillIssueKeys` |
 | `server/internal/handler/{daemon,issue_workflow_entry,issue_system_wakeup,squad}.go` | 认领、工作流提示词、等待中的子 issue、squad 活跃 issue 的标识改用 `issueKey` / `service.IssueKey` |
 | `server/internal/service/{task,source_context}.go` | `IssueToMap` 带 `provider`，`IssueToMapResolved` 改写标识；quick-create 活动记录、来源快照的标识 |
+| `server/cmd/server/main.go` | 启动时 `issuekey.SetEnabled(config.Enabled())` |
 | `server/cmd/server/activity_listeners.go` | 活动记录里的 issue 标识 |
 | `server/cmd/multica/{cmd_id_resolver,cmd_issue}.go` | 接受 `owner/repo#N`；`--fields` 加 `provider` |
 | `server/pkg/db/queries/github_issue.sql` | 新查询 `GetIssueExternalByRepoName`（只读 fork 表） |

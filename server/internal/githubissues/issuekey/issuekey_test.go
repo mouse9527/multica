@@ -73,7 +73,15 @@ func (f *fakeQuerier) ListIssueExternalsByIssueIDs(_ context.Context, _ db.ListI
 
 func uuid(b byte) pgtype.UUID { return pgtype.UUID{Bytes: [16]byte{b}, Valid: true} }
 
+func enableForTest(t *testing.T) {
+	t.Helper()
+	previous := Enabled()
+	SetEnabled(true)
+	t.Cleanup(func() { SetEnabled(previous) })
+}
+
 func TestLoadAndKey(t *testing.T) {
+	enableForTest(t)
 	ws, local, gh := uuid(1), uuid(2), uuid(3)
 	q := &fakeQuerier{rows: []db.IssueExternal{{IssueID: gh, Provider: ProviderGitHub, ExternalRepo: "octo/hello", ExternalNumber: 9}}}
 
@@ -99,6 +107,7 @@ func TestLoadAndKey(t *testing.T) {
 }
 
 func TestLoadFailureRendersLocal(t *testing.T) {
+	enableForTest(t)
 	q := &fakeQuerier{err: errors.New("boom")}
 	externals := Load(context.Background(), q, uuid(1), []pgtype.UUID{uuid(2)})
 	if got := externals.Key(uuid(2), "MUL-2"); got != "MUL-2" {
@@ -106,5 +115,20 @@ func TestLoadFailureRendersLocal(t *testing.T) {
 	}
 	if got := LoadOne(context.Background(), q, uuid(1), uuid(2)).Key(uuid(2), "MUL-2"); got != "MUL-2" {
 		t.Fatalf("LoadOne after failure = %q, want local", got)
+	}
+}
+
+func TestSwitchOffSkipsReads(t *testing.T) {
+	SetEnabled(false)
+	gh := uuid(3)
+	q := &fakeQuerier{rows: []db.IssueExternal{{IssueID: gh, Provider: ProviderGitHub, ExternalRepo: "octo/hello", ExternalNumber: 9}}}
+	if got := Load(context.Background(), q, uuid(1), []pgtype.UUID{gh}).Key(gh, "MUL-3"); got != "MUL-3" {
+		t.Fatalf("Load with switch off: %q, want local", got)
+	}
+	if got := LoadOne(context.Background(), q, uuid(1), gh).Provider(gh); got != ProviderLocal {
+		t.Fatalf("LoadOne with switch off: provider %q, want local", got)
+	}
+	if q.calls != 0 {
+		t.Fatalf("switch off made %d queries, want 0", q.calls)
 	}
 }

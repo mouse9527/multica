@@ -6,6 +6,11 @@
 // identifier is then "owner/repo#N" instead of the workspace's "PREFIX-N".
 // The package depends only on the generated queries so that service, handler
 // and githubissues can all use it without an import cycle.
+//
+// Rendering follows the feature switch: while it is off (the default) no
+// issue_external row is read and every issue renders as local, exactly as
+// upstream does. Rows written while the feature was on are kept, so turning
+// it back on restores the GitHub identifiers.
 package issuekey
 
 import (
@@ -14,6 +19,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -26,6 +32,15 @@ const (
 	ProviderLocal  = "local"
 	ProviderGitHub = "github"
 )
+
+var enabled atomic.Bool
+
+// SetEnabled records whether GitHub-native issues are on for this process.
+// The server calls it once at startup with githubissues.Config.Enabled.
+func SetEnabled(on bool) { enabled.Store(on) }
+
+// Enabled reports whether GitHub identifiers are rendered and resolved.
+func Enabled() bool { return enabled.Load() }
 
 // GitHub renders the identifier of a GitHub-backed issue: "owner/repo#N".
 func GitHub(ext db.IssueExternal) string {
@@ -60,11 +75,11 @@ type Querier interface {
 // An issue missing from it is local. The zero value is an empty set.
 type Externals map[pgtype.UUID]db.IssueExternal
 
-// Load reads the GitHub identity of issueIDs in one query; no ids, no query.
-// A failed read is logged and leaves every issue rendered as local, the way
-// list endpoints degrade when labels fail to load.
+// Load reads the GitHub identity of issueIDs in one query; no ids, or the
+// feature off, no query. A failed read is logged and leaves every issue
+// rendered as local, the way list endpoints degrade when labels fail to load.
 func Load(ctx context.Context, q Querier, workspaceID pgtype.UUID, issueIDs []pgtype.UUID) Externals {
-	if len(issueIDs) == 0 {
+	if len(issueIDs) == 0 || !Enabled() {
 		return Externals{}
 	}
 	rows, err := q.ListIssueExternalsByIssueIDs(ctx, db.ListIssueExternalsByIssueIDsParams{
@@ -84,6 +99,9 @@ func Load(ctx context.Context, q Querier, workspaceID pgtype.UUID, issueIDs []pg
 
 // LoadOne is Load for a single issue.
 func LoadOne(ctx context.Context, q Querier, workspaceID, issueID pgtype.UUID) Externals {
+	if !Enabled() {
+		return Externals{}
+	}
 	row, err := q.GetIssueExternal(ctx, db.GetIssueExternalParams{IssueID: issueID, WorkspaceID: workspaceID})
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
