@@ -103,7 +103,9 @@ func (s *Service) BeginIssueUpdate(ctx context.Context, actor Actor, issue db.Is
 	if err != nil {
 		return nil, err
 	}
-	if !touchesGitHub(issue, change) {
+	// Deleted or transferred away on GitHub: there is nothing left to write
+	// to, and the issue goes on as a local one.
+	if issueGone(ext) || !touchesGitHub(issue, change) {
 		return nil, nil
 	}
 	// From here until Finish no other writer of this GitHub issue (another
@@ -133,6 +135,9 @@ func (s *Service) beginIssueUpdate(ctx context.Context, guard *writeGuard, actor
 	ext, err := guard.q.GetIssueExternal(ctx, db.GetIssueExternalParams{IssueID: issueID, WorkspaceID: ext.WorkspaceID})
 	if err != nil {
 		return nil, err
+	}
+	if issueGone(ext) {
+		return nil, nil
 	}
 	issue, err := guard.q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issueID, WorkspaceID: ext.WorkspaceID})
 	if err != nil {

@@ -32,6 +32,10 @@ func (s *Service) BeginCommentCreate(ctx context.Context, actor Actor, issue db.
 	if err != nil {
 		return nil, err
 	}
+	if issueGone(ext) {
+		// Deleted or transferred away on GitHub: the comment stays local.
+		return nil, nil
+	}
 	repo, err := s.repoForIssue(ctx, ext)
 	if err != nil {
 		return nil, err
@@ -150,6 +154,9 @@ func (s *Service) beginLockedCommentWrite(ctx context.Context, guard *writeGuard
 	}
 	if err != nil {
 		return nil, err
+	}
+	if issueGone(ext) {
+		return nil, nil
 	}
 	repo, err := s.repoForIssue(ctx, ext)
 	if err != nil {

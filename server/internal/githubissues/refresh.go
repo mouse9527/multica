@@ -112,7 +112,8 @@ func (s *Service) refreshIssue(ctx context.Context, issue db.Issue) error {
 	if err != nil {
 		return fmt.Errorf("githubissues: read issue link: %w", err)
 	}
-	if ext.Provider != issuekey.ProviderGitHub {
+	if ext.Provider != issuekey.ProviderGitHub || issueGone(ext) {
+		// Deleted or transferred away on GitHub: nothing left to read.
 		return nil
 	}
 	owner, name, _ := strings.Cut(ext.ExternalRepo, "/")
