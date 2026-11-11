@@ -211,15 +211,40 @@ func (h *Handler) beginGitHubIssueUpdate(r *http.Request, prev db.Issue, params 
 	return write, err
 }
 
-// beginGitHubIssueCreate prepares opening the issue on GitHub when the create
-// names a repository; the request itself goes out from InTx, after the local
-// checks. With the feature off the field is ignored, as upstream ignores
-// fields it does not know.
-func (h *Handler) beginGitHubIssueCreate(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID, req CreateIssueRequest) (*githubissues.Write, bool) {
-	if h.GitHubIssues == nil || req.Repo == nil {
+// beginGitHubIssueCreate decides where the new issue lives from the request's
+// repo and provider and the issue's project (githubissues.ResolveCreateRepo),
+// and prepares opening it on GitHub when that is a repository; the request
+// itself goes out from InTx, after the local checks. projectID is the project
+// the issue lands in, the parent's for a sub-issue without one. With the
+// feature off both fields are ignored, as upstream ignores fields it does not
+// know.
+func (h *Handler) beginGitHubIssueCreate(w http.ResponseWriter, r *http.Request, workspaceID, projectID pgtype.UUID, creatorType string, req CreateIssueRequest) (*githubissues.Write, bool) {
+	if h.GitHubIssues == nil {
 		return nil, true
 	}
-	write, err := h.GitHubIssues.BeginIssueCreate(r.Context(), workspaceID, h.gitHubActor(r, workspaceID), githubissues.NewIssue{Repo: *req.Repo})
+	choice := githubissues.RepoChoice{ByAgent: creatorType == "agent"}
+	if req.Repo != nil {
+		choice.Repo = *req.Repo
+	}
+	if req.Provider != nil {
+		choice.Provider = *req.Provider
+	}
+	repo, err := h.GitHubIssues.ResolveCreateRepo(r.Context(), workspaceID, projectID, choice)
+	var refused *githubissues.RepoChoiceError
+	if errors.As(err, &refused) {
+		status, body := refused.HTTPResponse()
+		writeJSON(w, status, body)
+		return nil, false
+	}
+	if err != nil {
+		slog.Warn("choose github repository failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to choose the GitHub repository")
+		return nil, false
+	}
+	if repo == "" {
+		return nil, true
+	}
+	write, err := h.GitHubIssues.BeginIssueCreate(r.Context(), workspaceID, h.gitHubActor(r, workspaceID), githubissues.NewIssue{Repo: repo})
 	if err != nil {
 		writeGitHubWriteError(w, r, err, "issue", pgtype.UUID{})
 		return nil, false

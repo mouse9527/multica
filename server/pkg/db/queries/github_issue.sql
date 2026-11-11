@@ -185,6 +185,19 @@ ON CONFLICT (project_id) DO UPDATE SET
 WHERE project_github_settings.workspace_id = EXCLUDED.workspace_id
 RETURNING *;
 
+-- name: SetProjectGithubDefaultResource :one
+-- Sets only the default repository; status_label_map is kept.
+INSERT INTO project_github_settings (
+    project_id, workspace_id, default_resource_id
+) VALUES (
+    $1, $2, $3
+)
+ON CONFLICT (project_id) DO UPDATE SET
+    default_resource_id = EXCLUDED.default_resource_id,
+    updated_at          = now()
+WHERE project_github_settings.workspace_id = EXCLUDED.workspace_id
+RETURNING *;
+
 -- name: DeleteProjectGithubSettings :exec
 DELETE FROM project_github_settings
 WHERE project_id = $1 AND workspace_id = $2;
