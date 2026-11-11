@@ -107,30 +107,35 @@ const listGithubWriteIntentsToReconcile = `-- name: ListGithubWriteIntentsToReco
 SELECT id, workspace_id, op, repo_id, external_repo, issue_id, external_number, comment_id, payload_digest, actor_type, actor_id, state, github_id, error, created_at, updated_at FROM github_write_intent
 WHERE workspace_id = $1
   AND repo_id = $2
-  AND state IN ('pending', 'github_ok', 'unknown')
-  AND created_at <= $3
+  AND (
+    (state = 'github_ok' AND created_at <= $3)
+    OR (state IN ('pending', 'unknown') AND created_at <= $4)
+  )
   AND (error IS NULL OR error NOT LIKE 'needs_confirmation:%')
 ORDER BY created_at ASC
-LIMIT $4
+LIMIT $5
 `
 
 type ListGithubWriteIntentsToReconcileParams struct {
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	RepoID        int64              `json:"repo_id"`
-	CreatedBefore pgtype.Timestamptz `json:"created_before"`
-	RowLimit      int32              `json:"row_limit"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	RepoID           int64              `json:"repo_id"`
+	AcceptedBefore   pgtype.Timestamptz `json:"accepted_before"`
+	UnansweredBefore pgtype.Timestamptz `json:"unanswered_before"`
+	RowLimit         int32              `json:"row_limit"`
 }
 
-// Intents of one repository that GitHub never answered (pending, unknown),
-// or that GitHub accepted without a confirmed local copy (github_ok), created
-// at or before created_before, oldest first. Intents already handed to a
-// person (error 'needs_confirmation: ...') are not checked again. Served by
+// Intents of one repository for the reconciler, oldest first: writes GitHub
+// accepted without a confirmed local copy (github_ok) created at or before
+// accepted_before, and writes GitHub never answered (pending, unknown)
+// created at or before unanswered_before. Intents already handed to a person
+// (error 'needs_confirmation: ...') are not checked again. Served by
 // idx_github_write_intent_open.
 func (q *Queries) ListGithubWriteIntentsToReconcile(ctx context.Context, arg ListGithubWriteIntentsToReconcileParams) ([]GithubWriteIntent, error) {
 	rows, err := q.db.Query(ctx, listGithubWriteIntentsToReconcile,
 		arg.WorkspaceID,
 		arg.RepoID,
-		arg.CreatedBefore,
+		arg.AcceptedBefore,
+		arg.UnansweredBefore,
 		arg.RowLimit,
 	)
 	if err != nil {

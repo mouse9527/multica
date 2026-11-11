@@ -58,42 +58,93 @@ func (s *Service) BeginCommentCreate(ctx context.Context, actor Actor, issue db.
 	return w, nil
 }
 
+// CommentBase is the caller's preconditions on a comment edit
+// (content_base, expected_revision). They are checked under the comment's
+// lock before anything is sent; a mismatch is a *StaleWriteError.
+type CommentBase struct {
+	Content          *string
+	ExpectedRevision *int64
+}
+
 // BeginCommentUpdate rewrites a comment Multica posted on GitHub. It returns
 // nil for a comment that never reached GitHub (it has no comment_external
 // row) or whose text does not change.
-func (s *Service) BeginCommentUpdate(ctx context.Context, actor Actor, comment db.Comment, content string) (*Write, error) {
-	if s == nil || content == comment.Content {
+func (s *Service) BeginCommentUpdate(ctx context.Context, actor Actor, comment db.Comment, content string, base CommentBase) (*Write, error) {
+	if s == nil || IsSyncedWrite(ctx) {
 		return nil, nil
 	}
-	return s.beginCommentWrite(ctx, actor, comment, opUpdateComment, http.MethodPatch, &content)
+	return s.beginCommentWrite(ctx, actor, comment, opUpdateComment, http.MethodPatch, &content, base)
 }
 
 // BeginCommentDelete deletes a comment Multica posted on GitHub. It returns
 // nil for a comment that never reached GitHub. A comment GitHub no longer has
 // counts as deleted.
 func (s *Service) BeginCommentDelete(ctx context.Context, actor Actor, comment db.Comment) (*Write, error) {
-	if s == nil {
+	if s == nil || IsSyncedWrite(ctx) {
 		return nil, nil
 	}
-	return s.beginCommentWrite(ctx, actor, comment, opDeleteComment, http.MethodDelete, nil)
+	return s.beginCommentWrite(ctx, actor, comment, opDeleteComment, http.MethodDelete, nil, CommentBase{})
 }
 
-func (s *Service) beginCommentWrite(ctx context.Context, actor Actor, comment db.Comment, op, method string, content *string) (*Write, error) {
+func (s *Service) beginCommentWrite(ctx context.Context, actor Actor, comment db.Comment, op, method string, content *string, base CommentBase) (*Write, error) {
 	q, err := s.queries()
 	if err != nil {
 		return nil, err
 	}
-	cext, err := q.GetCommentExternal(ctx, db.GetCommentExternalParams{CommentID: comment.ID, WorkspaceID: comment.WorkspaceID})
+	if _, err := q.GetCommentExternal(ctx, db.GetCommentExternalParams{CommentID: comment.ID, WorkspaceID: comment.WorkspaceID}); errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	if comment.AuthorType == externalAuthorType {
+		return nil, &WriteError{Kind: WriteNotAllowed, msg: "comments synced from GitHub are read-only"}
+	}
+	// From here until Finish no other writer of this comment (another edit
+	// or delete, the poller) runs, so the preconditions checked now still
+	// hold when the local write lands.
+	guard, err := s.lockTarget(ctx, commentLockKey(comment.ID))
+	if err != nil {
+		return nil, err
+	}
+	w, err := s.beginLockedCommentWrite(ctx, guard, actor, comment.ID, comment.WorkspaceID, op, method, content, base)
+	if w == nil {
+		guard.release()
+	}
+	return w, err
+}
+
+func (s *Service) beginLockedCommentWrite(ctx context.Context, guard *writeGuard, actor Actor, commentID, workspaceID pgtype.UUID,
+	op, method string, content *string, base CommentBase) (*Write, error) {
+	comment, err := guard.q.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{ID: commentID, WorkspaceID: workspaceID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if comment.AuthorType == externalAuthorType {
-		return nil, &WriteError{Kind: WriteNotAllowed, msg: "comments synced from GitHub are read-only"}
+	if comment.DeletedAt.Valid {
+		// The local write reports the deletion.
+		return nil, nil
 	}
-	ext, err := q.GetIssueExternal(ctx, db.GetIssueExternalParams{IssueID: comment.IssueID, WorkspaceID: comment.WorkspaceID})
+	if base.ExpectedRevision != nil && comment.Revision != *base.ExpectedRevision {
+		return nil, &StaleWriteError{Revision: true, Expected: *base.ExpectedRevision, Current: comment.Revision}
+	}
+	if content != nil {
+		if base.Content != nil && comment.Content != *base.Content && comment.Content != *content {
+			return nil, &StaleWriteError{}
+		}
+		if *content == comment.Content {
+			return nil, nil
+		}
+	}
+	cext, err := guard.q.GetCommentExternal(ctx, db.GetCommentExternalParams{CommentID: commentID, WorkspaceID: workspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ext, err := guard.q.GetIssueExternal(ctx, db.GetIssueExternalParams{IssueID: comment.IssueID, WorkspaceID: workspaceID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -118,7 +169,7 @@ func (s *Service) beginCommentWrite(ctx context.Context, actor Actor, comment db
 	if err != nil {
 		return nil, err
 	}
-	w := &Write{svc: s, intent: intent, repo: repo}
+	w := &Write{svc: s, intent: intent, repo: repo, guard: guard}
 	if content != nil {
 		var gh githubComment
 		if json.Unmarshal(resp.Body, &gh) == nil && gh.ID == cext.ExternalID {
@@ -137,6 +188,11 @@ func (w *Write) Finish(ctx context.Context, localErr error) {
 	if w == nil {
 		return
 	}
+	defer func() {
+		w.done = true
+		w.guard.release()
+		w.guard = nil
+	}()
 	if localErr != nil {
 		w.localFailed(ctx, localErr)
 		return

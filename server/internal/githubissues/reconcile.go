@@ -27,23 +27,28 @@ const (
 )
 
 // reconcileIntents settles the writes of one repository that the polls have
-// not settled by the end of the grace period (unknownGrace), after a poll of
-// the repository caught up:
+// not settled, after a poll of the repository caught up:
 //
-//   - pending or unknown (GitHub never answered): the write is looked for on
-//     GitHub, a new issue or comment by the op in its marker, an edit or a
-//     deletion by comparing GitHub's current state. Found, it is adopted or
-//     marked applied; not found, it is handed to a person
+//   - github_ok (GitHub accepted, local copy failed), one cycle after the
+//     write: a missing new issue or comment is fetched and adopted; an edit
+//     has already been copied by the poll; a deleted comment's local copy is
+//     deleted through the delete path (the comments list never returns a
+//     deleted comment, so the poll cannot).
+//   - pending or unknown (GitHub never answered), after the grace period
+//     (unknownGrace): the write is looked for on GitHub, a new issue or
+//     comment by the op in its marker, an edit or a deletion by comparing
+//     GitHub's current state. Found, it is adopted, applied or (a deletion)
+//     finished locally; not found, it is handed to a person
 //     ("needs_confirmation: ...") and never retried.
-//   - github_ok (GitHub accepted, local copy failed): a missing new issue or
-//     comment is fetched and adopted; an edit has already been copied by the
-//     poll; a deletion GitHub made but Multica did not is handed to a person.
 func (s *Service) reconcileIntents(ctx context.Context, repo *Repo, projectID pgtype.UUID) error {
 	q := db.New(s.db)
 	intents, err := q.ListGithubWriteIntentsToReconcile(ctx, db.ListGithubWriteIntentsToReconcileParams{
 		WorkspaceID: repo.workspaceID, RepoID: repo.id,
-		CreatedBefore: pgtype.Timestamptz{Time: s.now().Add(-unknownGrace), Valid: true},
-		RowLimit:      reconcileBatch,
+		// An accepted write heals on the next poll; the delay keeps it clear
+		// of a local write still in flight.
+		AcceptedBefore:   pgtype.Timestamptz{Time: s.now().Add(-pollInterval), Valid: true},
+		UnansweredBefore: pgtype.Timestamptz{Time: s.now().Add(-unknownGrace), Valid: true},
+		RowLimit:         reconcileBatch,
 	})
 	if err != nil {
 		return fmt.Errorf("githubissues: list write intents: %w", err)
@@ -113,17 +118,19 @@ func (s *Service) reconcileIntent(ctx context.Context, repo *Repo, projectID pgt
 		}
 		return s.handOver(ctx, intent, "GitHub does not show the edit")
 	case opDeleteComment:
-		if accepted {
-			return s.handOver(ctx, intent, "deleted on GitHub but not in Multica; delete the comment again in Multica")
+		if !accepted {
+			_, status, err := s.fetchJSON(ctx, repo, "/issues/comments/"+strconv.FormatInt(intent.GithubID.Int64, 10))
+			if err != nil {
+				return err
+			}
+			if status != http.StatusNotFound && status != http.StatusGone {
+				return s.handOver(ctx, intent, "the comment is still on GitHub")
+			}
 		}
-		_, status, err := s.fetchJSON(ctx, repo, "/issues/comments/"+strconv.FormatInt(intent.GithubID.Int64, 10))
-		if err != nil {
-			return err
-		}
-		if status == http.StatusNotFound || status == http.StatusGone {
-			return s.handOver(ctx, intent, "deleted on GitHub but not in Multica; delete the comment again in Multica")
-		}
-		return s.handOver(ctx, intent, "the comment is still on GitHub")
+		// GitHub no longer has the comment: finish the local delete the
+		// write could not. The comments list never returns a deleted
+		// comment, so nothing else would.
+		return s.deleteLocalComment(ctx, intent)
 	}
 	return nil
 }
@@ -318,4 +325,47 @@ func cutDigest(digest string) (keys []string, sum string, ok bool) {
 		keys = strings.Split(digest[:i], ",")
 	}
 	return keys, digest[i+1:], true
+}
+
+// CommentDeleter deletes the local copy of a comment through the same entry
+// as a person's delete (DeleteComment), acting as userID, so tasks, events and
+// thread tombstones are handled as for any delete. ctx is marked
+// WithSyncedWrite: nothing is sent to GitHub.
+type CommentDeleter interface {
+	DeleteGitHubComment(ctx context.Context, userID pgtype.UUID, comment db.Comment) error
+}
+
+// SetCommentDeleter installs the local delete path. It is called once while
+// the server is wired, before polling starts.
+func (s *Service) SetCommentDeleter(d CommentDeleter) {
+	s.commentDeleter = d
+}
+
+// deleteLocalComment removes the local copy of a comment GitHub deleted and
+// settles its delete_comment intent. A failure is retried next cycle.
+func (s *Service) deleteLocalComment(ctx context.Context, intent db.GithubWriteIntent) error {
+	q := db.New(s.db)
+	comment, err := q.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{ID: intent.CommentID, WorkspaceID: intent.WorkspaceID})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		return err
+	case !comment.DeletedAt.Valid:
+		if s.commentDeleter == nil {
+			s.logger.Warn("github issues: no comment delete path; local copy kept", "intent_id", intent.ID)
+			return nil
+		}
+		actor, err := s.statusActor(ctx, intent.WorkspaceID)
+		if err != nil {
+			return err
+		}
+		if err := s.commentDeleter.DeleteGitHubComment(WithSyncedWrite(ctx), actor, comment); err != nil {
+			return fmt.Errorf("delete local comment: %w", err)
+		}
+	}
+	if err := q.DeleteCommentExternal(ctx, db.DeleteCommentExternalParams{CommentID: intent.CommentID, WorkspaceID: intent.WorkspaceID}); err != nil {
+		return err
+	}
+	s.logger.Info("github comment deletion healed locally", "intent_id", intent.ID, "repo", intent.ExternalRepo)
+	return s.markApplied(ctx, intent)
 }

@@ -27,16 +27,18 @@ type IssueChange struct {
 	// ProjectID is the project the issue is in after the update; its
 	// status_label_map decides the status label.
 	ProjectID pgtype.UUID
+	// ExpectedRevision and TitleBase are the caller's preconditions
+	// (expected_revision, title_base). They are checked under the issue's
+	// lock before anything is sent; a mismatch is a *StaleWriteError.
+	ExpectedRevision *int64
+	TitleBase        *string
 }
 
-// NewIssue is an issue to open on GitHub from Multica.
+// NewIssue is an issue to open on GitHub from Multica. Its title,
+// description and status are those of the local issue InTx receives.
 type NewIssue struct {
 	// Repo is "owner/name" of a repository registered in the workspace.
-	Repo        string
-	Title       string
-	Description string
-	Status      string
-	ProjectID   pgtype.UUID
+	Repo string
 }
 
 // statusTarget is how a Multica status is written on GitHub: the state, the
@@ -100,6 +102,47 @@ func (s *Service) BeginIssueUpdate(ctx context.Context, actor Actor, issue db.Is
 	}
 	if err != nil {
 		return nil, err
+	}
+	if !touchesGitHub(issue, change) {
+		return nil, nil
+	}
+	// From here until Finish no other writer of this GitHub issue (another
+	// write, the poller) runs, so the preconditions checked now still hold
+	// when the local write lands.
+	guard, err := s.lockTarget(ctx, issueLockKeyFor(ext.WorkspaceID, ext.ExternalRepoID, ext.ExternalNumber))
+	if err != nil {
+		return nil, err
+	}
+	w, err := s.beginIssueUpdate(ctx, guard, actor, issue.ID, ext, change)
+	if w == nil {
+		guard.release()
+	}
+	return w, err
+}
+
+// touchesGitHub reports whether change may change a field GitHub holds.
+func touchesGitHub(issue db.Issue, change IssueChange) bool {
+	return (change.Title != nil && *change.Title != issue.Title) ||
+		(change.Description != nil && *change.Description != issue.Description.String) ||
+		(change.Status != nil && *change.Status != issue.Status)
+}
+
+func (s *Service) beginIssueUpdate(ctx context.Context, guard *writeGuard, actor Actor, issueID pgtype.UUID, ext db.IssueExternal, change IssueChange) (*Write, error) {
+	q := db.New(s.db)
+	// Read again under the lock: the poller may have moved either since.
+	ext, err := guard.q.GetIssueExternal(ctx, db.GetIssueExternalParams{IssueID: issueID, WorkspaceID: ext.WorkspaceID})
+	if err != nil {
+		return nil, err
+	}
+	issue, err := guard.q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issueID, WorkspaceID: ext.WorkspaceID})
+	if err != nil {
+		return nil, err
+	}
+	if change.ExpectedRevision != nil && issue.Revision != *change.ExpectedRevision {
+		return nil, &StaleWriteError{Revision: true, Expected: *change.ExpectedRevision, Current: issue.Revision}
+	}
+	if change.Title != nil && change.TitleBase != nil && issue.Title != *change.TitleBase && issue.Title != *change.Title {
+		return nil, &StaleWriteError{}
 	}
 	setTitle := change.Title != nil && *change.Title != issue.Title
 	setBody := change.Description != nil && *change.Description != issue.Description.String
@@ -165,7 +208,7 @@ func (s *Service) BeginIssueUpdate(ctx context.Context, actor Actor, issue db.Is
 	if err != nil {
 		return nil, err
 	}
-	w := &Write{svc: s, intent: intent, repo: repo}
+	w := &Write{svc: s, intent: intent, repo: repo, guard: guard}
 	var gh githubIssue
 	if json.Unmarshal(resp.Body, &gh) == nil && gh.Number == ext.ExternalNumber {
 		w.issue = &gh
@@ -234,59 +277,28 @@ func relabel(current []string, target statusTarget) ([]string, bool) {
 	return next, strings.Join(next, "\x00") != strings.Join(sorted, "\x00")
 }
 
-// BeginIssueCreate opens an issue on GitHub for a create in Multica. The
-// caller then creates the local issue, passing InTx to run inside its
-// transaction, or calls Abandon if the local create fails.
+// BeginIssueCreate prepares opening an issue on GitHub for a create in
+// Multica: it resolves the repository and sends nothing. The request goes out
+// from InTx, inside the create transaction after every local check passed, so
+// a create the local checks refuse (duplicate guard, labels, project) never
+// reaches GitHub. The caller passes InTx to the create and calls Abandon with
+// its outcome.
 //
-// GitHub opens every new issue, so a status that maps to closed is refused,
-// and so is one the project's status mapping cannot show (UnmappedStatusError).
+// The issue fields come from the issue the transaction is about to commit;
+// in carries the repository.
 func (s *Service) BeginIssueCreate(ctx context.Context, workspaceID pgtype.UUID, actor Actor, in NewIssue) (*Write, error) {
 	if s == nil {
 		return nil, ErrFeatureOff
 	}
-	q, err := s.queries()
-	if err != nil {
-		return nil, err
+	if !actor.valid() {
+		return nil, errors.New("githubissues: write without a member or agent actor")
 	}
 	owner, name, _ := strings.Cut(strings.TrimSpace(in.Repo), "/")
-	target, err := s.statusTargetFor(ctx, q, workspaceID, in.ProjectID, in.Status)
-	var unmapped *UnmappedStatusError
-	if errors.As(err, &unmapped) {
-		unmapped.Issue = strings.TrimSpace(in.Repo) + " (new issue)"
-	}
-	if err != nil {
-		return nil, err
-	}
-	if target.state != "open" {
-		return nil, &WriteError{Kind: WriteNotAllowed, msg: "a GitHub issue is opened in an open status; create it, then close it"}
-	}
 	repo, err := s.RepoClient(ctx, workspaceID, owner, name)
 	if err != nil {
 		return nil, repoError(err)
 	}
-	intent, resp, err := s.send(ctx, writeRequest{
-		op: opCreateIssue, actor: actor, repo: repo, method: http.MethodPost, path: "/issues",
-		payload: func(op pgtype.UUID) map[string]any {
-			p := map[string]any{"title": in.Title, "body": signedBody(in.Description, actor, op)}
-			if target.label != "" {
-				p["labels"] = []string{target.label}
-			}
-			return p
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	var gh githubIssue
-	if err := json.Unmarshal(resp.Body, &gh); err != nil || gh.Number <= 0 || (gh.State != "open" && gh.State != "closed") {
-		// GitHub created something this reply does not describe; the poll
-		// finds it by its marker.
-		s.settleIntent(context.WithoutCancel(ctx), intent, intentUnknown, "malformed create response")
-		return nil, &WriteError{Kind: WriteUnknown, msg: unconfirmedMessage}
-	}
-	w := &Write{svc: s, intent: intent, repo: repo, issue: &gh}
-	s.accept(ctx, &w.intent, gh.ID, gh.Number)
-	return w, nil
+	return &Write{svc: s, repo: repo, actor: actor}, nil
 }
 
 // errIssueAlreadyImported means the poller healed this create before the
@@ -294,18 +306,63 @@ func (s *Service) BeginIssueCreate(ctx context.Context, workspaceID pgtype.UUID,
 // issue stays.
 var errIssueAlreadyImported = errors.New("githubissues: the GitHub issue was already imported")
 
-// InTx links the new local issue to the GitHub issue inside the create
-// transaction, so the issue never exists without its issue_external row (the
-// poller would otherwise import the GitHub issue a second time).
+// InTx opens the issue on GitHub and links the new local issue to it, inside
+// the create transaction: the local checks have passed, and the issue never
+// exists without its issue_external row (the poller would otherwise import
+// the GitHub issue a second time). An error from GitHub rolls the create back.
+//
+// The transaction is held open for the request, so other creates in the
+// workspace wait for it (at most requestTimeout).
+//
+// GitHub opens every new issue, so a status that maps to closed is refused,
+// and so is one the project's status mapping cannot show (UnmappedStatusError).
 func (w *Write) InTx(ctx context.Context, q *db.Queries, issue db.Issue) error {
-	if w == nil || w.issue == nil {
+	if w == nil {
 		return nil
 	}
-	gh := w.issue
+	if w.issue != nil {
+		// Sent already; never twice for one create.
+		return errors.New("githubissues: create already sent to GitHub")
+	}
+	s := w.svc
+	target, err := s.statusTargetFor(ctx, q, issue.WorkspaceID, issue.ProjectID, issue.Status)
+	var unmapped *UnmappedStatusError
+	if errors.As(err, &unmapped) {
+		unmapped.Issue = w.repo.FullName() + " (new issue)"
+	}
+	if err != nil {
+		return err
+	}
+	if target.state != "open" {
+		return &WriteError{Kind: WriteNotAllowed, msg: "a GitHub issue is opened in an open status; create it, then close it"}
+	}
+	intent, resp, err := s.send(ctx, writeRequest{
+		op: opCreateIssue, actor: w.actor, repo: w.repo, method: http.MethodPost, path: "/issues",
+		payload: func(op pgtype.UUID) map[string]any {
+			p := map[string]any{"title": issue.Title, "body": signedBody(issue.Description.String, w.actor, op)}
+			if target.label != "" {
+				p["labels"] = []string{target.label}
+			}
+			return p
+		},
+	})
+	if err != nil {
+		return err
+	}
+	var gh githubIssue
+	if err := json.Unmarshal(resp.Body, &gh); err != nil || gh.Number <= 0 || (gh.State != "open" && gh.State != "closed") {
+		// GitHub created something this reply does not describe; the poll
+		// finds it by its marker.
+		s.settleIntent(context.WithoutCancel(ctx), intent, intentUnknown, "malformed create response")
+		return &WriteError{Kind: WriteUnknown, msg: unconfirmedMessage}
+	}
+	w.intent, w.issue = intent, &gh
+	s.accept(ctx, &w.intent, gh.ID, gh.Number)
+
 	if err := q.LockIssueDuplicateKey(ctx, issueLockKey(w.repo, gh.Number)); err != nil {
 		return err
 	}
-	_, err := q.GetIssueExternalByNumber(ctx, db.GetIssueExternalByNumberParams{
+	_, err = q.GetIssueExternalByNumber(ctx, db.GetIssueExternalByNumberParams{
 		WorkspaceID: w.repo.workspaceID, Provider: issuekey.ProviderGitHub,
 		ExternalRepoID: w.repo.id, ExternalNumber: gh.Number,
 	})
@@ -334,17 +391,36 @@ func (w *Write) InTx(ctx context.Context, q *db.Queries, issue db.Issue) error {
 	return err
 }
 
-// Abandon records that the local create failed after GitHub opened the
-// issue. The next poll imports it (docs/github-issues.md, "自愈").
+// Abandon records the outcome of the create. Only a create GitHub accepted
+// whose transaction then failed to commit needs anything: the next poll
+// imports the issue (docs/github-issues.md, "自愈").
 func (w *Write) Abandon(ctx context.Context, cause error) {
-	if w == nil || cause == nil {
+	if w == nil || cause == nil || w.issue == nil {
 		return
 	}
 	w.localFailed(ctx, cause)
 }
 
+// GitHubCreateError reports whether err is a create refused or not confirmed
+// by GitHub (from InTx), which the caller answers with WriteError or
+// UnmappedStatusError's response rather than a generic failure.
+func GitHubCreateError(err error) bool {
+	var writeErr *WriteError
+	var unmapped *UnmappedStatusError
+	return errors.As(err, &writeErr) || errors.As(err, &unmapped)
+}
+
 // issueLockKey serializes every writer of one GitHub issue in a workspace.
 func issueLockKey(repo *Repo, number int32) string {
-	return "githubissues:issue:" + util.UUIDToString(repo.workspaceID) + ":" +
-		strconv.FormatInt(repo.id, 10) + ":" + strconv.Itoa(int(number))
+	return issueLockKeyFor(repo.workspaceID, repo.id, number)
+}
+
+func issueLockKeyFor(workspaceID pgtype.UUID, repoID int64, number int32) string {
+	return "githubissues:issue:" + util.UUIDToString(workspaceID) + ":" +
+		strconv.FormatInt(repoID, 10) + ":" + strconv.Itoa(int(number))
+}
+
+// commentLockKey serializes every writer of one comment written to GitHub.
+func commentLockKey(commentID pgtype.UUID) string {
+	return "githubissues:comment:" + util.UUIDToString(commentID)
 }

@@ -83,22 +83,29 @@ func (env *writeEnv) importedIssue(t *testing.T, number int) db.Issue {
 // writes it.
 func (env *writeEnv) ownIssue(t *testing.T, actor Actor, title, description string) db.Issue {
 	t.Helper()
-	w, err := env.svc.BeginIssueCreate(context.Background(), env.uuid(t, env.ws), actor, NewIssue{
-		Repo: "acme/widgets", Title: title, Description: description, Status: "backlog", ProjectID: env.uuid(t, env.project),
-	})
-	if err != nil {
-		t.Fatalf("begin create: %v", err)
-	}
-	issue, err := env.localIssue(w, actor, title, description)
+	w := env.beginCreate(t, actor)
+	issue, err := env.localIssue(w, actor, title, description, "backlog", true)
+	w.Abandon(context.Background(), err)
 	if err != nil {
 		t.Fatalf("local create: %v", err)
 	}
 	return issue
 }
 
+func (env *writeEnv) beginCreate(t *testing.T, actor Actor) *Write {
+	t.Helper()
+	w, err := env.svc.BeginIssueCreate(context.Background(), env.uuid(t, env.ws), actor, NewIssue{Repo: "acme/widgets"})
+	if err != nil {
+		t.Fatalf("begin create: %v", err)
+	}
+	return w
+}
+
+var errCommitFailed = errors.New("commit failed")
+
 // localIssue is the create transaction of IssueService.Create, reduced to
-// what InTx needs.
-func (env *writeEnv) localIssue(w *Write, actor Actor, title, description string) (db.Issue, error) {
+// what InTx needs. commit false rolls it back after InTx, as a failed commit.
+func (env *writeEnv) localIssue(w *Write, actor Actor, title, description, status string, commit bool) (db.Issue, error) {
 	ctx := context.Background()
 	tx, err := env.svc.db.Begin(ctx)
 	if err != nil {
@@ -114,13 +121,16 @@ func (env *writeEnv) localIssue(w *Write, actor Actor, title, description string
 	project, _ := util.ParseUUID(env.project)
 	issue, err := q.CreateIssue(ctx, db.CreateIssueParams{
 		ID: dbid.NewV7(), WorkspaceID: ws, Title: title, Description: pgtype.Text{String: description, Valid: true},
-		Status: "backlog", Priority: "none", CreatorType: actor.Type, CreatorID: actor.ID, Number: number, ProjectID: project,
+		Status: status, Priority: "none", CreatorType: actor.Type, CreatorID: actor.ID, Number: number, ProjectID: project,
 	})
 	if err != nil {
 		return db.Issue{}, err
 	}
 	if err := w.InTx(ctx, q, issue); err != nil {
 		return db.Issue{}, err
+	}
+	if !commit {
+		return db.Issue{}, errCommitFailed
 	}
 	return issue, tx.Commit(ctx)
 }
@@ -353,7 +363,6 @@ func TestWriteCommentLocalFailureHealsOnPoll(t *testing.T) {
 func TestWriteIssueCreateNeverDuplicates(t *testing.T) {
 	env := newWriteEnv(t)
 	ctx := context.Background()
-	ws := env.uuid(t, env.ws)
 	countTitle := func(title string) int {
 		return env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1 AND title = $2`, env.ws, title)
 	}
@@ -374,20 +383,28 @@ func TestWriteIssueCreateNeverDuplicates(t *testing.T) {
 		t.Fatalf("issue after echo = %q %s", description, creatorType)
 	}
 
-	// The local create fails after GitHub opened the issue.
-	w, err := env.svc.BeginIssueCreate(ctx, ws, env.agent, NewIssue{Repo: "acme/widgets", Title: "Abandoned", Status: "backlog"})
-	if err != nil {
-		t.Fatal(err)
+	// The local commit fails after GitHub opened the issue.
+	w := env.beginCreate(t, env.agent)
+	_, err := env.localIssue(w, env.agent, "Abandoned", "", "backlog", false)
+	w.Abandon(ctx, err)
+	if !errors.Is(err, errCommitFailed) {
+		t.Fatalf("failed commit = %v", err)
 	}
-	w.Abandon(ctx, errors.New("duplicate guard"))
-	// GitHub opens it but the answer is lost.
+	// GitHub opens it but the answer is lost: the create rolls back.
 	env.api.failNext("500", true)
-	_, err = env.svc.BeginIssueCreate(ctx, ws, env.member, NewIssue{Repo: "acme/widgets", Title: "Lost answer", Status: "backlog"})
+	w = env.beginCreate(t, env.member)
+	_, err = env.localIssue(w, env.member, "Lost answer", "", "backlog", true)
+	w.Abandon(ctx, err)
 	wantWriteError(t, err, WriteUnknown)
 	// GitHub never opens it.
 	env.api.failNext("disconnect", false)
-	_, err = env.svc.BeginIssueCreate(ctx, ws, env.member, NewIssue{Repo: "acme/widgets", Title: "Never opened", Status: "backlog"})
+	w = env.beginCreate(t, env.member)
+	_, err = env.localIssue(w, env.member, "Never opened", "", "backlog", true)
+	w.Abandon(ctx, err)
 	wantWriteError(t, err, WriteUnknown)
+	if countTitle("Abandoned")+countTitle("Lost answer")+countTitle("Never opened") != 0 {
+		t.Fatalf("a failed create left a local issue")
+	}
 
 	env.tick(t)
 	env.pastGrace(t)
@@ -544,18 +561,27 @@ func TestWriteRejectionsAndReadOnlyDescription(t *testing.T) {
 	_, err := env.svc.BeginIssueUpdate(ctx, env.member, issue, IssueChange{Description: &desc})
 	wantWriteError(t, err, WriteNotAllowed)
 
+	// GitHub opens every new issue, and a status the project cannot show
+	// would be lost: both refused inside the create, nothing sent.
+	w := env.beginCreate(t, env.member)
+	_, err = env.localIssue(w, env.member, "closed on create", "", "done", true)
+	wantWriteError(t, err, WriteNotAllowed)
+	w = env.beginCreate(t, env.member)
+	var unmapped *UnmappedStatusError
+	if _, err = env.localIssue(w, env.member, "unmapped on create", "", "in_progress", true); !errors.As(err, &unmapped) {
+		t.Fatalf("unmapped status on create = %v", err)
+	}
+	if n := env.api.sentCount("POST /repositories/42/issues"); n != 0 {
+		t.Fatalf("refused creates sent %d POSTs", n)
+	}
+
 	env.f.Exec(t, `DELETE FROM project_resource WHERE workspace_id = $1`, env.ws)
 	title := "x"
 	_, err = env.svc.BeginIssueUpdate(ctx, env.member, issue, IssueChange{Title: &title})
 	wantWriteError(t, err, WriteUnavailable)
 
-	_, err = env.svc.BeginIssueCreate(ctx, env.uuid(t, env.ws), env.member, NewIssue{Repo: "acme/widgets", Title: "x", Status: "done"})
-	wantWriteError(t, err, WriteNotAllowed)
-	// A status GitHub cannot show is refused like on the update path.
-	var unmapped *UnmappedStatusError
-	if _, err = env.svc.BeginIssueCreate(ctx, env.uuid(t, env.ws), env.member, NewIssue{Repo: "acme/widgets", Title: "x", Status: "in_progress"}); !errors.As(err, &unmapped) {
-		t.Fatalf("unmapped status on create = %v", err)
-	}
+	_, err = env.svc.BeginIssueCreate(ctx, env.uuid(t, env.ws), env.member, NewIssue{Repo: "acme/widgets"})
+	wantWriteError(t, err, WriteUnavailable)
 	if n := env.count(t, `SELECT count(*) FROM github_write_intent WHERE workspace_id = $1`, env.ws); n != 0 {
 		t.Fatalf("refused writes left %d intents", n)
 	}
@@ -574,7 +600,7 @@ func TestWriteCommentEditAndDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	edit, err := env.svc.BeginCommentUpdate(ctx, env.member, comment, "v2")
+	edit, err := env.svc.BeginCommentUpdate(ctx, env.member, comment, "v2", CommentBase{})
 	if err != nil || edit == nil {
 		t.Fatalf("begin edit: %v %v", edit, err)
 	}
@@ -607,7 +633,7 @@ func TestWriteCommentEditAndDelete(t *testing.T) {
 	}
 
 	local, _ := db.New(env.svc.db).GetComment(ctx, env.uuid(t, env.f.Comment(t, util.UUIDToString(issue.ID), "local only")))
-	if w, err := env.svc.BeginCommentUpdate(ctx, env.member, local, "changed"); w != nil || err != nil {
+	if w, err := env.svc.BeginCommentUpdate(ctx, env.member, local, "changed", CommentBase{}); w != nil || err != nil {
 		t.Fatalf("local-only comment sent a write: %v %v", w, err)
 	}
 }
@@ -620,4 +646,178 @@ func toStrings(v any) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// fakeDeleter is the handler's DeleteComment, reduced to the row it removes.
+type fakeDeleter struct {
+	env   *writeEnv
+	calls int
+	// synced records whether each call was marked as a synced write.
+	synced []bool
+}
+
+func (d *fakeDeleter) DeleteGitHubComment(ctx context.Context, _ pgtype.UUID, comment db.Comment) error {
+	d.calls++
+	d.synced = append(d.synced, IsSyncedWrite(ctx))
+	_, err := d.env.svc.db.Exec(ctx, `DELETE FROM comment WHERE id = $1`, comment.ID)
+	return err
+}
+
+// postedComment is a comment written from Multica and linked to GitHub.
+func (env *writeEnv) postedComment(t *testing.T, issue db.Issue, content string) db.Comment {
+	t.Helper()
+	w, err := env.svc.BeginCommentCreate(context.Background(), env.member, issue, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.localComment(t, w, issue, env.member, content)
+	comment, err := db.New(env.svc.db).GetComment(context.Background(), w.CommentID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return comment
+}
+
+// A delete GitHub carried out whose local copy was not removed (the local
+// delete failed, or GitHub's answer was lost) is finished locally by the
+// polls through the delete path, marked as a synced write; a delete GitHub
+// never carried out is handed to a person and the comment stays.
+func TestWriteCommentDeleteHealsLocally(t *testing.T) {
+	cases := []struct {
+		name    string
+		fault   string
+		applied bool
+		heal    func(env *writeEnv, t *testing.T)
+		deleted bool
+	}{
+		{"local delete failed", "", true, func(env *writeEnv, t *testing.T) { env.tick(t); env.tick(t) }, true},
+		{"answer lost after GitHub deleted", "timeout", true, func(env *writeEnv, t *testing.T) { env.pastGrace(t) }, true},
+		{"GitHub never deleted", "500", false, func(env *writeEnv, t *testing.T) { env.pastGrace(t) }, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newWriteEnv(t)
+			deleter := &fakeDeleter{env: env}
+			env.svc.SetCommentDeleter(deleter)
+			ctx := context.Background()
+			issue := env.importedIssue(t, 1)
+			comment := env.postedComment(t, issue, "to be deleted")
+
+			if tc.fault != "" {
+				env.api.failNext(tc.fault, tc.applied)
+				w, err := env.svc.BeginCommentDelete(ctx, env.member, comment)
+				if w != nil {
+					t.Fatal("write returned for a failed request")
+				}
+				wantWriteError(t, err, WriteUnknown)
+			} else {
+				w, err := env.svc.BeginCommentDelete(ctx, env.member, comment)
+				if err != nil || w == nil {
+					t.Fatalf("begin delete: %v %v", w, err)
+				}
+				w.Finish(ctx, errors.New("database unavailable"))
+			}
+			if n := len(env.comments(t, issue)); n != 1 {
+				t.Fatalf("local comments right after the delete = %d, want 1", n)
+			}
+
+			tc.heal(env, t)
+			got := env.comments(t, issue)
+			intent := env.lastIntent(t)
+			if tc.deleted {
+				if len(got) != 0 || intent.state != intentApplied || deleter.calls != 1 || !deleter.synced[0] {
+					t.Fatalf("healed delete: comments %+v, intent %+v, deleter calls %d synced %v", got, intent, deleter.calls, deleter.synced)
+				}
+				if n := env.count(t, `SELECT count(*) FROM comment_external WHERE comment_id = $1`, comment.ID); n != 0 {
+					t.Fatalf("comment_external kept after the healed delete")
+				}
+			} else if len(got) != 1 || deleter.calls != 0 || intent.state != intentUnknown || !strings.HasPrefix(intent.errText, needsConfirmation) {
+				t.Fatalf("unapplied delete: comments %+v, intent %+v, deleter calls %d", got, intent, deleter.calls)
+			}
+			if n := env.api.sentCount("DELETE /repositories/42/issues/comments/7001"); n != 1 {
+				t.Fatalf("DELETEs = %d, want 1 (never retried)", n)
+			}
+		})
+	}
+}
+
+// A change made against a version that is no longer current is refused
+// before anything reaches GitHub, so a later poll cannot copy it over the
+// newer text.
+func TestWriteStaleChangesAreRefusedBeforeSending(t *testing.T) {
+	env := newWriteEnv(t)
+	ctx := context.Background()
+	issue := env.importedIssue(t, 1)
+	comment := env.postedComment(t, issue, "B")
+	before := env.api.sentCount("PATCH /repositories/42/issues/comments/7001")
+
+	staleBase, stale := "A", int64(comment.Revision-1)
+	for _, base := range []CommentBase{{Content: &staleBase}, {ExpectedRevision: &stale}} {
+		w, err := env.svc.BeginCommentUpdate(ctx, env.member, comment, "C", base)
+		var staleErr *StaleWriteError
+		if w != nil || !errors.As(err, &staleErr) {
+			t.Fatalf("stale comment edit %+v: %v %v", base, w, err)
+		}
+	}
+	// A base that matches, or already holds the new text, is not stale.
+	current := "B"
+	w, err := env.svc.BeginCommentUpdate(ctx, env.member, comment, "C", CommentBase{Content: &current})
+	if err != nil || w == nil {
+		t.Fatalf("current base refused: %v %v", w, err)
+	}
+	w.Finish(ctx, nil)
+	if n := env.api.sentCount("PATCH /repositories/42/issues/comments/7001"); n != before+1 {
+		t.Fatalf("comment PATCHes = %d, want only the current edit", n-before)
+	}
+
+	title, oldTitle, oldRevision := "New", "Old title", issue.Revision-1
+	for _, change := range []IssueChange{{Title: &title, TitleBase: &oldTitle}, {Title: &title, ExpectedRevision: &oldRevision}} {
+		w, err := env.svc.BeginIssueUpdate(ctx, env.member, issue, change)
+		var staleErr *StaleWriteError
+		if w != nil || !errors.As(err, &staleErr) {
+			t.Fatalf("stale issue update %+v: %v %v", change, w, err)
+		}
+	}
+	if n := env.api.sentCount("PATCH /repositories/42/issues/1"); n != 0 {
+		t.Fatalf("stale issue updates sent %d PATCHes", n)
+	}
+	if n := env.count(t, `SELECT count(*) FROM github_write_intent WHERE workspace_id = $1 AND op = 'update_issue'`, env.ws); n != 0 {
+		t.Fatalf("stale issue updates left %d intents", n)
+	}
+}
+
+// A poll that meets a comment while a write from Multica to it is in flight
+// waits for the write's local copy, then finds nothing to change.
+func TestWritePollWaitsForInFlightWrite(t *testing.T) {
+	env := newWriteEnv(t)
+	ctx := context.Background()
+	issue := env.importedIssue(t, 1)
+	comment := env.postedComment(t, issue, "B")
+
+	w, err := env.svc.BeginCommentUpdate(ctx, env.member, comment, "C", CommentBase{})
+	if err != nil || w == nil {
+		t.Fatalf("begin edit: %v %v", w, err)
+	}
+	*env.now = env.now.Add(pollInterval)
+	env.api.setNow(*env.now)
+	done := make(chan error, 1)
+	go func() {
+		_, err := env.svc.PollOnce(ctx)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("poll ran past an in-flight write to the comment: %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if _, err := db.New(env.svc.db).UpdateComment(ctx, db.UpdateCommentParams{ID: comment.ID, Content: "C"}); err != nil {
+		t.Fatal(err)
+	}
+	w.Finish(ctx, nil)
+	if err := <-done; err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if got := env.comments(t, issue); len(got) != 1 || got[0].content != "C" {
+		t.Fatalf("comments after the write and the poll = %+v", got)
+	}
 }

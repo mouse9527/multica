@@ -277,3 +277,95 @@ func TestGitHubIssueWritesOffMatchesUpstream(t *testing.T) {
 		t.Fatalf("issue created while off = %v", issue)
 	}
 }
+
+// A stale edit is refused with the usual 409 before anything is sent to
+// GitHub, so a later poll cannot copy it over the newer text. This is the
+// content_base case: the comment is B, the client edits from A to C.
+func TestGitHubStaleEditsSendNothing(t *testing.T) {
+	h, fake, issueID := newGitHubWriteHandler(t)
+	var created map[string]any
+	testutil.Call(t, h.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
+		"content": "A",
+	}), "id", issueID)).Want(http.StatusCreated).JSON(&created)
+	commentID := created["id"].(string)
+	editComment := func(body map[string]any) *testutil.Response {
+		return testutil.Call(t, h.UpdateComment, withURLParam(newRequest(http.MethodPut, "/api/comments/"+commentID, body), "commentId", commentID))
+	}
+	editComment(map[string]any{"content": "B"}).Want(http.StatusOK)
+	fake.take()
+
+	editComment(map[string]any{"content": "C", "content_base": "A"}).Want(http.StatusConflict)
+	editComment(map[string]any{"content": "C", "expected_revision": 1}).Want(http.StatusConflict)
+	var content string
+	dbfx.QueryRow(t, `SELECT content FROM comment WHERE id = $1`, commentID).Scan(&content)
+	if requests, _ := fake.take(); len(requests) != 0 || content != "B" {
+		t.Fatalf("stale comment edits sent %v, local content %q", requests, content)
+	}
+
+	updateIssue := func(body map[string]any) *testutil.Response {
+		return testutil.Call(t, h.UpdateIssue, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, body), "id", issueID))
+	}
+	updateIssue(map[string]any{"title": "B"}).Want(http.StatusOK)
+	fake.take()
+	updateIssue(map[string]any{"title": "C", "title_base": "A"}).Want(http.StatusConflict)
+	updateIssue(map[string]any{"title": "C", "expected_revision": 1}).Want(http.StatusConflict)
+	var title string
+	dbfx.QueryRow(t, `SELECT title FROM issue WHERE id = $1`, issueID).Scan(&title)
+	if requests, _ := fake.take(); len(requests) != 0 || title != "B" {
+		t.Fatalf("stale issue updates sent %v, local title %q", requests, title)
+	}
+
+	// The reconciler's delete of a comment GitHub already deleted runs the
+	// delete path without sending anything to GitHub.
+	comment, err := testHandler.Queries.GetComment(context.Background(), parseUUID(commentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.DeleteGitHubComment(context.Background(), parseUUID(testUserID), comment); err != nil {
+		t.Fatalf("delete github comment: %v", err)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE id = $1 AND deleted_at IS NULL`, commentID); n != 0 {
+		t.Fatalf("comment still live after the healed delete")
+	}
+	if requests, _ := fake.take(); len(requests) != 0 {
+		t.Fatalf("healed delete sent %v", requests)
+	}
+	// Already gone counts as deleted.
+	if err := h.DeleteGitHubComment(context.Background(), parseUUID(testUserID), comment); err != nil {
+		t.Fatalf("second delete: %v", err)
+	}
+}
+
+// A create the local checks refuse (here the active-duplicate guard) never
+// reaches GitHub: the request goes out only from inside the create
+// transaction, after those checks.
+func TestGitHubCreateRefusedLocallySendsNothing(t *testing.T) {
+	h, fake, _ := newGitHubWriteHandler(t)
+	create := func() *testutil.Response {
+		return testutil.Call(t, h.CreateIssue, newRequest(http.MethodPost, "/api/issues", map[string]any{
+			"title": "Opened twice", "repo": "acme/widgets", "status": "backlog",
+		}))
+	}
+	var first map[string]any
+	create().Want(http.StatusCreated).JSON(&first)
+	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, first["id"]) })
+	fake.take()
+
+	var dup map[string]any
+	create().Want(http.StatusConflict).JSON(&dup)
+	if dup["code"] != "active_duplicate_issue" {
+		t.Fatalf("duplicate create = %v", dup)
+	}
+	if requests, _ := fake.take(); len(requests) != 0 {
+		t.Fatalf("refused create sent %v", requests)
+	}
+
+	// GitHub refuses: the local create rolls back.
+	fake.fail(http.StatusUnprocessableEntity)
+	testutil.Call(t, h.CreateIssue, newRequest(http.MethodPost, "/api/issues", map[string]any{
+		"title": "Refused by GitHub", "repo": "acme/widgets", "status": "backlog",
+	})).Want(http.StatusUnprocessableEntity)
+	if n := dbfx.Count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1 AND title = 'Refused by GitHub'`, testWorkspaceID); n != 0 {
+		t.Fatalf("a create GitHub refused left %d local issues", n)
+	}
+}

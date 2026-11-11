@@ -3547,8 +3547,8 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		return out
 	}
 
-	// GitHub-native issues (fork): an issue for a GitHub repository is opened there first.
-	ghWrite, ok := h.beginGitHubIssueCreate(w, r, wsUUID, req, status, workflowProjectID)
+	// GitHub-native issues (fork): an issue for a GitHub repository is opened there, from InTx.
+	ghWrite, ok := h.beginGitHubIssueCreate(w, r, wsUUID, req)
 	if !ok {
 		return
 	}
@@ -3600,6 +3600,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	ghWrite.Abandon(r.Context(), err) // GitHub-native issues (fork)
+	if writeGitHubCreateFailure(w, r, err) {
+		return
+	}
 
 	if errors.Is(err, service.ErrActiveDuplicate) {
 		dup := *res.DuplicateIssue
@@ -4164,11 +4167,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// GitHub-native issues (fork): GitHub takes title, description and status first.
-	ghWrite, err := h.beginGitHubIssueUpdate(r, prevIssue, params)
+	ghWrite, err := h.beginGitHubIssueUpdate(r, prevIssue, &params, req.TitleBase)
 	if err != nil {
-		writeGitHubWriteError(w, r, err)
+		writeGitHubWriteError(w, r, err, "issue", prevIssue.ID)
 		return
 	}
+	defer ghWrite.Close(r.Context())
 
 	// The agent this write hands the issue to gets the change as its own run,
 	// not also through its event wakeups.
@@ -5012,7 +5016,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// GitHub-native issues (fork): an issue GitHub refuses is skipped like the other per-item guards.
-		ghWrite, err := h.beginGitHubIssueUpdate(r, prevIssue, params)
+		ghWrite, err := h.beginGitHubIssueUpdate(r, prevIssue, &params, nil)
 		if err != nil {
 			slog.Warn("batch update issue: github write failed", "issue_id", issueID, "error", err)
 			continue

@@ -326,6 +326,16 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 - 项目移动、工作流切换时的状态重映射（`MoveTarget`）不经过本节的拒绝钩子。
 - 多个状态标签时不判定哪个最新（需要读 GitHub 的标签事件时间线，多一次请求，本期不做），固定取最后一个。
 
+### 对上游文件的钩子（本节）
+
+| 文件 | 改动 |
+|---|---|
+| `server/internal/handler/handler.go` | `Handler` 增加字段 `GitHubStatuses` |
+| `server/internal/handler/issue.go` | `UpdateIssue` 在工作流校验之后调 `rejectUnmappedGitHubStatus`（3 行）；`BatchUpdateIssues` 同处调 `gitHubStatusRejected`（3 行） |
+| `server/cmd/server/router.go` | 功能开启时设置 `h.GitHubStatuses` 并 `SetStatusWriter(h)` |
+
+钩子实现与 `WriteGitHubStatus` 在 fork 自己的 `server/internal/handler/githubissues_hook.go`。
+
 ## 双写、意图记录与署名
 
 Multica 里对 github issue 的写入先写 GitHub，GitHub 接受后才落库（Owner 的决定，见 #7、#9）。代码在 `write.go`、`write_issue.go`、`write_comment.go`、`marker.go`、`adopt.go`、`reconcile.go`，所有请求经 `RepoClient`。
@@ -350,6 +360,12 @@ Multica 里对 github issue 的写入先写 GitHub，GitHub 接受后才落库�
 
 每次写入：校验 → 插入一条 `github_write_intent`（`pending`）→ 发请求 → 按结果处理 → 落库 → 回填。
 
+**先校验完再发请求。** 本地会拒绝的写入不能先到 GitHub，否则下一轮轮询会以 GitHub 为准把被拒绝的修改抄回本地：
+
+- 改 issue、改/删评论：发请求前，对这一条目标拿一把 advisory 锁（issue 用与轮询相同的 `githubissues:issue:<工作区>:<仓库 id>:<编号>`，评论用 `githubissues:comment:<评论 id>`），锁放在一个单独的、什么也不写的事务里，一直持有到本地写完（`Finish`，或请求提前结束时 `Close`）。锁内重读当前行，校验 `expected_revision`、`title_base`（issue）、`content_base`（评论），不符就返回与本地相同的 409（`writeRevisionConflict` / `writeEditConflict`），什么都不发。轮询写同一条目标（同步 issue、跟随或认领评论）时拿同一把锁，所以校验与本地写入之间不会插进别的写入者。
+- 标题、正文、评论内容只有上面这些写入者会改，所以文本校验在锁内成立到落库。版本号还会被别的写入（例如改优先级、评论的解决/取消解决）推进；校验通过、GitHub 接受后，这次写入就算在那一刻生效，本地落库不再按版本号拒绝（清掉 `ExpectedRevision`），只改请求里的字段，其他字段保持别人写入的值。
+- 新建 issue：`BeginIssueCreate` 只解析仓库、不发请求；请求在 `IssueCreateOpts.InTx` 里发出，这时本地的全部校验（重复 issue 检查、标签、项目、父 issue、自定义状态、工作流）都已在创建事务里通过。GitHub 拒绝或结果未知时返回错误，整个本地创建回滚。代价：这次请求期间，事务持有工作区编号计数器的行锁，同一工作区的其他新建要排队等它（最长 15 秒超时，通常不到 1 秒）。
+
 | 情形 | 意图 | 对调用方 | 之后 |
 |---|---|---|---|
 | GitHub 2xx | `github_ok`，记下 GitHub id | 继续落库，成功后 `applied`，同时写 `issue_external` / `comment_external` | — |
@@ -357,13 +373,14 @@ Multica 里对 github issue 的写入先写 GitHub，GitHub 接受后才落库�
 | 限流（429、带限流信号的 403） | `failed` | 429 `github_rate_limited`，带 `Retry-After` | 调用方稍后自己重试 |
 | 令牌不可用、仓库不在白名单 | 不建意图，或 `failed` | 503 `github_unavailable`；没有发请求 | 无 |
 | 超时、断连、5xx（结果未知） | `unknown` | 502 `github_write_unconfirmed`；本地不变 | **不自动重试**，见下 |
-| GitHub 成功、落库失败 | 保持 `github_ok`，`error` 记原因 | 原有的落库错误 | 下一轮轮询自愈，不重复 |
+| GitHub 成功、落库失败 | 保持 `github_ok`，`error` 记原因 | 原有的落库错误 | 满一个轮询周期后的下一轮自愈，不重复（见下） |
 
 - 请求用 `context.WithoutCancel` 发出：调用方断开后，已经发出的请求的结果照样记下。
 - 新评论的本地 id 在发请求前就定好，存在意图的 `comment_id` 里，本地插入用同一个 id。所以轮询自愈出来的评论和处理器写的是同一行，不会出现两份。
-- 新 issue 的 `issue_external` 与本地 issue 在同一个事务里写（`IssueCreateOpts.InTx`），并和轮询用同一个 advisory lock，所以本地 issue 不会缺 `issue_external`，轮询也不会把它当成别人的 issue 再导入一次。轮询抢先自愈时，处理器的事务回滚（这时返回 500，但 issue 已经由轮询导入）。
+- 新 issue 的 `issue_external` 与本地 issue 在同一个事务里写（`InTx`），并和轮询用同一个 advisory lock，所以本地 issue 不会缺 `issue_external`，轮询也不会把它当成别人的 issue 再导入一次。GitHub 已建好、但事务提交失败（或轮询抢先自愈，这时返回 500）时，由轮询按标记导入。
 - 改 issue 时，GitHub 返回的 `updated_at` 先写进 `issue_external.external_updated_at`，再落库：写之前读到的旧快照不会把本地改回去。`state` 等落库成功后才更新，所以落库失败时，下一轮轮询仍能看出状态变化并自愈。
-- 落库在 GitHub 成功之后，所以本地校验（版本冲突、重复 issue 检查、标签不存在等）若在落库时才失败，GitHub 上已经有了这次修改；按「GitHub 成功、落库失败」处理，下一轮轮询以 GitHub 为准改回本地。评论的附件不写到 GitHub。
+- 「GitHub 成功、落库失败」的自愈：新 issue、新评论、改标题正文状态、改评论由轮询读流时按 GitHub 补齐；**删评论**由协调器补：评论列表不会返回已删除的评论，所以协调器在 GitHub 接受删除满一个周期后，经 handler 的删除路径（`DeleteGitHubComment`：进程内调用 `DeleteComment`，以同步账号或最早的所有者身份，标记为同步写入、不再发请求）删掉本地评论，清掉 `comment_external`，意图置为 `applied`。
+- 评论的附件不写到 GitHub。
 
 ### 结果未知（`unknown`）
 
@@ -374,7 +391,7 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
   - 新建 issue：在写入时间（减 2 分钟）之后更新的 issue 里按标记找，最多 3 页；新建评论：在该 issue 的评论里找。找到就按认领处理。
   - 改 issue：读当前 issue，按意图里记下的字段重新算摘要（`payload_digest` 是「字段名列表:内容哈希」），一致就是成功。
   - 改评论：读这条评论，正文标记是这次的 op 就是成功。
-  - 删评论：读这条评论，404 说明已删（本地评论保留，要在 Multica 里再删一次；GitHub 上已不存在时，删除视为成功）。
+  - 删评论：读这条评论，404/410 说明已删，按上面「删评论」的自愈补删本地评论；GitHub 上还在就交给人确认（本地评论也还在，两边一致）。
 - 找不到：意图保持 `unknown`，`error` 写成 `needs_confirmation: <原因>`，打一条 Warn 日志（带意图 id、仓库、编号）。之后不再查、不再重试，由人去 GitHub 上看并决定是否重新提交。目前没有界面展示，查 `github_write_intent` 表即可。
 
 ### 标记与署名
@@ -418,19 +435,13 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
 
 | 文件 | 改动 |
 |---|---|
-| `server/internal/handler/handler.go` | `Handler` 增加字段 `GitHubStatuses` |
-| `server/internal/handler/issue.go` | `UpdateIssue` 在工作流校验之后调 `rejectUnmappedGitHubStatus`（3 行）；`BatchUpdateIssues` 同处调 `gitHubStatusRejected`（3 行） |
-| `server/cmd/server/router.go` | 功能开启时设置 `h.GitHubStatuses` 并 `SetStatusWriter(h)` |
-
-钩子实现与 `WriteGitHubStatus` 在 fork 自己的 `server/internal/handler/githubissues_hook.go`。
-
-| `server/internal/handler/issue.go` | `CreateIssueRequest.Repo`；`CreateIssue` 先开 GitHub issue、`InTx`、失败时 `Abandon`；`UpdateIssue`、`BatchUpdateIssues` 在状态映射的拒绝钩子之后、落库前 `beginGitHubIssueUpdate`，落库后 `Finish`（批量里被 GitHub 拒绝的 issue 跳过，与其他逐项校验一致） |
-| `server/internal/handler/comment.go` | `CreateComment` 先发评论并用预定 id 插入；`UpdateComment`、`DeleteComment` 先改/删 GitHub 上的评论；各自落库后 `Finish` |
+| `server/internal/handler/issue.go` | `CreateIssueRequest.Repo`；`CreateIssue` 准备（`beginGitHubIssueCreate`）、`InTx` 里发请求、之后 `Abandon` 与 `writeGitHubCreateFailure`；`UpdateIssue`、`BatchUpdateIssues` 在状态映射的拒绝钩子之后、落库前 `beginGitHubIssueUpdate`（GitHub 接受后清掉 `params.ExpectedRevision`），落库后 `Finish`，单个更新另 `defer Close`（批量里被 GitHub 拒绝的 issue 跳过，与其他逐项校验一致） |
+| `server/internal/handler/comment.go` | `CreateComment` 先发评论并用预定 id 插入；`UpdateComment`、`DeleteComment` 先改/删 GitHub 上的评论（编辑带上 `content_base`、`expected_revision`，GitHub 接受后本地不再按版本号拒绝）；各自落库后 `Finish`，并 `defer Close` |
 | `server/internal/handler/handler.go` | `Handler.GitHubIssues` 字段 |
-| `server/internal/handler/githubissues_hook.go` | 钩子实现与错误响应 |
+| `server/internal/handler/githubissues_hook.go` | 钩子实现、错误响应、`DeleteGitHubComment`（协调器补删本地评论用） |
 | `server/internal/service/issue.go` | `IssueCreateOpts.InTx`：提交前在创建事务里执行 |
-| `server/cmd/server/router.go` | 功能开启时设置 `Handler.GitHubIssues` |
-| `server/pkg/db/queries/githubissues_write.sql` | 新文件：带 id 插入意图、按仓库列出待核对的意图、推进 `external_updated_at`（只写 fork 表） |
+| `server/cmd/server/router.go` | 功能开启时设置 `Handler.GitHubIssues` 并 `SetCommentDeleter(h)` |
+| `server/pkg/db/queries/githubissues_write.sql` | 新文件：带 id 插入意图、按仓库列出待核对的意图（`github_ok` 满一个周期、`pending`/`unknown` 满宽限期）、推进 `external_updated_at`（只写 fork 表） |
 
 ### 已知限制
 

@@ -1847,6 +1847,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	defer ghWrite.Close(r.Context())
 
 	createParams := db.CreateCommentParams{
 		ID:           dbid.NewV7(),
@@ -3442,10 +3443,11 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	// NOTE: See CreateComment — Markdown is sanitized at render/edit time, not here.
 
 	// GitHub-native issues (fork): a comment Multica posted on GitHub is edited there first.
-	ghWrite, ok := h.beginGitHubCommentChange(w, r, existing, &req.Content)
+	ghWrite, ok := h.beginGitHubCommentChange(w, r, existing, &req.Content, req.ContentBase, req.ExpectedRevision)
 	if !ok {
 		return
 	}
+	defer ghWrite.Close(r.Context())
 
 	oldContent := existing.Content
 	// Preserve the existing authority lineage by default — this path is taken only
@@ -3501,7 +3503,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	if req.ContentBase != nil {
 		updateParams.ContentBase = pgtype.Text{String: *req.ContentBase, Valid: true}
 	}
-	if req.ExpectedRevision != nil {
+	if req.ExpectedRevision != nil && ghWrite == nil { // GitHub-native issues (fork): met when GitHub accepted
 		updateParams.ExpectedRevision = pgtype.Int8{Int64: *req.ExpectedRevision, Valid: true}
 	}
 	var comment db.Comment
@@ -3690,10 +3692,11 @@ func (h *Handler) DeleteComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// GitHub-native issues (fork): a comment Multica posted on GitHub is deleted there first.
-	ghWrite, ok := h.beginGitHubCommentChange(w, r, comment, nil)
+	ghWrite, ok := h.beginGitHubCommentChange(w, r, comment, nil, nil, nil)
 	if !ok {
 		return
 	}
+	defer ghWrite.Close(r.Context())
 
 	// Cancel any active task whose planned batch contains this comment so the
 	// agent does not run with the now-deleted content already embedded. Must

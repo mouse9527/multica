@@ -66,6 +66,9 @@ type Service struct {
 	pollResume resumeStore
 	// statusWriter applies status changes from GitHub (SetStatusWriter).
 	statusWriter StatusWriter
+	// commentDeleter removes the local copy of a comment deleted on GitHub
+	// (SetCommentDeleter).
+	commentDeleter CommentDeleter
 	// pollLimits overrides the page size and budget in tests; zero values
 	// keep the defaults.
 	pollLimits struct{ perPage, pages int }

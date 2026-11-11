@@ -182,9 +182,6 @@ func (s *Service) syncWrittenComment(ctx context.Context, repo *Repo, issueID pg
 // Multica. GitHub is the only writer, so its text wins; the marker of the
 // write that produced it is dropped.
 func (s *Service) refreshOwnComment(ctx context.Context, repo *Repo, comment db.Comment, ext db.CommentExternal, c githubComment) (bool, error) {
-	if comment.DeletedAt.Valid || c.UpdatedAt.Before(ext.ExternalUpdatedAt.Time) {
-		return false, nil
-	}
 	content := NormalizeGitHubText(c.Body)
 	if _, ok := s.trustedIntent(ctx, db.New(s.db), repo, c.Body, c.User.Login, c.ID, 0, opCreateComment, opUpdateComment); ok {
 		content = NormalizeGitHubText(stripMarker(c.Body))
@@ -195,6 +192,28 @@ func (s *Service) refreshOwnComment(ctx context.Context, repo *Repo, comment db.
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(tx)
+	// Waits out a write from Multica to this comment, then judges the
+	// snapshot against what that write left (writeGuard).
+	if err := q.LockIssueDuplicateKey(ctx, commentLockKey(comment.ID)); err != nil {
+		return false, err
+	}
+	if comment, err = q.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{ID: comment.ID, WorkspaceID: comment.WorkspaceID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if ext, err = q.LockCommentExternalByExternalID(ctx, db.LockCommentExternalByExternalIDParams{
+		WorkspaceID: comment.WorkspaceID, ExternalID: c.ID,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if comment.DeletedAt.Valid || ext.CommentID != comment.ID || c.UpdatedAt.Before(ext.ExternalUpdatedAt.Time) {
+		return false, nil
+	}
 	changed := false
 	var issueRevision int64
 	if content != comment.Content {
@@ -238,6 +257,9 @@ func (s *Service) adoptComment(ctx context.Context, repo *Repo, issueID pgtype.U
 	commentID := intent.CommentID
 	if !commentID.Valid {
 		commentID = dbid.NewV7()
+	}
+	if err := q.LockIssueDuplicateKey(ctx, commentLockKey(commentID)); err != nil {
+		return false, err
 	}
 	var comment db.Comment
 	var issueRevision int64

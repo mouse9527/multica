@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -123,6 +124,85 @@ type Write struct {
 	issue *githubIssue
 	// comment is GitHub's answer for comment writes.
 	comment *githubComment
+	// guard holds the target's lock until the local write is done; nil for
+	// creates, whose target does not exist yet.
+	guard *writeGuard
+	// done is set once the local outcome has been recorded.
+	done bool
+	// actor is who asked for a create; InTx sends it.
+	actor Actor
+}
+
+// StaleWriteError means the change was made against a version of the issue or
+// comment that is no longer current: its expected revision or its text base
+// does not match. It is checked under the target's lock before anything is
+// sent, so a refused change never reaches GitHub.
+type StaleWriteError struct {
+	// Revision is true for an expected_revision mismatch, false for a text
+	// base (title_base, content_base) mismatch.
+	Revision bool
+	Expected int64
+	Current  int64
+}
+
+func (e *StaleWriteError) Error() string {
+	if e.Revision {
+		return "githubissues: expected revision " + strconv.FormatInt(e.Expected, 10) + ", current " + strconv.FormatInt(e.Current, 10)
+	}
+	return "githubissues: the text was edited since it was read"
+}
+
+// writeGuard serializes every writer of one GitHub item: the write path from
+// before its stale-check until its local write is done, and the poller while
+// it stores the same item (issueLockKey, commentLockKey). It is a
+// transaction-scoped advisory lock in a transaction of its own that writes
+// nothing. Without it a change checked against one version could reach GitHub
+// after another writer changed the item, and the poll would then copy the
+// stale change over the newer one.
+type writeGuard struct {
+	tx pgx.Tx
+	q  *db.Queries
+}
+
+func (s *Service) lockTarget(ctx context.Context, key string) (*writeGuard, error) {
+	// The transaction outlives a caller that hangs up mid-write; Close ends it.
+	tx, err := s.db.Begin(context.WithoutCancel(ctx))
+	if err != nil {
+		return nil, err
+	}
+	q := db.New(tx)
+	if err := q.LockIssueDuplicateKey(ctx, key); err != nil {
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		return nil, err
+	}
+	return &writeGuard{tx: tx, q: q}, nil
+}
+
+func (g *writeGuard) release() {
+	if g != nil {
+		_ = g.tx.Rollback(context.Background())
+	}
+}
+
+// Close releases the target's lock. If the local outcome was never recorded
+// (the request ended between GitHub's acceptance and the local write), the
+// intent stays github_ok and the next poll heals the local copy. Handlers
+// defer it right after a Begin* call.
+func (w *Write) Close(ctx context.Context) {
+	if w == nil {
+		return
+	}
+	if !w.done {
+		w.localFailed(ctx, errors.New("the request ended before the local write"))
+	}
+	w.guard.release()
+	w.guard = nil
+}
+
+// WithSyncedWrite marks ctx as a write that brings Multica in line with
+// GitHub, which the write path never sends back to GitHub (IsSyncedWrite).
+func WithSyncedWrite(ctx context.Context) context.Context {
+	return context.WithValue(ctx, syncedWriteKey{}, true)
 }
 
 // CommentID is the id the new local comment must be created with, chosen
@@ -259,6 +339,7 @@ func (s *Service) settleIntent(ctx context.Context, intent db.GithubWriteIntent,
 // localFailed notes that GitHub has the write but the local copy failed. The
 // intent stays github_ok; the next poll heals the local copy from GitHub.
 func (w *Write) localFailed(ctx context.Context, cause error) {
+	w.done = true
 	w.svc.logger.Warn("github write accepted but local write failed; the next poll heals it",
 		"intent_id", w.intent.ID, "op", w.intent.Op, "repo", w.repo, "error", cause)
 	w.svc.settleIntent(context.WithoutCancel(ctx), w.intent, intentGitHubOK, "local write failed: "+cause.Error())
