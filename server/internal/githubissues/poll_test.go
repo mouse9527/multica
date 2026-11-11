@@ -39,6 +39,8 @@ type fakeIssuesAPI struct {
 	requests []string
 	// throttle, when set, answers every list request with 429.
 	throttle string
+	// writes is the single-item API of write_fake_test.go.
+	writes fakeWrites
 }
 
 func newFakeIssuesAPI(t *testing.T) *fakeIssuesAPI {
@@ -81,6 +83,9 @@ func (f *fakeIssuesAPI) seen() []string {
 func (f *fakeIssuesAPI) serve(w http.ResponseWriter, r *http.Request) {
 	if got := r.Header.Get("Authorization"); got != "Bearer "+fakeToken {
 		f.t.Errorf("Authorization = %q", got)
+	}
+	if f.serveItem(w, r) {
+		return
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()

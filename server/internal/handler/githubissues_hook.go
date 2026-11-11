@@ -11,10 +11,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/githubissues"
+	"github.com/multica-ai/multica/server/internal/logger"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -155,4 +157,188 @@ func (c *capturedResponse) WriteHeader(code int) {
 func (c *capturedResponse) Write(p []byte) (int, error) {
 	c.wroteHeader = true
 	return c.body.Write(p)
+}
+
+// GitHub issues are written through to GitHub (docs/github-issues.md, "双写"):
+// each hook below sends the GitHub part of a write before the handler writes
+// the local copy, and reports the local outcome afterwards. With the feature
+// off GitHubIssues is nil, every hook returns nil, and the handlers behave as
+// upstream.
+
+// gitHubActor is who the request writes as, with an agent's name for the
+// signature line on GitHub.
+func (h *Handler) gitHubActor(r *http.Request, workspaceID pgtype.UUID) githubissues.Actor {
+	actorType, actorID := h.resolveActor(r, requestUserID(r), uuidToString(workspaceID))
+	actor := githubissues.Actor{Type: actorType, ID: parseUUIDOrZero(actorID)}
+	if actorType == "agent" {
+		if agent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+			ID: actor.ID, WorkspaceID: workspaceID,
+		}); err == nil {
+			actor.Name = agent.Name
+		}
+	}
+	return actor
+}
+
+// beginGitHubIssueUpdate sends the title, description and status of an issue
+// update to GitHub. params are the update as it will be written locally;
+// titleBase is the request's title_base. The preconditions (expected
+// revision, title base) are checked under the issue's lock before anything is
+// sent. Once GitHub has accepted, the expected revision has been met at that
+// point and is cleared from params: a later write to a field GitHub does not
+// hold must not turn an accepted change into a local 409.
+func (h *Handler) beginGitHubIssueUpdate(r *http.Request, prev db.Issue, params *db.UpdateIssueParams, titleBase *string) (*githubissues.Write, error) {
+	if h.GitHubIssues == nil {
+		return nil, nil
+	}
+	change := githubissues.IssueChange{ProjectID: params.ProjectID, TitleBase: titleBase}
+	if params.Title.Valid {
+		change.Title = &params.Title.String
+	}
+	if params.Description.Valid {
+		change.Description = &params.Description.String
+	}
+	if params.Status.Valid {
+		change.Status = &params.Status.String
+	}
+	if params.ExpectedRevision.Valid {
+		change.ExpectedRevision = &params.ExpectedRevision.Int64
+	}
+	write, err := h.GitHubIssues.BeginIssueUpdate(r.Context(), h.gitHubActor(r, prev.WorkspaceID), prev, change)
+	if write != nil {
+		params.ExpectedRevision = pgtype.Int8{}
+	}
+	return write, err
+}
+
+// beginGitHubIssueCreate prepares opening the issue on GitHub when the create
+// names a repository; the request itself goes out from InTx, after the local
+// checks. With the feature off the field is ignored, as upstream ignores
+// fields it does not know.
+func (h *Handler) beginGitHubIssueCreate(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID, req CreateIssueRequest) (*githubissues.Write, bool) {
+	if h.GitHubIssues == nil || req.Repo == nil {
+		return nil, true
+	}
+	write, err := h.GitHubIssues.BeginIssueCreate(r.Context(), workspaceID, h.gitHubActor(r, workspaceID), githubissues.NewIssue{Repo: *req.Repo})
+	if err != nil {
+		writeGitHubWriteError(w, r, err, "issue", pgtype.UUID{})
+		return nil, false
+	}
+	return write, true
+}
+
+// writeGitHubCreateFailure answers a create that GitHub refused or did not
+// confirm inside the create transaction, and reports whether it did. The
+// create was rolled back.
+func writeGitHubCreateFailure(w http.ResponseWriter, r *http.Request, err error) bool {
+	if err == nil || !githubissues.GitHubCreateError(err) {
+		return false
+	}
+	writeGitHubWriteError(w, r, err, "issue", pgtype.UUID{})
+	return true
+}
+
+// gitHubCreateInTx is the IssueCreateOpts.InTx of a create opened on GitHub.
+func gitHubCreateInTx(write *githubissues.Write) func(context.Context, *db.Queries, db.Issue) error {
+	if write == nil {
+		return nil
+	}
+	return write.InTx
+}
+
+// beginGitHubCommentCreate posts a new comment of a GitHub issue to GitHub.
+func (h *Handler) beginGitHubCommentCreate(w http.ResponseWriter, r *http.Request, issue db.Issue, content string) (*githubissues.Write, bool) {
+	if h.GitHubIssues == nil {
+		return nil, true
+	}
+	write, err := h.GitHubIssues.BeginCommentCreate(r.Context(), h.gitHubActor(r, issue.WorkspaceID), issue, content)
+	if err != nil {
+		writeGitHubWriteError(w, r, err, "comment", pgtype.UUID{})
+		return nil, false
+	}
+	return write, true
+}
+
+// beginGitHubCommentChange edits (content set) or deletes (content nil) a
+// comment that Multica posted on GitHub. contentBase and expectedRevision are
+// the edit's preconditions, checked under the comment's lock before anything
+// is sent.
+func (h *Handler) beginGitHubCommentChange(w http.ResponseWriter, r *http.Request, comment db.Comment, content, contentBase *string, expectedRevision *int64) (*githubissues.Write, bool) {
+	if h.GitHubIssues == nil {
+		return nil, true
+	}
+	actor := h.gitHubActor(r, comment.WorkspaceID)
+	var write *githubissues.Write
+	var err error
+	if content != nil {
+		write, err = h.GitHubIssues.BeginCommentUpdate(r.Context(), actor, comment, *content, githubissues.CommentBase{
+			Content: contentBase, ExpectedRevision: expectedRevision,
+		})
+	} else {
+		write, err = h.GitHubIssues.BeginCommentDelete(r.Context(), actor, comment)
+	}
+	if err != nil {
+		writeGitHubWriteError(w, r, err, "comment", comment.ID)
+		return nil, false
+	}
+	return write, true
+}
+
+// writeGitHubWriteError answers a write GitHub did not take, or a stale one
+// refused before it was sent, with the same 409 the local write would give.
+// Nothing was written locally.
+func writeGitHubWriteError(w http.ResponseWriter, r *http.Request, err error, resourceType string, resourceID pgtype.UUID) {
+	var stale *githubissues.StaleWriteError
+	if errors.As(err, &stale) {
+		if stale.Revision {
+			writeRevisionConflict(w, resourceType, resourceID, stale.Expected, stale.Current)
+		} else {
+			writeEditConflict(w, resourceType, resourceID)
+		}
+		return
+	}
+	var unmapped *githubissues.UnmappedStatusError
+	if errors.As(err, &unmapped) {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": unmapped.Error(), "code": "github_status_unmapped", "allowed_statuses": unmapped.Mappable,
+		})
+		return
+	}
+	var writeErr *githubissues.WriteError
+	if !errors.As(err, &writeErr) {
+		slog.Warn("github write failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to write to GitHub")
+		return
+	}
+	status, body, retryAfter := writeErr.HTTPResponse()
+	if retryAfter != "" {
+		w.Header().Set("Retry-After", retryAfter)
+	}
+	writeJSON(w, status, body)
+}
+
+// DeleteGitHubComment removes the local copy of a comment GitHub no longer
+// has, by running DeleteComment as the member userID, so tasks, events and
+// thread tombstones are handled as for any delete. The context is marked as a
+// synced write, so nothing is sent to GitHub. A comment already gone counts as
+// deleted.
+func (h *Handler) DeleteGitHubComment(ctx context.Context, userID pgtype.UUID, comment db.Comment) error {
+	ctx = githubissues.WithSyncedWrite(ctx)
+	id := uuidToString(comment.ID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, "/api/comments/"+id, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-User-ID", uuidToString(userID))
+	req.Header.Set("X-Workspace-ID", uuidToString(comment.WorkspaceID))
+	route := chi.NewRouteContext()
+	route.URLParams.Add("commentId", id)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, route))
+
+	res := &capturedResponse{header: http.Header{}, code: http.StatusOK}
+	h.DeleteComment(res, req)
+	if res.code < http.StatusBadRequest || res.code == http.StatusNotFound {
+		return nil
+	}
+	return fmt.Errorf("delete comment: %d %s", res.code, strings.TrimSpace(res.body.String()))
 }

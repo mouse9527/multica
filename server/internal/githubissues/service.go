@@ -67,6 +67,9 @@ type Service struct {
 	pollResume resumeStore
 	// statusWriter applies status changes from GitHub (SetStatusWriter).
 	statusWriter StatusWriter
+	// commentDeleter removes the local copy of a comment deleted on GitHub
+	// (SetCommentDeleter).
+	commentDeleter CommentDeleter
 	// pullMirror stores polled pull requests; nil leaves them unread.
 	pullMirror PullRequestMirror
 	// pullsResume is where each pulls read that stopped early continues.

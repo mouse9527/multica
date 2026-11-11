@@ -1843,6 +1843,13 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// GitHub-native issues (fork): a comment on a GitHub issue is posted there first.
+	ghWrite, ok := h.beginGitHubCommentCreate(w, r, issue, req.Content)
+	if !ok {
+		return
+	}
+	defer ghWrite.Close(r.Context())
+
 	createParams := db.CreateCommentParams{
 		ID:           dbid.NewV7(),
 		IssueID:      issue.ID,
@@ -1856,6 +1863,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		// The author's "don't start" choices outlive this call: completion
 		// replay skips the agents it names.
 		SuppressedAgentIds: suppressAgentIDs,
+	}
+	if id := ghWrite.CommentID(); id.Valid {
+		createParams.ID = id // GitHub-native issues (fork)
 	}
 	var created db.CreateCommentRow
 	var err error
@@ -1914,6 +1924,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			return q.CreateComment(r.Context(), createParams)
 		})
 	}
+	ghWrite.Finish(r.Context(), err) // GitHub-native issues (fork)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The issue was deleted, possibly while this waited for its row lock.
 		writeError(w, http.StatusNotFound, "issue not found")
@@ -3432,6 +3443,13 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 
 	// NOTE: See CreateComment — Markdown is sanitized at render/edit time, not here.
 
+	// GitHub-native issues (fork): a comment Multica posted on GitHub is edited there first.
+	ghWrite, ok := h.beginGitHubCommentChange(w, r, existing, &req.Content, req.ContentBase, req.ExpectedRevision)
+	if !ok {
+		return
+	}
+	defer ghWrite.Close(r.Context())
+
 	oldContent := existing.Content
 	// Preserve the existing authority lineage by default — this path is taken only
 	// for an UNCHANGED edit (no re-trigger). When the content changes below, the
@@ -3486,7 +3504,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	if req.ContentBase != nil {
 		updateParams.ContentBase = pgtype.Text{String: *req.ContentBase, Valid: true}
 	}
-	if req.ExpectedRevision != nil {
+	if req.ExpectedRevision != nil && ghWrite == nil { // GitHub-native issues (fork): met when GitHub accepted
 		updateParams.ExpectedRevision = pgtype.Int8{Int64: *req.ExpectedRevision, Valid: true}
 	}
 	var comment db.Comment
@@ -3547,6 +3565,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 			issueRevision = updated.IssueRevision
 		}
 	}
+	ghWrite.Finish(r.Context(), err) // GitHub-native issues (fork)
 	if err != nil {
 		slog.Warn("update comment failed", append(logger.RequestAttrs(r), "error", err, "comment_id", commentId)...)
 		if triggerIssue != nil && !strictContentEdit {
@@ -3673,6 +3692,13 @@ func (h *Handler) DeleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GitHub-native issues (fork): a comment Multica posted on GitHub is deleted there first.
+	ghWrite, ok := h.beginGitHubCommentChange(w, r, comment, nil, nil, nil)
+	if !ok {
+		return
+	}
+	defer ghWrite.Close(r.Context())
+
 	// Cancel any active task whose planned batch contains this comment so the
 	// agent does not run with the now-deleted content already embedded. Must
 	// run before the delete: a removed row would nullify trigger_comment_id
@@ -3683,6 +3709,7 @@ func (h *Handler) DeleteComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	deleted, err := h.deleteComment(r.Context(), comment.ID, comment.WorkspaceID)
+	ghWrite.Finish(r.Context(), err) // GitHub-native issues (fork)
 	if err != nil {
 		slog.Warn("delete comment failed", append(logger.RequestAttrs(r), "error", err, "comment_id", commentId)...)
 		// Cancellation already committed but deletion did not. If the parent

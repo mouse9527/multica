@@ -258,6 +258,12 @@ func (s *Service) pollRepo(ctx context.Context, t pollTarget) (int, error) {
 		var n int
 		n, err = s.pollComments(ctx, repo, pin.CommentsCursor)
 		synced += n
+		if err == nil {
+			// Writes from Multica the streams just read past are settled
+			// here, so a write is only given up after a poll that would
+			// have seen it.
+			err = s.reconcileIntents(ctx, repo, t.projectID)
+		}
 		if err == nil && s.pullMirror != nil {
 			n, err = s.pollPulls(ctx, repo, pin.PullsCursor)
 			synced += n

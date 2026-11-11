@@ -259,8 +259,8 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 
 ### 已有 issue 的更新与乱序
 
-- GitHub 快照的 `updated_at` 早于已存的 `external_updated_at` 时什么都不改（乱序到达的旧快照不回滚）；不早于时更新标题、`issue_external` 的状态字段与仓库名。描述只在它带外部前缀（由轮询写入）时改写；从 Multica 写出去的 issue 的描述留给双写任务（#19）。
-- 评论的乱序与去重沿用 `SyncExternalComment`；从 Multica 写出去的评论（作者不是 `system`）不改写。
+- GitHub 快照的 `updated_at` 早于已存的 `external_updated_at` 时什么都不改（乱序到达的旧快照不回滚）；不早于时更新标题、`issue_external` 的状态字段与仓库名。描述带外部前缀（由轮询写入）时连前缀一起重建；从 Multica 写出去的 issue 的描述也跟随 GitHub，见「双写、意图记录与署名」。
+- 评论的乱序与去重沿用 `SyncExternalComment`；从 Multica 写出去的评论（作者不是 `system`）按「自愈与认领」处理。
 
 ### 限流
 
@@ -330,7 +330,7 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 
 - 已有 issue 的状态变化在 issue 事务提交后，由 `StatusWriter.WriteGitHubStatus` 执行。它的实现是 handler 的 `WriteGitHubStatus`：在进程内构造一个 `PUT /api/issues/{id}` 请求、直接调用 `UpdateIssue`，所以和人在 Multica 里改状态是同一条路径：项目工作流校验、进入交接步时改派给步骤处理人并启动运行、`issue:updated` 事件与活动记录、子任务规则。
 - 以谁的身份：同步账号是成员时用它；同步账号是智能体时用工作区最早的所有者（智能体只能在自己的运行里写状态）；同步账号配置了但不可用时报错，不悄悄换人。
-- 写入请求的 context 带标记，`githubissues.IsSyncedWrite(ctx)` 为真，双写不应把这次变化再写回 GitHub。
+- 写入请求的 context 带标记，`githubissues.IsSyncedWrite(ctx)` 为真，双写据此跳过，不把这次变化再写回 GitHub。
 - `UpdateIssue` 拒绝（4xx，例如工作流不含该状态）：记告警，不重试（重试结果一样）。其他失败（5xx、409 写入竞争、数据库错误）：这一项失败，流停在这里，下个周期重读这个 issue 再试。
 - 没有接上 `StatusWriter` 时（只在测试里会发生）不同步状态并记告警。
 
@@ -339,7 +339,7 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 - 对 github issue 改状态时，目标状态必须能在 GitHub 上表达：done 类、cancelled 类、项目入口状态，或在 `status_label_map` 里有标签。否则 `UpdateIssue` 返回 422，`code` 为 `github_status_unmapped`，`allowed_statuses` 列出能用的状态，错误文本提示去项目的 GitHub 设置加 `status:<name>` 标签。不拒绝的话，这个状态会在下一次 GitHub 更新时被覆盖，等于静默丢失。
 - 批量更新里，这样的 issue 和其他逐项校验失败一样被跳过，其余照常更新。
 - 本地 issue、不改状态的写入不受影响。功能关闭时没有这个钩子，行为与上游一致。
-- 在双写（#19）合并之前，Multica 里改的状态不会写到 GitHub；GitHub 上下一次更新这个 issue 时，按上面的规则以 GitHub 为准。
+- 通过拒绝钩子的状态变化由双写写到 GitHub，见「双写、意图记录与署名」。
 
 ### 已知限制
 
@@ -391,6 +391,101 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 - CI 变化不会改变 PR 的 `updated_at`，轮询发现不了。之后的 CI 状态靠上游已有的刷新：打开 issue 时快照过期就刷新，后台定时刷新状态未定的 PR。
 - 一个 issue 先被 PR 引用、后被导入（跨仓库引用的仓库还没轮询到）时，要等这个 PR 下次更新才会关联。
 
+## 双写、意图记录与署名
+
+Multica 里对 github issue 的写入先写 GitHub，GitHub 接受后才落库（Owner 的决定，见 #7、#9）。代码在 `write.go`、`write_issue.go`、`write_comment.go`、`marker.go`、`adopt.go`、`reconcile.go`，所有请求经 `RepoClient`。
+
+### 覆盖范围
+
+| Multica 操作 | GitHub 请求 | 本地 |
+|---|---|---|
+| 新建 issue（请求带 `repo: "owner/name"`） | `POST /issues`（标题、正文、状态标签） | `IssueService.Create` 的事务里同时写 `issue_external` |
+| 改标题、正文、状态（单个与批量更新） | `PATCH /issues/{n}`，只带变化的字段 | 原有更新路径 |
+| 评论新建、编辑、删除 | `POST /issues/{n}/comments`、`PATCH`/`DELETE /issues/comments/{id}` | 原有评论路径，另写 `comment_external` |
+
+- 只改 Multica 专有字段（指派、项目、优先级、父子、日期等）只落库，不发请求。local issue 完全不受影响。
+- 本地评论（没有 `comment_external` 行的，例如功能开启前写的）编辑、删除只落库。
+- 状态按「状态映射」一节反向写：done 类 → `closed` + `completed`；cancelled 类 → `closed` + `not_planned`；入口状态 → `open` 且不带状态标签；其他 → `open` 加 `status_label_map` 里的标签。改状态时先去掉该映射里的所有状态标签（不区分大小写），再加上新的，其他标签保留；只有项目配置了状态标签时才先读一次 issue 拿当前标签。无法表达的状态在改状态时已被「状态映射」的钩子拒绝；新建时同样拒绝（422 `github_status_unmapped`）。GitHub 新建 issue 只能是 open，所以新建时状态是 done 类、cancelled 类的也拒绝（403 `github_write_not_allowed`）。
+- 轮询把 GitHub 的状态同步回来时（`IsSyncedWrite`）不发请求，不会形成回写循环。
+- 他人在 GitHub 上新建的 issue（描述带外部前缀），描述在 Multica 里只读，改描述返回 403；标题、状态照常可改。
+- `repo` 参数在本任务只是「显式指定就建到这个仓库」。默认仓库、歧义报错、CLI `--repo`、界面下拉属于新建选仓库任务（#20）。功能关闭时忽略这个字段，与上游一致。
+- 删除 issue 不发请求：GitHub REST 不能删除 issue。本地删除后，该 issue 在 GitHub 上再有更新会重新导入（见「轮询」）。
+
+### 顺序与失败语义
+
+每次写入：校验 → 插入一条 `github_write_intent`（`pending`）→ 发请求 → 按结果处理 → 落库 → 回填。
+
+**先校验完再发请求。** 本地会拒绝的写入不能先到 GitHub，否则下一轮轮询会以 GitHub 为准把被拒绝的修改抄回本地：
+
+- 改 issue、改/删评论：发请求前，对这一条目标拿一把 advisory 锁（issue 用与轮询相同的 `githubissues:issue:<工作区>:<仓库 id>:<编号>`，评论用 `githubissues:comment:<评论 id>`），锁放在一个单独的、什么也不写的事务里，一直持有到本地写完（`Finish`，或请求提前结束时 `Close`）。锁内重读当前行，校验 `expected_revision`、`title_base`（issue）、`content_base`（评论），不符就返回与本地相同的 409（`writeRevisionConflict` / `writeEditConflict`），什么都不发。轮询写同一条目标（同步 issue、跟随或认领评论）时拿同一把锁，所以校验与本地写入之间不会插进别的写入者。
+- 标题、正文、评论内容只有上面这些写入者会改，所以文本校验在锁内成立到落库。版本号还会被别的写入（例如改优先级、评论的解决/取消解决）推进；校验通过、GitHub 接受后，这次写入就算在那一刻生效，本地落库不再按版本号拒绝（清掉 `ExpectedRevision`），只改请求里的字段，其他字段保持别人写入的值。
+- 新建 issue：`BeginIssueCreate` 只解析仓库、不发请求；请求在 `IssueCreateOpts.InTx` 里发出，这时本地的全部校验（重复 issue 检查、标签、项目、父 issue、自定义状态、工作流）都已在创建事务里通过。GitHub 拒绝或结果未知时返回错误，整个本地创建回滚。代价：这次请求期间，事务持有工作区编号计数器的行锁，同一工作区的其他新建要排队等它（最长 15 秒超时，通常不到 1 秒）。
+
+| 情形 | 意图 | 对调用方 | 之后 |
+|---|---|---|---|
+| GitHub 2xx | `github_ok`，记下 GitHub id | 继续落库，成功后 `applied`，同时写 `issue_external` / `comment_external` | — |
+| GitHub 4xx | `failed` | 422 `github_write_rejected`，带 `github_status`；本地不变 | 无 |
+| 限流（429、带限流信号的 403） | `failed` | 429 `github_rate_limited`，带 `Retry-After` | 调用方稍后自己重试 |
+| 令牌不可用、仓库不在白名单 | 不建意图，或 `failed` | 503 `github_unavailable`；没有发请求 | 无 |
+| 超时、断连、5xx（结果未知） | `unknown` | 502 `github_write_unconfirmed`；本地不变 | **不自动重试**，见下 |
+| GitHub 成功、落库失败 | 保持 `github_ok`，`error` 记原因 | 原有的落库错误 | 满一个轮询周期后的下一轮自愈，不重复（见下） |
+
+- 请求用 `context.WithoutCancel` 发出：调用方断开后，已经发出的请求的结果照样记下。
+- 新评论的本地 id 在发请求前就定好，存在意图的 `comment_id` 里，本地插入用同一个 id。所以轮询自愈出来的评论和处理器写的是同一行，不会出现两份。
+- 新 issue 的 `issue_external` 与本地 issue 在同一个事务里写（`InTx`），并和轮询用同一个 advisory lock，所以本地 issue 不会缺 `issue_external`，轮询也不会把它当成别人的 issue 再导入一次。GitHub 已建好、但事务提交失败（或轮询抢先自愈，这时返回 500）时，由轮询按标记导入。
+- 改 issue 时，GitHub 返回的 `updated_at` 先写进 `issue_external.external_updated_at`，再落库：写之前读到的旧快照不会把本地改回去。`state` 等落库成功后才更新，所以落库失败时，下一轮轮询仍能看出状态变化并自愈。
+- 「GitHub 成功、落库失败」的自愈：新 issue、新评论、改标题正文状态、改评论由轮询读流时按 GitHub 补齐；**删评论**由协调器补：评论列表不会返回已删除的评论，所以协调器在 GitHub 接受删除满一个周期后，经 handler 的删除路径（`DeleteGitHubComment`：进程内调用 `DeleteComment`，以工作区最早的所有者身份：`DeleteComment` 只允许作者或 owner/admin 删除，而被删的可能是任何人的评论，同步账号可能只是普通成员；标记为同步写入、不再发请求）删掉本地评论，清掉 `comment_external`，意图置为 `applied`。
+- 评论的附件不写到 GitHub。
+
+### 结果未知（`unknown`）
+
+Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下，交给人确认。**
+
+- 宽限期 = 2 个轮询周期且不少于 5 分钟（现为 5 分钟）。只在这个仓库的一次轮询读完两个流之后才检查，所以轮询停着（限流、令牌失效）时不会误判。
+- 期间轮询照常读流，按正文标记认领（见下面「自愈与认领」）。过了宽限期还没认领的，直接查 GitHub：
+  - 新建 issue：在写入时间（减 2 分钟）之后更新的 issue 里按标记找，最多 3 页；新建评论：在该 issue 的评论里找。找到就按认领处理。
+  - 改 issue：读当前 issue，按意图里记下的字段重新算摘要（`payload_digest` 是「字段名列表:内容哈希」），一致就是成功。
+  - 改评论：读这条评论，正文标记是这次的 op 就是成功。
+  - 删评论：读这条评论，404/410 说明已删，按上面「删评论」的自愈补删本地评论；GitHub 上还在就交给人确认（本地评论也还在，两边一致）。
+- 找不到：意图保持 `unknown`，`error` 写成 `needs_confirmation: <原因>`，打一条 Warn 日志（带意图 id、仓库、编号）。之后不再查、不再重试，由人去 GitHub 上看并决定是否重新提交。目前没有界面展示，查 `github_write_intent` 表即可。
+
+### 标记与署名
+
+所有写到 GitHub 的正文末尾都带一个隐藏标记；智能体写的在标记上方另加一行可见署名：
+
+```
+<正文>
+
+— 研析（智能体），经 Multica
+<!-- multica:v1 actor=agent:<agent-uuid> op=<意图 id> -->
+```
+
+- 真人写的只有标记（`actor=member:<user-uuid>`），没有署名行。
+- `op` 就是意图 id，即幂等键。issue 要求的 `<!-- multica:op=<意图id> -->` 与署名标记合成了这一个标记，不再单写一个。
+- 本地存的是不带标记、不带署名的原文；从 GitHub 读回时去掉末尾的标记块。
+- 署名里的智能体名去掉换行，`<`、`>` 换成 `‹`、`›`。
+- 只改标题、状态时不改正文，不写标记（不去动别人写的 issue 正文）。
+
+### 自愈与认领（轮询里）
+
+轮询遇到带标记的内容时，**只有同时满足以下条件才采信标记**：
+
+1. 作者是令牌所属的 GitHub 账号（Multica 的写入都以这个账号出现；令牌还没被接受过时跳过这一条）；
+2. 本工作区有 `id = op` 的意图，仓库一致，类型对得上（新 issue 只认 `create_issue`，新评论只认 `create_comment`），且不是 `failed`；
+3. 标记里的 actor 与意图记录的一致；
+4. 意图已有 GitHub id 时必须与这一项相同；还没有（GitHub 没回答）时，必须是同一个 issue。
+
+否则按外部作者处理：评论用 `system` 作者加外部前缀，issue 用同步账号加外部前缀，标记原样留在正文里（**伪造的标记按外部作者展示**）。
+
+采信后：
+
+- 新 issue（本地没有 `issue_external`）：按意图记录的作者建本地 issue，描述去掉标记，不加外部前缀，意图置为 `applied`。项目和初始状态与他人新建的 issue 规则相同；原请求里只有 Multica 有的字段（指派、优先级等）没有记录，自愈出来的 issue 不带这些。
+- 新评论（本地没有 `comment_external`）：按意图的作者、用意图里预定的 id 建评论（已存在就只补 `comment_external`），意图置为 `applied`。自愈出来的评论没有线程（GitHub 评论是平铺的）。
+- 已链接的评论（作者不是 `system`）：GitHub 上的新版本（`updated_at` 不早于已存值）覆盖本地正文，标记可信时去掉标记。
+- 从 Multica 写出去的 issue 的描述也跟随 GitHub：标记指向本 issue 的写入时去掉标记，否则原样存。
+
+**回显不触发智能体**：自己写出去的评论回显时只按 GitHub id 对上，正文不变就什么都不写；GitHub 上改了正文、或自愈新建的评论，在同一事务里删掉评论触发器为它产生的 wakeup 回执（与外部评论相同），不走评论触发流程。
+
 ### 对上游文件的钩子（本节）
 
 | 文件 | 改动 |
@@ -401,6 +496,20 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 | `server/internal/handler/handler.go` | `Handler.GitHubIssueRefs` 字段 |
 | `server/cmd/server/router.go` | 功能开启时调 `h.UseGitHubIssuePulls`（1 行） |
 | `server/internal/integrations/ghsnapshot/static_source.go` | fork 文件：`Manager.UseStaticSource` |
+
+| `server/internal/handler/issue.go` | `CreateIssueRequest.Repo`；`CreateIssue` 准备（`beginGitHubIssueCreate`）、`InTx` 里发请求、之后 `Abandon` 与 `writeGitHubCreateFailure`；`UpdateIssue`、`BatchUpdateIssues` 在状态映射的拒绝钩子之后、落库前 `beginGitHubIssueUpdate`（GitHub 接受后清掉 `params.ExpectedRevision`），落库后 `Finish`，单个更新另 `defer Close`（批量里被 GitHub 拒绝的 issue 跳过，与其他逐项校验一致） |
+| `server/internal/handler/comment.go` | `CreateComment` 先发评论并用预定 id 插入；`UpdateComment`、`DeleteComment` 先改/删 GitHub 上的评论（编辑带上 `content_base`、`expected_revision`，GitHub 接受后本地不再按版本号拒绝）；各自落库后 `Finish`，并 `defer Close` |
+| `server/internal/handler/handler.go` | `Handler.GitHubIssues` 字段 |
+| `server/internal/handler/githubissues_hook.go` | 钩子实现、错误响应、`DeleteGitHubComment`（协调器补删本地评论用） |
+| `server/internal/service/issue.go` | `IssueCreateOpts.InTx`：提交前在创建事务里执行 |
+| `server/cmd/server/router.go` | 功能开启时设置 `Handler.GitHubIssues` 并 `SetCommentDeleter(h)` |
+| `server/pkg/db/queries/githubissues_write.sql` | 新文件：带 id 插入意图、按仓库列出待核对的意图（`github_ok` 满一个周期、`pending`/`unknown` 满宽限期）、推进 `external_updated_at`（只写 fork 表） |
+
+### 已知限制
+
+- 结果未知的写入交给人确认后没有界面，只有日志和 `github_write_intent` 表。
+- 回执在事务里删除，订阅了 `comment.created` 的插件仍会收到自愈评论的事件（与外部评论相同）。
+- `/repositories/{id}/issues/comments/{id}` 等写接口、GitHub 返回的正文是否原样保留（换行、末尾空白）在真实 GitHub 上未验证，见 PR 的 Owner 实测步骤。
 
 ## 迁移号段规则
 

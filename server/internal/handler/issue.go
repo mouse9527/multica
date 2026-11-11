@@ -3140,6 +3140,10 @@ type CreateIssueRequest struct {
 
 	AllowDuplicate         bool `json:"allow_duplicate,omitempty"`
 	PRAutoCompleteDisabled bool `json:"pr_auto_complete_disabled,omitempty"`
+
+	// Repo ("owner/name") opens the issue on that GitHub repository first.
+	// GitHub-native issues (mouse9527/multica fork); ignored while they are off.
+	Repo *string `json:"repo,omitempty"`
 }
 
 // CreateIssueResponse echoes the atomic PR setting without expanding issue reads.
@@ -3544,6 +3548,12 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		return out
 	}
 
+	// GitHub-native issues (fork): an issue for a GitHub repository is opened there, from InTx.
+	ghWrite, ok := h.beginGitHubIssueCreate(w, r, wsUUID, req)
+	if !ok {
+		return
+	}
+
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		WorkspaceID:            wsUUID,
 		Title:                  req.Title,
@@ -3569,6 +3579,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	}, service.IssueCreateOpts{
 		ActorID:          actualCreatorID,
 		AnalyticsAgentID: analyticsAgentID,
+		InTx:             gitHubCreateInTx(ghWrite), // GitHub-native issues (fork)
 		Platform:         func() string { p, _, _ := middleware.ClientMetadataFromContext(r.Context()); return p }(),
 		BroadcastPayload: func(issue db.Issue, atts []db.Attachment, labels []db.IssueLabel) map[string]any {
 			payload := issueToResponse(issue, prefix)
@@ -3589,6 +3600,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			return map[string]any{"issue": payload}
 		},
 	})
+	ghWrite.Abandon(r.Context(), err) // GitHub-native issues (fork)
+	if writeGitHubCreateFailure(w, r, err) {
+		return
+	}
 
 	if errors.Is(err, service.ErrActiveDuplicate) {
 		dup := *res.DuplicateIssue
@@ -4152,6 +4167,14 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GitHub-native issues (fork): GitHub takes title, description and status first.
+	ghWrite, err := h.beginGitHubIssueUpdate(r, prevIssue, &params, req.TitleBase)
+	if err != nil {
+		writeGitHubWriteError(w, r, err, "issue", prevIssue.ID)
+		return
+	}
+	defer ghWrite.Close(r.Context())
+
 	// The agent this write hands the issue to gets the change as its own run,
 	// not also through its event wakeups.
 	writeCtx := withWakeupHandedTo(r.Context(), h.handedToAgent(r.Context(), prevIssue, params, handoff != nil))
@@ -4168,6 +4191,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	} else {
 		issue, err = h.updateIssueWithStatusGuard(writeCtx, prevIssue.WorkspaceID, statusKeyForGuard, params)
 	}
+	ghWrite.Finish(r.Context(), err) // GitHub-native issues (fork)
 	if err != nil {
 		if writeIssueStatusRaceError(w, err) {
 			return
@@ -4992,6 +5016,12 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// GitHub-native issues (fork): an issue GitHub refuses is skipped like the other per-item guards.
+		ghWrite, err := h.beginGitHubIssueUpdate(r, prevIssue, &params, nil)
+		if err != nil {
+			slog.Warn("batch update issue: github write failed", "issue_id", issueID, "error", err)
+			continue
+		}
 		writeCtx := withWakeupHandedTo(r.Context(), h.handedToAgent(r.Context(), prevIssue, params, handoff != nil))
 		var issue db.Issue
 		if req.Updates.Description != nil {
@@ -5008,6 +5038,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		} else {
 			issue, err = h.updateIssueWithStatusGuard(writeCtx, wsUUID, issueStatusGuard, params)
 		}
+		ghWrite.Finish(r.Context(), err) // GitHub-native issues (fork)
 		if err != nil {
 			// The archive race is a property of the batch's shared target
 			// status, not of one issue, so every remaining item would fail the

@@ -84,6 +84,15 @@ func (s *Service) pollComments(ctx context.Context, repo *Repo, cursor pgtype.Ti
 // issue number and reports whether it stored or changed anything. A comment
 // written from Multica, or one that can no longer be placed, is skipped.
 func (s *Service) syncComment(ctx context.Context, repo *Repo, issueID pgtype.UUID, number int32, c githubComment) (bool, error) {
+	// A comment written from Multica is followed or adopted under its
+	// Multica author (adopt.go), never imported as someone else's.
+	handled, changed, err := s.syncWrittenComment(ctx, repo, issueID, number, c)
+	if err != nil {
+		return false, fmt.Errorf("sync comment %d on %s#%d: %w", c.ID, repo.FullName(), number, err)
+	}
+	if handled {
+		return changed, nil
+	}
 	res, err := s.SyncExternalComment(ctx, ExternalComment{
 		WorkspaceID: repo.workspaceID, IssueID: issueID, ExternalID: c.ID,
 		Login: c.User.Login, AvatarURL: c.User.AvatarURL, Body: c.Body, UpdatedAt: c.UpdatedAt,
@@ -92,7 +101,8 @@ func (s *Service) syncComment(ctx context.Context, repo *Repo, issueID pgtype.UU
 	case err == nil:
 		return res.Created || res.Changed, nil
 	case errors.Is(err, ErrNotExternalComment):
-		// Written from Multica; its local row is already the mirror.
+		// Linked to a comment written from Multica since syncWrittenComment
+		// looked; the next sync follows it.
 		return false, nil
 	case errors.Is(err, ErrIssueNotFound), errors.Is(err, ErrCommentMoved):
 		s.logger.Warn("github issues: comment skipped", "repo", repo,
