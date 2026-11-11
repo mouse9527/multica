@@ -278,7 +278,12 @@
       "local": "本地（不同步 GitHub）",
       "choose": "選擇倉庫",
       "search_placeholder": "搜尋倉庫…",
-      "required": "請選擇一個 GitHub 倉庫，或選「本地」"
+      "required": "請選擇一個 GitHub 倉庫，或選「本地」",
+      "loading": "正在載入倉庫…",
+      "load_failed": "重新載入倉庫",
+      "blocked_loading": "還在載入這個專案的 GitHub 倉庫",
+      "blocked_error": "這個專案的 GitHub 倉庫載入失敗，正在重試；也可以換一個專案。",
+      "status_not_creatable": "這個專案新建的 GitHub issue 不能用「{{status}}」狀態。請改用 {{allowed}}，或選「本地」。"
     }
   },
   "mark_duplicate": {

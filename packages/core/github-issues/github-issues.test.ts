@@ -20,11 +20,16 @@ describe("getProjectGitHubSettings", () => {
     const fetchMock = respond(200, {
       repos: [{ resource_id: "r1", repo: "acme/widgets" }],
       default_resource_id: "r1",
+      create_statuses: ["backlog", "todo"],
     });
     vi.stubGlobal("fetch", fetchMock);
     const settings = await new ApiClient("https://api.example.test").getProjectGitHubSettings("p1");
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://api.example.test/api/projects/p1/github-settings");
-    expect(settings).toEqual({ repos: [{ resource_id: "r1", repo: "acme/widgets" }], default_resource_id: "r1" });
+    expect(settings).toEqual({
+      repos: [{ resource_id: "r1", repo: "acme/widgets" }],
+      default_resource_id: "r1",
+      create_statuses: ["backlog", "todo"],
+    });
   });
 
   it("offers nothing when the server has the feature off", async () => {
@@ -37,6 +42,7 @@ describe("getProjectGitHubSettings", () => {
     await expect(new ApiClient("https://api.example.test").getProjectGitHubSettings("p1")).resolves.toEqual({
       repos: [],
       default_resource_id: null,
+      create_statuses: [],
     });
   });
 
@@ -45,6 +51,7 @@ describe("getProjectGitHubSettings", () => {
     await expect(new ApiClient("https://api.example.test").getProjectGitHubSettings("p1")).resolves.toEqual({
       repos: [],
       default_resource_id: null,
+      create_statuses: [],
     });
   });
 });
@@ -55,11 +62,11 @@ describe("defaultGitHubCreateRepo", () => {
 
   it("selects the default, else the only repository, else none", () => {
     expect(defaultGitHubCreateRepo(null)).toBeNull();
-    expect(defaultGitHubCreateRepo({ repos: [], default_resource_id: null })).toBeNull();
-    expect(defaultGitHubCreateRepo({ repos: [widgets], default_resource_id: null })).toBe("acme/widgets");
-    expect(defaultGitHubCreateRepo({ repos: [widgets, gadgets], default_resource_id: null })).toBeNull();
-    expect(defaultGitHubCreateRepo({ repos: [widgets, gadgets], default_resource_id: "r2" })).toBe("acme/gadgets");
+    expect(defaultGitHubCreateRepo({ repos: [], default_resource_id: null, create_statuses: [] })).toBeNull();
+    expect(defaultGitHubCreateRepo({ repos: [widgets], default_resource_id: null, create_statuses: [] })).toBe("acme/widgets");
+    expect(defaultGitHubCreateRepo({ repos: [widgets, gadgets], default_resource_id: null, create_statuses: [] })).toBeNull();
+    expect(defaultGitHubCreateRepo({ repos: [widgets, gadgets], default_resource_id: "r2", create_statuses: [] })).toBe("acme/gadgets");
     // A default that no longer names one of the repositories is ignored.
-    expect(defaultGitHubCreateRepo({ repos: [widgets], default_resource_id: "gone" })).toBe("acme/widgets");
+    expect(defaultGitHubCreateRepo({ repos: [widgets], default_resource_id: "gone", create_statuses: [] })).toBe("acme/widgets");
   });
 });

@@ -151,6 +151,18 @@ func TestCreateIssueChoosesGitHubRepository(t *testing.T) {
 		if got["default_resource_id"] != widgets {
 			t.Fatalf("read settings = %v", got)
 		}
+		// Without status labels only the entry status can open a GitHub issue.
+		if statuses, _ := got["create_statuses"].([]any); len(statuses) != 1 || statuses[0] != "backlog" {
+			t.Fatalf("create_statuses = %v, want [backlog]", got["create_statuses"])
+		}
+		dbfx.Exec(t, `UPDATE project_github_settings SET status_label_map = '{"todo":"status:todo","done":"status:done"}'
+			WHERE project_id = $1`, multi)
+		got = testutil.Call(t, h.GetProjectGitHubSettings, withURLParam(newRequest(http.MethodGet,
+			"/api/projects/"+multi+"/github-settings", nil), "id", multi)).Want(http.StatusOK).Map()
+		if statuses, _ := got["create_statuses"].([]any); len(statuses) != 2 || statuses[0] != "backlog" || statuses[1] != "todo" {
+			t.Fatalf("create_statuses with labels = %v, want [backlog todo] (done only by closing)", got["create_statuses"])
+		}
+		dbfx.Exec(t, `UPDATE project_github_settings SET status_label_map = '{}' WHERE project_id = $1`, multi)
 		wantGitHub(t, create(h, false, map[string]any{"title": "Default", "project_id": multi}))
 		body := wantRefused(t, create(h, true, map[string]any{"title": "Default by agent", "project_id": multi}),
 			http.StatusUnprocessableEntity, "github_repo_required", "acme/widgets", "acme/gadgets")

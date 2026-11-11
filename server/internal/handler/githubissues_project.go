@@ -25,10 +25,13 @@ type ProjectGitHubRepoResponse struct {
 }
 
 // ProjectGitHubSettingsResponse is what the create dialog needs to offer a
-// repository: the project's GitHub repositories and its default among them.
+// repository: the project's GitHub repositories, its default among them, and
+// the statuses a new GitHub issue of the project can start in (entry status
+// first).
 type ProjectGitHubSettingsResponse struct {
 	Repos             []ProjectGitHubRepoResponse `json:"repos"`
 	DefaultResourceID *string                     `json:"default_resource_id"`
+	CreateStatuses    []string                    `json:"create_statuses"`
 }
 
 // SetProjectGitHubSettingsRequest sets the project's default repository; null
@@ -97,6 +100,11 @@ func (h *Handler) writeProjectGitHubSettings(w http.ResponseWriter, r *http.Requ
 	if def != nil {
 		id := uuidToString(def.ResourceID)
 		resp.DefaultResourceID = &id
+	}
+	if resp.CreateStatuses, err = h.GitHubIssues.CreateStatuses(r.Context(), project.WorkspaceID, project.ID); err != nil {
+		slog.Warn("list project github create statuses failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to read the project's GitHub settings")
+		return
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

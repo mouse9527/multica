@@ -554,7 +554,7 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
 
 - 候选仓库是 issue 所在项目的 `github_repo` 资源（只认 github.com，与白名单同一套解析），按资源顺序，同名只列一次。子 issue 不带项目时用父 issue 的项目，与 `IssueService.Create` 一致。
 - 项目默认仓库存在 `project_github_settings.default_resource_id`，指向该项目的一条 `github_repo` 资源；资源被删后默认自动失效（按无默认处理），不改上游表。
-- 接口（功能开启时才挂载，关闭时 404）：`GET /api/projects/{id}/github-settings` 返回 `{repos: [{resource_id, repo}], default_resource_id}`；`PUT` 同路径传 `{default_resource_id}`（`null` 清除），只能选本项目的 GitHub 仓库，`status_label_map` 不变。
+- 接口（功能开启时才挂载，关闭时 404）：`GET /api/projects/{id}/github-settings` 返回 `{repos: [{resource_id, repo}], default_resource_id, create_statuses}`，`create_statuses` 是新建 GitHub issue 可用的状态（项目入口状态排第一，其余为映射了状态标签的非终态；GitHub 新建的 issue 只能是 open）；`PUT` 同路径传 `{default_resource_id}`（`null` 清除），只能选本项目的 GitHub 仓库，`status_label_map` 不变。
 
 ### 解析顺序
 
@@ -573,6 +573,8 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
 
 - `multica issue create --repo owner/name` 或 `--provider local`；两者同时给、`--provider` 取值不对、`--repo` 不是 `owner/name`，在发请求前就报错。服务端的 422 被 CLI 改写成候选列表，每行一个可直接用的 `--repo`，并提示 `--provider local`。
 - 创建对话框：项目挂了 GitHub 仓库时，项目选择后面出现仓库下拉，最后一项是「本地（不同步 GitHub）」。默认选中项目默认仓库，否则唯一的仓库；多个仓库且无默认时不预选，点创建会提示并打开下拉。换项目后清掉手选的值。功能关闭（接口 404）或项目没挂仓库时不出现下拉，请求与上游一致。从评论创建子 issue 的入口走另一个接口，不出现下拉。
+- 仓库列表还在加载或读取失败时，对话框不知道服务端会不会自动选仓库，所以不提交：加载中显示「正在加载仓库」，失败时显示「重新加载仓库」并在点创建时自动重试，两种情况点创建都只给提示。
+- 状态：目标变成某个仓库（预选或手选）时，如果当前状态不在 `create_statuses` 里，改成项目入口状态（通常是 backlog），这样默认操作不会得到 422 `github_status_unmapped`。之后手动改成 GitHub 表达不了的状态时不再改回，点创建会提示可用的状态或改选「本地」。
 
 ### 对上游文件的钩子（本节）
 
@@ -584,7 +586,7 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
 | `packages/core/api/client.ts` | `getProjectGitHubSettings`（404 返回 `null`） |
 | `packages/core/types/api.ts` | `CreateIssueRequest.repo`、`provider` |
 | `packages/core/package.json` | 导出 `./github-issues` |
-| `packages/views/modals/create-issue.tsx` | 仓库下拉、提交前检查、请求体带上选择（各 1–4 行） |
+| `packages/views/modals/create-issue.tsx` | 仓库下拉、状态调整、提交前检查、请求体带上选择（各 1–4 行） |
 | `packages/views/locales/*/modals.json` | `create_issue.github_repo` 文案 |
 
 新文件：`server/internal/githubissues/create_repo.go`、`server/internal/handler/githubissues_project.go`、`server/cmd/multica/cmd_issue_github.go`、`packages/core/github-issues/`、`packages/views/modals/create-issue-github-repo.tsx`，以及 `server/pkg/db/queries/github_issue.sql` 里的 `SetProjectGithubDefaultResource`（只写 fork 表）。
@@ -592,7 +594,7 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
 ### 已知限制
 
 - 设置项目默认仓库目前只有接口，没有界面入口。
-- 新建 github issue 时的状态仍受「状态映射」约束：项目没有配置状态标签时，只有入口状态（通常是 backlog）能建到 GitHub，其他状态返回 422 `github_status_unmapped`。
+- 新建 github issue 时的状态受「状态映射」约束：项目没有配置状态标签时，只有入口状态能建到 GitHub。对话框按上面的规则处理；CLI 与 API 直接创建时仍返回 422 `github_status_unmapped`（带可用状态）。
 
 ## 迁移号段规则
 

@@ -102,7 +102,7 @@ import { useT } from "../i18n";
 import { SourceContextPreviewCard, useSourceContextFailureMessage } from "./source-context-preview";
 import { useIssueLimitUpgradePrompt } from "./use-issue-limit-upgrade-prompt";
 import { CopyParentFields } from "./copy-parent-fields";
-import { GitHubRepoPicker, useGitHubCreateRepo } from "./create-issue-github-repo"; // GitHub-native issues (fork)
+import { GitHubRepoPicker, useGitHubCreateGate, useGitHubCreateRepo, useGitHubCreateStatus } from "./create-issue-github-repo"; // GitHub-native issues (fork)
 
 // ManualCreatePanel — manual-mode body of the create-issue dialog. Renders
 // DialogContent + everything inside; the surrounding `<Dialog>` is owned by
@@ -459,6 +459,8 @@ export function ManualCreatePanel({
   // GitHub-native issues (fork): the repository of the new issue, offered when its project has any.
   const githubRepo = useGitHubCreateRepo(wsId, projectId, !anchorCommentId);
   const [repoPickerOpen, setRepoPickerOpen] = useState(false);
+  useGitHubCreateStatus(githubRepo, status, updateStatus);
+  const gitHubCreateBlocked = useGitHubCreateGate(wsId, githubRepo, status, () => setRepoPickerOpen(true));
   const createCommentSubIssueMutation = useCreateCommentSubIssue();
   const updateIssueMutation = useUpdateIssue();
   const attachLabelMutation = useAttachLabelToIssue();
@@ -850,11 +852,7 @@ export function ManualCreatePanel({
       titleEditorRef.current?.focus();
       return;
     }
-    if (githubRepo.visible && !githubRepo.target) { // GitHub-native issues (fork)
-      toast.error(t(($) => $.create_issue.github_repo.required));
-      setRepoPickerOpen(true);
-      return;
-    }
+    if (gitHubCreateBlocked()) return; // GitHub-native issues (fork)
     void composer.submit();
   };
   const submitting = composer.submitting;
@@ -1168,7 +1166,7 @@ export function ManualCreatePanel({
               )}
 
               {/* GitHub repository (fork: GitHub-native issues) */}
-              {githubRepo.visible && (
+              {githubRepo.phase !== "none" && (
                 <GitHubRepoPicker state={githubRepo} open={repoPickerOpen} onOpenChange={setRepoPickerOpen} />
               )}
 

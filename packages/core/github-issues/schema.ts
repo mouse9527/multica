@@ -14,6 +14,9 @@ export interface ProjectGitHubSettings {
   repos: ProjectGitHubRepo[];
   /** The project_resource id of the project's default repository. */
   default_resource_id: string | null;
+  /** Statuses a new GitHub issue of the project can start in, entry status
+   *  first. Empty from a server that does not say. */
+  create_statuses: string[];
 }
 
 export const ProjectGitHubSettingsSchema = z.object({
@@ -25,9 +28,14 @@ export const ProjectGitHubSettingsSchema = z.object({
     .string()
     .nullish()
     .transform((v) => v ?? null),
+  create_statuses: z
+    .array(z.string())
+    .nullish()
+    .transform((v) => v ?? []),
 });
 
 export const EMPTY_PROJECT_GITHUB_SETTINGS: ProjectGitHubSettings = {
   repos: [],
   default_resource_id: null,
+  create_statuses: [],
 };

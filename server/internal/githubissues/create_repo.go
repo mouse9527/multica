@@ -91,6 +91,29 @@ func (s *Service) ProjectRepos(ctx context.Context, workspaceID, projectID pgtyp
 	return repos, nil, nil
 }
 
+// CreateStatuses lists the statuses a new GitHub issue of the project can be
+// created in, its entry status first: GitHub opens every new issue, and an
+// open issue shows the entry status without a label and any other status only
+// through the label the project maps it to. Anything else is refused at create
+// (UnmappedStatusError, or WriteNotAllowed for done and cancelled).
+func (s *Service) CreateStatuses(ctx context.Context, workspaceID, projectID pgtype.UUID) ([]string, error) {
+	q, err := s.queries()
+	if err != nil {
+		return nil, err
+	}
+	m, err := loadStatusMapping(ctx, q, s.logger, workspaceID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	statuses := make([]string, 0, len(m.labels)+1)
+	for _, key := range m.shown() {
+		if !m.closedTerminal(key) {
+			statuses = append(statuses, key)
+		}
+	}
+	return statuses, nil
+}
+
 // ErrNotProjectRepo means the resource is not a GitHub repository registered
 // on the project.
 var ErrNotProjectRepo = errors.New("githubissues: the resource is not a GitHub repository of this project")
