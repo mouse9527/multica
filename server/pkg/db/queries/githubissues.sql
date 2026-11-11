@@ -140,3 +140,13 @@ WHERE id = @id
   AND workspace_id = @workspace_id
   AND (title IS DISTINCT FROM @title OR description IS DISTINCT FROM sqlc.narg('description'))
 RETURNING *;
+
+-- name: ListTrackedGitHubIssuesInRepo :many
+-- The GitHub issues of one repository that the workspace tracks (imported, or
+-- opened from Multica), by number: the issues whose linked pull requests the
+-- poller looks for. Read-only on issue_external.
+SELECT issue_id, external_number, state, external_updated_at FROM issue_external
+WHERE workspace_id = @workspace_id
+  AND provider = 'github'
+  AND external_repo_id = @external_repo_id
+ORDER BY external_number;

@@ -48,6 +48,42 @@ func (f *fakeGitHub) openPull(number int, body string, updated time.Time) {
 	})
 }
 
+// editPull replaces the body of the pull request number.
+func (f *fakeGitHub) editPull(number int, body string, updated time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, pr := range f.pulls {
+		if pr["number"] == number {
+			pr["body"], pr["updated_at"] = body, updated.UTC().Format(time.RFC3339)
+		}
+	}
+}
+
+// timeline is issue #1's timeline: a cross-reference from every pull request,
+// as GitHub records one when a pull request mentions the issue. Called with
+// f.mu held.
+func (f *fakeGitHub) timeline() []any {
+	events := []any{}
+	for _, pr := range f.pulls {
+		events = append(events, map[string]any{"event": "cross-referenced", "source": map[string]any{"type": "issue", "issue": map[string]any{
+			"number": pr["number"], "title": pr["title"], "body": pr["body"], "state": pr["state"], "updated_at": pr["updated_at"],
+			"pull_request": map[string]any{"merged_at": pr["merged_at"]},
+			"repository":   map[string]any{"name": "widgets", "owner": map[string]any{"login": "acme"}},
+		}}})
+	}
+	return events
+}
+
+// pull is pull request number. Called with f.mu held.
+func (f *fakeGitHub) pull(number int) any {
+	for _, pr := range f.pulls {
+		if pr["number"] == number {
+			return pr
+		}
+	}
+	return nil
+}
+
 // acceptanceIssue is issue #1, opened on GitHub by someone else an hour ago.
 func acceptanceIssue() map[string]any {
 	return map[string]any{
@@ -78,11 +114,13 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		out = acceptanceIssue()
 	case "/repositories/42/issues/comments", "/repositories/42/issues/1/comments":
 		out = []any{}
-	case "/repositories/42/pulls":
+	case "/repositories/42/issues/1/timeline":
 		out = []any{}
 		if firstPage {
-			out = f.pulls
+			out = f.timeline()
 		}
+	case "/repositories/42/pulls/7":
+		out = f.pull(7)
 	case "/repos/acme/widgets/pulls/7":
 		out = map[string]any{"head": map[string]any{"sha": acceptanceHead}, "mergeable": true, "mergeable_state": "clean"}
 	case "/repos/acme/widgets/commits/" + acceptanceHead + "/check-runs":
@@ -103,7 +141,9 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // TestPolledPullRequestReachesIssueCard is the acceptance path of PR polling:
 // a pull request opened on GitHub with "Closes #1" is on issue #1's PR card
 // after the cycle that follows it, with its CI state, read with the server
-// token through the poller, the PR mirror and the snapshot pipeline.
+// token through the poller (issue #1's timeline, then the pull request), the
+// PR mirror and the snapshot pipeline. The pull request list is never read;
+// a pull request edited to stop closing #1 leaves the card.
 func TestPolledPullRequestReachesIssueCard(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -219,5 +259,12 @@ func TestPolledPullRequestReachesIssueCard(t *testing.T) {
 	f.QueryRow(t, `SELECT count(*) FROM github_pull_request WHERE workspace_id = $1`, ws).Scan(&rows)
 	if rows != 1 {
 		t.Fatalf("github_pull_request rows = %d, want 1", rows)
+	}
+
+	// The pull request stops claiming #1: it is read again and unlinked.
+	api.editPull(7, "Fixes the crash.", time.Now())
+	poll()
+	if prs := listPRs(); len(prs) != 0 {
+		t.Fatalf("issue #1 pull requests after the edit = %+v, want none", prs)
 	}
 }

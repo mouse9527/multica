@@ -8,18 +8,21 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/githubissues/issuekey"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// PullRequest is a pull request read from a registered repository's pulls
-// list, normalized for the PR mirror.
+// PullRequest is a pull request read from a registered repository, normalized
+// for the PR mirror.
 type PullRequest struct {
 	// Owner and Repo are the registered name of the repository, the name the
 	// PR row, the snapshot reads and the allowlist all use.
@@ -51,9 +54,9 @@ func (s *Service) SetPullRequestMirror(m PullRequestMirror) {
 	}
 }
 
-// githubPull is the part of a pulls list item the poller reads. The list has
-// no merged flag, line counts or mergeability: merged is merged_at being set,
-// and the rest is left to the snapshot and the stored row.
+// githubPull is the part of a pull request the poller reads. Merged is
+// merged_at being set; line counts and mergeability are left to the snapshot
+// and the stored row.
 type githubPull struct {
 	Number    int32      `json:"number"`
 	HTMLURL   string     `json:"html_url"`
@@ -83,124 +86,338 @@ type githubPull struct {
 	} `json:"base"`
 }
 
-// pullsResume is where a pulls read that ran out of budget continues: the
-// next page, with the cursor it was reading down to and the newest updated_at
-// it has seen. In memory only, like streamResume.
-type pullsResume struct {
-	stopAt time.Time
+// errLinkedBudget ends a cycle's linked pull request scan of a repository
+// when its request budget is spent; the scan continues there next cycle.
+var errLinkedBudget = errors.New("githubissues: linked pull request budget spent")
+
+// linkedResume is where the linked pull request scan of a repository
+// continues after a cycle's budget ran out: the tracked issue it was reading
+// and the timeline page it was on.
+type linkedResume struct {
+	number int32
 	page   int
-	newest time.Time
 }
 
-type pullsResumeStore struct {
-	mu sync.Mutex
-	at map[streamKey]pullsResume
+// linkedKey names one pull request seen on one tracked issue's timeline.
+type linkedKey struct {
+	issueID pgtype.UUID
+	repoID  int64
+	number  int32
 }
 
-func (r *pullsResumeStore) get(key streamKey) (pullsResume, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	at, ok := r.at[key]
+// linkedPullsState is the in-memory state of the linked pull request scan,
+// like streamResume: after a restart, or on another replica, every tracked
+// issue is scanned and every pull request read once more.
+type linkedPullsState struct {
+	mu     sync.Mutex
+	resume map[streamKey]linkedResume
+	// scanned is each tracked issue's external_updated_at when its timeline
+	// was last read to the end: a closed issue is read again only after it
+	// changes.
+	scanned map[pgtype.UUID]time.Time
+	// mirrored is the updated_at a timeline showed for a pull request when it
+	// was last mirrored from that issue's timeline: an unchanged pull request
+	// is not read again.
+	mirrored map[linkedKey]time.Time
+}
+
+func (l *linkedPullsState) getResume(key streamKey) (linkedResume, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	at, ok := l.resume[key]
 	return at, ok
 }
 
-func (r *pullsResumeStore) set(key streamKey, at pullsResume) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.at == nil {
-		r.at = map[streamKey]pullsResume{}
+func (l *linkedPullsState) setResume(key streamKey, at linkedResume) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.resume == nil {
+		l.resume = map[streamKey]linkedResume{}
 	}
-	r.at[key] = at
+	l.resume[key] = at
 }
 
-func (r *pullsResumeStore) clear(key streamKey) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.at, key)
+func (l *linkedPullsState) clearResume(key streamKey) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.resume, key)
 }
 
-// pollPulls reads the pull requests of a repository updated since cursor and
-// hands each to the mirror.
+func (l *linkedPullsState) scannedAt(issueID pgtype.UUID) (time.Time, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	at, ok := l.scanned[issueID]
+	return at, ok
+}
+
+func (l *linkedPullsState) markScanned(issueID pgtype.UUID, at time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.scanned == nil {
+		l.scanned = map[pgtype.UUID]time.Time{}
+	}
+	l.scanned[issueID] = at
+}
+
+func (l *linkedPullsState) mirroredAt(key linkedKey) (time.Time, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	at, ok := l.mirrored[key]
+	return at, ok
+}
+
+func (l *linkedPullsState) markMirrored(key linkedKey, at time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.mirrored == nil {
+		l.mirrored = map[linkedKey]time.Time{}
+	}
+	l.mirrored[key] = at
+}
+
+// timelineEvent is the part of an issue timeline event the poller reads: a
+// "cross-referenced" event names the issue or pull request that mentioned
+// this one, as it is now (state, title, body, updated_at), not as it was
+// when it mentioned it.
+type timelineEvent struct {
+	Event  string `json:"event"`
+	Source struct {
+		Issue *timelineSource `json:"issue"`
+	} `json:"source"`
+}
+
+type timelineSource struct {
+	Number    int32     `json:"number"`
+	Title     string    `json:"title"`
+	Body      *string   `json:"body"`
+	UpdatedAt time.Time `json:"updated_at"`
+	// PullRequest is present when the source is a pull request.
+	PullRequest json.RawMessage `json:"pull_request"`
+	Repository  struct {
+		ID    int64  `json:"id"`
+		Name  string `json:"name"`
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+	} `json:"repository"`
+	RepositoryURL string `json:"repository_url"`
+}
+
+func (t timelineSource) isPull() bool {
+	return len(t.PullRequest) > 0 && string(t.PullRequest) != "null"
+}
+
+// repo is the repository of the source, in GitHub's spelling.
+func (t timelineSource) repo() (repoName, bool) {
+	if t.Repository.Owner.Login != "" && t.Repository.Name != "" {
+		return repoName{owner: t.Repository.Owner.Login, name: t.Repository.Name}, true
+	}
+	u, err := url.Parse(t.RepositoryURL)
+	if err != nil {
+		return repoName{}, false
+	}
+	parts := strings.Split(strings.TrimPrefix(u.Path, "/repos/"), "/")
+	if !strings.HasPrefix(u.Path, "/repos/") || len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return repoName{}, false
+	}
+	return repoName{owner: parts[0], name: parts[1]}, true
+}
+
+// pollLinkedPulls mirrors the pull requests that close the tracked issues of
+// a repository, and no others: the repository's pull request list is never
+// read, so what the poller sends grows with the tracked issues, not with the
+// repository.
 //
-// The pulls list has no "since", so it is read newest first
-// (sort=updated&direction=desc) down to the first item older than cursor
-// minus pollOverlap, or to its end on the first read. Only then does the
-// cursor move, to the newest updated_at of the read: an item updated while the
-// list is read moves to its front, which a later read covers, and the items
-// behind it only move further back, so resuming at a page number re-reads
-// some items but skips none. A read that runs out of pages, or stops at an
-// item the mirror failed, resumes at that page next cycle.
-func (s *Service) pollPulls(ctx context.Context, repo *Repo, cursor pgtype.Timestamptz) (synced int, err error) {
-	var stopAt time.Time
-	if cursor.Valid {
-		stopAt = cursor.Time.Add(-pollOverlap)
+// It reads the timeline of each tracked issue that is open, or closed and
+// changed since its timeline was last read to the end, and takes the pull
+// requests in its "cross-referenced" events: GitHub records one whenever a
+// pull request mentions the issue, "Closes #N" and "owner/repo#N" included,
+// and shows the pull request as it is now. A pull request is read
+// (GET /pulls/{n}) and mirrored only when its title or body closes a tracked
+// issue of the workspace (PullRequestIssues, the rule its links follow), or
+// when the poller mirrored it before, so that one that stopped claiming loses
+// its link; and only when the timeline shows it updated since it was last
+// mirrored from that issue.
+//
+// Timeline pages and pull request reads share one budget per repository per
+// cycle (pollPageBudget). A scan that runs out continues next cycle at the
+// issue and page it stopped on; a failed read or mirror stops it the same
+// way, so the pull request is read again.
+func (s *Service) pollLinkedPulls(ctx context.Context, repo *Repo) (synced int, err error) {
+	tracked, err := db.New(s.db).ListTrackedGitHubIssuesInRepo(ctx, db.ListTrackedGitHubIssuesInRepoParams{
+		WorkspaceID: repo.workspaceID, ExternalRepoID: repo.id,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("githubissues: list tracked issues: %w", err)
+	}
+	var due []db.ListTrackedGitHubIssuesInRepoRow
+	for _, issue := range tracked {
+		if at, ok := s.linkedPulls.scannedAt(issue.IssueID); issue.State == "open" || !ok || !at.Equal(issue.ExternalUpdatedAt.Time) {
+			due = append(due, issue)
+		}
 	}
 	key := streamKey{workspaceID: repo.workspaceID, repoID: repo.id, pulls: true}
-	page := 1
-	var newest time.Time
-	if at, ok := s.pullsResume.get(key); ok && at.stopAt.Equal(stopAt) {
-		page, newest = at.page, at.newest
+	if len(due) == 0 {
+		s.linkedPulls.clearResume(key)
+		return 0, nil
 	}
-	perPage, pages := s.pollPageSize(), s.pollPageBudget()
-	for range pages {
-		query := url.Values{
-			"state": {"all"}, "sort": {"updated"}, "direction": {"desc"},
-			"per_page": {strconv.Itoa(perPage)}, "page": {strconv.Itoa(page)},
+	start, page := 0, 1
+	if at, ok := s.linkedPulls.getResume(key); ok {
+		start = sort.Search(len(due), func(i int) bool { return due[i].ExternalNumber >= at.number }) % len(due)
+		if due[start].ExternalNumber == at.number {
+			page = at.page
 		}
-		resp, err := repo.Do(ctx, http.MethodGet, "/pulls?"+query.Encode(), nil)
-		if err != nil {
-			s.pullsResume.set(key, pullsResume{stopAt: stopAt, page: page, newest: newest})
-			return synced, err
+	}
+	budget := s.pollPageBudget()
+	for i := range due {
+		issue := due[(start+i)%len(due)]
+		if i > 0 {
+			page = 1
 		}
-		if resp.StatusCode != http.StatusOK {
-			s.pullsResume.set(key, pullsResume{stopAt: stopAt, page: page, newest: newest})
-			return synced, fmt.Errorf("github GET /pulls: unexpected status %d", resp.StatusCode)
-		}
-		var items []githubPull
-		if err := json.Unmarshal(resp.Body, &items); err != nil {
-			s.pullsResume.set(key, pullsResume{stopAt: stopAt, page: page, newest: newest})
-			return synced, errors.New("github GET /pulls: malformed response")
-		}
-		reached := len(items) < perPage
-		for _, gh := range items {
-			if gh.Number <= 0 || gh.UpdatedAt.IsZero() || (gh.State != "open" && gh.State != "closed") {
-				s.pullsResume.set(key, pullsResume{stopAt: stopAt, page: page, newest: newest})
-				return synced, errors.New("github GET /pulls: pull request without number, state or updated_at")
+		for {
+			n, more, err := s.scanTimelinePage(ctx, repo, issue, page, &budget)
+			synced += n
+			if err != nil {
+				s.linkedPulls.setResume(key, linkedResume{number: issue.ExternalNumber, page: page})
+				if errors.Is(err, errLinkedBudget) {
+					return synced, nil
+				}
+				return synced, err
 			}
-			if !stopAt.IsZero() && gh.UpdatedAt.Before(stopAt) {
-				reached = true
+			if !more {
 				break
 			}
-			changed, err := s.pullMirror.MirrorPolledPullRequest(ctx, repo.workspaceID, gh.normalized(repo.name))
-			if err != nil {
-				s.pullsResume.set(key, pullsResume{stopAt: stopAt, page: page, newest: newest})
-				return synced, fmt.Errorf("mirror %s pull request %d: %w", repo.FullName(), gh.Number, err)
-			}
-			if changed {
-				synced++
-			}
-			if gh.UpdatedAt.After(newest) {
-				newest = gh.UpdatedAt
-			}
+			page++
 		}
-		if reached {
-			s.pullsResume.clear(key)
-			if newest.IsZero() {
-				return synced, nil
-			}
-			q := db.New(s.db)
-			if _, err := q.AdvanceGithubRepoSyncCursors(ctx, db.AdvanceGithubRepoSyncCursorsParams{
-				WorkspaceID: repo.workspaceID, RepoID: repo.id,
-				PullsCursor: pgtype.Timestamptz{Time: newest, Valid: true},
-			}); err != nil {
-				return synced, fmt.Errorf("githubissues: advance cursor: %w", err)
-			}
-			return synced, nil
-		}
-		page++
+		s.linkedPulls.markScanned(issue.IssueID, issue.ExternalUpdatedAt.Time)
 	}
-	s.pullsResume.set(key, pullsResume{stopAt: stopAt, page: page, newest: newest})
+	s.linkedPulls.clearResume(key)
 	return synced, nil
+}
+
+// scanTimelinePage reads one page of a tracked issue's timeline and mirrors
+// the pull requests on it. more is true when the page was full.
+func (s *Service) scanTimelinePage(ctx context.Context, repo *Repo, issue db.ListTrackedGitHubIssuesInRepoRow, page int, budget *int) (synced int, more bool, err error) {
+	if *budget <= 0 {
+		return 0, false, errLinkedBudget
+	}
+	*budget--
+	perPage := s.pollPageSize()
+	query := url.Values{"per_page": {strconv.Itoa(perPage)}, "page": {strconv.Itoa(page)}}
+	resp, err := repo.Do(ctx, http.MethodGet, fmt.Sprintf("/issues/%d/timeline?%s", issue.ExternalNumber, query.Encode()), nil)
+	if err != nil {
+		return 0, false, err
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusMovedPermanently, http.StatusNotFound, http.StatusGone:
+		// Deleted or transferred: the refresh of the issue deals with it.
+		return 0, false, nil
+	default:
+		return 0, false, fmt.Errorf("github GET /issues/{n}/timeline: unexpected status %d", resp.StatusCode)
+	}
+	var events []timelineEvent
+	if err := json.Unmarshal(resp.Body, &events); err != nil {
+		return 0, false, errors.New("github GET /issues/{n}/timeline: malformed response")
+	}
+	for _, ev := range events {
+		if ev.Event != "cross-referenced" || ev.Source.Issue == nil || !ev.Source.Issue.isPull() {
+			continue
+		}
+		changed, err := s.mirrorLinkedPull(ctx, repo, issue.IssueID, *ev.Source.Issue, budget)
+		if err != nil {
+			return synced, false, err
+		}
+		if changed {
+			synced++
+		}
+	}
+	return synced, len(events) >= perPage, nil
+}
+
+// mirrorLinkedPull reads and mirrors one pull request seen on the timeline of
+// tracked issue issueID, if it closes a tracked issue (see pollLinkedPulls).
+// A pull request in a repository the workspace has not registered is left
+// alone without a request.
+func (s *Service) mirrorLinkedPull(ctx context.Context, repo *Repo, issueID pgtype.UUID, src timelineSource, budget *int) (bool, error) {
+	name, ok := src.repo()
+	if src.Number <= 0 || !ok {
+		return false, nil
+	}
+	// A repository renamed since it was registered is still the same id.
+	prRepo := repo
+	if src.Repository.ID != repo.id && !name.sameAs(repo.name) {
+		other, err := s.RepoClient(ctx, repo.workspaceID, name.owner, name.name)
+		switch {
+		case errors.Is(err, ErrRepoNotRegistered), errors.Is(err, ErrRepoAmbiguous):
+			return false, nil
+		case err != nil:
+			return false, err
+		}
+		prRepo = other
+	}
+	key := linkedKey{issueID: issueID, repoID: prRepo.id, number: src.Number}
+	if at, ok := s.linkedPulls.mirroredAt(key); ok && at.Equal(src.UpdatedAt) {
+		return false, nil
+	}
+	claims, err := s.linkedPullClaims(ctx, prRepo, name, src)
+	if err != nil || !claims {
+		return false, err
+	}
+	if *budget <= 0 {
+		return false, errLinkedBudget
+	}
+	*budget--
+	resp, err := prRepo.Do(ctx, http.MethodGet, fmt.Sprintf("/pulls/%d", src.Number), nil)
+	if err != nil {
+		return false, err
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusMovedPermanently, http.StatusNotFound, http.StatusGone:
+		return false, nil
+	default:
+		return false, fmt.Errorf("github GET /pulls/{n}: unexpected status %d", resp.StatusCode)
+	}
+	var gh githubPull
+	if err := json.Unmarshal(resp.Body, &gh); err != nil {
+		return false, errors.New("github GET /pulls/{n}: malformed response")
+	}
+	if gh.Number != src.Number || gh.UpdatedAt.IsZero() || (gh.State != "open" && gh.State != "closed") {
+		return false, errors.New("github GET /pulls/{n}: pull request without number, state or updated_at")
+	}
+	changed, err := s.pullMirror.MirrorPolledPullRequest(ctx, repo.workspaceID, gh.normalized(prRepo.name))
+	if err != nil {
+		return false, fmt.Errorf("mirror %s pull request %d: %w", prRepo.FullName(), gh.Number, err)
+	}
+	s.linkedPulls.markMirrored(key, src.UpdatedAt)
+	return changed, nil
+}
+
+// linkedPullClaims reports whether a pull request from a timeline is one the
+// poller mirrors: it closes a tracked issue of the workspace, or the poller
+// mirrored it before. name is its repository in GitHub's spelling, which a
+// mirrored row uses when it differs from the registered name only in case
+// (githubPull.normalized).
+func (s *Service) linkedPullClaims(ctx context.Context, prRepo *Repo, name repoName, src timelineSource) (bool, error) {
+	body := ""
+	if src.Body != nil {
+		body = *src.Body
+	}
+	ids, err := s.PullRequestIssues(ctx, prRepo.workspaceID, prRepo.name.owner, prRepo.name.name, src.Title, body)
+	if err != nil || len(ids) > 0 {
+		return len(ids) > 0, err
+	}
+	row, err := db.New(s.db).GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+		WorkspaceID: prRepo.workspaceID, RepoOwner: name.owner, RepoName: name.name, PrNumber: src.Number,
+	})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("githubissues: read mirrored pull request: %w", err)
+	}
+	return row.InstallationID == ghsnapshot.StaticInstallationID, nil
 }
 
 // normalized names the repository as registered, in GitHub's spelling when

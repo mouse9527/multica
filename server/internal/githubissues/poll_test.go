@@ -36,7 +36,11 @@ type fakeIssuesAPI struct {
 	issues   map[int]map[string]any // by number
 	comments map[int64]map[string]any
 	pulls    map[int]map[string]any // by number
-	requests []string
+	// timeline is each issue's cross-references, by issue number.
+	timeline map[int][]timelineRef
+	// linkedSeen is how many requests linkedRequests has counted.
+	linkedSeen int
+	requests   []string
 	// throttle, when set, answers every list request with 429.
 	throttle string
 	// commentsFault, when set, answers that page of an issue's comment
@@ -47,7 +51,7 @@ type fakeIssuesAPI struct {
 }
 
 func newFakeIssuesAPI(t *testing.T) *fakeIssuesAPI {
-	f := &fakeIssuesAPI{t: t, issues: map[int]map[string]any{}, comments: map[int64]map[string]any{}, pulls: map[int]map[string]any{}}
+	f := &fakeIssuesAPI{t: t, issues: map[int]map[string]any{}, comments: map[int64]map[string]any{}, pulls: map[int]map[string]any{}, timeline: map[int][]timelineRef{}}
 	f.server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.server.Close)
 	return f
@@ -104,11 +108,7 @@ func (f *fakeIssuesAPI) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"message":"rate limited"}`))
 		return
 	}
-	if f.serveIssue(w, r) {
-		return
-	}
-	if r.URL.Path == fmt.Sprintf("/repositories/%d/pulls", pollRepoID) {
-		f.servePulls(w, r)
+	if f.serveLinked(w, r) || f.serveIssue(w, r) {
 		return
 	}
 	var items []map[string]any

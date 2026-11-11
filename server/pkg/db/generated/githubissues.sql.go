@@ -299,6 +299,54 @@ func (q *Queries) ListGitHubTokenExpiryRecipients(ctx context.Context) ([]ListGi
 	return items, nil
 }
 
+const listTrackedGitHubIssuesInRepo = `-- name: ListTrackedGitHubIssuesInRepo :many
+SELECT issue_id, external_number, state, external_updated_at FROM issue_external
+WHERE workspace_id = $1
+  AND provider = 'github'
+  AND external_repo_id = $2
+ORDER BY external_number
+`
+
+type ListTrackedGitHubIssuesInRepoParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	ExternalRepoID int64       `json:"external_repo_id"`
+}
+
+type ListTrackedGitHubIssuesInRepoRow struct {
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	ExternalNumber    int32              `json:"external_number"`
+	State             string             `json:"state"`
+	ExternalUpdatedAt pgtype.Timestamptz `json:"external_updated_at"`
+}
+
+// The GitHub issues of one repository that the workspace tracks (imported, or
+// opened from Multica), by number: the issues whose linked pull requests the
+// poller looks for. Read-only on issue_external.
+func (q *Queries) ListTrackedGitHubIssuesInRepo(ctx context.Context, arg ListTrackedGitHubIssuesInRepoParams) ([]ListTrackedGitHubIssuesInRepoRow, error) {
+	rows, err := q.db.Query(ctx, listTrackedGitHubIssuesInRepo, arg.WorkspaceID, arg.ExternalRepoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTrackedGitHubIssuesInRepoRow{}
+	for rows.Next() {
+		var i ListTrackedGitHubIssuesInRepoRow
+		if err := rows.Scan(
+			&i.IssueID,
+			&i.ExternalNumber,
+			&i.State,
+			&i.ExternalUpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkspaceGitHubRepoRefs = `-- name: ListWorkspaceGitHubRepoRefs :many
 SELECT resource_ref FROM project_resource
 WHERE workspace_id = $1

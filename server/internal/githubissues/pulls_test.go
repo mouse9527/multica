@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,40 +29,112 @@ func (f *fakeIssuesAPI) putPull(number int, title, body, state string, updated t
 	}
 }
 
-// servePulls serves the pulls list the way GitHub documents it: no "since",
-// newest updated_at first when asked for sort=updated&direction=desc.
-// Called with f.mu held.
-func (f *fakeIssuesAPI) servePulls(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	if q.Get("state") != "all" || q.Get("sort") != "updated" || q.Get("direction") != "desc" || q.Has("since") {
-		f.t.Errorf("pulls listed with %s, want state=all, updated desc, no since", r.URL.RawQuery)
-	}
-	items := make([]map[string]any, 0, len(f.pulls))
-	for _, it := range f.pulls {
-		items = append(items, it)
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		a, b := items[i]["updated_at"].(string), items[j]["updated_at"].(string)
-		if a != b {
-			return a > b
-		}
-		return items[i]["number"].(int) > items[j]["number"].(int)
-	})
-	perPage, _ := strconv.Atoi(q.Get("per_page"))
-	page, _ := strconv.Atoi(q.Get("page"))
-	start := min((page-1)*perPage, len(items))
-	end := min(start+perPage, len(items))
-	_ = json.NewEncoder(w).Encode(items[start:end])
+// mergePull merges pull request number at at.
+func (f *fakeIssuesAPI) mergePull(number int, at time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	stamp := at.UTC().Format(time.RFC3339)
+	pr := f.pulls[number]
+	pr["state"], pr["merged_at"], pr["closed_at"], pr["updated_at"] = "closed", stamp, stamp, stamp
 }
 
-func (f *fakeIssuesAPI) pullRequests() int {
-	n := 0
-	for _, r := range f.seen() {
-		if strings.HasPrefix(r, fmt.Sprintf("/repositories/%d/pulls?", pollRepoID)) {
-			n++
+// mention records that pull request pr of acme/widgets mentions issue: a
+// "cross-referenced" event on the issue's timeline, which shows the pull
+// request as it is when the timeline is read.
+func (f *fakeIssuesAPI) mention(issue, pr int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.timeline[issue] = append(f.timeline[issue], timelineRef{pr: pr})
+}
+
+// mentionFrom records a mention of issue by a pull request of another
+// repository, given as the source GitHub would show.
+func (f *fakeIssuesAPI) mentionFrom(issue int, source map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.timeline[issue] = append(f.timeline[issue], timelineRef{source: source})
+}
+
+// timelineRef is one cross-reference on an issue's timeline: a pull request
+// of acme/widgets by number, or a fixed source.
+type timelineRef struct {
+	pr     int
+	source map[string]any
+}
+
+// serveLinked serves an issue's timeline and single pull requests. Called
+// with f.mu held.
+func (f *fakeIssuesAPI) serveLinked(w http.ResponseWriter, r *http.Request) bool {
+	base := fmt.Sprintf("/repositories/%d/", pollRepoID)
+	if strings.HasPrefix(r.URL.Path, base+"pulls") {
+		n, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, base+"pulls/"))
+		pr, ok := f.pulls[n]
+		if err != nil || !ok {
+			f.t.Errorf("unexpected pull request read %s?%s", r.URL.Path, r.URL.RawQuery)
+			w.WriteHeader(http.StatusNotFound)
+			return true
+		}
+		_ = json.NewEncoder(w).Encode(pr)
+		return true
+	}
+	rest, ok := strings.CutPrefix(r.URL.Path, base+"issues/")
+	numberPart, timeline := strings.CutSuffix(rest, "/timeline")
+	if !ok || !timeline {
+		return false
+	}
+	number, _ := strconv.Atoi(numberPart)
+	if _, found := f.issues[number]; !found {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+		return true
+	}
+	// A timeline holds more than cross-references; the poller skips the rest.
+	events := []map[string]any{{"event": "labeled", "label": map[string]any{"name": "bug"}}}
+	for _, ref := range f.timeline[number] {
+		source := ref.source
+		if source == nil {
+			pr := f.pulls[ref.pr]
+			source = map[string]any{
+				"number": ref.pr, "title": pr["title"], "body": pr["body"], "state": pr["state"],
+				"updated_at":   pr["updated_at"],
+				"pull_request": map[string]any{"merged_at": pr["merged_at"]},
+				"repository":   map[string]any{"id": pollRepoID, "name": "widgets", "owner": map[string]any{"login": "acme"}},
+			}
+		}
+		events = append(events, map[string]any{"event": "cross-referenced", "source": map[string]any{"type": "issue", "issue": source}})
+	}
+	q := r.URL.Query()
+	perPage, _ := strconv.Atoi(q.Get("per_page"))
+	page, _ := strconv.Atoi(q.Get("page"))
+	if perPage <= 0 || page <= 0 {
+		f.t.Errorf("timeline read without paging: %s", r.URL.RawQuery)
+		perPage, page = 30, 1
+	}
+	start := min((page-1)*perPage, len(events))
+	end := min(start+perPage, len(events))
+	_ = json.NewEncoder(w).Encode(events[start:end])
+	return true
+}
+
+// linkedRequests counts the timeline and pull request reads since the last
+// call, and fails on any read of the pull request list.
+func (f *fakeIssuesAPI) linkedRequests(t *testing.T) (timelines, pulls int) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.requests[f.linkedSeen:] {
+		path, _, _ := strings.Cut(r, "?")
+		switch {
+		case strings.HasSuffix(path, "/timeline"):
+			timelines++
+		case strings.HasPrefix(path, fmt.Sprintf("/repositories/%d/pulls/", pollRepoID)):
+			pulls++
+		case strings.Contains(path, "/pulls"):
+			t.Errorf("pull request list read: %s", r)
 		}
 	}
-	return n
+	f.linkedSeen = len(f.requests)
+	return timelines, pulls
 }
 
 // fakePullMirror records what the poller hands to the PR mirror.
@@ -94,14 +165,6 @@ func (m *fakePullMirror) numbers() []int32 {
 	}
 	m.got = nil
 	return out
-}
-
-func (env *pollEnv) pullsCursor(t *testing.T) (time.Time, bool) {
-	t.Helper()
-	var at pgtype.Timestamptz
-	env.f.QueryRow(t, `SELECT pulls_cursor FROM github_repo_sync WHERE workspace_id = $1 AND repo_id = $2`,
-		env.ws, pollRepoID).Scan(&at)
-	return at.Time, at.Valid
 }
 
 func TestClosingRefs(t *testing.T) {
@@ -140,122 +203,133 @@ func TestPullNormalizedKeepsRegisteredRepository(t *testing.T) {
 	}
 }
 
-// TestPollPullsReadsDownToCursor: the first read takes the whole list, later
-// ones stop at the first pull request older than the cursor's overlap window,
-// and nothing is read without a mirror.
-func TestPollPullsReadsDownToCursor(t *testing.T) {
+// TestPollLinkedPullsMirrorsOnlyTrackedIssues is the acceptance path: of a
+// thousand pull requests, the two that close tracked issues are mirrored,
+// found through the tracked issues' timelines without reading the pull
+// request list. A pull request closing an issue nobody imported, and one that
+// only mentions a tracked issue, stay out; an unchanged pull request is not
+// read again, and a merge is picked up the next cycle.
+func TestPollLinkedPullsMirrorsOnlyTrackedIssues(t *testing.T) {
 	env := newPollEnv(t)
-	env.svc.pollLimits.perPage = 2
-	t0 := testNow.Add(-5 * time.Hour)
-	for n := 1; n <= 5; n++ {
-		env.api.putPull(n, fmt.Sprintf("PR %d", n), "", "open", t0.Add(time.Duration(n)*time.Hour))
+	for n := 1; n <= 3; n++ {
+		env.api.putIssue(n, "stranger", fmt.Sprintf("Issue %d", n), "", "open", testNow.Add(-time.Hour), nil)
 	}
+	env.importIssue(t, 1)
+	env.importIssue(t, 2)
+	t0 := testNow.Add(-30 * time.Minute)
+	for n := 1; n <= 1000; n++ {
+		env.api.putPull(n, fmt.Sprintf("PR %d", n), "", "open", t0)
+	}
+	env.api.putPull(7, "Fix crash", "Closes #1", "open", t0)
+	env.api.putPull(8, "Fix login", "fixes acme/widgets#2", "open", t0)
+	env.api.putPull(9, "Fix untracked", "Closes #3", "open", t0)
+	env.api.putPull(10, "Refactor", "see #1", "open", t0)
+	env.api.mention(1, 7)
+	env.api.mention(1, 10)
+	env.api.mention(2, 8)
+	env.api.mention(3, 9)
 
+	// Without a mirror no pull request is looked for.
 	env.poll(t)
-	if n := env.api.pullRequests(); n != 0 {
-		t.Fatalf("pulls read %d times without a mirror", n)
+	if timelines, pulls := env.api.linkedRequests(t); timelines != 0 || pulls != 0 {
+		t.Fatalf("read %d timelines and %d pull requests without a mirror", timelines, pulls)
 	}
 
 	mirror := &fakePullMirror{}
 	env.svc.SetPullRequestMirror(mirror)
 	*env.now = testNow.Add(pollInterval)
-	if stats := env.poll(t); stats.Failed != 0 || stats.Synced != 5 {
-		t.Fatalf("first read stats = %+v", stats)
+	if stats := env.poll(t); stats.Failed != 0 || stats.Synced != 2 {
+		t.Fatalf("stats = %+v, want 2 pull requests stored", stats)
 	}
-	if got := mirror.numbers(); !slices.Equal(got, []int32{5, 4, 3, 2, 1}) {
-		t.Fatalf("first read mirrored %v, want newest first 5..1", got)
+	got := mirror.numbers()
+	slices.Sort(got)
+	if !slices.Equal(got, []int32{7, 8}) {
+		t.Fatalf("mirrored %v, want only [7 8]", got)
 	}
-	if n := env.api.pullRequests(); n != 3 {
-		t.Fatalf("first read took %d requests, want 3 pages", n)
-	}
-	cursor, ok := env.pullsCursor(t)
-	if want := t0.Add(5 * time.Hour); !ok || !cursor.Equal(want) {
-		t.Fatalf("pulls cursor = %v %v, want %v", cursor, ok, want)
+	if timelines, pulls := env.api.linkedRequests(t); timelines != 2 || pulls != 2 {
+		t.Fatalf("read %d timelines and %d pull requests, want the 2 tracked issues' and the 2 closing pull requests", timelines, pulls)
 	}
 
-	// PR 6 opens; PR 5 is inside the overlap window and read again, PR 4 is
-	// older and ends the read.
-	env.api.putPull(6, "PR 6", "Closes #1", "open", testNow.Add(30*time.Second))
+	// Nothing changed: the timelines are read, no pull request.
 	*env.now = testNow.Add(2 * pollInterval)
 	env.poll(t)
-	if got := mirror.numbers(); !slices.Equal(got, []int32{6, 5}) {
-		t.Fatalf("second read mirrored %v, want [6 5]", got)
+	if got := mirror.numbers(); len(got) != 0 {
+		t.Fatalf("unchanged pull requests mirrored again: %v", got)
 	}
-	if n := env.api.pullRequests(); n != 5 {
-		t.Fatalf("pulls requests = %d, want 5 (2 for the second read)", n)
+	if timelines, pulls := env.api.linkedRequests(t); timelines != 2 || pulls != 0 {
+		t.Fatalf("read %d timelines and %d pull requests, want 2 and 0", timelines, pulls)
 	}
-	if cursor, _ := env.pullsCursor(t); !cursor.Equal(testNow.Add(30 * time.Second)) {
-		t.Fatalf("pulls cursor = %v, want PR 6's updated_at", cursor)
+
+	env.api.mergePull(7, testNow.Add(2*pollInterval))
+	*env.now = testNow.Add(3 * pollInterval)
+	env.poll(t)
+	mirror.mu.Lock()
+	merged := slices.Clone(mirror.got)
+	mirror.mu.Unlock()
+	if len(merged) != 1 || merged[0].Number != 7 || merged[0].MergedAt == nil {
+		t.Fatalf("after the merge mirrored %+v, want #7 merged", merged)
+	}
+	if _, pulls := env.api.linkedRequests(t); pulls != 1 {
+		t.Fatalf("read %d pull requests after the merge, want 1", pulls)
 	}
 }
 
-// TestPollPullsResumesAcrossCycles: a first read longer than a cycle's page
-// budget continues where it stopped, the cursor moves only once the read is
-// complete, and a pull request updated during the read is not lost.
-func TestPollPullsResumesAcrossCycles(t *testing.T) {
+// TestPollLinkedPullsKeepsToBudget: timeline pages and pull request reads
+// share a budget per repository per cycle, and a scan that runs out continues
+// at the issue and page where it stopped.
+func TestPollLinkedPullsKeepsToBudget(t *testing.T) {
 	env := newPollEnv(t)
-	env.svc.pollLimits.perPage, env.svc.pollLimits.pages = 2, 1
+	env.svc.pollLimits.perPage, env.svc.pollLimits.pages = 2, 2
+	env.api.putIssue(1, "stranger", "One", "", "open", testNow.Add(-time.Hour), nil)
+	env.api.putIssue(2, "stranger", "Two", "", "open", testNow.Add(-time.Hour), nil)
+	env.importIssue(t, 1)
+	env.importIssue(t, 2)
+	t0 := testNow.Add(-30 * time.Minute)
+	// #1's timeline: a label, then PRs 1-3, so two pages of two.
+	for n := 1; n <= 3; n++ {
+		env.api.putPull(n, fmt.Sprintf("PR %d", n), "Closes #1", "open", t0)
+		env.api.mention(1, n)
+	}
+	env.api.putPull(4, "PR 4", "Closes #2", "open", t0)
+	env.api.mention(2, 4)
 	mirror := &fakePullMirror{}
 	env.svc.SetPullRequestMirror(mirror)
-	t0 := testNow.Add(-5 * time.Hour)
-	for n := 1; n <= 5; n++ {
-		env.api.putPull(n, fmt.Sprintf("PR %d", n), "", "open", t0.Add(time.Duration(n)*10*time.Minute))
-	}
+	env.api.linkedRequests(t)
 
-	env.poll(t)
-	if got := mirror.numbers(); !slices.Equal(got, []int32{5, 4}) {
-		t.Fatalf("cycle 1 mirrored %v", got)
-	}
-	if _, ok := env.pullsCursor(t); ok {
-		t.Fatal("cursor moved before the first read was complete")
-	}
-	// PR 2, not read yet, is updated: it moves to the front of the list.
-	env.api.putPull(2, "PR 2 edited", "", "open", testNow.Add(-time.Minute))
-	for cycle, want := range [][]int32{{4, 3}, {1}} {
-		*env.now = testNow.Add(time.Duration(cycle+1) * pollInterval)
-		env.poll(t)
-		if got := mirror.numbers(); !slices.Equal(got, want) {
-			t.Fatalf("cycle %d mirrored %v, want %v", cycle+2, got, want)
+	var all []int32
+	for cycle := 1; cycle <= 5; cycle++ {
+		*env.now = testNow.Add(time.Duration(cycle) * pollInterval)
+		if stats := env.poll(t); stats.Failed != 0 {
+			t.Fatalf("cycle %d stats = %+v", cycle, stats)
 		}
+		if timelines, pulls := env.api.linkedRequests(t); timelines+pulls > 2 {
+			t.Fatalf("cycle %d sent %d timeline and %d pull request reads, over the budget of 2", cycle, timelines, pulls)
+		}
+		all = append(all, mirror.numbers()...)
 	}
-	cursor, ok := env.pullsCursor(t)
-	if want := t0.Add(50 * time.Minute); !ok || !cursor.Equal(want) {
-		t.Fatalf("cursor after the first read = %v %v, want PR 5's %v", cursor, ok, want)
-	}
-
-	// The next read starts from the front and picks up PR 2.
-	env.svc.pollLimits.pages = 10
-	*env.now = testNow.Add(4 * pollInterval)
-	env.poll(t)
-	if got := mirror.numbers(); !slices.Equal(got, []int32{2, 5}) {
-		t.Fatalf("read after the backfill mirrored %v, want [2 5]", got)
+	slices.Sort(all)
+	if !slices.Equal(all, []int32{1, 2, 3, 4}) {
+		t.Fatalf("mirrored %v over five cycles, want each of 1-4 once", all)
 	}
 }
 
-// TestPollPullsRetriesFailedMirror: a pull request the mirror could not store
-// stops the read without moving the cursor, is recorded as the repository's
-// error, and is stored by the next cycle.
-func TestPollPullsRetriesFailedMirror(t *testing.T) {
+// TestPollLinkedPullsRetriesFailedMirror: a pull request the mirror could not
+// store is recorded as the repository's error and stored by the next cycle.
+func TestPollLinkedPullsRetriesFailedMirror(t *testing.T) {
 	env := newPollEnv(t)
-	mirror := &fakePullMirror{failUntil: map[int32]int{2: 1}}
+	env.api.putIssue(1, "stranger", "Crash", "", "open", testNow.Add(-time.Hour), nil)
+	env.importIssue(t, 1)
+	env.api.putPull(7, "Fix crash", "Closes #1", "open", testNow.Add(-time.Minute))
+	env.api.mention(1, 7)
+	mirror := &fakePullMirror{failUntil: map[int32]int{7: 1}}
 	env.svc.SetPullRequestMirror(mirror)
-	t0 := testNow.Add(-time.Hour)
-	for n := 1; n <= 3; n++ {
-		env.api.putPull(n, fmt.Sprintf("PR %d", n), "", "open", t0.Add(time.Duration(n)*time.Minute))
-	}
 
 	if stats := env.poll(t); stats.Failed != 1 {
 		t.Fatalf("stats = %+v, want the repository failed", stats)
 	}
-	if got := mirror.numbers(); !slices.Equal(got, []int32{3}) {
-		t.Fatalf("mirrored %v before the failure, want [3]", got)
-	}
-	if _, ok := env.pullsCursor(t); ok {
-		t.Fatal("cursor moved past a pull request that was not stored")
-	}
 	var lastError string
 	env.f.QueryRow(t, `SELECT COALESCE(last_error, '') FROM github_repo_sync WHERE workspace_id = $1`, env.ws).Scan(&lastError)
-	if !strings.Contains(lastError, "pull request 2") {
+	if !strings.Contains(lastError, "pull request 7") {
 		t.Fatalf("last_error = %q", lastError)
 	}
 
@@ -263,11 +337,99 @@ func TestPollPullsRetriesFailedMirror(t *testing.T) {
 	if stats := env.poll(t); stats.Failed != 0 {
 		t.Fatalf("retry stats = %+v", stats)
 	}
-	if got := mirror.numbers(); !slices.Equal(got, []int32{3, 2, 1}) {
-		t.Fatalf("retry mirrored %v, want [3 2 1]", got)
+	if got := mirror.numbers(); !slices.Equal(got, []int32{7}) {
+		t.Fatalf("retry mirrored %v, want [7]", got)
 	}
-	if cursor, ok := env.pullsCursor(t); !ok || !cursor.Equal(t0.Add(3*time.Minute)) {
-		t.Fatalf("cursor = %v %v", cursor, ok)
+}
+
+// TestPollLinkedPullsReadsClosedIssueOnce: a closed tracked issue's timeline
+// is read once, and again only after the issue changes on GitHub.
+func TestPollLinkedPullsReadsClosedIssueOnce(t *testing.T) {
+	env := newPollEnv(t)
+	env.api.putIssue(1, "stranger", "Crash", "", "closed", testNow.Add(-time.Hour), nil)
+	env.importIssue(t, 1)
+	env.api.putPull(7, "Fix crash", "Closes #1", "closed", testNow.Add(-time.Hour))
+	env.api.mention(1, 7)
+	mirror := &fakePullMirror{}
+	env.svc.SetPullRequestMirror(mirror)
+	env.api.linkedRequests(t)
+
+	env.poll(t)
+	if got := mirror.numbers(); !slices.Equal(got, []int32{7}) {
+		t.Fatalf("mirrored %v, want [7]", got)
+	}
+	*env.now = testNow.Add(pollInterval)
+	env.poll(t)
+	if timelines, _ := env.api.linkedRequests(t); timelines != 1 {
+		t.Fatalf("closed issue's timeline read %d times over two cycles, want once", timelines)
+	}
+
+	env.api.putIssue(1, "stranger", "Crash", "", "open", testNow.Add(pollInterval+time.Second), nil)
+	*env.now = testNow.Add(2 * pollInterval)
+	env.poll(t)
+	if timelines, _ := env.api.linkedRequests(t); timelines != 1 {
+		t.Fatalf("issue reopened on GitHub: timeline read %d times, want once", timelines)
+	}
+}
+
+// TestPollLinkedPullsSkipsUnregisteredRepositories: a pull request of a
+// repository the workspace has not registered is neither read nor mirrored,
+// however it refers to a tracked issue. One whose repository was renamed
+// since it was registered is the same repository id, and is mirrored under
+// the registered name.
+func TestPollLinkedPullsSkipsUnregisteredRepositories(t *testing.T) {
+	env := newPollEnv(t)
+	env.api.putIssue(1, "stranger", "Crash", "", "open", testNow.Add(-time.Hour), nil)
+	env.importIssue(t, 1)
+	env.api.mentionFrom(1, map[string]any{
+		"number": 5, "title": "Fix upstream", "body": "Closes acme/widgets#1", "state": "open",
+		"updated_at":   testNow.Add(-time.Minute).UTC().Format(time.RFC3339),
+		"pull_request": map[string]any{"merged_at": nil},
+		"repository":   map[string]any{"name": "fork", "owner": map[string]any{"login": "stranger"}},
+	})
+	env.api.putPull(6, "Fix crash", "Closes #1", "open", testNow.Add(-time.Minute))
+	env.api.mentionFrom(1, map[string]any{
+		"number": 6, "title": "Fix crash", "body": "Closes #1", "state": "open",
+		"updated_at":   testNow.Add(-time.Minute).UTC().Format(time.RFC3339),
+		"pull_request": map[string]any{"merged_at": nil},
+		"repository":   map[string]any{"id": pollRepoID, "name": "gadgets", "owner": map[string]any{"login": "acme"}},
+	})
+	mirror := &fakePullMirror{}
+	env.svc.SetPullRequestMirror(mirror)
+	env.api.linkedRequests(t)
+
+	if stats := env.poll(t); stats.Failed != 0 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	mirror.mu.Lock()
+	got := slices.Clone(mirror.got)
+	mirror.mu.Unlock()
+	if len(got) != 1 || got[0].Number != 6 || got[0].Owner != "acme" || got[0].Repo != "widgets" {
+		t.Fatalf("mirrored %+v, want only the renamed repository's #6 as acme/widgets", got)
+	}
+	if _, pulls := env.api.linkedRequests(t); pulls != 1 {
+		t.Fatalf("read %d pull requests, want 1", pulls)
+	}
+}
+
+func TestTimelineSourceRepo(t *testing.T) {
+	var src timelineSource
+	src.Repository.Name, src.Repository.Owner.Login = "Widgets", "Acme"
+	if name, ok := src.repo(); !ok || name != (repoName{owner: "Acme", name: "Widgets"}) {
+		t.Fatalf("repository object: %v %v", name, ok)
+	}
+	for url, want := range map[string]bool{
+		"https://api.github.com/repos/acme/widgets":       true,
+		"https://api.github.com/repos/acme":               false,
+		"https://api.github.com/users/acme/widgets":       false,
+		"https://api.github.com/repos/acme/widgets/extra": false,
+		"": false,
+	} {
+		src := timelineSource{RepositoryURL: url}
+		name, ok := src.repo()
+		if ok != want || (ok && name != (repoName{owner: "acme", name: "widgets"})) {
+			t.Errorf("repo() of %q = %v %v, want ok %v", url, name, ok, want)
+		}
 	}
 }
 
