@@ -469,6 +469,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	if opts.GitHubIssues != nil {
 		h.ExternalComments = opts.GitHubIssues
 		h.IssueViews = opts.GitHubIssues
+		h.GitHubStatuses = opts.GitHubIssues
+		opts.GitHubIssues.SetStatusWriter(h)
 	}
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags

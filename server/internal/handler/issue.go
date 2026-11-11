@@ -4136,6 +4136,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		// A project move remapped the status; guard the key actually written.
 		statusKeyForGuard = params.Status.String
 	}
+	// mouse9527/multica fork: GitHub-native issues (githubissues_hook.go).
+	if h.rejectUnmappedGitHubStatus(w, r, prevIssue, params) {
+		return
+	}
 	if touchedType || touchedID || handoff != nil {
 		if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
 			writeError(w, status, msg)
@@ -4972,6 +4976,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		callerRun := h.agentRunOnIssue(r, callerType, prevIssue)
 		handoff, err := h.applyIssueWorkflow(r.Context(), prevIssue, &params, req.Updates.Status != nil, batchTouchedType || batchTouchedID, false, callerRun)
 		if err != nil {
+			continue
+		}
+		// mouse9527/multica fork: GitHub-native issues (githubissues_hook.go).
+		if h.gitHubStatusRejected(r.Context(), prevIssue, params) {
 			continue
 		}
 		issueStatusGuard := batchStatusKey

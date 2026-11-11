@@ -253,7 +253,7 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 ### 他人新建的 issue
 
 - 本地没有对应 `issue_external` 的 GitHub issue 新建为本地 issue：创建者是同步账号（`IssueCreator`，见「外部作者」），描述是带前缀的原文，不指派任何人，项目是最早登记该仓库的项目，优先级 `none`。同一事务写 `issue_external`，并用 advisory lock 串行化同一 GitHub issue 的写入。工作区编号冲突时按上游的做法修复计数器后重试一次。
-- 初始状态：open → `backlog`；closed → `done`，`state_reason` 为 `not_planned`、`duplicate` 时 `cancelled`。项目工作流不包含该状态时用工作流的第一步（与其他创建入口一致）。**之后的状态变化不在这里映射**，`issue_external.state` 会更新，Multica 状态由状态映射任务（#18）处理。
+- 初始状态：按「状态映射」的规则从 GitHub 的状态与状态标签得出。项目工作流不包含该状态时用工作流的第一步（与其他创建入口一致）。新建 issue 不走 `UpdateIssue`，所以直接落在交接步上时**不触发交接**；之后的状态变化见「状态映射」。
 - 配置的同步账号不可用时（`ErrSyncAccountUnavailable`），这个 issue 和它之后的项都不导入，直到配置修正。
 - 本地删除的 github issue 在 GitHub 上再次更新时会重新导入（GitHub 是唯一写入方）。
 
@@ -306,6 +306,56 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 | `server/cmd/server/router.go` | 功能开启时 `h.IssueViews = opts.GitHubIssues` |
 
 功能关闭时 `IssueViews` 为 nil，三个接口与上游一致。
+
+## 状态映射
+
+GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作区状态目录加项目工作流。代码在 `status.go`。
+
+### GitHub → Multica
+
+| GitHub | Multica |
+|---|---|
+| closed，`state_reason` 为 `not_planned` 或 `duplicate` | cancelled 类：当前已是 cancelled 类就保持，否则 `cancelled` |
+| closed，其他（`completed`、无原因） | done 类：当前已是 done 类就保持，否则 `done` |
+| open，有一个映射到的状态标签 | 标签映射到的状态 |
+| open，没有映射到的状态标签 | 项目默认入口状态：`backlog`；项目工作流不含 `backlog` 时用工作流起始状态（`todo`） |
+| open，有多个映射到的状态标签 | 见下 |
+
+- 状态标签用保留前缀 `status:`，每个项目在 `project_github_settings.status_label_map` 里配置，形如 `{"in_progress": "status:in-progress", "in_review": "status:review"}`（状态 key → 标签名）。标签名比较不区分大小写（GitHub 的标签名不区分大小写唯一）。不以 `status:` 开头的条目、和别的 key 重复的标签忽略并记告警。没有配置时只有入口状态、done 类、cancelled 类可以表达。
+- 带 `status:` 前缀但不在映射里的标签、映射到 done 类或 cancelled 类状态的标签（这两类只由关闭表达）忽略。
+- **同一 issue 出现多个状态标签：** 取 GitHub 标签顺序里的最后一个，并记告警 `several status labels; took the last`。哪个标签最新无法核实：GitHub 的 issue 列表不带每个标签的添加时间，之前见过的标签也没有存。结果只取决于这份快照本身、不看当前状态，所以轮询在重叠窗口里重读同一份快照时不会再改状态（不会来回改派、反复触发运行）。不回写清理多余标签（写 GitHub 属于双写任务）。
+- 算出的状态与当前状态相同时什么都不做，所以只改标题、正文的 GitHub 更新不会动状态；本地状态与 GitHub 等价（例如当前是自定义的 done 类状态而 GitHub 是 closed completed）也不动。
+
+### 走与普通写入相同的入口
+
+- 已有 issue 的状态变化在 issue 事务提交后，由 `StatusWriter.WriteGitHubStatus` 执行。它的实现是 handler 的 `WriteGitHubStatus`：在进程内构造一个 `PUT /api/issues/{id}` 请求、直接调用 `UpdateIssue`，所以和人在 Multica 里改状态是同一条路径：项目工作流校验、进入交接步时改派给步骤处理人并启动运行、`issue:updated` 事件与活动记录、子任务规则。
+- 以谁的身份：同步账号是成员时用它；同步账号是智能体时用工作区最早的所有者（智能体只能在自己的运行里写状态）；同步账号配置了但不可用时报错，不悄悄换人。
+- 写入请求的 context 带标记，`githubissues.IsSyncedWrite(ctx)` 为真，双写不应把这次变化再写回 GitHub。
+- `UpdateIssue` 拒绝（4xx，例如工作流不含该状态）：记告警，不重试（重试结果一样）。其他失败（5xx、409 写入竞争、数据库错误）：这一项失败，流停在这里，下个周期重读这个 issue 再试。
+- 没有接上 `StatusWriter` 时（只在测试里会发生）不同步状态并记告警。
+
+### Multica → GitHub：无法表达的状态拒绝写入
+
+- 对 github issue 改状态时，目标状态必须能在 GitHub 上表达：done 类、cancelled 类、项目入口状态，或在 `status_label_map` 里有标签。否则 `UpdateIssue` 返回 422，`code` 为 `github_status_unmapped`，`allowed_statuses` 列出能用的状态，错误文本提示去项目的 GitHub 设置加 `status:<name>` 标签。不拒绝的话，这个状态会在下一次 GitHub 更新时被覆盖，等于静默丢失。
+- 批量更新里，这样的 issue 和其他逐项校验失败一样被跳过，其余照常更新。
+- 本地 issue、不改状态的写入不受影响。功能关闭时没有这个钩子，行为与上游一致。
+- 在双写（#19）合并之前，Multica 里改的状态不会写到 GitHub；GitHub 上下一次更新这个 issue 时，按上面的规则以 GitHub 为准。
+
+### 已知限制
+
+- 新建 issue（他人在 GitHub 上新建）直接落在交接步时不触发交接，见「他人新建的 issue」。
+- 项目移动、工作流切换时的状态重映射（`MoveTarget`）不经过本节的拒绝钩子。
+- 多个状态标签时不判定哪个最新（需要读 GitHub 的标签事件时间线，多一次请求，本期不做），固定取最后一个。
+
+### 对上游文件的钩子（本节）
+
+| 文件 | 改动 |
+|---|---|
+| `server/internal/handler/handler.go` | `Handler` 增加字段 `GitHubStatuses` |
+| `server/internal/handler/issue.go` | `UpdateIssue` 在工作流校验之后调 `rejectUnmappedGitHubStatus`（3 行）；`BatchUpdateIssues` 同处调 `gitHubStatusRejected`（3 行） |
+| `server/cmd/server/router.go` | 功能开启时设置 `h.GitHubStatuses` 并 `SetStatusWriter(h)` |
+
+钩子实现与 `WriteGitHubStatus` 在 fork 自己的 `server/internal/handler/githubissues_hook.go`。
 
 ## 迁移号段规则
 
