@@ -258,7 +258,7 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 - 每个周期每个登记仓库：issue 流、评论流各至少 1 个列表请求，带 `since`（游标减 2 分钟），页数取决于这段时间里仓库有多少项被更新，每流最多 10 页；读到的项按已跟踪集合过滤，不为未跟踪的 issue 再发任何请求。**从不为了发现未导入的 issue 去翻页读历史**：没有不带 `since` 的列表请求。
 - 导入一个 issue：1 个 `GET /issues/{N}` 加它的全部评论页；再次导入只重读它的评论页。按需刷新同样只读那一个 issue（评论最多 10 页）。
 - 所以与仓库里 issue 总数无关；与已跟踪的 issue 有关的只有导入与按需刷新，加上轮询窗口里被更新的项数（允许的做法：「读取游标之后更新的 issue 并过滤到已跟踪集合」）。
-- PR 轮询（`/pulls`）不在本节，仍按「PR 轮询与关联」读整库 PR，收窄由 #51 处理。
+- PR：不读仓库的 PR 列表。每个周期每个仓库读已跟踪 issue 的时间线（开着的、或关掉但还挂着未合并的轮询 PR 的，每个周期读；其余关掉的在 GitHub 上变了之后读一次，否则每 30 分钟读一次），再为关闭已跟踪 issue、且有变化的 PR 各发 1 个 `GET /pulls/{n}`；两者合计每周期每仓库最多 10 个请求，超出的下个周期接着读。所以与仓库里 PR 总数无关，见「PR 轮询与关联」。
 
 ### 已有 issue 的更新与乱序
 
@@ -394,22 +394,26 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 
 ## PR 轮询与关联
 
-没有 GitHub App 也能在 issue 的 PR 卡片上看到 PR 和 CI。代码在 `pulls.go`（轮询与引用解析）和 `server/internal/handler/githubissues_pulls.go`（写入 PR 镜像）。
+没有 GitHub App 也能在 issue 的 PR 卡片上看到 PR 和 CI。只镜像关闭已跟踪 issue 的 PR，不读仓库的 PR 列表（按需导入，#51）。代码在 `pulls.go`（发现、读取与引用解析）和 `server/internal/handler/githubissues_pulls.go`（写入 PR 镜像）。
 
 ### 轮询
 
-- 在「轮询」的同一个周期里、同一个仓库的 issue 流读到末尾、评论流成功之后读 PR。请求经 `RepoClient`：`GET /repositories/{id}/pulls?state=all&sort=updated&direction=desc`。
-- `pulls` 列表没有 `since`（文档未列出，未在真实 GitHub 上验证），所以按更新时间倒序读，读到第一条早于「`pulls_cursor` 减 2 分钟」的 PR 为止；首次（游标为空）读到列表末尾。读完才把 `pulls_cursor` 推进到这次读到的最大 `updated_at`。
-- 每周期最多 10 页（每页 100 条）。没读完时记下下一页页码，下个周期接着读，游标不动。倒序列表里，读的过程中被更新的 PR 移到最前面，由下一次读取覆盖；其余 PR 只会往后挪，所以按页码接续可能重读、不会漏读。进度只在进程内存里，规则同 issue 流。
-- 某个 PR 写入失败时，这次读取停在这一页，游标不动，错误写进 `github_repo_sync.last_error`，下个周期重试。
-- 列表项没有 `merged` 字段，以 `merged_at` 非空判定已合并；也没有增删行数与可合并状态：已有行保留原值，新行为 0（卡片不显示行数），可合并状态由快照提供，head 变了就清空旧的 `mergeable_state`。
+- 在「轮询」的同一个周期里、同一个仓库的 issue 流读到末尾、评论流成功之后找 PR。请求都经 `RepoClient`。
+- **发现：** 列出这个仓库的已跟踪 issue（有 `issue_external` 的，新查询 `ListTrackedGitHubIssuesInRepo`，只读），读它们的时间线 `GET /repositories/{id}/issues/{N}/timeline`。PR 提到 issue 时（`Closes #N`、`owner/repo#N` 都算）GitHub 在 issue 的时间线上记一条 `cross-referenced` 事件，`source.issue` 是那个 PR 的**当前**状态（标题、正文、`state`、`updated_at`、`pull_request.merged_at`）。只看来源是 PR 的这类事件，其余事件跳过。
+- **读哪些 issue：** 每个周期都读的：开着的已跟踪 issue；关掉了、但还关联着轮询镜像的未合并 PR 的 issue（查询里的 `has_unmerged_pull`：`issue_pull_request` 连 `github_pull_request`，安装 id 为 `StaticInstallationID`、状态不是 `merged`）。这样 issue 被手动关闭后，PR 再修改、关闭、重开或合并都还能同步，PR 不再引用时也能去掉关联。其余关掉的 issue：GitHub 上的 `updated_at`（`issue_external.external_updated_at`）变了就读一次（PR 合并、issue 随之关闭时补上 PR 的最终状态），否则每 30 分钟读一次，用来发现之后才引用它的 PR。
+- **镜像哪些 PR：** 只在 PR 的标题或正文按「与 issue 关联」的规则关闭本工作区的某个已跟踪 issue，或者轮询以前镜像过它（`github_pull_request` 里有安装 id 为 `StaticInstallationID` 的行，这样不再引用的 PR 能去掉关联）时，才 `GET /repositories/{id}/pulls/{n}` 读出完整 PR（head 分支与 SHA）交给镜像。只提到 issue、不带关闭关键词的 PR，和关闭未跟踪 issue 的 PR，不发请求、不入库。
+- **不重复读：** 时间线显示的 PR `updated_at` 与上次从这个 issue 的时间线镜像它时相同，就不再读它。按「issue + PR」记，所以一个 PR 后来被导入的另一个 issue 的时间线看到时会重读一次，补上新关联。
+- **别的仓库的 PR：** 来源 PR 所在仓库没登记在本工作区时跳过，不发请求；登记了就用那个仓库的 `RepoClient` 读。
+- **预算：** 时间线页（每页 100 条）与 PR 读取合计每周期每仓库最多 10 个请求。用完时记下停在哪个 issue 的哪一页，下个周期从那里接着读，按 issue 编号轮转，所以 issue 多时每个 issue 隔几个周期读一次。某个 PR 读取或写入失败时同样停在那一页，错误写进 `github_repo_sync.last_error`，下个周期重读。以上进度只在进程内存里：重启后、或在另一个副本上，每个已跟踪 issue 与关联 PR 会再读一次。
+- `pulls_cursor` 列不再使用（不改表）。
+- 以 `merged_at` 非空判定已合并；不读增删行数与可合并状态：已有行保留原值，新行为 0（卡片不显示行数），可合并状态由快照提供，head 变了就清空旧的 `mergeable_state`。
 - 仓库名用登记的名字；与 GitHub 返回的 `base.repo` 只差大小写时用 GitHub 的写法，这样与 App webhook 写的是同一行（`github_pull_request` 按 owner/name 区分大小写）。仓库改名后仍用登记的名字，因为快照白名单只认登记的名字。
 
 ### 写入 PR 镜像
 
 - `mirrorPullRequestForWorkspace`（`handler/github.go`）的入参从 webhook 载荷改成归一化结构 `prMirrorInput`；webhook 用 `ghPullRequestPayload.mirrorInput()` 转换，行为不变。轮询到的 PR 经 `Handler.MirrorPolledPullRequest` 走同一个函数，安装 id 是 `StaticInstallationID`，之后放进快照刷新队列（合并时另外刷新冲突监听），CI 状态由静态来源读取。
 - 已有一行且它的安装 id 是真实的 App 安装 id 时，这一行归 App webhook 维护，轮询不改它。`updated_at` 比已存的旧时什么都不写。
-- **关联失败可恢复：** 读引用失败、读工作区失败、关联的读写失败都会作为错误返回给轮询器（webhook 照旧只记日志）。轮询器因此不推进游标，下个周期重读这个 PR；`updated_at` 与已存的相同的快照会再走一遍镜像，补上关联，不需要有人改 PR。只有新行或更新的快照才算「有变化」；快照队列只在有变化、或已有快照不是当前 head 时才入队。重叠窗口里的重读会再发一次 `pull_request:updated`。
+- **关联失败可恢复：** 读引用失败、读工作区失败、关联的读写失败都会作为错误返回给轮询器（webhook 照旧只记日志）。轮询器因此不记下这个 PR 已镜像，下个周期重读它；`updated_at` 与已存的相同的快照会再走一遍镜像，补上关联，不需要有人改 PR。只有新行或更新的快照才算「有变化」；快照队列只在有变化、或已有快照不是当前 head 时才入队。重读会再发一次 `pull_request:updated`。
 
 ### 与 issue 关联
 
@@ -422,9 +426,10 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 
 ### 已知限制
 
-- `pulls` 列表的排序参数、`/repositories/{id}/pulls` 路径、静态令牌读 check-runs 未在真实 GitHub 上验证，见 PR 的 Owner 实测步骤。
+- 已在公开仓库上匿名读取核实：同仓库的 `Closes #N` 与全名写法 `owner/repo#N` 都会在 issue 时间线上产生 `cross-referenced` 事件，且事件里的 PR 是当前状态（含 `merged_at`）。跨仓库 PR、按 id 寻址的 `/repositories/{id}/issues/{N}/timeline` 与 `/repositories/{id}/pulls/{n}`、静态令牌读 check-runs 未在真实 GitHub 上验证，见 PR 的 Owner 实测步骤。
 - CI 变化不会改变 PR 的 `updated_at`，轮询发现不了。之后的 CI 状态靠上游已有的刷新：打开 issue 时快照过期就刷新，后台定时刷新状态未定的 PR。
-- 一个 issue 先被 PR 引用、后被导入时，要等这个 PR 下次更新才会关联。
+- 已关闭、没有未合并关联 PR 的 issue，被新 PR 引用时最长要 30 分钟才发现。
+- 一个 issue 先被 PR 引用、后被导入时，导入后的下一个周期读它的时间线就会关联，不再需要等 PR 更新。
 
 ## 双写、意图记录与署名
 

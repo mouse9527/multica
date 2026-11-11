@@ -72,8 +72,9 @@ type Service struct {
 	commentDeleter CommentDeleter
 	// pullMirror stores polled pull requests; nil leaves them unread.
 	pullMirror PullRequestMirror
-	// pullsResume is where each pulls read that stopped early continues.
-	pullsResume pullsResumeStore
+	// linkedPulls is the in-memory state of the scan for pull requests of
+	// tracked issues.
+	linkedPulls linkedPullsState
 	// pollLimits overrides the page size and budget in tests; zero values
 	// keep the defaults.
 	pollLimits struct{ perPage, pages int }
