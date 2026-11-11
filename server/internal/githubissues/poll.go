@@ -37,16 +37,10 @@ const (
 	// whose updated_at GitHub reports late is not skipped.
 	pollOverlap = 2 * time.Minute
 	pollPerPage = 100
-	// pollPagesPerStream bounds the pages of one stream in one cycle that
-	// reach past the cursor the cycle started from; a stream with more to
-	// read continues in the next cycle from its cursor.
+	// pollPagesPerStream bounds the requests of one stream in one cycle; a
+	// stream with more to read continues in the next cycle where it stopped
+	// (streamResume).
 	pollPagesPerStream = 10
-	// pollRereadPagesPerStream bounds the pages that only re-read items at or
-	// before that cursor (the overlap). They do not count against
-	// pollPagesPerStream: the cursor is a timestamp alone, so a cycle that
-	// stopped inside a run of items sharing one second has to read through
-	// the whole run again before it can get past it.
-	pollRereadPagesPerStream = 100
 )
 
 // StartPolling registers the poll job on a scheduler of its own and runs it
@@ -316,6 +310,53 @@ func (st stream) cursorParams(repo *Repo, newest time.Time) db.AdvanceGithubRepo
 	return p
 }
 
+// streamKey names one stream of one repository in one workspace.
+type streamKey struct {
+	workspaceID pgtype.UUID
+	repoID      int64
+	comments    bool
+}
+
+// streamResume is where a stream that stopped before its end asks next: the
+// "since" and page number of its next request. The cursor alone cannot say
+// this, as it is only a timestamp: a run of items sharing one second that is
+// longer than a cycle's page budget would otherwise be re-read from its start
+// every cycle and never left. Kept in memory: after a restart, or on a
+// replica that has not read the stream yet, the stream starts over from the
+// cursor once and resumes from there on.
+type streamResume struct {
+	since time.Time
+	page  int
+}
+
+// resumeStore holds the streamResume of every stream that stopped early.
+type resumeStore struct {
+	mu sync.Mutex
+	at map[streamKey]streamResume
+}
+
+func (r *resumeStore) get(key streamKey) (streamResume, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	at, ok := r.at[key]
+	return at, ok
+}
+
+func (r *resumeStore) set(key streamKey, at streamResume) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.at == nil {
+		r.at = map[streamKey]streamResume{}
+	}
+	r.at[key] = at
+}
+
+func (r *resumeStore) clear(key streamKey) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.at, key)
+}
+
 // streamItem is the part of every listed item the stream itself reads.
 type streamItem struct {
 	UpdatedAt time.Time `json:"updated_at"`
@@ -334,11 +375,12 @@ type streamItem struct {
 // an unread item onto an already-read page. Only when a whole page shares
 // that second does the stream step to the next page number.
 //
-// Only pages that reach past the starting cursor count against
-// pollPagesPerStream. A cycle that ran out of pages inside a run of items
-// sharing one second leaves the cursor on that second; the next cycle re-reads
-// the run for free and spends its budget beyond it, so the stream always gets
-// past the run instead of re-reading the same pages every cycle.
+// A stream that stops before its end (page budget spent, cycle out of time,
+// an item failed) records where its next request would have gone, and the
+// next cycle continues there instead of from cursor minus pollOverlap, so a
+// stream always moves forward however long a run of one second is. A
+// recorded position behind the overlap window (another replica has read
+// further since) is dropped in favor of the cursor.
 //
 // caughtUp is true when the stream reached its end within the page budget.
 func (s *Service) readStream(ctx context.Context, repo *Repo, st stream, cursor pgtype.Timestamptz,
@@ -348,16 +390,23 @@ func (s *Service) readStream(ctx context.Context, repo *Repo, st stream, cursor 
 		since = cursor.Time.Add(-pollOverlap)
 	}
 	page := 1
-	q := db.New(s.db)
-	for advancing, rereading := 0, 0; advancing < pollPagesPerStream; {
-		if rereading == pollRereadPagesPerStream {
-			s.logger.Warn("github issues poll: overlap too large to re-read in one cycle",
-				"repo", repo, "stream", st.path, "pages", rereading)
-			return false, nil
+	key := streamKey{workspaceID: repo.workspaceID, repoID: repo.id, comments: st.comments}
+	if at, ok := s.pollResume.get(key); ok && !at.since.Before(since) {
+		since, page = at.since, at.page
+	}
+	defer func() {
+		if caughtUp {
+			s.pollResume.clear(key)
+		} else {
+			s.pollResume.set(key, streamResume{since: since, page: page})
 		}
+	}()
+	perPage, pages := s.pollPageSize(), s.pollPageBudget()
+	q := db.New(s.db)
+	for range pages {
 		query := url.Values{
 			"sort": {"updated"}, "direction": {"asc"},
-			"per_page": {strconv.Itoa(pollPerPage)}, "page": {strconv.Itoa(page)},
+			"per_page": {strconv.Itoa(perPage)}, "page": {strconv.Itoa(page)},
 		}
 		if !st.comments {
 			query.Set("state", "all")
@@ -398,13 +447,8 @@ func (s *Service) readStream(ctx context.Context, repo *Repo, st stream, cursor 
 		if handleErr != nil {
 			return false, handleErr
 		}
-		if len(items) < pollPerPage {
+		if len(items) < perPage {
 			return true, nil
-		}
-		if !cursor.Valid || newest.After(cursor.Time) {
-			advancing++
-		} else {
-			rereading++
 		}
 		if next := newest.Add(-time.Second); next.After(since) {
 			since, page = next, 1
@@ -413,4 +457,20 @@ func (s *Service) readStream(ctx context.Context, repo *Repo, st stream, cursor 
 		}
 	}
 	return false, nil
+}
+
+// pollPageSize and pollPageBudget are pollPerPage and pollPagesPerStream
+// unless a test made them smaller.
+func (s *Service) pollPageSize() int {
+	if s.pollLimits.perPage > 0 {
+		return s.pollLimits.perPage
+	}
+	return pollPerPage
+}
+
+func (s *Service) pollPageBudget() int {
+	if s.pollLimits.pages > 0 {
+		return s.pollLimits.pages
+	}
+	return pollPagesPerStream
 }

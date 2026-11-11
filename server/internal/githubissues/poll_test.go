@@ -443,6 +443,78 @@ func TestPollGetsPastSharedTimestampsOverCycles(t *testing.T) {
 	}
 }
 
+// TestPollResumesRunsLongerThanAnyCycle shrinks the page size and budget so
+// a run on one second is five cycles' worth of pages: no single cycle, nor a
+// cycle starting over from the cursor, can read through it. Each cycle must
+// continue where the last one stopped, and after a restart has dropped that
+// position the stream starts over once and again moves forward, until the
+// newer issue and its comment arrive.
+func TestPollResumesRunsLongerThanAnyCycle(t *testing.T) {
+	env := newPollEnv(t)
+	env.svc.pollLimits.perPage, env.svc.pollLimits.pages = 10, 3
+	bulk := testNow.Add(-time.Hour)
+	const runLength = 150 // 15 pages of 10, against 3 pages per cycle
+	for n := 1; n <= runLength; n++ {
+		env.api.putIssue(n, "stranger", "Imported "+strconv.Itoa(n), "", "open", bulk, nil)
+	}
+	newer := runLength + 1
+	env.api.putIssue(newer, "stranger", "After the import", "", "open", bulk.Add(time.Minute), nil)
+	env.api.putComment(901, newer, "stranger", "On the newer issue", bulk.Add(2*time.Minute))
+
+	imported := func() int {
+		return env.count(t, `SELECT count(*) FROM issue_external WHERE workspace_id = $1`, env.ws)
+	}
+	issueRequests := func() int {
+		n := 0
+		for _, r := range env.api.seen() {
+			if strings.HasPrefix(r, fmt.Sprintf("/repositories/%d/issues?", pollRepoID)) {
+				n++
+			}
+		}
+		return n
+	}
+	previous, cycles := 0, 0
+	for imported() < runLength+1 {
+		cycles++
+		// 16 pages at 3 per cycle is 6 cycles; the restart costs the pages
+		// read before it once more.
+		if cycles > 12 {
+			t.Fatalf("still %d of %d issues after %d cycles: the stream is not moving forward", imported(), runLength+1, cycles-1)
+		}
+		if cycles == 3 {
+			// A restart: the in-memory position is gone, only the cursor is left.
+			env.svc.pollResume.mu.Lock()
+			env.svc.pollResume.at = nil
+			env.svc.pollResume.mu.Unlock()
+		}
+		before := issueRequests()
+		*env.now = testNow.Add(time.Duration(cycles) * pollInterval)
+		if stats := env.poll(t); stats.Failed != 0 {
+			t.Fatalf("cycle %d stats = %+v", cycles, stats)
+		}
+		if sent := issueRequests() - before; sent > 3 {
+			t.Fatalf("cycle %d sent %d issue requests, budget is 3", cycles, sent)
+		}
+		got := imported()
+		if cycles < 3 && got <= previous {
+			t.Fatalf("cycle %d imported nothing new (%d issues)", cycles, got)
+		}
+		previous = got
+	}
+	if n := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws); n != runLength+1 {
+		t.Fatalf("issues = %d, want %d without duplicates", n, runLength+1)
+	}
+	// The comments stream runs once the issues stream has caught up: in the
+	// cycle that imported the newer issue, or the next.
+	if n := env.count(t, `SELECT count(*) FROM comment_external WHERE workspace_id = $1 AND external_id = 901`, env.ws); n != 1 {
+		*env.now = testNow.Add(time.Duration(cycles+1) * pollInterval)
+		env.poll(t)
+		if n := env.count(t, `SELECT count(*) FROM comment_external WHERE workspace_id = $1 AND external_id = 901`, env.ws); n != 1 {
+			t.Fatal("comment on the newer issue not imported once the issues stream caught up")
+		}
+	}
+}
+
 // TestPollBacksOffWhenRateLimited stops the cycle at the first throttled
 // answer and sends nothing until GitHub's Retry-After has passed.
 func TestPollBacksOffWhenRateLimited(t *testing.T) {
