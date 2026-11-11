@@ -392,6 +392,57 @@ func TestPollPagesPastSharedTimestamps(t *testing.T) {
 	}
 }
 
+// TestPollGetsPastSharedTimestampsOverCycles is a bulk import larger than one
+// cycle's page budget, all on one second, with a newer issue and a comment on
+// it after the run. The cursor can only stop on that second, so the next cycle
+// must re-read the run and still get past it, rather than re-reading the same
+// pages every cycle and never reaching the newer issue or the comments.
+func TestPollGetsPastSharedTimestampsOverCycles(t *testing.T) {
+	env := newPollEnv(t)
+	bulk := testNow.Add(-time.Hour)
+	const runLength = 1200 // more than pollPagesPerStream pages of pollPerPage
+	for n := 1; n <= runLength; n++ {
+		env.api.putIssue(n, "stranger", "Imported "+strconv.Itoa(n), "", "open", bulk, nil)
+	}
+	newer := runLength + 1
+	env.api.putIssue(newer, "stranger", "After the import", "", "open", bulk.Add(10*time.Minute), nil)
+	env.api.putComment(901, newer, "stranger", "On the newer issue", bulk.Add(11*time.Minute))
+
+	first := env.poll(t)
+	if first.Failed != 0 || first.Synced >= runLength {
+		t.Fatalf("first cycle stats = %+v, want a partial import within the page budget", first)
+	}
+	*env.now = testNow.Add(pollInterval)
+	if stats := env.poll(t); stats.Failed != 0 {
+		t.Fatalf("second cycle stats = %+v", stats)
+	}
+	if n := env.count(t, `SELECT count(DISTINCT external_number) FROM issue_external WHERE workspace_id = $1`, env.ws); n != runLength+1 {
+		t.Fatalf("after two cycles imported %d issues, want %d", n, runLength+1)
+	}
+	if got := env.issue(t, newer); got.title != "After the import" {
+		t.Fatalf("newer issue = %+v", got)
+	}
+	// The issues stream caught up, so the comments stream ran too.
+	if n := env.count(t, `SELECT count(*) FROM comment_external WHERE workspace_id = $1 AND external_id = 901`, env.ws); n != 1 {
+		t.Fatalf("comment on the newer issue not imported after two cycles")
+	}
+	var cursor time.Time
+	env.f.QueryRow(t, `SELECT issues_cursor FROM github_repo_sync WHERE workspace_id = $1`, env.ws).Scan(&cursor)
+	if !cursor.Equal(bulk.Add(10 * time.Minute)) {
+		t.Fatalf("issues_cursor = %v, want the newer issue's updated_at", cursor)
+	}
+
+	// Later cycles still catch up every time: the run sits inside no overlap
+	// window any more, and nothing is imported twice.
+	*env.now = testNow.Add(2 * pollInterval)
+	if stats := env.poll(t); stats.Synced != 0 || stats.Failed != 0 {
+		t.Fatalf("third cycle stats = %+v, want nothing new", stats)
+	}
+	if n := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws); n != runLength+1 {
+		t.Fatalf("issues = %d, want %d", n, runLength+1)
+	}
+}
+
 // TestPollBacksOffWhenRateLimited stops the cycle at the first throttled
 // answer and sends nothing until GitHub's Retry-After has passed.
 func TestPollBacksOffWhenRateLimited(t *testing.T) {

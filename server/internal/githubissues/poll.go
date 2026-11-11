@@ -37,9 +37,16 @@ const (
 	// whose updated_at GitHub reports late is not skipped.
 	pollOverlap = 2 * time.Minute
 	pollPerPage = 100
-	// pollPagesPerStream bounds the requests of one stream in one cycle; a
-	// stream with more to read continues in the next cycle from its cursor.
+	// pollPagesPerStream bounds the pages of one stream in one cycle that
+	// reach past the cursor the cycle started from; a stream with more to
+	// read continues in the next cycle from its cursor.
 	pollPagesPerStream = 10
+	// pollRereadPagesPerStream bounds the pages that only re-read items at or
+	// before that cursor (the overlap). They do not count against
+	// pollPagesPerStream: the cursor is a timestamp alone, so a cycle that
+	// stopped inside a run of items sharing one second has to read through
+	// the whole run again before it can get past it.
+	pollRereadPagesPerStream = 100
 )
 
 // StartPolling registers the poll job on a scheduler of its own and runs it
@@ -327,6 +334,12 @@ type streamItem struct {
 // an unread item onto an already-read page. Only when a whole page shares
 // that second does the stream step to the next page number.
 //
+// Only pages that reach past the starting cursor count against
+// pollPagesPerStream. A cycle that ran out of pages inside a run of items
+// sharing one second leaves the cursor on that second; the next cycle re-reads
+// the run for free and spends its budget beyond it, so the stream always gets
+// past the run instead of re-reading the same pages every cycle.
+//
 // caughtUp is true when the stream reached its end within the page budget.
 func (s *Service) readStream(ctx context.Context, repo *Repo, st stream, cursor pgtype.Timestamptz,
 	handle func(items []json.RawMessage) (int, error)) (caughtUp bool, err error) {
@@ -336,7 +349,12 @@ func (s *Service) readStream(ctx context.Context, repo *Repo, st stream, cursor 
 	}
 	page := 1
 	q := db.New(s.db)
-	for range pollPagesPerStream {
+	for advancing, rereading := 0, 0; advancing < pollPagesPerStream; {
+		if rereading == pollRereadPagesPerStream {
+			s.logger.Warn("github issues poll: overlap too large to re-read in one cycle",
+				"repo", repo, "stream", st.path, "pages", rereading)
+			return false, nil
+		}
 		query := url.Values{
 			"sort": {"updated"}, "direction": {"asc"},
 			"per_page": {strconv.Itoa(pollPerPage)}, "page": {strconv.Itoa(page)},
@@ -382,6 +400,11 @@ func (s *Service) readStream(ctx context.Context, repo *Repo, st stream, cursor 
 		}
 		if len(items) < pollPerPage {
 			return true, nil
+		}
+		if !cursor.Valid || newest.After(cursor.Time) {
+			advancing++
+		} else {
+			rereading++
 		}
 		if next := newest.Add(-time.Second); next.After(since) {
 			since, page = next, 1
