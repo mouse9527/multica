@@ -5,10 +5,11 @@
 ## 设计要点
 
 - **GitHub 是唯一写入方。** Multica 里对 github issue 的标题、正文、状态、评论的写入先写 GitHub，GitHub 接受后才落库（双写）；结果未知的写入不自动重试，过了宽限期找不到就交给人确认。见「双写、意图记录与署名」。
-- **读 = 轮询 + 按需刷新 + 每日对账，只看已导入的 issue。** GitHub 上的 issue 只有被明确导入（或从 Multica 新建）才进入 Multica；之后每 60 秒按游标读变化，打开 issue 时后台刷新一次，每天逐个核对一次是否已删除或转移。不用 webhook，不读整个仓库的历史。见「轮询」「按需导入」「按需刷新」「每日对账」。
+- **按需导入：fork 不主动导入 GitHub 上的 issue 和 PR。** 只有被明确要求导入的 issue（目前入口只有 API `POST /api/issues/import` 和 CLI `multica issue import`，界面上的导入输入框还没做），以及从 Multica 新建的 issue，才进入 Multica；PR 只镜像关闭这些已跟踪 issue 的。见「按需导入」「PR 轮询与关联」。
+- **读 = 轮询 + 按需刷新 + 每日对账，只处理已导入的 issue。** 每 60 秒按游标读变化、只保留已跟踪的，打开 issue 时后台刷新一次，每天逐个核对一次是否已删除或转移。不用 webhook，不读整个仓库的历史。见「轮询」「按需刷新」「每日对账」。
 - **只经 `RepoClient` 访问 GitHub。** 仓库白名单 = 项目上登记的 `github_repo` 资源；令牌只在 `transport.go`、`config.go` 两个文件里出现，有语法树扫描测试守着。见「访问仓库」。
 - **local issue 不变，开关关闭时与上游一致。** 没有 `issue_external` 行的 issue 是 local issue；开关关闭时不注册路由、不发请求、不跑调度任务，标识按上游渲染。
-- **只新增表、薄钩子。** 5 张 fork 表（迁移 9000–9003），不改上游表结构；新逻辑放在新包和 fork 自己的文件里，对上游文件的改动列在各节的「对上游文件的钩子」里。见「迁移号段规则」「上游同步」。
+- **只新增表、薄钩子。** 5 张 fork 表（迁移 9000–9003），不改上游表结构；新逻辑放在新包和 fork 自己的文件里，对上游文件的改动列在各节的「对上游文件的钩子」里，汇总见 [fork 对上游文件的修改清单](github-issues-upstream-changes.md)（分发时附上）。见「迁移号段规则」「上游同步」。
 
 ## 功能开关与环境变量
 
@@ -307,6 +308,7 @@ GitHub 上的 issue 只有被明确要求时才进入 Multica（#50）。代码�
 
 - API：`POST /api/issues/import`，正文 `{"ref": "owner/repo#N"}` 或 `{"ref": "https://github.com/owner/repo/issues/N"}`（可带查询串、`#issuecomment-…` 这类片段、结尾 `/`；主机只认 `github.com`、`www.github.com`）。工作区成员可用（与新建 issue 相同），工作区由 `X-Workspace-ID` 指定。功能关闭时不注册这个路由，响应与 `/api/issues` 下其他不存在的路径相同。
 - CLI：`multica issue import <owner/repo#N | GitHub issue 的 URL>`，`--output table|json`。引用原样交给服务端解析。
+- 界面：还没有导入入口（输入框未做），目前只能用 API 或 CLI。
 - 成功：新导入 201，已导入过 200，响应都是 issue（与 `GET /api/issues/{id}` 的字段相同，标识为 `owner/repo#N`）。
 
 ### 规则
@@ -520,7 +522,7 @@ Multica 里对 github issue 的写入先写 GitHub，GitHub 接受后才落库�
 | GitHub 成功、落库失败 | 保持 `github_ok`，`error` 记原因 | 原有的落库错误 | 满一个轮询周期后的下一轮自愈，不重复（见下） |
 
 - 请求用 `context.WithoutCancel` 发出：调用方断开后，已经发出的请求的结果照样记下。
-- 新评论的本地 id 在发请求前就定好，存在意图的 `comment_id` 里，本地插入用同一个 id。所以轮询自愈出来的评论和处理器写的是同一行，不会出现两份。
+- 新评论的本地 id 在发请求前就定好，存在意图的 `comment_id` 里，本地插入用同一个 id。所以轮询自愈出来的评论和处理器写的是同一行，不会出现两份。发请求前还对这个 id 拿评论锁（`githubissues:comment:<id>`），持有到本地写完；轮询认领评论时拿同一把锁，所以不会抢在处理器插入之前插入同一个 id、让处理器撞主键返回 500（#49 第 1 条）。
 - 新 issue 的 `issue_external` 与本地 issue 在同一个事务里写（`InTx`），并和轮询用同一个 advisory lock，所以本地 issue 不会缺 `issue_external`，轮询也不会把它当成别人的 issue 再导入一次。GitHub 已建好、但事务提交失败（或轮询抢先自愈，这时返回 500）时，由轮询按标记导入。
 - 改 issue 时，GitHub 返回的 `updated_at` 先写进 `issue_external.external_updated_at`，再落库：写之前读到的旧快照不会把本地改回去。`state` 等落库成功后才更新，所以落库失败时，下一轮轮询仍能看出状态变化并自愈。
 - 「GitHub 成功、落库失败」的自愈：新 issue、新评论、改标题正文状态、改评论由轮询读流时按 GitHub 补齐；**删评论**由协调器补：评论列表不会返回已删除的评论，所以协调器在 GitHub 接受删除满一个周期后，经 handler 的删除路径（`DeleteGitHubComment`：进程内调用 `DeleteComment`，以工作区最早的所有者身份：`DeleteComment` 只允许作者或 owner/admin 删除，而被删的可能是任何人的评论，同步账号可能只是普通成员；标记为同步写入、不再发请求）删掉本地评论，清掉 `comment_external`，意图置为 `applied`。
@@ -536,6 +538,7 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
   - 改 issue：读当前 issue，按意图里记下的字段重新算摘要（`payload_digest` 是「字段名列表:内容哈希」），一致就是成功。
   - 改评论：读这条评论，正文标记是这次的 op 就是成功。
   - 删评论：读这条评论，404/410 说明已删，按上面「删评论」的自愈补删本地评论；GitHub 上还在就交给人确认（本地评论也还在，两边一致）。
+- 永远落不了定的意图也直接交给人：删评论意图没有 GitHub 评论 id（不去请求 `/issues/comments/0`，也不因为它的 404 删本地评论，#49 第 4 条）；新评论在 GitHub 上找到了，但它所在的本地 issue 已被删除后重新导入、评论按外部评论入库了（#49 第 5 条，以前每个周期都会再查一次）。
 - 找不到：意图保持 `unknown`，`error` 写成 `needs_confirmation: <原因>`，打一条 Warn 日志（带意图 id、仓库、编号）。之后不再查、不再重试，由人去 GitHub 上看并决定是否重新提交。目前没有界面展示，查 `github_write_intent` 表即可。
 
 ### 标记与署名
@@ -597,6 +600,9 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
 ### 已知限制
 
 - 结果未知的写入交给人确认后没有界面，只有日志和 `github_write_intent` 表。
+- 带附件的新建评论，附件在本地事务里才校验，晚于 GitHub 写入：附件这时恰好失效（上传后、发评论前被删）的话，处理器返回 409，GitHub 上却已有这条评论，之后轮询会把它（不带附件）落库；调用方若重试，会多一条。要修得把上游 `CreateComment` 的附件锁定挪到发请求之前，改动超出薄钩子，暂不处理（#49 第 2 条）。
+- 结果未知的改 issue 按完整字段比较摘要：GitHub 若对正文做空白归一化，或宽限期内又被别人改过，会多一条「交给人确认」的误报，不丢数据。是否归一化见实测清单 A8（#49 第 3 条）。
+- 新建 issue 在创建事务里发请求，同时占两个数据库连接（事务一个，意图读写一个）。同一工作区的新建已被编号计数器的行锁串行化，只有很多工作区同时大量新建时才会先碰到连接池上限；需要时看连接池使用率（#49 第 6 条）。
 - 回执在事务里删除，订阅了 `comment.created` 的插件仍会收到自愈评论的事件（与外部评论相同）。
 - `/repositories/{id}/issues/comments/{id}` 等写接口、GitHub 返回的正文是否原样保留（换行、末尾空白）在真实 GitHub 上未验证，见 PR 的 Owner 实测步骤。
 
@@ -686,6 +692,7 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
 | 新建 issue 不重复（落库失败、答复丢失、从未创建） | `TestWriteIssueCreateNeverDuplicates` |
 | 改 issue 结果未知：按摘要确认或交给人 | `TestWriteIssueUpdateUnknownIsConfirmedOrHandedOver` |
 | 删评论的自愈（以 owner 身份、标记为同步写入） | `TestWriteCommentDeleteHealsLocally`、`TestWriteCommentDeleteHealsAsOwner` |
+| 新评论的本地插入与轮询认领串行；落不了定的意图交给人（#49） | `TestWritePollWaitsForNewCommentInFlight`、`TestWriteReconcileHandsOverIntentsThatCannotSettle` |
 | 被拒绝的写入不留痕、过时的修改发请求前拒绝、轮询等进行中的写入 | `TestWriteRejectionsAndReadOnlyDescription`、`TestWriteStaleChangesAreRefusedBeforeSending`、`TestWritePollWaitsForInFlightWrite`；handler 层 `githubissues_write_test.go` |
 | 伪造的标记按外部作者处理 | `TestWriteForgedMarkersStayExternal` |
 | 读路径：限流暂停、令牌不可用不发请求、单仓库失败记错 | `poll_test.go`：`TestPollBacksOffWhenRateLimited`、`TestPollSendsNothingWithUnusableToken`、`TestPollRecordsRepositoryErrors`；`TestRefreshOnViewThrottledPausesPolling`；`TestImportReadsEveryComment`（导入中途失败） |
@@ -754,6 +761,8 @@ fork 的改动按「新包、新文件、薄钩子」组织，同步上游时冲
 
 ### 钩子分布
 
+全部被修改的上游文件、各自所属任务和改动见 [fork 对上游文件的修改清单](github-issues-upstream-changes.md)。同步上游后更新它的基线。
+
 fork 相对上游新增约 100 个文件，修改 49 个上游已有文件（不含生成代码、测试与翻译文件是 29 个），集中在 `server/internal/handler/`（`issue.go`、`comment.go`、`handler.go`、`github.go` 等）、`server/cmd/server/{main,router}.go`、`server/internal/service/`、`server/cmd/multica/`、`packages/core/api/client.ts`、`packages/views/modals/create-issue.tsx`。冲突最可能出现在这些文件里上游也在改的地方。
 
 ### 演练记录
@@ -767,4 +776,5 @@ fork 相对上游新增约 100 个文件，修改 49 个上游已有文件（不
 | 生成文件 | `server/pkg/db/generated/models.go` 冲突 1 次（M-20 提交）；最终状态 `githubissues.sql.go` 无冲突但已过时（上游给 `issue` 加了 `requester_user_id`）。都用 sqlc 重新生成，没有手合 |
 | 耗时 | rebase、解决冲突、重新生成到编译通过约 6 分钟；全量测试约 16 分钟；含重跑与核对约 1 小时 |
 | 结果 | `go build ./...`、`go vet` 通过；`githubissues` 全部通过（单独跑 7 分钟；与全部包并行时超过默认 10 分钟超时，属机器负载）；`handler` 并行跑时 7 个 `TestClaimTask*` 失败，单独跑在演练分支与纯上游 `main` 上都通过；`service` 的 1 个 wakeup 条件测试在负载下超过 5 秒期限，单独跑（3 次）在演练分支与上游上都通过；其余失败（`daemon`、`daemon/execenv`、`daemon/repocache`、`integrations/wecom`）所在包没有 fork 改动，是本机环境（git 身份、并行负载） |
+| 之后的增量 | `main` 后来的 M-49（`Dockerfile` 一行）与 M-31 的全部提交叠到演练分支上：无冲突，sqlc 重新生成无差异，编译通过。上游 `6ccbdd178` 的 `Dockerfile` 已经是同一行，M-49 在同步后变成空改动 |
 | 结论 | **达标**：手工冲突 3 处（判据不超过 5 处），耗时约 1 小时（判据不超过半天），不需要减少钩子 |
