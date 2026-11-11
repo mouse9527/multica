@@ -193,6 +193,34 @@ func (q *Queries) ListAllGithubRepoSyncs(ctx context.Context) ([]GithubRepoSync,
 	return items, nil
 }
 
+const listGitHubRepoRefs = `-- name: ListGitHubRepoRefs :many
+SELECT resource_ref FROM project_resource
+WHERE resource_type = 'github_repo'
+`
+
+// The github_repo resources registered on any project of any workspace: the
+// allowlist behind githubissues.Service.SnapshotTransport, which serves the
+// whole server. Read-only on project_resource.
+func (q *Queries) ListGitHubRepoRefs(ctx context.Context) ([][]byte, error) {
+	rows, err := q.db.Query(ctx, listGitHubRepoRefs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := [][]byte{}
+	for rows.Next() {
+		var resource_ref []byte
+		if err := rows.Scan(&resource_ref); err != nil {
+			return nil, err
+		}
+		items = append(items, resource_ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitHubRepoResources = `-- name: ListGitHubRepoResources :many
 SELECT workspace_id, project_id, resource_ref FROM project_resource
 WHERE resource_type = 'github_repo'
