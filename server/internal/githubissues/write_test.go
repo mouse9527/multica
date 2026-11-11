@@ -3,11 +3,13 @@ package githubissues
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -656,11 +658,60 @@ type fakeDeleter struct {
 	synced []bool
 }
 
-func (d *fakeDeleter) DeleteGitHubComment(ctx context.Context, _ pgtype.UUID, comment db.Comment) error {
+// DeleteGitHubComment applies DeleteComment's gate: only the author or an
+// owner or admin of the workspace may delete (the handler answers 403).
+func (d *fakeDeleter) DeleteGitHubComment(ctx context.Context, userID pgtype.UUID, comment db.Comment) error {
 	d.calls++
 	d.synced = append(d.synced, IsSyncedWrite(ctx))
+	var role string
+	if err := d.env.svc.db.QueryRow(ctx, `SELECT role FROM member WHERE workspace_id = $1 AND user_id = $2`,
+		comment.WorkspaceID, userID).Scan(&role); err != nil {
+		return fmt.Errorf("delete comment: 403 not a member: %w", err)
+	}
+	isAuthor := comment.AuthorType == "member" && comment.AuthorID == userID
+	if !isAuthor && role != "owner" && role != "admin" {
+		return errors.New("delete comment: 403 only comment author or admin can delete")
+	}
 	_, err := d.env.svc.db.Exec(ctx, `DELETE FROM comment WHERE id = $1`, comment.ID)
 	return err
+}
+
+// A confirmed GitHub deletion of someone else's comment heals even when the
+// sync account is a plain member, who may not delete it: it is carried out as
+// the workspace owner.
+func TestWriteCommentDeleteHealsAsOwner(t *testing.T) {
+	env := newWriteEnv(t)
+	deleter := &fakeDeleter{env: env}
+	env.svc.SetCommentDeleter(deleter)
+	ctx := context.Background()
+	plain := env.f.User(t, "Plain", "plain-"+uuid.NewString()[:8]+"@example.com")
+	env.f.Member(t, env.ws, plain, "member")
+	env.svc.cfg.syncAccount = SyncAccount{Type: "member", ID: env.uuid(t, plain)}
+	issue := env.importedIssue(t, 1)
+
+	w, err := env.svc.BeginCommentCreate(ctx, env.agent, issue, "agent wrote this")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.localComment(t, w, issue, env.agent, "agent wrote this")
+	comment, err := db.New(env.svc.db).GetComment(ctx, w.CommentID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	del, err := env.svc.BeginCommentDelete(ctx, env.member, comment)
+	if err != nil || del == nil {
+		t.Fatalf("begin delete: %v %v", del, err)
+	}
+	del.Finish(ctx, errors.New("database unavailable"))
+
+	env.tick(t)
+	env.tick(t)
+	if got := env.comments(t, issue); len(got) != 0 {
+		t.Fatalf("comments after the healed delete = %+v", got)
+	}
+	if intent := env.lastIntent(t); intent.state != intentApplied || deleter.calls != 1 {
+		t.Fatalf("intent %+v after %d delete calls", intent, deleter.calls)
+	}
 }
 
 // postedComment is a comment written from Multica and linked to GitHub.

@@ -328,8 +328,8 @@ func cutDigest(digest string) (keys []string, sum string, ok bool) {
 }
 
 // CommentDeleter deletes the local copy of a comment through the same entry
-// as a person's delete (DeleteComment), acting as userID, so tasks, events and
-// thread tombstones are handled as for any delete. ctx is marked
+// as a person's delete (DeleteComment), acting as userID (deleteActor), so
+// tasks, events and thread tombstones are handled as for any delete. ctx is marked
 // WithSyncedWrite: nothing is sent to GitHub.
 type CommentDeleter interface {
 	DeleteGitHubComment(ctx context.Context, userID pgtype.UUID, comment db.Comment) error
@@ -355,7 +355,7 @@ func (s *Service) deleteLocalComment(ctx context.Context, intent db.GithubWriteI
 			s.logger.Warn("github issues: no comment delete path; local copy kept", "intent_id", intent.ID)
 			return nil
 		}
-		actor, err := s.statusActor(ctx, intent.WorkspaceID)
+		actor, err := s.deleteActor(ctx, intent.WorkspaceID)
 		if err != nil {
 			return err
 		}
@@ -368,4 +368,17 @@ func (s *Service) deleteLocalComment(ctx context.Context, intent db.GithubWriteI
 	}
 	s.logger.Info("github comment deletion healed locally", "intent_id", intent.ID, "repo", intent.ExternalRepo)
 	return s.markApplied(ctx, intent)
+}
+
+// deleteActor is the member a confirmed GitHub deletion is carried out as:
+// the workspace's earliest owner. DeleteComment lets only the author or an
+// owner or admin delete, and the comment may be anyone's, so neither the
+// write's own actor (an agent cannot act outside its run) nor the sync
+// account (it may be a plain member) is guaranteed to pass.
+func (s *Service) deleteActor(ctx context.Context, workspaceID pgtype.UUID) (pgtype.UUID, error) {
+	owner, err := db.New(s.db).GetGitHubSyncDefaultOwner(ctx, workspaceID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return pgtype.UUID{}, errors.New("githubissues: workspace has no owner to delete the comment as")
+	}
+	return owner, err
 }

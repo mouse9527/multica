@@ -434,7 +434,7 @@ Multica 里对 github issue 的写入先写 GitHub，GitHub 接受后才落库�
 - 新评论的本地 id 在发请求前就定好，存在意图的 `comment_id` 里，本地插入用同一个 id。所以轮询自愈出来的评论和处理器写的是同一行，不会出现两份。
 - 新 issue 的 `issue_external` 与本地 issue 在同一个事务里写（`InTx`），并和轮询用同一个 advisory lock，所以本地 issue 不会缺 `issue_external`，轮询也不会把它当成别人的 issue 再导入一次。GitHub 已建好、但事务提交失败（或轮询抢先自愈，这时返回 500）时，由轮询按标记导入。
 - 改 issue 时，GitHub 返回的 `updated_at` 先写进 `issue_external.external_updated_at`，再落库：写之前读到的旧快照不会把本地改回去。`state` 等落库成功后才更新，所以落库失败时，下一轮轮询仍能看出状态变化并自愈。
-- 「GitHub 成功、落库失败」的自愈：新 issue、新评论、改标题正文状态、改评论由轮询读流时按 GitHub 补齐；**删评论**由协调器补：评论列表不会返回已删除的评论，所以协调器在 GitHub 接受删除满一个周期后，经 handler 的删除路径（`DeleteGitHubComment`：进程内调用 `DeleteComment`，以同步账号或最早的所有者身份，标记为同步写入、不再发请求）删掉本地评论，清掉 `comment_external`，意图置为 `applied`。
+- 「GitHub 成功、落库失败」的自愈：新 issue、新评论、改标题正文状态、改评论由轮询读流时按 GitHub 补齐；**删评论**由协调器补：评论列表不会返回已删除的评论，所以协调器在 GitHub 接受删除满一个周期后，经 handler 的删除路径（`DeleteGitHubComment`：进程内调用 `DeleteComment`，以工作区最早的所有者身份：`DeleteComment` 只允许作者或 owner/admin 删除，而被删的可能是任何人的评论，同步账号可能只是普通成员；标记为同步写入、不再发请求）删掉本地评论，清掉 `comment_external`，意图置为 `applied`。
 - 评论的附件不写到 GitHub。
 
 ### 结果未知（`unknown`）

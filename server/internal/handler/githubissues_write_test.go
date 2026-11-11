@@ -321,6 +321,14 @@ func TestGitHubStaleEditsSendNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// DeleteComment's gate holds here too: a plain member may not delete
+	// another member's comment, which is why the reconciler deletes as the
+	// workspace owner (githubissues.deleteActor).
+	plain := dbfx.User(t, "Plain member", "plain-"+strconv.FormatInt(time.Now().UnixNano(), 36)+"@example.com")
+	dbfx.Member(t, testWorkspaceID, plain, "member")
+	if err := h.DeleteGitHubComment(context.Background(), parseUUID(plain), comment); err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("plain member deleting another's comment = %v, want 403", err)
+	}
 	if err := h.DeleteGitHubComment(context.Background(), parseUUID(testUserID), comment); err != nil {
 		t.Fatalf("delete github comment: %v", err)
 	}
