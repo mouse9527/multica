@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -459,7 +460,7 @@ FOR EACH ROW EXECUTE FUNCTION mul5999_fail_agent_move()
 	}
 	t.Cleanup(func() {
 		bg := context.Background()
-		_, _ = testPool.Exec(bg, `DROP TRIGGER IF EXISTS mul5999_fail_agent_move ON agent`)
+		_ = testutil.ExecDDL(bg, testPool, `DROP TRIGGER IF EXISTS mul5999_fail_agent_move ON agent`) // Modified by the mouse9527/multica fork: see testutil.ExecDDL.
 		_, _ = testPool.Exec(bg, `DROP FUNCTION IF EXISTS mul5999_fail_agent_move()`)
 	})
 
@@ -505,7 +506,7 @@ FOR EACH ROW EXECUTE FUNCTION mul5999_fail_agent_move()
 
 	// With the injection removed the same merge completes, so the rollback above
 	// was not just a permanently broken fixture.
-	if _, err := testPool.Exec(ctx, `DROP TRIGGER mul5999_fail_agent_move ON agent`); err != nil {
+	if err := testutil.ExecDDL(ctx, testPool, `DROP TRIGGER mul5999_fail_agent_move ON agent`); err != nil { // Modified by the mouse9527/multica fork: see testutil.ExecDDL.
 		t.Fatalf("drop injection trigger: %v", err)
 	}
 	if err := testHandler.mergeLegacyRuntime(ctx, parseUUID(target), parseUUID(f.victimRuntime),

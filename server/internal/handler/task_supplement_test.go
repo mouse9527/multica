@@ -577,7 +577,7 @@ func TestTaskSupplementTerminalWriteRollsBackWhenSettlementFails(t *testing.T) {
 		FOR EACH ROW EXECUTE FUNCTION reject_task_supplement_settlement()
 	`)
 	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DROP TRIGGER IF EXISTS reject_task_supplement_settlement ON task_supplement`)
+		_ = testutil.ExecDDL(context.Background(), testPool, `DROP TRIGGER IF EXISTS reject_task_supplement_settlement ON task_supplement`) // Modified by the mouse9527/multica fork: see testutil.ExecDDL.
 		_, _ = testPool.Exec(context.Background(), `DROP FUNCTION IF EXISTS reject_task_supplement_settlement()`)
 	})
 

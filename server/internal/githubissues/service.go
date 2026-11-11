@@ -60,6 +60,13 @@ type Service struct {
 	// failures counts consecutive inconclusive checks for the retry backoff.
 	// Only the validation loop touches it.
 	failures int
+	// pollGate holds polling back after GitHub throttled it.
+	pollGate pollGate
+	// pollResume is where each stream that stopped early continues.
+	pollResume resumeStore
+	// pollLimits overrides the page size and budget in tests; zero values
+	// keep the defaults.
+	pollLimits struct{ perPage, pages int }
 }
 
 // New logs whether the feature is on and returns its Service, or nil when it

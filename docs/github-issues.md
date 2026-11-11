@@ -223,6 +223,69 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 | `server/internal/handler/githubissues_hook.go` | 新文件：只读检查 |
 | `server/pkg/db/queries/githubissues.sql` | 新查询：按 GitHub 评论 id 加锁、删除外部评论产生的 wakeup 回执、默认同步账号 |
 
+## 轮询
+
+把 GitHub 上的 issue 与评论拉进 Multica。代码在 `poll.go`、`poll_issues.go`、`poll_comments.go`，所有请求经 `RepoClient`。
+
+### 调度
+
+- 调度任务 `github_issues_poll`，`JobSpec` 写法同其他任务，周期 60 秒，全局一个任务（不按仓库拆）。数据库租约保证多副本同一时刻只有一个周期在跑，所以同一个令牌同时最多 2 个请求：2 个 worker，每个 worker 一次只处理一个仓库，同一仓库的请求串行。
+- 任务跑在**单独的调度器**上（`Service.StartPolling`，每 10 秒检查一次）。调度器按顺序执行任务，一个周期最长 50 秒，放在主调度器上会拖住 issue wakeup 等其他任务。
+- 每个周期列出所有工作区登记的 `github_repo` 资源（同一工作区同名只算一次），按上次轮询时间从早到晚处理；周期用完 50 秒还没轮到的仓库，下个周期排在最前面。`github_repo_sync.status = 'paused'` 的仓库跳过（目前没有界面会设置它）。
+- 令牌不是 `ok` 时整个周期不发请求。
+
+### 两个游标
+
+| 流 | 请求 | 游标 |
+|---|---|---|
+| issue | `GET /repositories/{id}/issues?state=all&sort=updated&direction=asc&since=…` | `issues_cursor` |
+| 评论 | `GET /repositories/{id}/issues/comments?sort=updated&direction=asc&since=…` | `comments_cursor` |
+
+- 游标是已处理项的最大 `updated_at`，每页处理完就写库，只前进不后退。每个周期从游标回退 2 分钟开始读，重叠部分靠 `(workspace, repo_id, number)` 与 `(workspace, 评论 id)` 唯一键去重，不会产生重复行。
+- **不依赖「评论是否推进 issue 的 `updated_at`」**（文档没写），评论单独轮询。
+- 翻页按游标而不是页码：下一页请求「上一页最大 `updated_at` 减 1 秒」之后的项（GitHub 时间戳精确到秒，`since` 是否含边界未验证，减 1 秒两种情况都覆盖）。这样读的过程中有项被更新，它会挪到后面，不会把没读的项挤到已读过的页。整页都在同一秒时才按页码往下翻。
+- 每个流每个周期最多 10 页（每页 100 条），没读完下个周期从游标接着读。首次轮询（游标为空）从头导入仓库里全部 issue 和评论。
+- 读取进度可以跨周期接续：一个流没读到末尾就停下时（10 页用完、周期超时、某一项失败），记下下一个请求的 `since` 和页码，下个周期从这里接着读，而不是又从「游标减 2 分钟」开始。游标只存时间戳，同一秒的项多于一个周期的预算时（比如批量导入），如果每个周期都从游标重来，就会一直重读同一批，后面的项和评论流永远轮不到；接续保证无论这批有多大，流都在前进（每周期约 1000 条）。读到末尾时清掉记录。
+- 进度只存在进程内存里。服务重启后、或在还没读过这个流的副本上，会从游标重读一次，之后接着往前。记录的位置落在重叠窗口之外时（别的副本已经读得更远），丢弃它，改用游标。
+- issue 流里的 PR（带 `pull_request` 键）跳过。评论流只在 issue 流本周期读到末尾后才读，所以评论不会先于它所属的 issue 到达；找不到本地 issue 的评论（PR 上的评论）跳过。
+- 某一项处理失败时，这个流停在这一项，游标不越过它，下个周期重试；错误写进 `github_repo_sync.last_error`，下一次干净的轮询清空它。其他仓库照常轮询。
+
+### 他人新建的 issue
+
+- 本地没有对应 `issue_external` 的 GitHub issue 新建为本地 issue：创建者是同步账号（`IssueCreator`，见「外部作者」），描述是带前缀的原文，不指派任何人，项目是最早登记该仓库的项目，优先级 `none`。同一事务写 `issue_external`，并用 advisory lock 串行化同一 GitHub issue 的写入。工作区编号冲突时按上游的做法修复计数器后重试一次。
+- 初始状态：open → `backlog`；closed → `done`，`state_reason` 为 `not_planned`、`duplicate` 时 `cancelled`。项目工作流不包含该状态时用工作流的第一步（与其他创建入口一致）。**之后的状态变化不在这里映射**，`issue_external.state` 会更新，Multica 状态由状态映射任务（#18）处理。
+- 配置的同步账号不可用时（`ErrSyncAccountUnavailable`），这个 issue 和它之后的项都不导入，直到配置修正。
+- 本地删除的 github issue 在 GitHub 上再次更新时会重新导入（GitHub 是唯一写入方）。
+
+### 已有 issue 的更新与乱序
+
+- GitHub 快照的 `updated_at` 早于已存的 `external_updated_at` 时什么都不改（乱序到达的旧快照不回滚）；不早于时更新标题、`issue_external` 的状态字段与仓库名。描述只在它带外部前缀（由轮询写入）时改写；从 Multica 写出去的 issue 的描述留给双写任务（#19）。
+- 评论的乱序与去重沿用 `SyncExternalComment`；从 Multica 写出去的评论（作者不是 `system`）不改写。
+
+### 限流
+
+- 任何请求遇到限流（429、带限流信号的 403），整个周期立即停止，按 GitHub 给的等待时长（`ghsnapshot.RateLimitFromResponse`，限制在 1 秒到 5 分钟）暂停轮询，期间的周期不发请求。暂停记在进程内存里；多副本时另一副本下一次请求也会被限流并自行暂停。
+- 401 使令牌变为 `invalid`（见 `RepoClient`），周期停止。
+
+### 事件与外部文本
+
+- 新建 issue 发 `issue:created`，载荷是完整的 issue，但 **`description` 置空**：订阅监听器会从 `issue:created` 的描述里解析 mention 链接并加订阅者，GitHub 上的文本不能借此订阅或通知任何人。同步账号照常作为创建者被加为订阅者。客户端打开详情时从接口读到描述。
+- 已有 issue 变化时发 `issue:updated`，载荷只有 `id` 和 `workspace_id`、不带 `revision`，客户端因此重新拉取；需要完整 issue 的通知、活动、订阅监听器都会跳过它。
+- 事件的 `actor_type` 是 `system`，活动记录里显示为系统创建。
+- 改写标题、描述时，数据库触发器照常为订阅了 `issue.updated` 的 wakeup 记回执（载荷只有字段名，不含正文），没有像外部评论那样丢弃。
+
+### 已知限制
+
+- 删除、转移的 issue 与删除的评论，`since` 列表发现不了，留给每日对账与按需刷新（#21、#23）。
+- `since` 的边界语义、评论列表的排序参数、`/repositories/{id}/...` 路径在真实 GitHub 上未验证，见 PR 的 Owner 实测步骤。
+
+### 对上游文件的钩子（本节）
+
+| 文件 | 改动 |
+|---|---|
+| `server/cmd/server/main.go` | 功能开启时调 `gitHubIssues.StartPolling(sweepCtx, pool)` |
+| `server/pkg/db/queries/githubissues.sql` | 新查询：跨工作区列出 `github_repo` 资源与轮询状态（只读 `project_resource`）、记录一次轮询结果（只写 `github_repo_sync`）、改写 github issue 的标题与描述 |
+
 ## 迁移号段规则
 
 ### 规则
