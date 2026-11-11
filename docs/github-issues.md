@@ -276,7 +276,7 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 
 ### 已知限制
 
-- 删除、转移的 issue 与删除的评论，`since` 列表发现不了，留给每日对账与按需刷新（#21、#23）。
+- 删除、转移的 issue 与删除的评论，`since` 列表发现不了，留给每日对账（#23）。按需刷新（见下节）也只记日志，不处理它们。
 - `since` 的边界语义、评论列表的排序参数、`/repositories/{id}/...` 路径在真实 GitHub 上未验证，见 PR 的 Owner 实测步骤。
 
 ### 对上游文件的钩子（本节）
@@ -285,6 +285,27 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 |---|---|
 | `server/cmd/server/main.go` | 功能开启时调 `gitHubIssues.StartPolling(sweepCtx, pool)` |
 | `server/pkg/db/queries/githubissues.sql` | 新查询：跨工作区列出 `github_repo` 资源与轮询状态（只读 `project_resource`）、记录一次轮询结果（只写 `github_repo_sync`）、改写 github issue 的标题与描述 |
+
+## 按需刷新
+
+打开 github issue 的详情、评论列表或时间线时，后台拉取这个 issue 和它的评论，不等结果就返回已存的数据；拉到的变化经轮询同样的 `issue:updated`、`comment:created` / `comment:updated` 事件推给客户端。代码在 `refresh.go`，写库沿用轮询的 `syncIssue` 与 `syncComment`，所有请求经 `RepoClient`。
+
+- **节流：** 每个 issue 15 秒内最多刷新一次；一次刷新还没结束时，同一 issue 的再次打开不发请求（进程内存表加在途标记，相当于 singleflight）。表只保留最近 15 秒内打开过的 issue。多副本时各副本各自节流。
+- **请求：** `GET /repositories/{id}/issues/{N}`，再 `GET /repositories/{id}/issues/{N}/comments?per_page=100&page=…`，最多 10 页，超出的留给轮询。一次刷新最长 30 秒。
+- **不发请求的情况：** 功能关闭；令牌不是 `ok`；轮询因限流暂停中；本地 issue（没有 `issue_external`，查库后直接结束）；仓库已不在白名单或名字现在指向另一个仓库 id。
+- **失败：** 只记一行警告，issue 保持已存的数据；限流时按 GitHub 给的等待时长暂停轮询与按需刷新（共用同一个暂停）。删除（404/410）、转移（301）的 issue 也只记日志，见「轮询 · 已知限制」。
+- **乱序：** 与轮询相同，旧快照不回滚，评论按 `(workspace, 评论 id)` 去重，与轮询同时写同一 issue 由 advisory lock 串行。
+
+### 对上游文件的钩子（本节）
+
+| 文件 | 改动 |
+|---|---|
+| `server/internal/handler/githubissues_hook.go` | `IssueViewRefresher` 接口与 `refreshIssueOnView` |
+| `server/internal/handler/handler.go` | `Handler.IssueViews` 字段 |
+| `server/internal/handler/{issue,comment,activity}.go` | `GetIssue`、`ListComments`、`ListTimeline` 载入 issue 后各调一次 `refreshIssueOnView` |
+| `server/cmd/server/router.go` | 功能开启时 `h.IssueViews = opts.GitHubIssues` |
+
+功能关闭时 `IssueViews` 为 nil，三个接口与上游一致。
 
 ## 迁移号段规则
 

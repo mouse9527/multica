@@ -37,3 +37,17 @@ func (h *Handler) rejectExternalCommentWrite(w http.ResponseWriter, r *http.Requ
 	}
 	return false
 }
+
+// IssueViewRefresher refreshes an issue mirrored from GitHub when someone
+// opens it. It returns at once; the refresh runs in the background.
+type IssueViewRefresher interface {
+	RefreshIssueOnView(ctx context.Context, issue db.Issue)
+}
+
+// refreshIssueOnView starts the background refresh of an opened issue. With
+// the feature off IssueViews is nil and nothing happens, as upstream.
+func (h *Handler) refreshIssueOnView(r *http.Request, issue db.Issue) {
+	if h.IssueViews != nil {
+		h.IssueViews.RefreshIssueOnView(r.Context(), issue)
+	}
+}
