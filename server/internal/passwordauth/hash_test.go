@@ -260,3 +260,22 @@ func TestParamsFromEnv(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkVerifyDefaultParams measures one login's hashing cost with the
+// production defaults.
+func BenchmarkVerifyDefaultParams(b *testing.B) {
+	h, err := NewHasher(DefaultParams)
+	if err != nil {
+		b.Fatal(err)
+	}
+	encoded, err := h.Hash(testPassword)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if ok, _ := h.Verify(testPassword, encoded); !ok {
+			b.Fatal("verify failed")
+		}
+	}
+}
