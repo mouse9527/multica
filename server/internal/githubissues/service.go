@@ -64,6 +64,8 @@ type Service struct {
 	pollGate pollGate
 	// pollResume is where each stream that stopped early continues.
 	pollResume resumeStore
+	// statusWriter applies status changes from GitHub (SetStatusWriter).
+	statusWriter StatusWriter
 	// pollLimits overrides the page size and budget in tests; zero values
 	// keep the defaults.
 	pollLimits struct{ perPage, pages int }

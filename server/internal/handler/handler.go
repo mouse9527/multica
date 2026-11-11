@@ -221,9 +221,10 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
-	// ExternalComments is set by the mouse9527/multica fork while
-	// GitHub-native issues are on (githubissues_hook.go).
+	// ExternalComments and GitHubStatuses are set by the mouse9527/multica
+	// fork while GitHub-native issues are on (githubissues_hook.go).
 	ExternalComments       ExternalCommentGuard
+	GitHubStatuses         GitHubStatusGuard
 	Queries                *db.Queries
 	ReadSelector           *dbreader.Selector
 	DB                     dbExecutor
