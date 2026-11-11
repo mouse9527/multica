@@ -17,6 +17,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/entitlement/entitlementtest"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -419,7 +420,7 @@ func TestAutopilotQuotaInboxFailurePreservesQuotaRejection(t *testing.T) {
 		t.Fatalf("install inbox failure trigger: %v", err)
 	}
 	t.Cleanup(func() {
-		fixture.pool.Exec(context.Background(), fmt.Sprintf("DROP TRIGGER IF EXISTS %s ON inbox_item", triggerName))
+		_ = testutil.ExecDDL(context.Background(), fixture.pool, fmt.Sprintf("DROP TRIGGER IF EXISTS %s ON inbox_item", triggerName)) // Modified by the mouse9527/multica fork: see testutil.ExecDDL.
 		fixture.pool.Exec(context.Background(), fmt.Sprintf("DROP FUNCTION IF EXISTS %s()", functionName))
 	})
 
@@ -462,7 +463,7 @@ func TestAutopilotQuotaInboxFailurePreservesQuotaRejection(t *testing.T) {
 		t.Fatalf("failed multi-recipient transaction persisted %d notices, want zero", failedTransactionNotices)
 	}
 
-	if _, err := fixture.pool.Exec(ctx, fmt.Sprintf("DROP TRIGGER %s ON inbox_item", triggerName)); err != nil {
+	if err := testutil.ExecDDL(ctx, fixture.pool, fmt.Sprintf("DROP TRIGGER %s ON inbox_item", triggerName)); err != nil { // Modified by the mouse9527/multica fork: see testutil.ExecDDL.
 		t.Fatalf("remove inbox failure trigger: %v", err)
 	}
 	_, _, err = fixture.service.createAutopilotRunWithQuota(

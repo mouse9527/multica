@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -55,7 +56,7 @@ func installWebhookAcknowledgementFailure(t *testing.T) {
 	functionName := fmt.Sprintf("webhook_ack_fail_fn_%d", suffix)
 	triggerName := fmt.Sprintf("webhook_ack_fail_%d", suffix)
 	t.Cleanup(func() {
-		testPool.Exec(ctx, fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON webhook_delivery`, triggerName))
+		_ = testutil.ExecDDL(ctx, testPool, fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON webhook_delivery`, triggerName)) // Modified by the mouse9527/multica fork: see testutil.ExecDDL.
 		testPool.Exec(ctx, fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, functionName))
 	})
 

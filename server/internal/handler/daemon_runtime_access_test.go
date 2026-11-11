@@ -541,7 +541,7 @@ func injectFailTaskSettlementFailure(t *testing.T, ctx context.Context, taskID s
 	functionName := "puck89_fail_task_" + suffix
 	triggerName := "puck89_fail_task_trg_" + suffix
 	t.Cleanup(func() {
-		testPool.Exec(ctx, fmt.Sprintf("DROP TRIGGER IF EXISTS %s ON agent_task_queue", triggerName))
+		_ = testutil.ExecDDL(ctx, testPool, fmt.Sprintf("DROP TRIGGER IF EXISTS %s ON agent_task_queue", triggerName)) // Modified by the mouse9527/multica fork: see testutil.ExecDDL.
 		testPool.Exec(ctx, fmt.Sprintf("DROP FUNCTION IF EXISTS %s()", functionName))
 	})
 	if _, err := testPool.Exec(ctx, fmt.Sprintf(`
@@ -572,7 +572,7 @@ func injectRuntimeOwnerFlipAfterClaim(t *testing.T, ctx context.Context, taskID,
 	functionName := "puck89_flip_runtime_owner_" + suffix
 	triggerName := "puck89_flip_runtime_owner_trg_" + suffix
 	t.Cleanup(func() {
-		testPool.Exec(ctx, fmt.Sprintf("DROP TRIGGER IF EXISTS %s ON agent_task_queue", triggerName))
+		_ = testutil.ExecDDL(ctx, testPool, fmt.Sprintf("DROP TRIGGER IF EXISTS %s ON agent_task_queue", triggerName)) // Modified by the mouse9527/multica fork: see testutil.ExecDDL.
 		testPool.Exec(ctx, fmt.Sprintf("DROP FUNCTION IF EXISTS %s()", functionName))
 	})
 	if _, err := testPool.Exec(ctx, fmt.Sprintf(`
