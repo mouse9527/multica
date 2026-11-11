@@ -3141,9 +3141,11 @@ type CreateIssueRequest struct {
 	AllowDuplicate         bool `json:"allow_duplicate,omitempty"`
 	PRAutoCompleteDisabled bool `json:"pr_auto_complete_disabled,omitempty"`
 
-	// Repo ("owner/name") opens the issue on that GitHub repository first.
-	// GitHub-native issues (mouse9527/multica fork); ignored while they are off.
-	Repo *string `json:"repo,omitempty"`
+	// Repo ("owner/name") opens the issue on that GitHub repository first;
+	// Provider "local" keeps it local. GitHub-native issues (mouse9527/multica
+	// fork); ignored while they are off.
+	Repo     *string `json:"repo,omitempty"`
+	Provider *string `json:"provider,omitempty"`
 }
 
 // CreateIssueResponse echoes the atomic PR setting without expanding issue reads.
@@ -3549,7 +3551,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// GitHub-native issues (fork): an issue for a GitHub repository is opened there, from InTx.
-	ghWrite, ok := h.beginGitHubIssueCreate(w, r, wsUUID, req)
+	ghWrite, ok := h.beginGitHubIssueCreate(w, r, wsUUID, workflowProjectID, creatorType, req)
 	if !ok {
 		return
 	}

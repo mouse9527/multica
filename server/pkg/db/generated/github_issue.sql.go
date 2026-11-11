@@ -735,6 +735,40 @@ func (q *Queries) SetGithubRepoSyncStatus(ctx context.Context, arg SetGithubRepo
 	return err
 }
 
+const setProjectGithubDefaultResource = `-- name: SetProjectGithubDefaultResource :one
+INSERT INTO project_github_settings (
+    project_id, workspace_id, default_resource_id
+) VALUES (
+    $1, $2, $3
+)
+ON CONFLICT (project_id) DO UPDATE SET
+    default_resource_id = EXCLUDED.default_resource_id,
+    updated_at          = now()
+WHERE project_github_settings.workspace_id = EXCLUDED.workspace_id
+RETURNING project_id, workspace_id, default_resource_id, status_label_map, created_at, updated_at
+`
+
+type SetProjectGithubDefaultResourceParams struct {
+	ProjectID         pgtype.UUID `json:"project_id"`
+	WorkspaceID       pgtype.UUID `json:"workspace_id"`
+	DefaultResourceID pgtype.UUID `json:"default_resource_id"`
+}
+
+// Sets only the default repository; status_label_map is kept.
+func (q *Queries) SetProjectGithubDefaultResource(ctx context.Context, arg SetProjectGithubDefaultResourceParams) (ProjectGithubSetting, error) {
+	row := q.db.QueryRow(ctx, setProjectGithubDefaultResource, arg.ProjectID, arg.WorkspaceID, arg.DefaultResourceID)
+	var i ProjectGithubSetting
+	err := row.Scan(
+		&i.ProjectID,
+		&i.WorkspaceID,
+		&i.DefaultResourceID,
+		&i.StatusLabelMap,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateGithubWriteIntentState = `-- name: UpdateGithubWriteIntentState :one
 UPDATE github_write_intent SET
     state           = $1,
