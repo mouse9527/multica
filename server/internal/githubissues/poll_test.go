@@ -35,13 +35,14 @@ type fakeIssuesAPI struct {
 	mu       sync.Mutex
 	issues   map[int]map[string]any // by number
 	comments map[int64]map[string]any
+	pulls    map[int]map[string]any // by number
 	requests []string
 	// throttle, when set, answers every list request with 429.
 	throttle string
 }
 
 func newFakeIssuesAPI(t *testing.T) *fakeIssuesAPI {
-	f := &fakeIssuesAPI{t: t, issues: map[int]map[string]any{}, comments: map[int64]map[string]any{}}
+	f := &fakeIssuesAPI{t: t, issues: map[int]map[string]any{}, comments: map[int64]map[string]any{}, pulls: map[int]map[string]any{}}
 	f.server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.server.Close)
 	return f
@@ -96,6 +97,10 @@ func (f *fakeIssuesAPI) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if f.serveIssue(w, r) {
+		return
+	}
+	if r.URL.Path == fmt.Sprintf("/repositories/%d/pulls", pollRepoID) {
+		f.servePulls(w, r)
 		return
 	}
 	var items []map[string]any

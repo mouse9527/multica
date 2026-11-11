@@ -52,7 +52,7 @@ func (g *statusTestGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id":42}`))
 	case "/repositories/42/issues":
 		_ = json.NewEncoder(w).Encode([]any{g.issue})
-	case "/repositories/42/issues/comments":
+	case "/repositories/42/issues/comments", "/repositories/42/pulls":
 		_, _ = w.Write([]byte(`[]`))
 	default:
 		w.WriteHeader(http.StatusNotFound)
