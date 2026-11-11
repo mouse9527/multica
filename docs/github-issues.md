@@ -9,7 +9,7 @@
 | `MULTICA_GITHUB_ISSUES_ENABLED` | `true` 才开启 | 默认关闭。写法同 `MULTICA_VCS_INTEGRATION_ENABLED` |
 | `MULTICA_GITHUB_TOKEN` | classic PAT（`repo` 范围） | 未设置时功能整体关闭，不报错 |
 | `MULTICA_GITHUB_TOKEN_EXPIRES_AT` | `YYYY-MM-DD` 或 `never` | 令牌在 GitHub 上登记的到期日；缺失或格式不对时功能关闭 |
-| `MULTICA_GITHUB_SYNC_ACCOUNT` | 可选：`member:<user-uuid>` 或 `agent:<agent-uuid>` | 他人在 GitHub 新建的 issue 记在谁名下，见「外部作者」。不设时用各工作区最早的 owner；格式不对时功能关闭 |
+| `MULTICA_GITHUB_SYNC_ACCOUNT` | 可选：`member:<user-uuid>` 或 `agent:<agent-uuid>` | 导入的 GitHub issue 记在谁名下，见「外部作者」。不设时用各工作区最早的 owner；格式不对时功能关闭 |
 
 - 三个条件同时满足才开启。不满足时服务照常启动，只打一行 `github issues disabled (<原因>)`。原因只写变量名，不回显变量值。
 - 关闭时服务行为与上游一致：`githubissues.New` 返回 nil，不发任何 GitHub 请求，不注册路由，不注册调度任务。对上游文件的钩子见下面「对上游文件的钩子」。
@@ -163,7 +163,7 @@
 
 ## 外部作者
 
-GitHub 上工作区以外的人写的评论和新建的 issue，在 Multica 里归到固定身份，GitHub 作者写在正文前缀里。**不改任何现有表约束**（Owner 选定，见 #26）。代码在 `external_author.go`、`external_comment.go`、`sync_account.go`，由轮询（#16）调用。
+GitHub 上工作区以外的人写的评论和新建的 issue，在 Multica 里归到固定身份，GitHub 作者写在正文前缀里。**不改任何现有表约束**（Owner 选定，见 #26）。代码在 `external_author.go`、`external_comment.go`、`sync_account.go`，由轮询（#16）与导入（#50）调用。
 
 ### 身份
 
@@ -173,7 +173,7 @@ GitHub 上工作区以外的人写的评论和新建的 issue，在 Multica 里�
 | issue | 同步账号：`MULTICA_GITHUB_SYNC_ACCOUNT` 指定的 member 或 agent，不设时为工作区最早的 owner（`issue.creator_type` 只允许 member、agent） | 描述前缀 |
 
 - 配置的账号不在该工作区（member 不是成员、agent 不属于该工作区或已归档）时，`IssueCreator` 返回 `ErrSyncAccountUnavailable`，不悄悄换成别人。
-- 建议用 member；不要用会被指派或会触发运行的 agent（#26 的结论）。issue 的实际写入在轮询（#16）里，创建者带来的订阅等副作用在那里处理。
+- 建议用 member；不要用会被指派或会触发运行的 agent（#26 的结论）。issue 的实际写入在导入（#50，写库沿用轮询的 `syncIssue`）里，创建者带来的订阅等副作用在那里处理。
 - PR 作者来自 PR 镜像（#22），不走这里。
 
 ### 前缀
@@ -225,7 +225,9 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 
 ## 轮询
 
-把 GitHub 上的 issue 与评论拉进 Multica。代码在 `poll.go`、`poll_issues.go`、`poll_comments.go`，所有请求经 `RepoClient`。
+把**已跟踪的** GitHub issue 与其评论的变化拉进 Multica。代码在 `poll.go`、`poll_issues.go`、`poll_comments.go`，所有请求经 `RepoClient`。
+
+**只跟踪已导入的 issue**（Owner 决定，见 #24「已定决定」2026-11-11）：已跟踪 = 本地有 `issue_external` 行，即被导入过（见「按需导入」），或从 Multica 新建（见「双写」）。登记仓库里没导入的 issue，无论在 GitHub 上怎么更新，都不入库、不新建本地 issue；它们的评论也不入库。
 
 ### 调度
 
@@ -244,18 +246,19 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 - 游标是已处理项的最大 `updated_at`，每页处理完就写库，只前进不后退。每个周期从游标回退 2 分钟开始读，重叠部分靠 `(workspace, repo_id, number)` 与 `(workspace, 评论 id)` 唯一键去重，不会产生重复行。
 - **不依赖「评论是否推进 issue 的 `updated_at`」**（文档没写），评论单独轮询。
 - 翻页按游标而不是页码：下一页请求「上一页最大 `updated_at` 减 1 秒」之后的项（GitHub 时间戳精确到秒，`since` 是否含边界未验证，减 1 秒两种情况都覆盖）。这样读的过程中有项被更新，它会挪到后面，不会把没读的项挤到已读过的页。整页都在同一秒时才按页码往下翻。
-- 每个流每个周期最多 10 页（每页 100 条），没读完下个周期从游标接着读。首次轮询（游标为空）从头导入仓库里全部 issue 和评论。
+- 每个流每个周期最多 10 页（每页 100 条），没读完下个周期从游标接着读。
+- **不回填历史：** 游标为空（仓库第一次被轮询或导入时）就把它设为当前时刻，之后只读这以后的变化，不再从头读整个仓库。两个游标分别看：只设空的那个，已有值的游标不动（`AdvanceGithubRepoSyncCursors` 取较大值，传入当前时刻会把已有游标往前推，所以只传空的那个）。已有游标的仓库照旧从游标读。
 - 读取进度可以跨周期接续：一个流没读到末尾就停下时（10 页用完、周期超时、某一项失败），记下下一个请求的 `since` 和页码，下个周期从这里接着读，而不是又从「游标减 2 分钟」开始。游标只存时间戳，同一秒的项多于一个周期的预算时（比如批量导入），如果每个周期都从游标重来，就会一直重读同一批，后面的项和评论流永远轮不到；接续保证无论这批有多大，流都在前进（每周期约 1000 条）。读到末尾时清掉记录。
 - 进度只存在进程内存里。服务重启后、或在还没读过这个流的副本上，会从游标重读一次，之后接着往前。记录的位置落在重叠窗口之外时（别的副本已经读得更远），丢弃它，改用游标。
-- issue 流里的 PR（带 `pull_request` 键）跳过。评论流只在 issue 流本周期读到末尾后才读，所以评论不会先于它所属的 issue 到达；找不到本地 issue 的评论（PR 上的评论）跳过。
+- issue 流里的 PR（带 `pull_request` 键）跳过；没有 `issue_external` 的 issue 跳过（先用一次查询判断，不开事务；正文带 Multica 写入标记的例外，交给认领判断，见「自愈与认领」）。评论流只在 issue 流本周期读到末尾后才读，所以从 Multica 新建、等待认领的 issue 先于它的评论入库；找不到本地 issue 的评论（未导入的 issue、PR 上的评论）跳过。
 - 某一项处理失败时，这个流停在这一项，游标不越过它，下个周期重试；错误写进 `github_repo_sync.last_error`，下一次干净的轮询清空它。其他仓库照常轮询。
 
-### 他人新建的 issue
+### 外呼量
 
-- 本地没有对应 `issue_external` 的 GitHub issue 新建为本地 issue：创建者是同步账号（`IssueCreator`，见「外部作者」），描述是带前缀的原文，不指派任何人，项目是最早登记该仓库的项目，优先级 `none`。同一事务写 `issue_external`，并用 advisory lock 串行化同一 GitHub issue 的写入。工作区编号冲突时按上游的做法修复计数器后重试一次。
-- 初始状态：按「状态映射」的规则从 GitHub 的状态与状态标签得出。项目工作流不包含该状态时用工作流的第一步（与其他创建入口一致）。新建 issue 不走 `UpdateIssue`，所以直接落在交接步上时**不触发交接**；之后的状态变化见「状态映射」。
-- 配置的同步账号不可用时（`ErrSyncAccountUnavailable`），这个 issue 和它之后的项都不导入，直到配置修正。
-- 本地删除的 github issue 在 GitHub 上再次更新时会重新导入（GitHub 是唯一写入方）。
+- 每个周期每个登记仓库：issue 流、评论流各至少 1 个列表请求，带 `since`（游标减 2 分钟），页数取决于这段时间里仓库有多少项被更新，每流最多 10 页；读到的项按已跟踪集合过滤，不为未跟踪的 issue 再发任何请求。**从不为了发现未导入的 issue 去翻页读历史**：没有不带 `since` 的列表请求。
+- 导入一个 issue：1 个 `GET /issues/{N}` 加它的全部评论页；再次导入只重读它的评论页。按需刷新同样只读那一个 issue（评论最多 10 页）。
+- 所以与仓库里 issue 总数无关；与已跟踪的 issue 有关的只有导入与按需刷新，加上轮询窗口里被更新的项数（允许的做法：「读取游标之后更新的 issue 并过滤到已跟踪集合」）。
+- PR 轮询（`/pulls`）不在本节，仍按「PR 轮询与关联」读整库 PR，收窄由 #51 处理。
 
 ### 已有 issue 的更新与乱序
 
@@ -277,6 +280,7 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 ### 已知限制
 
 - 删除、转移的 issue 与删除的评论，`since` 列表发现不了，留给每日对账（#23）。按需刷新（见下节）也只记日志，不处理它们。
+- 本地删除的 github issue 同时删掉 `issue_external`，之后不再跟踪；要再跟踪就重新导入。
 - `since` 的边界语义、评论列表的排序参数、`/repositories/{id}/...` 路径在真实 GitHub 上未验证，见 PR 的 Owner 实测步骤。
 
 ### 对上游文件的钩子（本节）
@@ -285,6 +289,37 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 |---|---|
 | `server/cmd/server/main.go` | 功能开启时调 `gitHubIssues.StartPolling(sweepCtx, pool)` |
 | `server/pkg/db/queries/githubissues.sql` | 新查询：跨工作区列出 `github_repo` 资源与轮询状态（只读 `project_resource`）、记录一次轮询结果（只写 `github_repo_sync`）、改写 github issue 的标题与描述 |
+
+## 按需导入
+
+GitHub 上的 issue 只有被明确要求时才进入 Multica（#50）。代码在 `import.go`，写库沿用轮询的 `syncIssue` 与 `syncComment`，所有请求经 `RepoClient`。
+
+### 入口
+
+- API：`POST /api/issues/import`，正文 `{"ref": "owner/repo#N"}` 或 `{"ref": "https://github.com/owner/repo/issues/N"}`（可带查询串、`#issuecomment-…` 这类片段、结尾 `/`；主机只认 `github.com`、`www.github.com`）。工作区成员可用（与新建 issue 相同），工作区由 `X-Workspace-ID` 指定。功能关闭时不注册这个路由，响应与 `/api/issues` 下其他不存在的路径相同。
+- CLI：`multica issue import <owner/repo#N | GitHub issue 的 URL>`，`--output table|json`。引用原样交给服务端解析。
+- 成功：新导入 201，已导入过 200，响应都是 issue（与 `GET /api/issues/{id}` 的字段相同，标识为 `owner/repo#N`）。
+
+### 规则
+
+- 仓库必须登记在本工作区某个项目上（白名单，经 `RepoClient`），名字不区分大小写，存的是登记的写法。不在白名单：403 `github_repo_not_registered`，不发请求。
+- **幂等：** 本地已有这个 issue 的 `issue_external` 时不重复建，返回已有的 issue（200）；返回前重读它的全部评论（按 GitHub 评论 id 去重，不产生重复评论），用来补完上次没读完的导入。并发的两次导入由轮询的 advisory lock 串行，只建一个。
+- 读 `GET /repositories/{id}/issues/{N}`：编号是 PR（带 `pull_request` 键，或 URL 是 `/pull/N`）时 422 `github_pull_request`，不入库；404、410、301（删除或转移）时 404 `github_issue_not_found`。
+- 入库与轮询原来导入他人 issue 的规则相同：创建者是同步账号（`IssueCreator`，见「外部作者」），描述是带前缀的原文，不指派任何人，项目是最早登记该仓库的项目，优先级 `none`。同一事务写 `issue_external`。工作区编号冲突时按上游的做法修复计数器后重试一次。同步账号不可用时 409 `github_sync_account_unavailable`，不入库。
+- 初始状态：按「状态映射」的规则从 GitHub 的状态与状态标签得出。项目工作流不包含该状态时用工作流的第一步（与其他创建入口一致）。导入不走 `UpdateIssue`，所以直接落在交接步上时**不触发交接**；之后的状态变化见「状态映射」。
+- 然后读这个 issue 的**全部**评论（每页 100 条，读到不满一页为止；只为防止列表永不结束设了 1000 页的上限，超过算未完成）。必须读完：轮询只读游标之后更新的评论，导入前的旧评论以后不会再出现在轮询里，按需刷新也只读前 10 页。
+- 评论没读完（GitHub 中途失败、限流、超过上限）时，issue 已入库，但导入**不算成功**：返回 502 `github_import_incomplete`（限流时 503，带 `Retry-After`，并暂停轮询），响应带 `issue_id`。再次导入同一个 issue 即可读完，不会建第二个。
+- 导入时仓库游标为空就先设为当前时刻（在读 issue 之前），所以读完之后 GitHub 上的改动落在下一次轮询的窗口里。
+- 令牌不可用 503 `github_token_unusable`；限流或限流暂停中 503 `github_rate_limited`（限流时带 `Retry-After`，并和轮询共用暂停）；其他 GitHub 错误 502。事件同轮询新建 issue（`issue:created`，`description` 置空）。
+
+### 对上游文件的钩子（本节）
+
+| 文件 | 改动 |
+|---|---|
+| `server/cmd/server/router.go` | 功能开启时注册 `POST /api/issues/import` |
+| `server/internal/handler/githubissues_import.go` | 新文件：接口与错误码 |
+| `server/cmd/multica/cmd_issue_import.go` | 新文件：`multica issue import`，在自己的 `init` 里挂到 `issue` 命令下，`cmd_issue.go` 不改 |
+| `server/pkg/db/queries/githubissues.sql` | 新查询 `ListWorkspaceGitHubRepoResources`：本工作区的 `github_repo` 资源与项目（只读 `project_resource`） |
 
 ## 按需刷新
 
@@ -343,7 +378,7 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 
 ### 已知限制
 
-- 新建 issue（他人在 GitHub 上新建）直接落在交接步时不触发交接，见「他人新建的 issue」。
+- 导入的 issue 直接落在交接步时不触发交接，见「按需导入」。
 - 项目移动、工作流切换时的状态重映射（`MoveTarget`）不经过本节的拒绝钩子。
 - 多个状态标签时不判定哪个最新（需要读 GitHub 的标签事件时间线，多一次请求，本期不做），固定取最后一个。
 
@@ -363,7 +398,7 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 
 ### 轮询
 
-- 在「轮询」的同一个周期里、同一个仓库的 issue 流读到末尾、评论流成功之后读 PR，所以 PR 引用的 issue 已经导入。请求经 `RepoClient`：`GET /repositories/{id}/pulls?state=all&sort=updated&direction=desc`。
+- 在「轮询」的同一个周期里、同一个仓库的 issue 流读到末尾、评论流成功之后读 PR。请求经 `RepoClient`：`GET /repositories/{id}/pulls?state=all&sort=updated&direction=desc`。
 - `pulls` 列表没有 `since`（文档未列出，未在真实 GitHub 上验证），所以按更新时间倒序读，读到第一条早于「`pulls_cursor` 减 2 分钟」的 PR 为止；首次（游标为空）读到列表末尾。读完才把 `pulls_cursor` 推进到这次读到的最大 `updated_at`。
 - 每周期最多 10 页（每页 100 条）。没读完时记下下一页页码，下个周期接着读，游标不动。倒序列表里，读的过程中被更新的 PR 移到最前面，由下一次读取覆盖；其余 PR 只会往后挪，所以按页码接续可能重读、不会漏读。进度只在进程内存里，规则同 issue 流。
 - 某个 PR 写入失败时，这次读取停在这一页，游标不动，错误写进 `github_repo_sync.last_error`，下个周期重试。
@@ -389,7 +424,7 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 
 - `pulls` 列表的排序参数、`/repositories/{id}/pulls` 路径、静态令牌读 check-runs 未在真实 GitHub 上验证，见 PR 的 Owner 实测步骤。
 - CI 变化不会改变 PR 的 `updated_at`，轮询发现不了。之后的 CI 状态靠上游已有的刷新：打开 issue 时快照过期就刷新，后台定时刷新状态未定的 PR。
-- 一个 issue 先被 PR 引用、后被导入（跨仓库引用的仓库还没轮询到）时，要等这个 PR 下次更新才会关联。
+- 一个 issue 先被 PR 引用、后被导入时，要等这个 PR 下次更新才会关联。
 
 ## 双写、意图记录与署名
 
@@ -407,9 +442,9 @@ Multica 里对 github issue 的写入先写 GitHub，GitHub 接受后才落库�
 - 本地评论（没有 `comment_external` 行的，例如功能开启前写的）编辑、删除只落库。
 - 状态按「状态映射」一节反向写：done 类 → `closed` + `completed`；cancelled 类 → `closed` + `not_planned`；入口状态 → `open` 且不带状态标签；其他 → `open` 加 `status_label_map` 里的标签。改状态时先去掉该映射里的所有状态标签（不区分大小写），再加上新的，其他标签保留；只有项目配置了状态标签时才先读一次 issue 拿当前标签。无法表达的状态在改状态时已被「状态映射」的钩子拒绝；新建时同样拒绝（422 `github_status_unmapped`）。GitHub 新建 issue 只能是 open，所以新建时状态是 done 类、cancelled 类的也拒绝（403 `github_write_not_allowed`）。
 - 轮询把 GitHub 的状态同步回来时（`IsSyncedWrite`）不发请求，不会形成回写循环。
-- 他人在 GitHub 上新建的 issue（描述带外部前缀），描述在 Multica 里只读，改描述返回 403；标题、状态照常可改。
+- 导入的他人 issue（描述带外部前缀），描述在 Multica 里只读，改描述返回 403；标题、状态照常可改。
 - `repo` 参数在本任务只是「显式指定就建到这个仓库」。默认仓库、歧义报错、CLI `--repo`、界面下拉属于新建选仓库任务（#20）。功能关闭时忽略这个字段，与上游一致。
-- 删除 issue 不发请求：GitHub REST 不能删除 issue。本地删除后，该 issue 在 GitHub 上再有更新会重新导入（见「轮询」）。
+- 删除 issue 不发请求：GitHub REST 不能删除 issue。本地删除后不再跟踪它，要再跟踪就重新导入（见「按需导入」）。
 
 ### 顺序与失败语义
 
@@ -479,7 +514,7 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
 
 采信后：
 
-- 新 issue（本地没有 `issue_external`）：按意图记录的作者建本地 issue，描述去掉标记，不加外部前缀，意图置为 `applied`。项目和初始状态与他人新建的 issue 规则相同；原请求里只有 Multica 有的字段（指派、优先级等）没有记录，自愈出来的 issue 不带这些。
+- 新 issue（本地没有 `issue_external`）：按意图记录的作者建本地 issue，描述去掉标记，不加外部前缀，意图置为 `applied`。项目和初始状态与导入的 issue 规则相同；原请求里只有 Multica 有的字段（指派、优先级等）没有记录，自愈出来的 issue 不带这些。
 - 新评论（本地没有 `comment_external`）：按意图的作者、用意图里预定的 id 建评论（已存在就只补 `comment_external`），意图置为 `applied`。自愈出来的评论没有线程（GitHub 评论是平铺的）。
 - 已链接的评论（作者不是 `system`）：GitHub 上的新版本（`updated_at` 不早于已存值）覆盖本地正文，标记可信时去掉标记。
 - 从 Multica 写出去的 issue 的描述也跟随 GitHub：标记指向本 issue 的写入时去掉标记，否则原样存。

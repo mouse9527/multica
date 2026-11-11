@@ -51,6 +51,30 @@ func TestGitHubTokenStatusRouteAbsentWhileOff(t *testing.T) {
 	}
 }
 
+// With the feature off POST /api/issues/import answers like any other
+// unknown path under /api/issues, as upstream.
+func TestGitHubIssueImportRouteAbsentWhileOff(t *testing.T) {
+	post := func(path string) int {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, testServer.URL+path, strings.NewReader(`{"ref":"acme/widgets#1"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.Header.Set("X-Workspace-ID", testWorkspaceID)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	got, upstream := post("/api/issues/import"), post("/api/issues/no-such-route")
+	if got != upstream || got < 400 {
+		t.Fatalf("import while off = %d, want %d like any unknown path", got, upstream)
+	}
+}
+
 func TestGitHubTokenStatusRouteIsAdminOnly(t *testing.T) {
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-OAuth-Scopes", "repo")

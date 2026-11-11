@@ -75,7 +75,8 @@ func (s *Service) reconcileIntent(ctx context.Context, repo *Repo, projectID pgt
 		if err != nil || !found {
 			return s.notFound(ctx, intent, err, "the issue was not found on GitHub")
 		}
-		if _, err := s.syncIssue(ctx, repo, projectID, gh); err != nil {
+		// Opened from Multica, so tracked even when adoption cannot claim it.
+		if _, err := s.syncIssue(ctx, repo, projectID, gh, true); err != nil {
 			return err
 		}
 		return s.requireSettled(ctx, intent, "the issue is on GitHub but could not be linked")

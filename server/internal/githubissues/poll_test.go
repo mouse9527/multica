@@ -17,8 +17,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/events"
-	"github.com/multica-ai/multica/server/internal/githubissues/issuekey"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -39,6 +39,9 @@ type fakeIssuesAPI struct {
 	requests []string
 	// throttle, when set, answers every list request with 429.
 	throttle string
+	// commentsFault, when set, answers that page of an issue's comment
+	// list with that status.
+	commentsFault struct{ page, status int }
 	// writes is the single-item API of write_fake_test.go.
 	writes fakeWrites
 }
@@ -225,6 +228,28 @@ func (env *pollEnv) count(t *testing.T, sql string, args ...any) int {
 	return env.f.Count(t, sql, args...)
 }
 
+// importIssue imports GitHub issue number the way a person does
+// (ImportIssue) and returns it.
+func (env *pollEnv) importIssue(t *testing.T, number int) polledIssue {
+	t.Helper()
+	ws, err := util.ParseUUID(env.ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := env.svc.ImportIssue(context.Background(), ws, IssueRef{Owner: "acme", Repo: "widgets", Number: int32(number)}); err != nil {
+		t.Fatalf("import #%d: %v", number, err)
+	}
+	return env.issue(t, number)
+}
+
+// rewindCursors puts the issues and comments cursors back to at, as for a
+// repository followed since then: the next poll reads what GitHub changed
+// after at, less the overlap.
+func (env *pollEnv) rewindCursors(t *testing.T, at time.Time) {
+	t.Helper()
+	env.f.Exec(t, `UPDATE github_repo_sync SET issues_cursor = $2, comments_cursor = $2 WHERE workspace_id = $1`, env.ws, at)
+}
+
 type polledIssue struct {
 	id, title, description, status, creatorType, creatorID, projectID, state string
 }
@@ -242,88 +267,69 @@ func (env *pollEnv) issue(t *testing.T, number int) polledIssue {
 	return got
 }
 
-// TestPollImportsIssuesAndCommentsWithinTwoCycles is the acceptance path:
-// an issue and a comment opened by someone else on GitHub are in Multica
-// after the cycle that follows them, pull requests and their comments stay
-// out, and polling the same data again writes no second row.
-func TestPollImportsIssuesAndCommentsWithinTwoCycles(t *testing.T) {
+// TestPollFollowsImportedIssuesWithinTwoCycles is the acceptance path: an
+// imported issue edited and commented on by someone else on GitHub is up to
+// date in Multica after the cycle that follows; issues nobody imported, pull
+// requests and the comments on them stay out, and polling the same data
+// again writes no second row.
+func TestPollFollowsImportedIssuesWithinTwoCycles(t *testing.T) {
 	env := newPollEnv(t)
-	// main.go turns GitHub identifiers on together with the feature.
-	previous := issuekey.Enabled()
-	issuekey.SetEnabled(true)
-	t.Cleanup(func() { issuekey.SetEnabled(previous) })
 	t0 := testNow.Add(-time.Hour)
 	env.api.putIssue(1, "stranger", "Crash on start", "It crashes.", "open", t0, nil)
-	env.api.putIssue(2, "stranger", "Fix crash", "PR body", "open", t0.Add(time.Minute),
+	env.api.putComment(501, 1, "stranger", "Same here", t0.Add(time.Minute))
+	env.importIssue(t, 1)
+
+	// Before the first cycle someone edits and comments on the imported
+	// issue, opens issue 3 and comments on it, and opens a pull request.
+	env.api.putIssue(1, "stranger", "Crash on start (macOS)", "It crashes.", "open", testNow.Add(-40*time.Second), nil)
+	env.api.putComment(502, 1, "stranger", "Me too", testNow.Add(-35*time.Second))
+	env.api.putIssue(2, "stranger", "Fix crash", "PR body", "open", testNow.Add(-30*time.Second),
 		map[string]any{"pull_request": map[string]any{"url": "https://api.github.com/repos/acme/widgets/pulls/2"}})
-	env.api.putComment(501, 1, "stranger", "Same here", t0.Add(2*time.Minute))
-	env.api.putComment(502, 2, "reviewer", "LGTM", t0.Add(3*time.Minute))
+	env.api.putComment(503, 2, "reviewer", "LGTM", testNow.Add(-25*time.Second))
+	env.api.putIssue(3, "stranger", "Docs typo", "", "open", testNow.Add(-20*time.Second), nil)
+	env.api.putComment(504, 3, "stranger", "Line 4", testNow.Add(-15*time.Second))
 
 	stats := env.poll(t)
 	if stats.Repos != 1 || stats.Failed != 0 || stats.Synced != 2 {
 		t.Fatalf("first cycle stats = %+v", stats)
 	}
-	got := env.issue(t, 1)
-	if got.title != "Crash on start" || got.status != "backlog" || got.state != "open" {
-		t.Fatalf("imported issue = %+v", got)
-	}
-	if got.creatorType != "member" || got.creatorID != env.owner || got.projectID != env.project {
-		t.Fatalf("imported issue creator/project = %+v, want owner %s in project %s", got, env.owner, env.project)
-	}
-	if got.description != ExternalIssueDescription("stranger", "It crashes.") {
-		t.Fatalf("description = %q", got.description)
-	}
-	if n := env.count(t, `SELECT count(*) FROM issue_external WHERE workspace_id = $1`, env.ws); n != 1 {
-		t.Fatalf("issue_external rows = %d, want 1 (the pull request stays out)", n)
+	if got := env.issue(t, 1); got.title != "Crash on start (macOS)" {
+		t.Fatalf("imported issue after the cycle = %+v", got)
 	}
 	var author, content string
 	env.f.QueryRow(t, `SELECT c.author_type, c.content FROM comment c JOIN comment_external x ON x.comment_id = c.id
-		WHERE x.workspace_id = $1 AND x.external_id = 501`, env.ws).Scan(&author, &content)
-	if author != externalAuthorType || content != ExternalCommentContent("stranger", "Same here") {
-		t.Fatalf("imported comment = %s %q", author, content)
+		WHERE x.workspace_id = $1 AND x.external_id = 502`, env.ws).Scan(&author, &content)
+	if author != externalAuthorType || content != ExternalCommentContent("stranger", "Me too") {
+		t.Fatalf("new comment = %s %q", author, content)
 	}
-	if n := env.count(t, `SELECT count(*) FROM comment_external WHERE workspace_id = $1`, env.ws); n != 1 {
-		t.Fatalf("comment_external rows = %d, want 1 (the pull request comment stays out)", n)
+	if n := env.count(t, `SELECT count(*) FROM issue_external WHERE workspace_id = $1`, env.ws); n != 1 {
+		t.Fatalf("issue_external rows = %d, want 1 (issue 3 and the pull request stay out)", n)
 	}
-
-	// The issue:created payload has no description, so the subscriber
-	// listener cannot read mention links out of GitHub text.
-	env.mu.Lock()
-	var created map[string]any
-	for _, e := range env.events {
-		if e.Type == protocol.EventIssueCreated {
-			created = e.Payload.(map[string]any)["issue"].(map[string]any)
-		}
-	}
-	env.mu.Unlock()
-	if created == nil || created["description"] != nil || created["identifier"] != "acme/widgets#1" || created["provider"] != "github" {
-		t.Fatalf("issue:created payload = %v", created)
+	if n := env.count(t, `SELECT count(*) FROM comment_external WHERE workspace_id = $1`, env.ws); n != 2 {
+		t.Fatalf("comment_external rows = %d, want 2 (comments on issue 3 and the pull request stay out)", n)
 	}
 
-	// Between cycles someone opens issue 3 and comments on it.
-	env.api.putIssue(3, "stranger", "Docs typo", "", "open", testNow.Add(-30*time.Second), nil)
-	env.api.putComment(503, 3, "stranger", "Line 4", testNow.Add(-20*time.Second))
+	// The second cycle brings the next comment.
+	env.api.putComment(505, 1, "stranger", "Still there", testNow.Add(30*time.Second))
+	env.api.putIssue(3, "stranger", "Docs typo", "Line 4 of the guide", "open", testNow.Add(40*time.Second), nil)
 	*env.now = testNow.Add(pollInterval)
-	if stats := env.poll(t); stats.Synced != 2 || stats.Failed != 0 {
+	if stats := env.poll(t); stats.Synced != 1 || stats.Failed != 0 {
 		t.Fatalf("second cycle stats = %+v", stats)
 	}
-	if got := env.issue(t, 3); got.description != ExternalIssueDescription("stranger", "") {
-		t.Fatalf("issue 3 = %+v", got)
-	}
-	if n := env.count(t, `SELECT count(*) FROM comment_external WHERE workspace_id = $1 AND external_id = 503`, env.ws); n != 1 {
-		t.Fatalf("comment on issue 3 not imported")
+	if n := env.count(t, `SELECT count(*) FROM comment_external WHERE workspace_id = $1 AND external_id = 505`, env.ws); n != 1 {
+		t.Fatal("second comment not synced")
 	}
 
-	// Re-reading everything (the overlap, or a lost cursor) adds nothing.
-	env.f.Exec(t, `UPDATE github_repo_sync SET issues_cursor = NULL, comments_cursor = NULL WHERE workspace_id = $1`, env.ws)
+	// Re-reading everything (the overlap, or a cursor set back) adds nothing.
+	env.rewindCursors(t, t0.Add(-time.Hour))
 	if stats := env.poll(t); stats.Synced != 0 || stats.Failed != 0 {
 		t.Fatalf("re-poll stats = %+v, want nothing synced", stats)
 	}
-	if n := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws); n != 2 {
-		t.Fatalf("issues = %d, want 2", n)
+	if n := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws); n != 1 {
+		t.Fatalf("issues = %d, want 1", n)
 	}
-	if n := env.count(t, `SELECT count(*) FROM comment WHERE workspace_id = $1`, env.ws); n != 2 {
-		t.Fatalf("comments = %d, want 2", n)
+	if n := env.count(t, `SELECT count(*) FROM comment WHERE workspace_id = $1`, env.ws); n != 3 {
+		t.Fatalf("comments = %d, want 3", n)
 	}
 }
 
@@ -335,7 +341,8 @@ func TestPollOrdersSnapshotsByExternalUpdatedAt(t *testing.T) {
 	t0 := testNow.Add(-10 * time.Minute)
 	env.api.putIssue(1, "stranger", "New title", "New body", "open", t0, nil)
 	env.api.putComment(501, 1, "stranger", "Edited", t0)
-	env.poll(t)
+	env.importIssue(t, 1)
+	env.rewindCursors(t, t0)
 
 	// GitHub serves stale copies, updated a minute before the stored ones:
 	// within the two-minute overlap, so the next cycle reads them.
@@ -377,26 +384,37 @@ func TestPollOrdersSnapshotsByExternalUpdatedAt(t *testing.T) {
 	}
 }
 
-// TestPollPagesPastSharedTimestamps imports more issues than one page holds,
-// with the first page entirely on one second, in a single cycle.
+// TestPollPagesPastSharedTimestamps reads more updated issues than one page
+// holds, with the first page entirely on one second, in a single cycle, and
+// syncs the imported ones among them wherever they are.
 func TestPollPagesPastSharedTimestamps(t *testing.T) {
 	env := newPollEnv(t)
 	t0 := testNow.Add(-time.Hour)
-	for n := 1; n <= 250; n++ {
-		at := t0
+	at := func(n int) time.Time {
 		if n > 120 {
-			at = t0.Add(time.Duration(n) * time.Second)
+			return t0.Add(time.Duration(n) * time.Second)
 		}
-		env.api.putIssue(n, "stranger", "Issue "+strconv.Itoa(n), "", "open", at, nil)
+		return t0
 	}
-	if stats := env.poll(t); stats.Synced != 250 || stats.Failed != 0 {
+	for n := 1; n <= 250; n++ {
+		env.api.putIssue(n, "stranger", "Issue "+strconv.Itoa(n), "", "open", at(n), nil)
+	}
+	env.importIssue(t, 1)
+	env.importIssue(t, 250)
+	env.rewindCursors(t, t0.Add(-time.Minute))
+	// Edited on GitHub without moving updated_at, so only reading them in
+	// the stream brings the edit.
+	for _, n := range []int{1, 250} {
+		env.api.putIssue(n, "stranger", "Edited "+strconv.Itoa(n), "", "open", at(n), nil)
+	}
+	if stats := env.poll(t); stats.Synced != 2 || stats.Failed != 0 {
 		t.Fatalf("stats = %+v", stats)
 	}
-	if n := env.count(t, `SELECT count(DISTINCT external_number) FROM issue_external WHERE workspace_id = $1`, env.ws); n != 250 {
-		t.Fatalf("imported %d distinct issues, want 250", n)
+	if got := env.issue(t, 1).title + " / " + env.issue(t, 250).title; got != "Edited 1 / Edited 250" {
+		t.Fatalf("titles = %s", got)
 	}
-	if n := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws); n != 250 {
-		t.Fatalf("issues = %d, want 250", n)
+	if n := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws); n != 2 {
+		t.Fatalf("issues = %d, want the 2 imported", n)
 	}
 	var cursor time.Time
 	env.f.QueryRow(t, `SELECT issues_cursor FROM github_repo_sync WHERE workspace_id = $1`, env.ws).Scan(&cursor)
@@ -405,39 +423,42 @@ func TestPollPagesPastSharedTimestamps(t *testing.T) {
 	}
 }
 
-// TestPollGetsPastSharedTimestampsOverCycles is a bulk import larger than one
-// cycle's page budget, all on one second, with a newer issue and a comment on
-// it after the run. The cursor can only stop on that second, so the next cycle
-// must re-read the run and still get past it, rather than re-reading the same
-// pages every cycle and never reaching the newer issue or the comments.
+// TestPollGetsPastSharedTimestampsOverCycles is a run of updated issues
+// larger than one cycle's page budget, all on one second, with an edit of an
+// imported issue and a comment on it after the run. The cursor can only stop
+// on that second, so the next cycle must re-read the run and still get past
+// it, rather than re-reading the same pages every cycle and never reaching
+// the edit or the comments.
 func TestPollGetsPastSharedTimestampsOverCycles(t *testing.T) {
 	env := newPollEnv(t)
 	bulk := testNow.Add(-time.Hour)
 	const runLength = 1200 // more than pollPagesPerStream pages of pollPerPage
 	for n := 1; n <= runLength; n++ {
-		env.api.putIssue(n, "stranger", "Imported "+strconv.Itoa(n), "", "open", bulk, nil)
+		env.api.putIssue(n, "stranger", "Bulk "+strconv.Itoa(n), "", "open", bulk, nil)
 	}
 	newer := runLength + 1
-	env.api.putIssue(newer, "stranger", "After the import", "", "open", bulk.Add(10*time.Minute), nil)
-	env.api.putComment(901, newer, "stranger", "On the newer issue", bulk.Add(11*time.Minute))
+	env.api.putIssue(newer, "stranger", "Before the run", "", "open", bulk.Add(-time.Hour), nil)
+	env.importIssue(t, newer)
+	env.rewindCursors(t, bulk.Add(-time.Minute))
+	env.api.putIssue(newer, "stranger", "After the run", "", "open", bulk.Add(10*time.Minute), nil)
+	env.api.putComment(901, newer, "stranger", "On the imported issue", bulk.Add(11*time.Minute))
 
-	first := env.poll(t)
-	if first.Failed != 0 || first.Synced >= runLength {
-		t.Fatalf("first cycle stats = %+v, want a partial import within the page budget", first)
+	if stats := env.poll(t); stats.Failed != 0 {
+		t.Fatalf("first cycle stats = %+v", stats)
+	}
+	if got := env.issue(t, newer); got.title != "Before the run" {
+		t.Fatalf("first cycle got past a run longer than its page budget: %+v", got)
 	}
 	*env.now = testNow.Add(pollInterval)
 	if stats := env.poll(t); stats.Failed != 0 {
 		t.Fatalf("second cycle stats = %+v", stats)
 	}
-	if n := env.count(t, `SELECT count(DISTINCT external_number) FROM issue_external WHERE workspace_id = $1`, env.ws); n != runLength+1 {
-		t.Fatalf("after two cycles imported %d issues, want %d", n, runLength+1)
-	}
-	if got := env.issue(t, newer); got.title != "After the import" {
-		t.Fatalf("newer issue = %+v", got)
+	if got := env.issue(t, newer); got.title != "After the run" {
+		t.Fatalf("imported issue after two cycles = %+v", got)
 	}
 	// The issues stream caught up, so the comments stream ran too.
 	if n := env.count(t, `SELECT count(*) FROM comment_external WHERE workspace_id = $1 AND external_id = 901`, env.ws); n != 1 {
-		t.Fatalf("comment on the newer issue not imported after two cycles")
+		t.Fatalf("comment on the imported issue not synced after two cycles")
 	}
 	var cursor time.Time
 	env.f.QueryRow(t, `SELECT issues_cursor FROM github_repo_sync WHERE workspace_id = $1`, env.ws).Scan(&cursor)
@@ -446,13 +467,13 @@ func TestPollGetsPastSharedTimestampsOverCycles(t *testing.T) {
 	}
 
 	// Later cycles still catch up every time: the run sits inside no overlap
-	// window any more, and nothing is imported twice.
+	// window any more, and none of it enters Multica.
 	*env.now = testNow.Add(2 * pollInterval)
 	if stats := env.poll(t); stats.Synced != 0 || stats.Failed != 0 {
 		t.Fatalf("third cycle stats = %+v, want nothing new", stats)
 	}
-	if n := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws); n != runLength+1 {
-		t.Fatalf("issues = %d, want %d", n, runLength+1)
+	if n := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws); n != 1 {
+		t.Fatalf("issues = %d, want only the imported one", n)
 	}
 }
 
@@ -461,22 +482,22 @@ func TestPollGetsPastSharedTimestampsOverCycles(t *testing.T) {
 // cycle starting over from the cursor, can read through it. Each cycle must
 // continue where the last one stopped, and after a restart has dropped that
 // position the stream starts over once and again moves forward, until the
-// newer issue and its comment arrive.
+// edit of the imported issue and its comment arrive.
 func TestPollResumesRunsLongerThanAnyCycle(t *testing.T) {
 	env := newPollEnv(t)
 	env.svc.pollLimits.perPage, env.svc.pollLimits.pages = 10, 3
 	bulk := testNow.Add(-time.Hour)
 	const runLength = 150 // 15 pages of 10, against 3 pages per cycle
 	for n := 1; n <= runLength; n++ {
-		env.api.putIssue(n, "stranger", "Imported "+strconv.Itoa(n), "", "open", bulk, nil)
+		env.api.putIssue(n, "stranger", "Bulk "+strconv.Itoa(n), "", "open", bulk, nil)
 	}
 	newer := runLength + 1
-	env.api.putIssue(newer, "stranger", "After the import", "", "open", bulk.Add(time.Minute), nil)
-	env.api.putComment(901, newer, "stranger", "On the newer issue", bulk.Add(2*time.Minute))
+	env.api.putIssue(newer, "stranger", "Before the run", "", "open", bulk.Add(-time.Hour), nil)
+	env.importIssue(t, newer)
+	env.rewindCursors(t, bulk.Add(-time.Minute))
+	env.api.putIssue(newer, "stranger", "After the run", "", "open", bulk.Add(time.Minute), nil)
+	env.api.putComment(901, newer, "stranger", "On the imported issue", bulk.Add(2*time.Minute))
 
-	imported := func() int {
-		return env.count(t, `SELECT count(*) FROM issue_external WHERE workspace_id = $1`, env.ws)
-	}
 	issueRequests := func() int {
 		n := 0
 		for _, r := range env.api.seen() {
@@ -486,13 +507,14 @@ func TestPollResumesRunsLongerThanAnyCycle(t *testing.T) {
 		}
 		return n
 	}
-	previous, cycles := 0, 0
-	for imported() < runLength+1 {
+	cycles := 0
+	for env.issue(t, newer).title != "After the run" {
 		cycles++
 		// 16 pages at 3 per cycle is 6 cycles; the restart costs the pages
-		// read before it once more.
+		// read before it once more. A stream that re-reads the same pages
+		// every cycle never gets here.
 		if cycles > 12 {
-			t.Fatalf("still %d of %d issues after %d cycles: the stream is not moving forward", imported(), runLength+1, cycles-1)
+			t.Fatalf("edit not synced after %d cycles: the stream is not moving forward", cycles-1)
 		}
 		if cycles == 3 {
 			// A restart: the in-memory position is gone, only the cursor is left.
@@ -508,22 +530,20 @@ func TestPollResumesRunsLongerThanAnyCycle(t *testing.T) {
 		if sent := issueRequests() - before; sent > 3 {
 			t.Fatalf("cycle %d sent %d issue requests, budget is 3", cycles, sent)
 		}
-		got := imported()
-		if cycles < 3 && got <= previous {
-			t.Fatalf("cycle %d imported nothing new (%d issues)", cycles, got)
-		}
-		previous = got
 	}
-	if n := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws); n != runLength+1 {
-		t.Fatalf("issues = %d, want %d without duplicates", n, runLength+1)
+	if cycles < 6 {
+		t.Fatalf("edit synced after %d cycles; the run should take at least 6", cycles)
+	}
+	if n := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws); n != 1 {
+		t.Fatalf("issues = %d, want only the imported one", n)
 	}
 	// The comments stream runs once the issues stream has caught up: in the
-	// cycle that imported the newer issue, or the next.
+	// cycle that synced the edit, or the next.
 	if n := env.count(t, `SELECT count(*) FROM comment_external WHERE workspace_id = $1 AND external_id = 901`, env.ws); n != 1 {
 		*env.now = testNow.Add(time.Duration(cycles+1) * pollInterval)
 		env.poll(t)
 		if n := env.count(t, `SELECT count(*) FROM comment_external WHERE workspace_id = $1 AND external_id = 901`, env.ws); n != 1 {
-			t.Fatal("comment on the newer issue not imported once the issues stream caught up")
+			t.Fatal("comment on the imported issue not synced once the issues stream caught up")
 		}
 	}
 }
@@ -533,6 +553,8 @@ func TestPollResumesRunsLongerThanAnyCycle(t *testing.T) {
 func TestPollBacksOffWhenRateLimited(t *testing.T) {
 	env := newPollEnv(t)
 	env.api.putIssue(1, "stranger", "Crash", "", "open", testNow.Add(-time.Hour), nil)
+	env.importIssue(t, 1)
+	env.api.putIssue(1, "stranger", "Crash on start", "", "open", testNow.Add(-30*time.Second), nil)
 	env.api.mu.Lock()
 	env.api.throttle = "120"
 	env.api.mu.Unlock()
@@ -571,18 +593,19 @@ func TestPollSendsNothingWithUnusableToken(t *testing.T) {
 func TestPollRecordsRepositoryErrors(t *testing.T) {
 	env := newPollEnv(t)
 	env.api.putIssue(1, "stranger", "Crash", "", "open", testNow.Add(-time.Hour), nil)
-	// The sync account is unavailable: no owner left in the workspace.
-	env.f.Exec(t, `UPDATE member SET role = 'member' WHERE workspace_id = $1`, env.ws)
+	env.importIssue(t, 1)
+	// GitHub answers the imported issue with a state the poller cannot read.
+	env.api.putIssue(1, "stranger", "Crash", "", "unknown", testNow.Add(-30*time.Second), nil)
 	if stats := env.poll(t); stats.Failed != 1 || stats.Synced != 0 {
 		t.Fatalf("stats = %+v", stats)
 	}
 	var lastError string
 	env.f.QueryRow(t, `SELECT COALESCE(last_error, '') FROM github_repo_sync WHERE workspace_id = $1`, env.ws).Scan(&lastError)
-	if !strings.Contains(lastError, ErrSyncAccountUnavailable.Error()) {
+	if !strings.Contains(lastError, "issue without number or state") {
 		t.Fatalf("last_error = %q", lastError)
 	}
 	// The failed issue was not skipped: the cursor did not move past it.
-	env.f.Exec(t, `UPDATE member SET role = 'owner' WHERE workspace_id = $1`, env.ws)
+	env.api.putIssue(1, "stranger", "Crash on start", "", "open", testNow.Add(-30*time.Second), nil)
 	*env.now = testNow.Add(pollInterval)
 	if stats := env.poll(t); stats.Failed != 0 || stats.Synced != 1 {
 		t.Fatalf("retry stats = %+v", stats)

@@ -50,8 +50,11 @@ func (g githubIssue) body() string {
 }
 
 // pollIssues reads the issues stream of a repository from cursor and stores
-// every issue in it. Pull requests are skipped.
+// the issues in it that Multica already tracks: imported ones (ImportIssue)
+// and ones opened from Multica. Every other issue and every pull request is
+// skipped, so nothing enters Multica by being updated on GitHub.
 func (s *Service) pollIssues(ctx context.Context, repo *Repo, projectID pgtype.UUID, cursor pgtype.Timestamptz) (synced int, caughtUp bool, err error) {
+	q := db.New(s.db)
 	caughtUp, err = s.readStream(ctx, repo, stream{path: "/issues"}, cursor, func(items []json.RawMessage) (int, error) {
 		for i, raw := range items {
 			var issue githubIssue
@@ -61,7 +64,14 @@ func (s *Service) pollIssues(ctx context.Context, repo *Repo, projectID pgtype.U
 			if len(issue.PullRequest) > 0 && string(issue.PullRequest) != "null" {
 				continue
 			}
-			changed, err := s.syncIssue(ctx, repo, projectID, issue)
+			tracked, err := s.mayBeTracked(ctx, q, repo, issue)
+			if err != nil {
+				return i, err
+			}
+			if !tracked {
+				continue
+			}
+			changed, err := s.syncIssue(ctx, repo, projectID, issue, false)
 			if err != nil {
 				return i, fmt.Errorf("sync %s#%d: %w", repo.FullName(), issue.Number, err)
 			}
@@ -74,31 +84,59 @@ func (s *Service) pollIssues(ctx context.Context, repo *Repo, projectID pgtype.U
 	return synced, caughtUp, err
 }
 
-// syncIssue stores one GitHub issue: a new local issue the first time it is
-// seen, otherwise a refresh of the issue that mirrors it. A snapshot older
-// than the one already stored (external_updated_at) changes nothing.
-func (s *Service) syncIssue(ctx context.Context, repo *Repo, projectID pgtype.UUID, gh githubIssue) (bool, error) {
+// mayBeTracked is a check without a transaction that keeps issues nobody
+// imported out of syncIssue: true when the issue has a local mirror, or when
+// its body carries the marker of a write from Multica that adoption may
+// claim. syncIssue decides again under the issue lock.
+func (s *Service) mayBeTracked(ctx context.Context, q *db.Queries, repo *Repo, gh githubIssue) (bool, error) {
+	_, err := q.GetIssueExternalByNumber(ctx, db.GetIssueExternalByNumberParams{
+		WorkspaceID: repo.workspaceID, Provider: issuekey.ProviderGitHub,
+		ExternalRepoID: repo.id, ExternalNumber: gh.Number,
+	})
+	switch {
+	case err == nil:
+		return true, nil
+	case !errors.Is(err, pgx.ErrNoRows):
+		return false, err
+	}
+	_, marked := parseMarker(gh.body())
+	return marked, nil
+}
+
+// syncIssue stores one GitHub issue: a refresh of the issue that mirrors it,
+// or, the first time it is seen, the adoption of an issue opened from Multica
+// (adoptIssue). A GitHub issue with neither becomes a new local issue only
+// when importNew is set (an import, or a write from Multica being settled);
+// otherwise it is left out. A snapshot older than the one already stored
+// (external_updated_at) changes nothing.
+func (s *Service) syncIssue(ctx context.Context, repo *Repo, projectID pgtype.UUID, gh githubIssue, importNew bool) (bool, error) {
+	created, changed, err := s.storeIssue(ctx, repo, projectID, gh, importNew)
+	return created || changed, err
+}
+
+// storeIssue is syncIssue, telling a new local issue apart from a change.
+func (s *Service) storeIssue(ctx context.Context, repo *Repo, projectID pgtype.UUID, gh githubIssue, importNew bool) (created, changed bool, err error) {
 	if gh.Number <= 0 || (gh.State != "open" && gh.State != "closed") {
-		return false, errors.New("issue without number or state")
+		return false, false, errors.New("issue without number or state")
 	}
 	// A collision on the workspace issue number means the counter trails
 	// MAX(number) (see service.IssueService.Create); heal it and run the
 	// transaction once more.
 	for attempt := 0; ; attempt++ {
-		created, changed, current, err := s.syncIssueOnce(ctx, repo, projectID, gh)
+		created, changed, current, err := s.syncIssueOnce(ctx, repo, projectID, gh, importNew)
 		var pgErr *pgconn.PgError
 		if attempt == 0 && errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == service.IssueNumberConstraint {
 			if _, healErr := db.New(s.db).HealIssueCounter(ctx, repo.workspaceID); healErr != nil && !errors.Is(healErr, pgx.ErrNoRows) {
-				return false, healErr
+				return false, false, healErr
 			}
 			continue
 		}
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if created != nil {
 			s.publishIssueCreated(ctx, *created)
-			return true, nil
+			return true, false, nil
 		}
 		if changed != nil {
 			s.publishIssueChanged(*changed)
@@ -108,16 +146,16 @@ func (s *Service) syncIssue(ctx context.Context, repo *Repo, projectID pgtype.UU
 		statusChanged := false
 		if current.ID.Valid {
 			if statusChanged, err = s.syncStatus(ctx, repo, current, gh); err != nil {
-				return changed != nil, fmt.Errorf("sync status: %w", err)
+				return false, changed != nil, fmt.Errorf("sync status: %w", err)
 			}
 		}
-		return changed != nil || statusChanged, nil
+		return false, changed != nil || statusChanged, nil
 	}
 }
 
 // current is the stored issue after the transaction when it existed before,
 // for the status sync that follows; it is zero when the snapshot was stale.
-func (s *Service) syncIssueOnce(ctx context.Context, repo *Repo, projectID pgtype.UUID, gh githubIssue) (created, changed *db.Issue, current db.Issue, err error) {
+func (s *Service) syncIssueOnce(ctx context.Context, repo *Repo, projectID pgtype.UUID, gh githubIssue, importNew bool) (created, changed *db.Issue, current db.Issue, err error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, nil, db.Issue{}, err
@@ -141,8 +179,11 @@ func (s *Service) syncIssueOnce(ctx context.Context, repo *Repo, projectID pgtyp
 		// adopted under its author, not imported as someone else's.
 		if intent, ok := s.trustedIntent(ctx, q, repo, gh.body(), gh.User.Login, gh.ID, gh.Number, opCreateIssue); ok {
 			issue, err = s.adoptIssue(ctx, tx, q, repo, projectID, gh, intent)
-		} else {
+		} else if importNew {
 			issue, err = s.createIssue(ctx, tx, q, repo, projectID, gh)
+		} else {
+			// Not tracked: nobody imported it.
+			return nil, nil, db.Issue{}, nil
 		}
 		if err != nil {
 			return nil, nil, db.Issue{}, err
@@ -213,7 +254,7 @@ func issueID(created, changed *db.Issue, existing db.IssueExternal) pgtype.UUID 
 }
 
 // createIssue inserts the local issue for a GitHub issue opened outside
-// Multica. The creator is the sync account (IssueCreator), the GitHub author
+// Multica and imported. The creator is the sync account (IssueCreator), the GitHub author
 // is named in the description prefix, and nobody is assigned, so no agent run
 // starts.
 func (s *Service) createIssue(ctx context.Context, tx pgx.Tx, q *db.Queries, repo *Repo, projectID pgtype.UUID, gh githubIssue) (db.Issue, error) {

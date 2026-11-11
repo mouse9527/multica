@@ -42,9 +42,9 @@ func (c githubComment) issueNumber() (int32, bool) {
 // stream has its own cursor instead of relying on a comment to move its
 // issue's updated_at, which GitHub does not document.
 //
-// A comment whose issue has no local mirror is skipped: the stream also lists
-// comments on pull requests, and the issues stream, read first, has already
-// imported every issue it could.
+// A comment whose issue has no local mirror is skipped: the issue was never
+// imported (or the comment is on a pull request), and the issues stream,
+// read first, has already adopted every issue opened from Multica.
 func (s *Service) pollComments(ctx context.Context, repo *Repo, cursor pgtype.Timestamptz) (synced int, err error) {
 	q := db.New(s.db)
 	_, err = s.readStream(ctx, repo, stream{path: "/issues/comments", comments: true}, cursor, func(items []json.RawMessage) (int, error) {

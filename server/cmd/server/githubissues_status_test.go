@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/githubissues"
+	"github.com/multica-ai/multica/server/internal/githubissues/issuekey"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -52,7 +54,9 @@ func (g *statusTestGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id":42}`))
 	case "/repositories/42/issues":
 		_ = json.NewEncoder(w).Encode([]any{g.issue})
-	case "/repositories/42/issues/comments", "/repositories/42/pulls":
+	case "/repositories/42/issues/1":
+		_ = json.NewEncoder(w).Encode(g.issue)
+	case "/repositories/42/issues/comments", "/repositories/42/issues/1/comments", "/repositories/42/pulls":
 		_, _ = w.Write([]byte(`[]`))
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -70,7 +74,8 @@ func TestGitHubCloseReachesDoneThroughRouterWiring(t *testing.T) {
 	pool := testutil.IsolatedDB(t, dsn)
 	f := testutil.New(pool, "", "")
 	suffix := uuid.NewString()[:8]
-	owner := f.User(t, "Owner", "status-owner-"+suffix+"@example.invalid")
+	ownerEmail := "status-owner-" + suffix + "@example.invalid"
+	owner := f.User(t, "Owner", ownerEmail)
 	ws := f.Workspace(t, "Status", "status-"+suffix)
 	f.WorkspaceID, f.UserID = ws, owner
 	f.Member(t, ws, owner, "owner")
@@ -95,7 +100,9 @@ func TestGitHubCloseReachesDoneThroughRouterWiring(t *testing.T) {
 		githubissues.Options{DB: pool, APIBase: server.URL})
 	bus := events.New()
 	registerActivityListeners(bus, db.New(pool))
-	NewRouterWithOptions(pool, realtime.NewHub(), bus, analytics.NoopClient{}, nil, RouterOptions{GitHubIssues: svc})
+	router, _ := NewRouterWithOptions(pool, realtime.NewHub(), bus, analytics.NoopClient{}, nil, RouterOptions{GitHubIssues: svc})
+	api := httptest.NewServer(router)
+	t.Cleanup(api.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	svc.Start(ctx)
@@ -118,10 +125,42 @@ func TestGitHubCloseReachesDoneThroughRouterWiring(t *testing.T) {
 			t.Fatalf("poll: %+v %v", stats, err)
 		}
 	}
+	// main.go turns GitHub identifiers on together with the feature.
+	previous := issuekey.Enabled()
+	issuekey.SetEnabled(true)
+	t.Cleanup(func() { issuekey.SetEnabled(previous) })
+	// Someone imports the issue through the API; only then is it followed.
 	poll()
+	if n := f.Count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, ws); n != 0 {
+		t.Fatalf("issues before the import = %d, want 0", n)
+	}
+	token, err := generateTestJWT(owner, ownerEmail, "Owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []int{http.StatusCreated, http.StatusOK} {
+		req, err := http.NewRequest(http.MethodPost, api.URL+"/api/issues/import", strings.NewReader(`{"ref":"acme/widgets#1"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-Workspace-ID", ws)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+		if resp.StatusCode != want || body["identifier"] != "acme/widgets#1" {
+			t.Fatalf("import: %d %v, want %d with the GitHub identifier", resp.StatusCode, body, want)
+		}
+	}
 	if got := status(); got != "backlog" {
 		t.Fatalf("imported status = %q, want backlog", got)
 	}
+	poll()
 
 	github.set("closed", "completed", t0.Add(time.Minute))
 	poll()
