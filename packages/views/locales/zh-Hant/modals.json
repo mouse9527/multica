@@ -272,6 +272,13 @@
       "error_daemon_version": "該 AI 代理的守護程序 CLI（{{current}}）低於要求的 {{min}}。請升級守護程序後再使用透過 AI 代理建立。",
       "error_unknown": "提交失敗，請重試。",
       "sub_issue_of": "作為 {{identifier}} 的子任務"
+    },
+    "github_repo": {
+      "tooltip": "GitHub 倉庫",
+      "local": "本地（不同步 GitHub）",
+      "choose": "選擇倉庫",
+      "search_placeholder": "搜尋倉庫…",
+      "required": "請選擇一個 GitHub 倉庫，或選「本地」"
     }
   },
   "mark_duplicate": {

@@ -274,6 +274,13 @@
       "error_daemon_version": "Le CLI du daemon de cet agent ({{current}}) est inférieur au minimum requis {{min}}. Mettez le daemon à jour pour utiliser la création avec un agent.",
       "error_unknown": "Échec de l'envoi. Réessayez.",
       "sub_issue_of": "Sous-tâche de {{identifier}}"
+    },
+    "github_repo": {
+      "tooltip": "Dépôt GitHub",
+      "local": "Local (non synchronisé avec GitHub)",
+      "choose": "Choisir un dépôt",
+      "search_placeholder": "Rechercher des dépôts…",
+      "required": "Choisissez un dépôt GitHub, ou Local"
     }
   },
   "mark_duplicate": {

@@ -249,6 +249,13 @@
       "error_unknown": "No se ha podido enviar. Inténtalo de nuevo.",
       "sub_issue_of": "Subtarea de {{identifier}}",
       "qoder_attachments_unsupported": "Qoder Cloud Agents no puede leer adjuntos. Quítalos o elige otro agente."
+    },
+    "github_repo": {
+      "tooltip": "Repositorio de GitHub",
+      "local": "Local (sin sincronizar con GitHub)",
+      "choose": "Elegir repositorio",
+      "search_placeholder": "Buscar repositorios…",
+      "required": "Elige un repositorio de GitHub, o Local"
     }
   },
   "mark_duplicate": {

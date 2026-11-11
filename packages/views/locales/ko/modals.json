@@ -272,6 +272,13 @@
       "error_daemon_version": "이 에이전트의 데몬 CLI({{current}})가 필요한 버전 {{min}}보다 낮습니다. 에이전트로 만들기를 사용하려면 데몬을 업그레이드하세요.",
       "error_unknown": "제출하지 못했습니다. 다시 시도하세요.",
       "sub_issue_of": "{{identifier}}의 하위 태스크"
+    },
+    "github_repo": {
+      "tooltip": "GitHub 저장소",
+      "local": "로컬 (GitHub와 동기화 안 함)",
+      "choose": "저장소 선택",
+      "search_placeholder": "저장소 검색…",
+      "required": "GitHub 저장소나 로컬을 선택하세요"
     }
   },
   "mark_duplicate": {

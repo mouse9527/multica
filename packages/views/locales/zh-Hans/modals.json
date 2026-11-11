@@ -272,6 +272,13 @@
       "error_daemon_version": "该智能体的守护进程 CLI（{{current}}）低于要求的 {{min}}。请升级守护进程后再使用通过智能体创建。",
       "error_unknown": "提交失败，请重试。",
       "sub_issue_of": "作为 {{identifier}} 的子任务"
+    },
+    "github_repo": {
+      "tooltip": "GitHub 仓库",
+      "local": "本地（不同步 GitHub）",
+      "choose": "选择仓库",
+      "search_placeholder": "搜索仓库…",
+      "required": "请选择一个 GitHub 仓库，或选「本地」"
     }
   },
   "mark_duplicate": {

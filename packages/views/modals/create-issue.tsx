@@ -102,6 +102,7 @@ import { useT } from "../i18n";
 import { SourceContextPreviewCard, useSourceContextFailureMessage } from "./source-context-preview";
 import { useIssueLimitUpgradePrompt } from "./use-issue-limit-upgrade-prompt";
 import { CopyParentFields } from "./copy-parent-fields";
+import { GitHubRepoPicker, useGitHubCreateRepo } from "./create-issue-github-repo"; // GitHub-native issues (fork)
 
 // ManualCreatePanel — manual-mode body of the create-issue dialog. Renders
 // DialogContent + everything inside; the surrounding `<Dialog>` is owned by
@@ -455,6 +456,9 @@ export function ManualCreatePanel({
   };
 
   const createIssueMutation = useCreateIssue();
+  // GitHub-native issues (fork): the repository of the new issue, offered when its project has any.
+  const githubRepo = useGitHubCreateRepo(wsId, projectId, !anchorCommentId);
+  const [repoPickerOpen, setRepoPickerOpen] = useState(false);
   const createCommentSubIssueMutation = useCreateCommentSubIssue();
   const updateIssueMutation = useUpdateIssue();
   const attachLabelMutation = useAttachLabelToIssue();
@@ -590,6 +594,7 @@ export function ManualCreatePanel({
           // Stage is only meaningful for a sub-issue (relative to its siblings).
           stage: parentIssueId && stage != null ? stage : undefined,
           project_id: projectId,
+          ...githubRepo.target, // GitHub-native issues (fork)
         });
       }
 
@@ -843,6 +848,11 @@ export function ManualCreatePanel({
     if (anchorCommentId && !sourcePreview) return;
     if (!title.trim()) {
       titleEditorRef.current?.focus();
+      return;
+    }
+    if (githubRepo.visible && !githubRepo.target) { // GitHub-native issues (fork)
+      toast.error(t(($) => $.create_issue.github_repo.required));
+      setRepoPickerOpen(true);
       return;
     }
     void composer.submit();
@@ -1155,6 +1165,11 @@ export function ManualCreatePanel({
                   open={fieldPickerOpen === "project" ? true : undefined}
                   onOpenChange={(open) => setFieldPickerOpen(open ? "project" : null)}
                 />
+              )}
+
+              {/* GitHub repository (fork: GitHub-native issues) */}
+              {githubRepo.visible && (
+                <GitHubRepoPicker state={githubRepo} open={repoPickerOpen} onOpenChange={setRepoPickerOpen} />
               )}
 
               {/* Stage — only relevant when creating a sub-issue under a parent */}
