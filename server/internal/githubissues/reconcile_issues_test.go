@@ -99,7 +99,6 @@ func TestReconcileFindsDeletedAndTransferredIssues(t *testing.T) {
 		t.Fatalf("pin acme/gadgets: %v", err)
 	}
 	// Synced at import: nothing is due for a day.
-	env.f.Exec(t, `UPDATE issue_external SET external_synced_at = $2 WHERE workspace_id = $1`, env.ws, testNow)
 	reads := func() int {
 		n := env.api.countPath(fmt.Sprintf("/repositories/%d/issues/7", otherRepoID))
 		for number := range ids {
@@ -124,7 +123,7 @@ func TestReconcileFindsDeletedAndTransferredIssues(t *testing.T) {
 	// Onto the issue 4 moves to, which is then tracked.
 	env.replyToIssue(6, http.StatusMovedPermanently, fmt.Sprintf("https://api.github.com/repositories/%d/issues/7", otherRepoID))
 
-	*env.now = testNow.Add(issueCheckInterval + time.Minute)
+	env.lastSyncedDayAgo(t)
 	if stats := env.poll(t); stats.Failed != 0 {
 		t.Fatalf("reconcile cycle stats = %+v", stats)
 	}
@@ -155,7 +154,6 @@ func TestReconcileFindsDeletedAndTransferredIssues(t *testing.T) {
 	// Checked today, and gone issues never again.
 	before = reads()
 	env.poll(t)
-	*env.now = env.now.Add(issueCheckInterval / 2)
 	env.poll(t)
 	if got := reads(); got != before {
 		t.Fatalf("issue reads after the pass = %d, want 0", got-before)
@@ -196,7 +194,7 @@ func TestReconcileStopsOnUnexpectedAnswers(t *testing.T) {
 	env.api.putIssue(1, "stranger", "Issue 1", "body", "open", testNow.Add(-time.Hour), nil)
 	id := env.importIssue(t, 1).id
 	env.replyToIssue(1, http.StatusBadGateway, "")
-	*env.now = testNow.Add(issueCheckInterval + time.Minute)
+	env.lastSyncedDayAgo(t)
 	if stats := env.poll(t); stats.Failed != 1 {
 		t.Fatalf("stats = %+v, want the repository failed", stats)
 	}
@@ -212,11 +210,17 @@ func TestReconcileStopsOnUnexpectedAnswers(t *testing.T) {
 	if stats := env.poll(t); stats.Failed != 0 {
 		t.Fatalf("retry stats = %+v", stats)
 	}
-	var synced time.Time
-	env.f.QueryRow(t, `SELECT external_synced_at FROM issue_external WHERE issue_id = $1`, id).Scan(&synced)
-	if !synced.Equal(*env.now) {
-		t.Fatalf("external_synced_at = %v, want the check recorded at %v", synced, *env.now)
+	if n := env.count(t, `SELECT count(*) FROM issue_external WHERE issue_id = $1
+		AND external_synced_at > now() - interval '1 minute'`, id); n != 1 {
+		t.Fatal("the check was not recorded")
 	}
+}
+
+// lastSyncedDayAgo makes every tracked issue due for the reconcile: last
+// synced (by the database clock, as GitHub syncs stamp it) over a day ago.
+func (env *pollEnv) lastSyncedDayAgo(t *testing.T) {
+	t.Helper()
+	env.f.Exec(t, `UPDATE issue_external SET external_synced_at = now() - interval '25 hours' WHERE workspace_id = $1`, env.ws)
 }
 
 func TestParseIssueLocation(t *testing.T) {

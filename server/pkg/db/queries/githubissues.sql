@@ -167,13 +167,15 @@ ORDER BY x.external_number;
 
 -- name: ListGitHubIssuesToReconcile :many
 -- The tracked issues of one repository due for the daily reconcile: not
--- synced since synced_before, and not already found deleted or transferred
--- away. Oldest sync first, so every check moves the next one forward.
+-- synced in the last check_seconds, and not already found deleted or
+-- transferred away. Oldest sync first, so every check moves the next one
+-- forward. external_synced_at is stamped by the database clock (see
+-- UpsertIssueExternal), so the cutoff is too.
 SELECT * FROM issue_external
 WHERE workspace_id = @workspace_id
   AND provider = 'github'
   AND external_repo_id = @external_repo_id
-  AND external_synced_at < @synced_before
+  AND external_synced_at < now() - make_interval(secs => @check_seconds::float8)
   AND (state_reason IS NULL OR state_reason NOT LIKE 'multica:%')
 ORDER BY external_synced_at, issue_id
 LIMIT @max_rows;
@@ -181,7 +183,7 @@ LIMIT @max_rows;
 -- name: TouchIssueExternalSynced :exec
 -- Records that the reconcile read the issue from GitHub, also when the
 -- snapshot changed nothing (fork table only).
-UPDATE issue_external SET external_synced_at = @synced_at
+UPDATE issue_external SET external_synced_at = now()
 WHERE issue_id = @issue_id AND workspace_id = @workspace_id;
 
 -- name: MarkGitHubIssueGone :execrows
@@ -191,7 +193,7 @@ WHERE issue_id = @issue_id AND workspace_id = @workspace_id;
 -- row still at repo and number is marked (fork table only).
 UPDATE issue_external SET
     state_reason       = @state_reason,
-    external_synced_at = @synced_at,
+    external_synced_at = now(),
     updated_at         = now()
 WHERE issue_id = @issue_id
   AND workspace_id = @workspace_id
@@ -207,7 +209,7 @@ UPDATE issue_external SET
     external_repo_id   = @to_repo_id,
     external_repo      = @to_repo,
     external_number    = @to_number,
-    external_synced_at = @synced_at,
+    external_synced_at = now(),
     updated_at         = now()
 WHERE issue_id = @issue_id
   AND workspace_id = @workspace_id

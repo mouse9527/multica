@@ -64,7 +64,7 @@ func (s *Service) reconcileIssues(ctx context.Context, repo *Repo, projectID pgt
 	q := db.New(s.db)
 	due, err := q.ListGitHubIssuesToReconcile(ctx, db.ListGitHubIssuesToReconcileParams{
 		WorkspaceID: repo.workspaceID, ExternalRepoID: repo.id,
-		SyncedBefore: pgtype.Timestamptz{Time: s.now().Add(-issueCheckInterval), Valid: true},
+		CheckSeconds: issueCheckInterval.Seconds(),
 		MaxRows:      issueChecksPerCycle,
 	})
 	if err != nil {
@@ -176,12 +176,8 @@ func (s *Service) followTransfer(ctx context.Context, repo *Repo, projectID pgty
 // touchSynced starts the next issueCheckInterval of the issue now.
 func (s *Service) touchSynced(ctx context.Context, ext db.IssueExternal) error {
 	return db.New(s.db).TouchIssueExternalSynced(ctx, db.TouchIssueExternalSyncedParams{
-		SyncedAt: s.syncedAt(), IssueID: ext.IssueID, WorkspaceID: ext.WorkspaceID,
+		IssueID: ext.IssueID, WorkspaceID: ext.WorkspaceID,
 	})
-}
-
-func (s *Service) syncedAt() pgtype.Timestamptz {
-	return pgtype.Timestamptz{Time: s.now(), Valid: true}
 }
 
 // parseIssueLocation reads the repository id and issue number out of the
@@ -246,7 +242,7 @@ func (s *Service) moveIssue(ctx context.Context, from, target *Repo, ext db.Issu
 		}
 	}
 	n, err := q.MoveIssueExternal(ctx, db.MoveIssueExternalParams{
-		ToRepoID: target.id, ToRepo: target.FullName(), ToNumber: number, SyncedAt: s.syncedAt(),
+		ToRepoID: target.id, ToRepo: target.FullName(), ToNumber: number,
 		IssueID: ext.IssueID, WorkspaceID: ext.WorkspaceID,
 		FromRepoID: ext.ExternalRepoID, FromNumber: ext.ExternalNumber,
 	})
@@ -278,8 +274,8 @@ func (s *Service) markIssueGone(ctx context.Context, ext db.IssueExternal, reaso
 		return false, err
 	}
 	n, err := q.MarkGitHubIssueGone(ctx, db.MarkGitHubIssueGoneParams{
-		StateReason: pgtype.Text{String: reason, Valid: true}, SyncedAt: s.syncedAt(),
-		IssueID: ext.IssueID, WorkspaceID: ext.WorkspaceID,
+		StateReason: pgtype.Text{String: reason, Valid: true},
+		IssueID:     ext.IssueID, WorkspaceID: ext.WorkspaceID,
 		ExternalRepoID: ext.ExternalRepoID, ExternalNumber: ext.ExternalNumber,
 	})
 	if err != nil {

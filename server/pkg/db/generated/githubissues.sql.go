@@ -198,27 +198,29 @@ SELECT issue_id, workspace_id, provider, external_repo_id, external_repo, extern
 WHERE workspace_id = $1
   AND provider = 'github'
   AND external_repo_id = $2
-  AND external_synced_at < $3
+  AND external_synced_at < now() - make_interval(secs => $3::float8)
   AND (state_reason IS NULL OR state_reason NOT LIKE 'multica:%')
 ORDER BY external_synced_at, issue_id
 LIMIT $4
 `
 
 type ListGitHubIssuesToReconcileParams struct {
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	ExternalRepoID int64              `json:"external_repo_id"`
-	SyncedBefore   pgtype.Timestamptz `json:"synced_before"`
-	MaxRows        int32              `json:"max_rows"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	ExternalRepoID int64       `json:"external_repo_id"`
+	CheckSeconds   float64     `json:"check_seconds"`
+	MaxRows        int32       `json:"max_rows"`
 }
 
 // The tracked issues of one repository due for the daily reconcile: not
-// synced since synced_before, and not already found deleted or transferred
-// away. Oldest sync first, so every check moves the next one forward.
+// synced in the last check_seconds, and not already found deleted or
+// transferred away. Oldest sync first, so every check moves the next one
+// forward. external_synced_at is stamped by the database clock (see
+// UpsertIssueExternal), so the cutoff is too.
 func (q *Queries) ListGitHubIssuesToReconcile(ctx context.Context, arg ListGitHubIssuesToReconcileParams) ([]IssueExternal, error) {
 	rows, err := q.db.Query(ctx, listGitHubIssuesToReconcile,
 		arg.WorkspaceID,
 		arg.ExternalRepoID,
-		arg.SyncedBefore,
+		arg.CheckSeconds,
 		arg.MaxRows,
 	)
 	if err != nil {
@@ -520,21 +522,20 @@ func (q *Queries) LockCommentExternalByExternalID(ctx context.Context, arg LockC
 const markGitHubIssueGone = `-- name: MarkGitHubIssueGone :execrows
 UPDATE issue_external SET
     state_reason       = $1,
-    external_synced_at = $2,
+    external_synced_at = now(),
     updated_at         = now()
-WHERE issue_id = $3
-  AND workspace_id = $4
-  AND external_repo_id = $5
-  AND external_number = $6
+WHERE issue_id = $2
+  AND workspace_id = $3
+  AND external_repo_id = $4
+  AND external_number = $5
 `
 
 type MarkGitHubIssueGoneParams struct {
-	StateReason    pgtype.Text        `json:"state_reason"`
-	SyncedAt       pgtype.Timestamptz `json:"synced_at"`
-	IssueID        pgtype.UUID        `json:"issue_id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	ExternalRepoID int64              `json:"external_repo_id"`
-	ExternalNumber int32              `json:"external_number"`
+	StateReason    pgtype.Text `json:"state_reason"`
+	IssueID        pgtype.UUID `json:"issue_id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	ExternalRepoID int64       `json:"external_repo_id"`
+	ExternalNumber int32       `json:"external_number"`
 }
 
 // Marks a tracked issue deleted or transferred away on GitHub. state_reason
@@ -544,7 +545,6 @@ type MarkGitHubIssueGoneParams struct {
 func (q *Queries) MarkGitHubIssueGone(ctx context.Context, arg MarkGitHubIssueGoneParams) (int64, error) {
 	result, err := q.db.Exec(ctx, markGitHubIssueGone,
 		arg.StateReason,
-		arg.SyncedAt,
 		arg.IssueID,
 		arg.WorkspaceID,
 		arg.ExternalRepoID,
@@ -612,23 +612,22 @@ UPDATE issue_external SET
     external_repo_id   = $1,
     external_repo      = $2,
     external_number    = $3,
-    external_synced_at = $4,
+    external_synced_at = now(),
     updated_at         = now()
-WHERE issue_id = $5
-  AND workspace_id = $6
-  AND external_repo_id = $7
-  AND external_number = $8
+WHERE issue_id = $4
+  AND workspace_id = $5
+  AND external_repo_id = $6
+  AND external_number = $7
 `
 
 type MoveIssueExternalParams struct {
-	ToRepoID    int64              `json:"to_repo_id"`
-	ToRepo      string             `json:"to_repo"`
-	ToNumber    int32              `json:"to_number"`
-	SyncedAt    pgtype.Timestamptz `json:"synced_at"`
-	IssueID     pgtype.UUID        `json:"issue_id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	FromRepoID  int64              `json:"from_repo_id"`
-	FromNumber  int32              `json:"from_number"`
+	ToRepoID    int64       `json:"to_repo_id"`
+	ToRepo      string      `json:"to_repo"`
+	ToNumber    int32       `json:"to_number"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	FromRepoID  int64       `json:"from_repo_id"`
+	FromNumber  int32       `json:"from_number"`
 }
 
 // Re-attaches a tracked issue to where GitHub transferred it. Only the row
@@ -640,7 +639,6 @@ func (q *Queries) MoveIssueExternal(ctx context.Context, arg MoveIssueExternalPa
 		arg.ToRepoID,
 		arg.ToRepo,
 		arg.ToNumber,
-		arg.SyncedAt,
 		arg.IssueID,
 		arg.WorkspaceID,
 		arg.FromRepoID,
@@ -653,20 +651,19 @@ func (q *Queries) MoveIssueExternal(ctx context.Context, arg MoveIssueExternalPa
 }
 
 const touchIssueExternalSynced = `-- name: TouchIssueExternalSynced :exec
-UPDATE issue_external SET external_synced_at = $1
-WHERE issue_id = $2 AND workspace_id = $3
+UPDATE issue_external SET external_synced_at = now()
+WHERE issue_id = $1 AND workspace_id = $2
 `
 
 type TouchIssueExternalSyncedParams struct {
-	SyncedAt    pgtype.Timestamptz `json:"synced_at"`
-	IssueID     pgtype.UUID        `json:"issue_id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
 // Records that the reconcile read the issue from GitHub, also when the
 // snapshot changed nothing (fork table only).
 func (q *Queries) TouchIssueExternalSynced(ctx context.Context, arg TouchIssueExternalSyncedParams) error {
-	_, err := q.db.Exec(ctx, touchIssueExternalSynced, arg.SyncedAt, arg.IssueID, arg.WorkspaceID)
+	_, err := q.db.Exec(ctx, touchIssueExternalSynced, arg.IssueID, arg.WorkspaceID)
 	return err
 }
 
