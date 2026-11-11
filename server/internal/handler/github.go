@@ -1580,7 +1580,8 @@ func (p *ghPullRequestPayload) mirrorInput() prMirrorInput {
 // arrived before the PR was mirrored, auto-links referenced issues (gated by
 // the workspace's github toggles), completes issues on a merge, and broadcasts
 // the change. Invoked once per workspace bound to the delivering installation.
-// It returns the error of the PR row write; everything after it only logs.
+// It returns the error of the PR row write, or of reading or writing its
+// links; those are logged too, and the webhook goes on as before.
 //
 // linkPolicy is the delivery-wide verdict on which identifiers this workspace
 // may link; this function only ever narrows it.
@@ -1640,12 +1641,14 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	// GitHub features restores history without backfill), but links and status
 	// changes are side-effects gated by the master `github_enabled` switch.
 	ws, err := h.Queries.GetWorkspace(ctx, wsID)
-	// Modified by the mouse9527/multica fork: GitHub-native issue references.
-	githubIssues, refsOK := h.githubIssueRefs(ctx, wsID, in)
-	if err == nil && githubFeaturesEnabled(ws) && !linkPolicy.indeterminate && refsOK {
+	// Modified by the mouse9527/multica fork: GitHub-native issue references,
+	// and link failures reported to the caller.
+	linkErr := err
+	githubIssues, refsErr := h.githubIssueRefs(ctx, wsID, in)
+	if err == nil && githubFeaturesEnabled(ws) && !linkPolicy.indeterminate && refsErr == nil {
 		touched := map[pgtype.UUID]struct{}{}
 		if autoLink, _ := autoLinkPRsEnabledForWorkspace(ws); autoLink {
-			linkedIssueIDs, touched = h.reconcileAutoLinks(ctx, ws, pr.ID, state, prAutoLinkInput{
+			linkedIssueIDs, touched, linkErr = h.reconcileAutoLinks(ctx, ws, pr.ID, state, prAutoLinkInput{
 				idents:    in.Idents,
 				issues:    githubIssues,
 				permits:   func(id string) bool { return linkPolicy.permits(id, workspaceID) },
@@ -1686,7 +1689,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		"pull_request":     resp,
 		"linked_issue_ids": linkedIssueIDs,
 	})
-	return nil
+	return errors.Join(linkErr, refsErr)
 }
 
 // prAutoLinkInput is what reconcileAutoLinks needs from one provider.
@@ -1712,8 +1715,10 @@ type prAutoLinkInput struct {
 //   - An automatic link for an identifier that turned out to be ambiguous
 //     across bound workspaces is always dropped (see prLinkPolicy).
 //
-// Manual links are never touched here.
-func (h *Handler) reconcileAutoLinks(ctx context.Context, ws db.Workspace, prID pgtype.UUID, state string, in prAutoLinkInput) ([]string, map[pgtype.UUID]struct{}) {
+// Manual links are never touched here. A failed read or write is logged and
+// skipped; the returned error joins them, for a caller that retries the PR.
+func (h *Handler) reconcileAutoLinks(ctx context.Context, ws db.Workspace, prID pgtype.UUID, state string, in prAutoLinkInput) ([]string, map[pgtype.UUID]struct{}, error) {
+	var failed []error
 	touched := map[pgtype.UUID]struct{}{}
 	linked := make([]string, 0)
 	claimed := map[pgtype.UUID]struct{}{}
@@ -1726,6 +1731,7 @@ func (h *Handler) reconcileAutoLinks(ctx context.Context, ws db.Workspace, prID 
 		excluded, err := h.Queries.IsPullRequestExcludedFromIssue(ctx, db.IsPullRequestExcludedFromIssueParams{IssueID: issueID, PullRequestID: prID})
 		if err != nil {
 			slog.Warn("pr link: exclusion lookup failed", "err", err)
+			failed = append(failed, err)
 			return
 		}
 		if excluded {
@@ -1735,6 +1741,7 @@ func (h *Handler) reconcileAutoLinks(ctx context.Context, ws db.Workspace, prID 
 		rows, err := in.link(issueID)
 		if err != nil {
 			slog.Warn("pr link: link failed", "err", err)
+			failed = append(failed, err)
 			return
 		}
 		linked = append(linked, uuidToString(issueID))
@@ -1764,7 +1771,7 @@ func (h *Handler) reconcileAutoLinks(ctx context.Context, ws db.Workspace, prID 
 	current, err := in.listAuto()
 	if err != nil {
 		slog.Warn("pr link: list auto links failed", "err", err)
-		return linked, touched
+		return linked, touched, errors.Join(append(failed, err)...)
 	}
 	for _, issueID := range current {
 		if _, ok := claimed[issueID]; ok {
@@ -1777,6 +1784,7 @@ func (h *Handler) reconcileAutoLinks(ctx context.Context, ws db.Workspace, prID 
 		rows, err := in.unlink(issueID)
 		if err != nil {
 			slog.Warn("pr link: unlink failed", "err", err)
+			failed = append(failed, err)
 			continue
 		}
 		if rows > 0 {
@@ -1784,7 +1792,7 @@ func (h *Handler) reconcileAutoLinks(ctx context.Context, ws db.Workspace, prID 
 			touched[issueID] = struct{}{}
 		}
 	}
-	return linked, touched
+	return linked, touched, errors.Join(failed...)
 }
 
 // derivePRMergeableState resolves the upsert behaviour for the PR row's

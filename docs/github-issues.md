@@ -373,7 +373,8 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 ### 写入 PR 镜像
 
 - `mirrorPullRequestForWorkspace`（`handler/github.go`）的入参从 webhook 载荷改成归一化结构 `prMirrorInput`；webhook 用 `ghPullRequestPayload.mirrorInput()` 转换，行为不变。轮询到的 PR 经 `Handler.MirrorPolledPullRequest` 走同一个函数，安装 id 是 `StaticInstallationID`，之后放进快照刷新队列（合并时另外刷新冲突监听），CI 状态由静态来源读取。
-- 已有一行且它的安装 id 是真实的 App 安装 id 时，这一行归 App webhook 维护，轮询不改它。`updated_at` 不比已存的新时什么都不写，重叠窗口里的重读不产生事件。
+- 已有一行且它的安装 id 是真实的 App 安装 id 时，这一行归 App webhook 维护，轮询不改它。`updated_at` 比已存的旧时什么都不写。
+- **关联失败可恢复：** 读引用失败、读工作区失败、关联的读写失败都会作为错误返回给轮询器（webhook 照旧只记日志）。轮询器因此不推进游标，下个周期重读这个 PR；`updated_at` 与已存的相同的快照会再走一遍镜像，补上关联，不需要有人改 PR。只有新行或更新的快照才算「有变化」；快照队列只在有变化、或已有快照不是当前 head 时才入队。重叠窗口里的重读会再发一次 `pull_request:updated`。
 
 ### 与 issue 关联
 
@@ -381,7 +382,8 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 - **不带关键词的 `#N` 不关联**：squash 合并的标题以 `(#<PR 号>)` 结尾，按它关联会挂错。
 - 这条规则在 webhook 与轮询两条路径上都生效（`Handler.GitHubIssueRefs`，功能关闭时为 nil，行为与上游一致）。引用读取失败时这次不改关联、不触发合并完成，避免误删关联。
 - 轮询到的 PR **不按 `PREFIX-N` 关联本地 issue**：同一个仓库可以登记在多个工作区，webhook 用 `prLinkPolicy` 防止同一个标识在多个工作区里同时关联，轮询路径没有对应的判断。本地 issue 仍可以手动关联 PR；装了 App 的仓库照旧由 webhook 关联。
-- 关联之后的行为（卡片、合并后按工作区设置完成 issue、开着的 PR 不再引用时去掉自动关联）与上游相同。
+- 关联之后的卡片、开着的 PR 不再引用时去掉自动关联，与上游相同。
+- **合并不改 github issue 的状态。** 上游在关联的 PR 都合并后按工作区设置把 issue 移到目标状态（`maybeAutoCompleteIssue`），对 github issue 这是绕过 GitHub 的本地写入（例如 PR 合并到非默认分支，GitHub 不会关闭 issue）。功能开启时，带 `issue_external` 的 issue 的自动完成决定是新状态 `github`：不移动，issue 页不显示提示（客户端对不认识的状态什么都不渲染）。GitHub 关闭 issue 后，由轮询与状态映射把它带到 done。读 `issue_external` 失败时按错误处理，不当作本地 issue。本地 issue 不受影响。
 
 ### 已知限制
 
@@ -393,7 +395,9 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 
 | 文件 | 改动 |
 |---|---|
-| `server/internal/handler/github.go` | `mirrorPullRequestForWorkspace` 入参改为 `prMirrorInput`、返回写行错误；`reconcileAutoLinks` 把单个 issue 的关联提成闭包，另外关联 `GitHubIssueRefs` 给出的 issue |
+| `server/internal/handler/github.go` | `mirrorPullRequestForWorkspace` 入参改为 `prMirrorInput`，返回写行与关联的错误；`reconcileAutoLinks` 把单个 issue 的关联提成闭包，另外关联 `GitHubIssueRefs` 给出的 issue，并返回读写失败的合并错误 |
+| `server/internal/handler/vcs_webhook.go` | 调 `reconcileAutoLinks` 时忽略新增的错误返回值（1 行） |
+| `server/internal/handler/pr_auto_complete.go` | `decidePRAutoComplete` 对 github issue 返回 `github` 状态（5 行） |
 | `server/internal/handler/handler.go` | `Handler.GitHubIssueRefs` 字段 |
 | `server/cmd/server/router.go` | 功能开启时调 `h.UseGitHubIssuePulls`（1 行） |
 | `server/internal/integrations/ghsnapshot/static_source.go` | fork 文件：`Manager.UseStaticSource` |

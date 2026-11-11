@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/githubissues"
+	"github.com/multica-ai/multica/server/internal/githubissues/issuekey"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -39,20 +40,20 @@ func (h *Handler) UseGitHubIssuePulls(svc *githubissues.Service) {
 	svc.SetPullRequestMirror(h)
 }
 
-// githubIssueRefs returns the GitHub-native issues the pull request claims,
-// and false when they could not be read: the caller then leaves the PR's
-// links alone for this event rather than dropping links it cannot confirm.
-func (h *Handler) githubIssueRefs(ctx context.Context, wsID pgtype.UUID, in prMirrorInput) ([]pgtype.UUID, bool) {
+// githubIssueRefs returns the GitHub-native issues the pull request claims.
+// On an error the caller leaves the PR's links alone for this event rather
+// than dropping links it cannot confirm.
+func (h *Handler) githubIssueRefs(ctx context.Context, wsID pgtype.UUID, in prMirrorInput) ([]pgtype.UUID, error) {
 	if h.GitHubIssueRefs == nil {
-		return nil, true
+		return nil, nil
 	}
 	ids, err := h.GitHubIssueRefs.PullRequestIssues(ctx, wsID, in.RepoOwner, in.RepoName, in.Title, in.Body)
 	if err != nil {
 		slog.Warn("github: resolve GitHub issue references failed, leaving links unchanged",
 			"err", err, "repo", in.RepoOwner+"/"+in.RepoName, "pr_number", in.Number)
-		return nil, false
+		return nil, err
 	}
-	return ids, true
+	return ids, nil
 }
 
 // MirrorPolledPullRequest stores a pull request the GitHub issues poller read
@@ -65,6 +66,11 @@ func (h *Handler) githubIssueRefs(ctx context.Context, wsID pgtype.UUID, in prMi
 // workspace's "PREFIX-N" identifiers: a repository can be registered in
 // several workspaces, and the webhook's guard against an identifier resolving
 // in more than one of them (prLinkPolicy) has no counterpart here.
+//
+// A snapshot no newer than the stored row is mirrored again rather than
+// skipped: its links may have failed last time, and an error here keeps the
+// poller's cursor behind the PR, so the next cycle repairs them. It reports a
+// change only for a new row or a newer snapshot.
 func (h *Handler) MirrorPolledPullRequest(ctx context.Context, wsID pgtype.UUID, pr githubissues.PullRequest) (bool, error) {
 	state := "open"
 	switch {
@@ -84,14 +90,17 @@ func (h *Handler) MirrorPolledPullRequest(ctx context.Context, wsID pgtype.UUID,
 		CreatedAt: ghTimeString(&pr.CreatedAt), UpdatedAt: ghTimeString(&pr.UpdatedAt),
 	}
 	prevState := ""
+	changed, snapshotCurrent := true, false
 	prev, err := h.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
 		WorkspaceID: wsID, RepoOwner: pr.Owner, RepoName: pr.Repo, PrNumber: pr.Number,
 	})
 	switch {
 	case err == nil:
-		if prev.InstallationID != ghsnapshot.StaticInstallationID || !pr.UpdatedAt.After(prev.PrUpdatedAt.Time) {
+		if prev.InstallationID != ghsnapshot.StaticInstallationID || pr.UpdatedAt.Before(prev.PrUpdatedAt.Time) {
 			return false, nil
 		}
+		changed = pr.UpdatedAt.After(prev.PrUpdatedAt.Time)
+		snapshotCurrent = prev.SnapshotFetchedAt.Valid && prev.SnapshotHeadSha == pr.HeadSHA
 		prevState = prev.State
 		// The pulls list carries no line counts or mergeability: keep the
 		// stored ones, and drop a verdict that belongs to an older head.
@@ -103,11 +112,13 @@ func (h *Handler) MirrorPolledPullRequest(ctx context.Context, wsID pgtype.UUID,
 	if err := h.mirrorPullRequestForWorkspace(ctx, wsID, ghsnapshot.StaticInstallationID, in, prLinkPolicy{unrestricted: true}); err != nil {
 		return false, err
 	}
-	h.PRRefresh.Enqueue(ghsnapshot.StaticInstallationID, pr.Owner, pr.Repo, pr.Number)
+	if changed || !snapshotCurrent {
+		h.PRRefresh.Enqueue(ghsnapshot.StaticInstallationID, pr.Owner, pr.Repo, pr.Number)
+	}
 	if state == "merged" && prevState != "merged" {
 		h.PRRefresh.RefreshConflictWatchers(ctx, ghsnapshot.StaticInstallationID, pr.Owner, pr.Repo, pr.Number)
 	}
-	return true, nil
+	return changed, nil
 }
 
 func ghTimeString(t *time.Time) string {
@@ -115,4 +126,27 @@ func ghTimeString(t *time.Time) string {
 		return ""
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+// prAutoCompleteGitHub is the PR auto-complete decision for a GitHub-native
+// issue. GitHub is the only writer of its status: a merge that closes it on
+// GitHub reaches Multica through the poller's status mapping, so Multica never
+// moves it on its own. Clients render nothing for a state they do not know.
+const prAutoCompleteGitHub = "github"
+
+// statusFromGitHub reports whether GitHub owns the issue's status. A failed
+// read is an error, not "local": the answer gates a status write.
+func (h *Handler) statusFromGitHub(ctx context.Context, issue db.Issue) (bool, error) {
+	if !issuekey.Enabled() {
+		return false, nil
+	}
+	_, err := h.Queries.GetIssueExternal(ctx, db.GetIssueExternalParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID})
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	default:
+		return false, err
+	}
 }

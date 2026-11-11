@@ -14,6 +14,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/githubissues"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -101,10 +102,11 @@ func TestMirrorPolledPullRequestLinksGitHubIssues(t *testing.T) {
 		t.Fatalf("re-mirror of the same snapshot: %v %v", changed, err)
 	}
 
-	// References that cannot be read leave the link alone.
+	// References that cannot be read leave the link alone, and the error
+	// keeps the poller on this PR.
 	refs.ids, refs.err = nil, errors.New("database unavailable")
-	if _, err := h.MirrorPolledPullRequest(ctx, parseUUID(testWorkspaceID), polledPullRequest(repo, 7, "", t0.Add(time.Minute))); err != nil {
-		t.Fatal(err)
+	if _, err := h.MirrorPolledPullRequest(ctx, parseUUID(testWorkspaceID), polledPullRequest(repo, 7, "", t0.Add(time.Minute))); err == nil {
+		t.Fatal("a failed reference read was reported as stored")
 	}
 	if n := linkedPRCountForTest(t, issueID); n != 1 {
 		t.Fatalf("link dropped on a failed reference read: %d PRs", n)
@@ -160,5 +162,80 @@ func TestMirrorPolledPullRequestLeavesAppRows(t *testing.T) {
 	pr := storedPullRequest(t, repo, 9)
 	if pr.State != "merged" || pr.Additions != 5 || pr.Deletions != 2 || pr.ChangedFiles != 1 {
 		t.Fatalf("polled row = state %s +%d -%d files %d", pr.State, pr.Additions, pr.Deletions, pr.ChangedFiles)
+	}
+}
+
+// A link that failed is made by the next cycle, which reads the same, unedited
+// PR again: the PR row being stored does not end the work.
+func TestMirrorPolledPullRequestRepairsFailedLink(t *testing.T) {
+	refs := &fakeIssueRefs{err: errors.New("connection reset")}
+	h := *testHandler
+	h.GitHubIssueRefs = refs
+	repo := pullRequestTestRepo(t)
+	issueID := dbfx.Issue(t, "GitHub issue whose link failed once")
+	ctx := context.Background()
+	pr := polledPullRequest(repo, 10, "Closes #1", time.Now().Add(-time.Hour).Truncate(time.Second))
+
+	if _, err := h.MirrorPolledPullRequest(ctx, parseUUID(testWorkspaceID), pr); err == nil {
+		t.Fatal("first mirror reported success without its links")
+	}
+	storedPullRequest(t, repo, 10)
+	if n := linkedPRCountForTest(t, issueID); n != 0 {
+		t.Fatalf("issue has %d PRs before the links were read", n)
+	}
+
+	refs.ids, refs.err = []pgtype.UUID{parseUUID(issueID)}, nil
+	changed, err := h.MirrorPolledPullRequest(ctx, parseUUID(testWorkspaceID), pr)
+	if err != nil || changed {
+		t.Fatalf("second mirror of the same snapshot: changed=%v err=%v, want the link repaired without a change", changed, err)
+	}
+	if n := linkedPRCountForTest(t, issueID); n != 1 {
+		t.Fatalf("issue has %d PRs after the next cycle, want 1", n)
+	}
+}
+
+// A merged PR does not move a GitHub-native issue: GitHub writes its status,
+// and the poller brings it in. A local issue still moves on merge.
+func TestPRMergeLeavesGitHubIssueStatusToGitHub(t *testing.T) {
+	setIssueKeysEnabledForTest(t, true)
+	setWorkspacePRMergeStatusForTest(t, "done")
+	repo := pullRequestTestRepo(t)
+	ctx := context.Background()
+	t0 := time.Now().Add(-time.Hour).Truncate(time.Second)
+
+	githubIssue := dbfx.Issue(t, "GitHub issue closed by a merged PR", testutil.Cols{"status": "in_progress"})
+	linkGitHubIssue(t, githubIssue, "acme/"+repo, 1)
+	local := dbfx.Issue(t, "Local issue closed by a merged PR", testutil.Cols{"status": "in_progress"})
+	localIdent := fmt.Sprintf("HAN-%d", issueKeyTestNumber(t, local))
+	t.Cleanup(func() {
+		for _, id := range []string{githubIssue, local} {
+			_, _ = testPool.Exec(context.Background(), `DELETE FROM activity_log WHERE issue_id = $1`, id)
+			_, _ = testPool.Exec(context.Background(), `DELETE FROM issue_pr_automation WHERE issue_id = $1`, id)
+		}
+	})
+
+	h := *testHandler
+	h.GitHubIssueRefs = &fakeIssueRefs{ids: []pgtype.UUID{parseUUID(githubIssue)}}
+	merged := (&ghPullRequestPayload{}).mirrorInput()
+	merged.RepoOwner, merged.RepoName, merged.Number = "acme", repo, 11
+	merged.Title, merged.Body, merged.State = "Fix crash", "Closes #1\nCloses "+localIdent, "merged"
+	merged.HTMLURL, merged.HeadSHA = "https://github.com/acme/"+repo+"/pull/11", "abc"
+	merged.CreatedAt, merged.UpdatedAt, merged.MergedAt = t0.Format(time.RFC3339), t0.Format(time.RFC3339), t0.Format(time.RFC3339)
+	merged.Idents = prClaimedIdentifiers(merged.Title, merged.Body, "")
+	if err := h.mirrorPullRequestForWorkspace(ctx, parseUUID(testWorkspaceID), 4343, merged, prLinkPolicy{unrestricted: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := linkedPRCountForTest(t, githubIssue); n != 1 {
+		t.Fatalf("GitHub issue has %d PRs, want 1", n)
+	}
+	if got := issueStatusForTest(t, githubIssue); got != "in_progress" {
+		t.Fatalf("GitHub issue moved to %q by a merge; GitHub writes its status", got)
+	}
+	if got := prAutoCompleteStateForTest(t, githubIssue).State; got != prAutoCompleteGitHub {
+		t.Fatalf("GitHub issue auto-complete state = %q, want %q", got, prAutoCompleteGitHub)
+	}
+	if got := issueStatusForTest(t, local); got != "done" {
+		t.Fatalf("local issue status after merge = %q, want done", got)
 	}
 }
