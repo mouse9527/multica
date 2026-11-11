@@ -150,39 +150,41 @@ func (s *Service) refreshIssue(ctx context.Context, issue db.Issue) error {
 	if _, err := s.syncIssue(ctx, repo, issue.ProjectID, gh, false); err != nil {
 		return fmt.Errorf("sync %s#%d: %w", repo.FullName(), number, err)
 	}
-	return s.syncIssueComments(ctx, repo, ext.IssueID, number)
+	// Comments past these pages are left to the poller.
+	_, err = s.syncIssueComments(ctx, repo, ext.IssueID, number, refreshCommentPages)
+	return err
 }
 
-// syncIssueComments reads the comments of one GitHub issue, up to
-// refreshCommentPages pages, and stores them on the local issue issueID.
-// Comments past those pages are left to the poller.
-func (s *Service) syncIssueComments(ctx context.Context, repo *Repo, issueID pgtype.UUID, number int32) error {
+// syncIssueComments reads the comments of one GitHub issue, up to maxPages
+// pages, and stores them on the local issue issueID. complete is false when
+// the last page read was full, so more comments may follow it.
+func (s *Service) syncIssueComments(ctx context.Context, repo *Repo, issueID pgtype.UUID, number int32, maxPages int) (complete bool, err error) {
 	path := "/issues/" + strconv.Itoa(int(number))
 	perPage := s.pollPageSize()
-	for page := 1; page <= refreshCommentPages; page++ {
+	for page := 1; page <= maxPages; page++ {
 		query := url.Values{"per_page": {strconv.Itoa(perPage)}, "page": {strconv.Itoa(page)}}
 		resp, err := repo.Do(ctx, http.MethodGet, path+"/comments?"+query.Encode(), nil)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("github GET %s/comments: unexpected status %d", path, resp.StatusCode)
+			return false, fmt.Errorf("github GET %s/comments: unexpected status %d", path, resp.StatusCode)
 		}
 		var comments []githubComment
 		if err := json.Unmarshal(resp.Body, &comments); err != nil {
-			return fmt.Errorf("github GET %s/comments: malformed response", path)
+			return false, fmt.Errorf("github GET %s/comments: malformed response", path)
 		}
 		for _, c := range comments {
 			if c.ID <= 0 || c.UpdatedAt.IsZero() {
-				return fmt.Errorf("github GET %s/comments: malformed comment", path)
+				return false, fmt.Errorf("github GET %s/comments: malformed comment", path)
 			}
 			if _, err := s.syncComment(ctx, repo, issueID, number, c); err != nil {
-				return err
+				return false, err
 			}
 		}
 		if len(comments) < perPage {
-			return nil
+			return true, nil
 		}
 	}
-	return nil
+	return false, nil
 }

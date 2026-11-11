@@ -39,6 +39,9 @@ type fakeIssuesAPI struct {
 	requests []string
 	// throttle, when set, answers every list request with 429.
 	throttle string
+	// commentsFault, when set, answers that page of an issue's comment
+	// list with that status.
+	commentsFault struct{ page, status int }
 	// writes is the single-item API of write_fake_test.go.
 	writes fakeWrites
 }

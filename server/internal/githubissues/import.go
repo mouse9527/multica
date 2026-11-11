@@ -31,7 +31,16 @@ var (
 	// ErrImportPaused: GitHub throttled this server and the wait it asked
 	// for has not passed.
 	ErrImportPaused = errors.New("githubissues: GitHub asked to wait; try again later")
+	// ErrImportIncomplete: the issue is stored but not all of its comments
+	// were read. Importing it again reads them all once more. ImportIssue
+	// wraps it together with the cause, so a rate limit is still told apart.
+	ErrImportIncomplete = errors.New("githubissues: the issue is imported but not all of its comments were read; import it again to finish")
 )
+
+// importCommentPages bounds the comment pages one import reads, as a guard
+// against a list that never ends; it is far more comments than one issue
+// holds. An issue with more is an incomplete import.
+const importCommentPages = 1000
 
 // IssueRef names one GitHub issue.
 type IssueRef struct {
@@ -83,15 +92,19 @@ func ParseIssueRef(raw string) (IssueRef, error) {
 // from GitHub: issues nobody imported stay out however often they change.
 //
 // The repository must be registered in the workspace (RepoClient). An issue
-// already imported is returned as it is, with created false and nothing sent
-// to GitHub. Otherwise the issue and its comments are read, the issue is
+// already imported is returned with created false, after its comments are
+// read again (below). Otherwise the issue and its comments are read, the issue is
 // stored as the poller stored issues opened on GitHub (the sync account as
 // creator, the GitHub author in the description prefix, nobody assigned, the
 // project that registered the repository first), and created is true unless
 // a concurrent import or poll stored it first.
 //
-// The issue is stored once GitHub has answered for it; comments that could
-// not all be read are logged and read again by the next view of the issue.
+// Every comment of the issue is read: the poller only reads comments updated
+// after the repository's cursor, so none older would arrive later. When they
+// cannot all be read (GitHub failed or throttled midway) the issue is still
+// stored and returned with an error wrapping ErrImportIncomplete. Importing
+// an issue that is already imported reads its comments again, which is how
+// such an import is finished; it never creates a second issue.
 func (s *Service) ImportIssue(ctx context.Context, workspaceID pgtype.UUID, ref IssueRef) (issueID pgtype.UUID, created bool, err error) {
 	if s == nil {
 		return pgtype.UUID{}, false, ErrFeatureOff
@@ -109,11 +122,15 @@ func (s *Service) ImportIssue(ctx context.Context, workspaceID pgtype.UUID, ref 
 	if err != nil {
 		return pgtype.UUID{}, false, err
 	}
-	if id, found, err := importedIssue(ctx, q, repo, ref.Number); err != nil || found {
-		return id, false, err
+	id, found, err := importedIssue(ctx, q, repo, ref.Number)
+	if err != nil {
+		return pgtype.UUID{}, false, err
 	}
 	if s.pollGate.paused(s.now()) {
-		return pgtype.UUID{}, false, ErrImportPaused
+		return id, false, ErrImportPaused
+	}
+	if found {
+		return id, false, s.importComments(ctx, repo, id, ref.Number)
 	}
 	// Started before the issue is read, so an edit GitHub takes after the
 	// read falls inside the poller's window.
@@ -146,7 +163,7 @@ func (s *Service) ImportIssue(ctx context.Context, workspaceID pgtype.UUID, ref 
 	if err != nil {
 		return pgtype.UUID{}, false, fmt.Errorf("import %s#%d: %w", repo.FullName(), ref.Number, err)
 	}
-	id, found, err := importedIssue(ctx, q, repo, ref.Number)
+	id, found, err = importedIssue(ctx, q, repo, ref.Number)
 	if err != nil {
 		return pgtype.UUID{}, false, err
 	}
@@ -154,12 +171,24 @@ func (s *Service) ImportIssue(ctx context.Context, workspaceID pgtype.UUID, ref 
 		// Deleted locally between the store and this read.
 		return pgtype.UUID{}, false, fmt.Errorf("import %s#%d: issue not stored", repo.FullName(), ref.Number)
 	}
-	if err := s.syncIssueComments(ctx, repo, id, ref.Number); err != nil {
-		s.pauseIfThrottled(err)
-		s.logger.Warn("github issue import: comments not all stored; the next view of the issue reads them again",
-			"repo", repo, "issue_number", ref.Number, "issue_id", util.UUIDToString(id), "error", err)
+	return id, created, s.importComments(ctx, repo, id, ref.Number)
+}
+
+// importComments reads every comment of an imported issue. A failure, or a
+// list longer than importCommentPages, is an error wrapping
+// ErrImportIncomplete.
+func (s *Service) importComments(ctx context.Context, repo *Repo, issueID pgtype.UUID, number int32) error {
+	complete, err := s.syncIssueComments(ctx, repo, issueID, number, importCommentPages)
+	if err == nil && complete {
+		return nil
 	}
-	return id, created, nil
+	if err == nil {
+		err = fmt.Errorf("more than %d pages of comments", importCommentPages)
+	}
+	s.pauseIfThrottled(err)
+	s.logger.Warn("github issue import: not all comments stored", "repo", repo, "issue_number", number,
+		"issue_id", util.UUIDToString(issueID), "error", err)
+	return fmt.Errorf("%w: %w", ErrImportIncomplete, err)
 }
 
 // importedIssue finds the local issue that mirrors GitHub issue number.

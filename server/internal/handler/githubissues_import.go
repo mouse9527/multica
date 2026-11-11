@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/githubissues"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -51,6 +52,10 @@ func (h *Handler) ImportGitHubIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	issueID, created, err := h.GitHubIssues.ImportIssue(r.Context(), wsUUID, ref)
+	if errors.Is(err, githubissues.ErrImportIncomplete) {
+		writeImportIncomplete(w, r, err, issueID)
+		return
+	}
 	if err != nil {
 		writeImportError(w, r, err)
 		return
@@ -97,6 +102,24 @@ func writeImportError(w http.ResponseWriter, r *http.Request, err error) {
 		slog.Warn("github issue import failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusBadGateway, "failed to import the issue from GitHub")
 	}
+}
+
+// writeImportIncomplete answers an import that stored the issue but not all
+// of its comments. The client imports again to finish it.
+func writeImportIncomplete(w http.ResponseWriter, r *http.Request, err error, issueID pgtype.UUID) {
+	status := http.StatusBadGateway
+	var limited *ghsnapshot.RateLimitError
+	if errors.As(err, &limited) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(limited.RetryAfter.Seconds())))
+		status = http.StatusServiceUnavailable
+	} else {
+		slog.Warn("github issue import incomplete", append(logger.RequestAttrs(r), "error", err)...)
+	}
+	writeJSON(w, status, map[string]any{
+		"error":    "the issue is imported but not all of its comments were read; import it again to finish",
+		"code":     "github_import_incomplete",
+		"issue_id": uuidToString(issueID),
+	})
 }
 
 func writeImportErrorCode(w http.ResponseWriter, status int, code, msg string) {

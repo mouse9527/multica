@@ -19,8 +19,9 @@ import (
 
 const importTestRepoID = 4343
 
-// fakeImportGitHub serves acme/widgets with issue #1 (one comment) and pull
-// request #2, and records the requests to the repository.
+// fakeImportGitHub serves acme/widgets with issue #1 (one comment), pull
+// request #2 and issue #3 whose comments GitHub fails to list, and records
+// the requests to the repository.
 type fakeImportGitHub struct {
 	mu       sync.Mutex
 	requests []string
@@ -53,6 +54,14 @@ func (f *fakeImportGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"id": 501, "body": "Same here", "updated_at": updated,
 			"user": map[string]any{"login": "stranger", "avatar_url": "https://avatars.example.com/stranger"},
 		}})
+	case base + "/issues/3":
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": 1003, "node_id": "I_3", "number": 3, "title": "Docs typo", "body": "",
+			"state": "open", "updated_at": updated, "user": map[string]any{"login": "stranger"},
+		})
+	case base + "/issues/3/comments":
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"message":"failure"}`))
 	case base + "/issues/2":
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": 1002, "node_id": "PR_2", "number": 2, "title": "Fix crash", "body": "",
@@ -132,8 +141,12 @@ func TestImportGitHubIssue(t *testing.T) {
 	sent := fake.sent()
 	var again IssueResponse
 	importRef("acme/widgets#1").Want(http.StatusOK).JSON(&again)
-	if again.ID != first.ID || fake.sent() != sent {
-		t.Fatalf("second import = %s after %d requests, want %s and none", again.ID, fake.sent()-sent, first.ID)
+	// Only the comments are read again.
+	if again.ID != first.ID || fake.sent() != sent+1 {
+		t.Fatalf("second import = %s after %d requests, want %s after one comments read", again.ID, fake.sent()-sent, first.ID)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, first.ID); n != 1 {
+		t.Fatalf("comments after the second import = %d, want 1", n)
 	}
 
 	for _, c := range []struct {
@@ -156,5 +169,17 @@ func TestImportGitHubIssue(t *testing.T) {
 	if n := dbfx.Count(t, `SELECT count(*) FROM issue_external WHERE workspace_id = $1 AND external_repo_id = $2`,
 		testWorkspaceID, importTestRepoID); n != 1 {
 		t.Fatalf("issue_external rows = %d, want only the first import", n)
+	}
+
+	// The issue is stored but its comments could not be read: the answer
+	// says so and names the issue, so the client imports again to finish.
+	var incomplete map[string]any
+	importRef("acme/widgets#3").Want(http.StatusBadGateway).JSON(&incomplete)
+	id, _ := incomplete["issue_id"].(string)
+	if incomplete["code"] != "github_import_incomplete" || id == "" {
+		t.Fatalf("incomplete import = %v", incomplete)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM issue_external WHERE issue_id = $1`, id); n != 1 {
+		t.Fatalf("issue of the incomplete import not stored")
 	}
 }

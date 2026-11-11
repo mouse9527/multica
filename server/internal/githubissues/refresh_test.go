@@ -39,6 +39,12 @@ func (f *fakeIssuesAPI) serveIssue(w http.ResponseWriter, r *http.Request) bool 
 		_ = json.NewEncoder(w).Encode(issue)
 		return true
 	}
+	if fault := f.commentsFault; fault.page != 0 && r.URL.Query().Get("page") == strconv.Itoa(fault.page) {
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(fault.status)
+		_, _ = w.Write([]byte(`{"message":"failure"}`))
+		return true
+	}
 	suffix := fmt.Sprintf("/issues/%d", number)
 	var items []map[string]any
 	for _, c := range f.comments {

@@ -22,7 +22,8 @@ reach Multica. GitHub issues are never imported on their own.
 
 The repository must be registered on a project of the workspace, and the
 number must be an issue, not a pull request. Importing an issue again returns
-the issue the first import made.`,
+the issue the first import made and reads its comments again, which also
+finishes an import that reported github_import_incomplete.`,
 	Args: exactArgs(1),
 	RunE: runIssueImport,
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/githubissues/issuekey"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -222,14 +224,20 @@ func TestImportIssue(t *testing.T) {
 		t.Fatalf("issue:created payload = %v", createdEvent)
 	}
 
-	// Importing again returns the same issue and sends nothing.
+	// Importing again returns the same issue, stores nothing new and reads
+	// only its comments again.
 	sent := len(env.api.seen())
 	again, created, err := env.importRef(t, IssueRef{Owner: "acme", Repo: "widgets", Number: 1})
 	if err != nil || created || again != id {
 		t.Fatalf("second import = %s %v %v, want %s not created", again, created, err, id)
 	}
-	if got := env.api.seen()[sent:]; len(got) != 0 {
-		t.Fatalf("second import sent %v", got)
+	for _, r := range env.api.seen()[sent:] {
+		if path, _, _ := strings.Cut(r, "?"); path != fmt.Sprintf("/repositories/%d/issues/1/comments", pollRepoID) {
+			t.Fatalf("second import sent %s", r)
+		}
+	}
+	if n := env.count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, id); n != 1 {
+		t.Fatalf("comments after the second import = %d, want 1", n)
 	}
 
 	// A pull request number is refused and nothing is stored.
@@ -266,6 +274,74 @@ func TestImportIssue(t *testing.T) {
 	}
 	if got := env.api.seen()[sent:]; len(got) != 0 {
 		t.Fatalf("import while paused sent %v", got)
+	}
+}
+
+// TestImportReadsEveryComment: an import reads every comment page, past the
+// pages an on-view refresh reads, since the poller never reads comments older
+// than the repository's cursor. An import cut short midway keeps the issue,
+// says it is incomplete, and importing again finishes it without a second
+// issue; a rate limit midway also pauses polling.
+func TestImportReadsEveryComment(t *testing.T) {
+	env := newPollEnv(t)
+	env.svc.pollLimits.perPage = 10
+	const comments = 10*refreshCommentPages + 5 // past the refresh's pages
+	t0 := testNow.Add(-24 * time.Hour)
+	for _, n := range []int{1, 2} {
+		env.api.putIssue(n, "stranger", "Issue "+strconv.Itoa(n), "", "open", t0, nil)
+		for i := 1; i <= comments; i++ {
+			env.api.putComment(int64(n*10_000+i), n, "stranger", "Comment "+strconv.Itoa(i), t0)
+		}
+	}
+	countComments := func(id string) int {
+		return env.count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, id)
+	}
+
+	id, created, err := env.importRef(t, IssueRef{Owner: "acme", Repo: "widgets", Number: 1})
+	if err != nil || !created {
+		t.Fatalf("import = %s %v %v", id, created, err)
+	}
+	if n := countComments(id); n != comments {
+		t.Fatalf("comments after the import = %d, want all %d", n, comments)
+	}
+
+	// GitHub fails on page 3: the issue is kept, the import is incomplete.
+	env.api.mu.Lock()
+	env.api.commentsFault.page, env.api.commentsFault.status = 3, http.StatusBadGateway
+	env.api.mu.Unlock()
+	id, created, err = env.importRef(t, IssueRef{Owner: "acme", Repo: "widgets", Number: 2})
+	if !errors.Is(err, ErrImportIncomplete) || !created || id == "" {
+		t.Fatalf("interrupted import = %q %v %v, want the new issue and ErrImportIncomplete", id, created, err)
+	}
+	if n := countComments(id); n != 20 {
+		t.Fatalf("comments after the interrupted import = %d, want the 2 pages before the failure", n)
+	}
+	env.api.mu.Lock()
+	env.api.commentsFault.page = 0
+	env.api.mu.Unlock()
+	again, created, err := env.importRef(t, IssueRef{Owner: "acme", Repo: "widgets", Number: 2})
+	if err != nil || created || again != id {
+		t.Fatalf("finishing import = %s %v %v, want %s not created", again, created, err, id)
+	}
+	if n := countComments(id); n != comments {
+		t.Fatalf("comments after finishing the import = %d, want all %d", n, comments)
+	}
+
+	// Throttled midway: incomplete, the rate limit still visible, polling
+	// paused for the wait GitHub asked.
+	env.api.mu.Lock()
+	env.api.commentsFault.page, env.api.commentsFault.status = 2, http.StatusTooManyRequests
+	env.api.mu.Unlock()
+	_, _, err = env.importRef(t, IssueRef{Owner: "acme", Repo: "widgets", Number: 2})
+	var limited *ghsnapshot.RateLimitError
+	if !errors.Is(err, ErrImportIncomplete) || !errors.As(err, &limited) {
+		t.Fatalf("throttled import: %v", err)
+	}
+	if !env.svc.pollGate.paused(testNow.Add(30 * time.Second)) {
+		t.Fatal("polling not paused after a throttled import")
+	}
+	if n := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws); n != 2 {
+		t.Fatalf("issues = %d, want 2", n)
 	}
 }
 
