@@ -95,23 +95,23 @@ func TestRefreshOnViewAtMostOncePerInterval(t *testing.T) {
 	t0 := testNow.Add(-time.Hour)
 	env.api.putIssue(1, "stranger", "Crash on start", "It crashes.", "open", t0, nil)
 	env.api.putComment(501, 1, "stranger", "Same here", t0.Add(time.Minute))
-	env.poll(t)
-	issue := env.loadIssue(t, env.issue(t, 1).id)
+	issue := env.loadIssue(t, env.importIssue(t, 1).id)
+	issuePath := fmt.Sprintf("/repositories/%d/issues/1", pollRepoID)
+	imported, importedComments := env.api.countPath(issuePath), env.api.countPath(issuePath+"/comments")
 
 	// Someone edits the issue and comments on GitHub; no poll has run since.
 	env.api.putIssue(1, "stranger", "Crash on start (macOS)", "It crashes.", "open", testNow.Add(-10*time.Second), nil)
 	env.api.putComment(502, 1, "stranger", "Me too", testNow.Add(-5*time.Second))
 
-	issuePath := fmt.Sprintf("/repositories/%d/issues/1", pollRepoID)
 	for range 5 {
 		env.view(issue)
 	}
 	*env.now = testNow.Add(refreshInterval - time.Second)
 	env.view(issue)
-	if got := env.api.countPath(issuePath); got != 1 {
+	if got := env.api.countPath(issuePath) - imported; got != 1 {
 		t.Fatalf("GET issue requests within the interval = %d, want 1", got)
 	}
-	if got := env.api.countPath(issuePath + "/comments"); got != 1 {
+	if got := env.api.countPath(issuePath+"/comments") - importedComments; got != 1 {
 		t.Fatalf("GET comments requests within the interval = %d, want 1", got)
 	}
 	if got := env.issue(t, 1); got.title != "Crash on start (macOS)" {
@@ -121,13 +121,13 @@ func TestRefreshOnViewAtMostOncePerInterval(t *testing.T) {
 		t.Fatal("new GitHub comment not stored by the refresh")
 	}
 	if n := env.count(t, `SELECT count(*) FROM comment WHERE workspace_id = $1`, env.ws); n != 2 {
-		t.Fatalf("comments = %d, want 2 (no duplicate of the polled one)", n)
+		t.Fatalf("comments = %d, want 2 (no duplicate of the imported one)", n)
 	}
 
 	// Once the interval has passed, the next view refreshes again.
 	*env.now = testNow.Add(refreshInterval)
 	env.view(issue)
-	if got := env.api.countPath(issuePath); got != 2 {
+	if got := env.api.countPath(issuePath) - imported; got != 2 {
 		t.Fatalf("GET issue requests after the interval = %d, want 2", got)
 	}
 }
@@ -137,8 +137,9 @@ func TestRefreshOnViewAtMostOncePerInterval(t *testing.T) {
 func TestRefreshOnViewConcurrentViewsShareOneRequest(t *testing.T) {
 	env := newPollEnv(t)
 	env.api.putIssue(1, "stranger", "Crash", "", "open", testNow.Add(-time.Hour), nil)
-	env.poll(t)
-	issue := env.loadIssue(t, env.issue(t, 1).id)
+	issue := env.loadIssue(t, env.importIssue(t, 1).id)
+	issuePath := fmt.Sprintf("/repositories/%d/issues/1", pollRepoID)
+	imported := env.api.countPath(issuePath)
 
 	done := make(chan struct{})
 	for range 20 {
@@ -151,7 +152,7 @@ func TestRefreshOnViewConcurrentViewsShareOneRequest(t *testing.T) {
 		<-done
 	}
 	env.svc.refreshing.Wait()
-	if got := env.api.countPath(fmt.Sprintf("/repositories/%d/issues/1", pollRepoID)); got != 1 {
+	if got := env.api.countPath(issuePath) - imported; got != 1 {
 		t.Fatalf("GET issue requests = %d, want 1", got)
 	}
 }
@@ -161,7 +162,7 @@ func TestRefreshOnViewConcurrentViewsShareOneRequest(t *testing.T) {
 func TestRefreshOnViewSendsNothing(t *testing.T) {
 	env := newPollEnv(t)
 	env.api.putIssue(1, "stranger", "Crash", "", "open", testNow.Add(-time.Hour), nil)
-	env.poll(t)
+	env.importIssue(t, 1)
 	before := len(env.api.seen())
 
 	local := env.loadIssue(t, env.f.Issue(t, "local issue"))
@@ -187,8 +188,7 @@ func TestRefreshOnViewSendsNothing(t *testing.T) {
 func TestRefreshOnViewThrottledPausesPolling(t *testing.T) {
 	env := newPollEnv(t)
 	env.api.putIssue(1, "stranger", "Crash", "", "open", testNow.Add(-time.Hour), nil)
-	env.poll(t)
-	issue := env.loadIssue(t, env.issue(t, 1).id)
+	issue := env.loadIssue(t, env.importIssue(t, 1).id)
 
 	env.api.mu.Lock()
 	env.api.throttle = "120"

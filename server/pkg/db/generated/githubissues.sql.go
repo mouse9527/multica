@@ -328,6 +328,41 @@ func (q *Queries) ListWorkspaceGitHubRepoRefs(ctx context.Context, workspaceID p
 	return items, nil
 }
 
+const listWorkspaceGitHubRepoResources = `-- name: ListWorkspaceGitHubRepoResources :many
+SELECT project_id, resource_ref FROM project_resource
+WHERE workspace_id = $1
+  AND resource_type = 'github_repo'
+ORDER BY created_at, id
+`
+
+type ListWorkspaceGitHubRepoResourcesRow struct {
+	ProjectID   pgtype.UUID `json:"project_id"`
+	ResourceRef []byte      `json:"resource_ref"`
+}
+
+// The github_repo resources of one workspace with their projects, oldest
+// first: an imported GitHub issue lands in the project that registered its
+// repository first, as the poller's did. Read-only on project_resource.
+func (q *Queries) ListWorkspaceGitHubRepoResources(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceGitHubRepoResourcesRow, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceGitHubRepoResources, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListWorkspaceGitHubRepoResourcesRow{}
+	for rows.Next() {
+		var i ListWorkspaceGitHubRepoResourcesRow
+		if err := rows.Scan(&i.ProjectID, &i.ResourceRef); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockCommentExternalByExternalID = `-- name: LockCommentExternalByExternalID :one
 SELECT comment_id, workspace_id, external_id, login, avatar_url, external_updated_at, created_at, updated_at FROM comment_external
 WHERE workspace_id = $1 AND external_id = $2

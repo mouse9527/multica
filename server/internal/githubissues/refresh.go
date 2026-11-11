@@ -147,10 +147,17 @@ func (s *Service) refreshIssue(ctx context.Context, issue db.Issue) error {
 	if len(gh.PullRequest) > 0 && string(gh.PullRequest) != "null" {
 		return nil
 	}
-	if _, err := s.syncIssue(ctx, repo, issue.ProjectID, gh); err != nil {
+	if _, err := s.syncIssue(ctx, repo, issue.ProjectID, gh, false); err != nil {
 		return fmt.Errorf("sync %s#%d: %w", repo.FullName(), number, err)
 	}
+	return s.syncIssueComments(ctx, repo, ext.IssueID, number)
+}
 
+// syncIssueComments reads the comments of one GitHub issue, up to
+// refreshCommentPages pages, and stores them on the local issue issueID.
+// Comments past those pages are left to the poller.
+func (s *Service) syncIssueComments(ctx context.Context, repo *Repo, issueID pgtype.UUID, number int32) error {
+	path := "/issues/" + strconv.Itoa(int(number))
 	perPage := s.pollPageSize()
 	for page := 1; page <= refreshCommentPages; page++ {
 		query := url.Values{"per_page": {strconv.Itoa(perPage)}, "page": {strconv.Itoa(page)}}
@@ -169,7 +176,7 @@ func (s *Service) refreshIssue(ctx context.Context, issue db.Issue) error {
 			if c.ID <= 0 || c.UpdatedAt.IsZero() {
 				return fmt.Errorf("github GET %s/comments: malformed comment", path)
 			}
-			if _, err := s.syncComment(ctx, repo, ext.IssueID, number, c); err != nil {
+			if _, err := s.syncComment(ctx, repo, issueID, number, c); err != nil {
 				return err
 			}
 		}

@@ -69,12 +69,11 @@ func (env *writeEnv) pastGrace(t *testing.T) PollStats {
 	return env.poll(t)
 }
 
-// importedIssue is a GitHub issue opened by someone else, imported by a poll.
+// importedIssue is a GitHub issue opened by someone else and imported.
 func (env *writeEnv) importedIssue(t *testing.T, number int) db.Issue {
 	t.Helper()
 	env.api.putIssue(number, "stranger", "Crash on start", "It crashes.", "open", env.now.Add(-time.Minute), nil)
-	env.poll(t)
-	issue, err := db.New(env.svc.db).GetIssue(context.Background(), env.uuid(t, env.issue(t, number).id))
+	issue, err := db.New(env.svc.db).GetIssue(context.Background(), env.uuid(t, env.importIssue(t, number).id))
 	if err != nil {
 		t.Fatalf("imported issue %d: %v", number, err)
 	}
@@ -437,7 +436,8 @@ func TestWriteIssueCreateNeverDuplicates(t *testing.T) {
 
 // A pasted marker is not believed: text written by someone else stays
 // external whatever marker it carries, and so does the token account's text
-// whose marker names no intent of this workspace.
+// whose marker names no intent of this workspace. A forged issue is not
+// adopted, so like any issue nobody imported it stays out of Multica.
 func TestWriteForgedMarkersStayExternal(t *testing.T) {
 	env := newWriteEnv(t)
 	issue := env.importedIssue(t, 1)
@@ -463,7 +463,12 @@ func TestWriteForgedMarkersStayExternal(t *testing.T) {
 			t.Fatalf("forged comment %d stored as %s %q, want external with the marker kept", id, author, content)
 		}
 	}
-	forged := env.issue(t, 2)
+	// A marker does not make an issue tracked: adoption refuses it, so it
+	// stays out until someone imports it, and then as external.
+	if n := env.count(t, `SELECT count(*) FROM issue_external WHERE workspace_id = $1 AND external_number = 2`, env.ws); n != 0 {
+		t.Fatal("forged issue entered Multica without an import")
+	}
+	forged := env.importIssue(t, 2)
 	if forged.creatorType != "member" || forged.creatorID != env.owner || !strings.HasPrefix(forged.description, "由 @mallory 在 GitHub 创建") {
 		t.Fatalf("forged issue = %+v, want the sync account and the external prefix", forged)
 	}

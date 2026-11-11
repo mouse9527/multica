@@ -248,9 +248,9 @@ func (s *Service) pollRepo(ctx context.Context, t pollTarget) (int, error) {
 		return 0, s.repoFailure(t.name.String(), err)
 	}
 	q := db.New(s.db)
-	pin, err := q.GetGithubRepoSync(ctx, db.GetGithubRepoSyncParams{WorkspaceID: t.workspaceID, RepoID: repo.ID()})
+	pin, err := s.startCursors(ctx, repo)
 	if err != nil {
-		return 0, fmt.Errorf("githubissues: read poll state: %w", err)
+		return 0, err
 	}
 
 	synced, caughtUp, err := s.pollIssues(ctx, repo, t.projectID, pin.IssuesCursor)
@@ -287,6 +287,36 @@ func (s *Service) pollRepo(ctx context.Context, t pollTarget) (int, error) {
 		return synced, s.repoFailure(repo.FullName(), err)
 	}
 	return synced, nil
+}
+
+// startCursors reads the poll state of a repository and starts each empty
+// issues or comments cursor at the current time: a repository is followed
+// from when Multica first looks at it, and its history is never read to find
+// issues nobody imported. A cursor already set keeps its place.
+func (s *Service) startCursors(ctx context.Context, repo *Repo) (db.GithubRepoSync, error) {
+	q := db.New(s.db)
+	pin, err := q.GetGithubRepoSync(ctx, db.GetGithubRepoSyncParams{WorkspaceID: repo.workspaceID, RepoID: repo.id})
+	if err != nil {
+		return db.GithubRepoSync{}, fmt.Errorf("githubissues: read poll state: %w", err)
+	}
+	if pin.IssuesCursor.Valid && pin.CommentsCursor.Valid {
+		return pin, nil
+	}
+	// Only the empty cursors are passed: the update takes the greater of the
+	// stored and the given time, which would move a set cursor forward.
+	now := pgtype.Timestamptz{Time: s.now(), Valid: true}
+	params := db.AdvanceGithubRepoSyncCursorsParams{WorkspaceID: repo.workspaceID, RepoID: repo.id}
+	if !pin.IssuesCursor.Valid {
+		params.IssuesCursor = now
+	}
+	if !pin.CommentsCursor.Valid {
+		params.CommentsCursor = now
+	}
+	pin, err = q.AdvanceGithubRepoSyncCursors(ctx, params)
+	if err != nil {
+		return db.GithubRepoSync{}, fmt.Errorf("githubissues: start cursors: %w", err)
+	}
+	return pin, nil
 }
 
 // repoFailure logs a failed repository poll and turns the failures that

@@ -276,8 +276,7 @@ func TestPollPullsRetriesFailedMirror(t *testing.T) {
 func TestPullRequestIssues(t *testing.T) {
 	env := newPollEnv(t)
 	env.api.putIssue(1, "stranger", "Crash", "", "open", testNow.Add(-time.Hour), nil)
-	env.poll(t)
-	issue := env.issue(t, 1)
+	issue := env.importIssue(t, 1)
 	ws := parseTestUUID(t, env.ws)
 
 	cases := []struct {
