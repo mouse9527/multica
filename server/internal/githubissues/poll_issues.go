@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -15,7 +16,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/githubissues/issuekey"
 	"github.com/multica-ai/multica/server/internal/issueposition"
-	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -26,13 +26,14 @@ import (
 
 // githubIssue is the part of a GitHub issue the poller reads.
 type githubIssue struct {
-	NodeID      string    `json:"node_id"`
-	Number      int32     `json:"number"`
-	Title       string    `json:"title"`
-	Body        *string   `json:"body"`
-	State       string    `json:"state"`
-	StateReason *string   `json:"state_reason"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	NodeID      string        `json:"node_id"`
+	Number      int32         `json:"number"`
+	Title       string        `json:"title"`
+	Body        *string       `json:"body"`
+	State       string        `json:"state"`
+	StateReason *string       `json:"state_reason"`
+	UpdatedAt   time.Time     `json:"updated_at"`
+	Labels      []githubLabel `json:"labels"`
 	User        struct {
 		Login string `json:"login"`
 	} `json:"user"`
@@ -84,7 +85,7 @@ func (s *Service) syncIssue(ctx context.Context, repo *Repo, projectID pgtype.UU
 	// MAX(number) (see service.IssueService.Create); heal it and run the
 	// transaction once more.
 	for attempt := 0; ; attempt++ {
-		created, changed, err := s.syncIssueOnce(ctx, repo, projectID, gh)
+		created, changed, current, err := s.syncIssueOnce(ctx, repo, projectID, gh)
 		var pgErr *pgconn.PgError
 		if attempt == 0 && errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == service.IssueNumberConstraint {
 			if _, healErr := db.New(s.db).HealIssueCounter(ctx, repo.workspaceID); healErr != nil && !errors.Is(healErr, pgx.ErrNoRows) {
@@ -97,17 +98,29 @@ func (s *Service) syncIssue(ctx context.Context, repo *Repo, projectID pgtype.UU
 		}
 		if created != nil {
 			s.publishIssueCreated(ctx, *created)
-		} else if changed != nil {
+			return true, nil
+		}
+		if changed != nil {
 			s.publishIssueChanged(*changed)
 		}
-		return created != nil || changed != nil, nil
+		// Committed first: the status write runs the issue write path, which
+		// has a transaction of its own.
+		statusChanged := false
+		if current.ID.Valid {
+			if statusChanged, err = s.syncStatus(ctx, repo, current, gh); err != nil {
+				return changed != nil, fmt.Errorf("sync status: %w", err)
+			}
+		}
+		return changed != nil || statusChanged, nil
 	}
 }
 
-func (s *Service) syncIssueOnce(ctx context.Context, repo *Repo, projectID pgtype.UUID, gh githubIssue) (created, changed *db.Issue, err error) {
+// current is the stored issue after the transaction when it existed before,
+// for the status sync that follows; it is zero when the snapshot was stale.
+func (s *Service) syncIssueOnce(ctx context.Context, repo *Repo, projectID pgtype.UUID, gh githubIssue) (created, changed *db.Issue, current db.Issue, err error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, db.Issue{}, err
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(tx)
@@ -116,7 +129,7 @@ func (s *Service) syncIssueOnce(ctx context.Context, repo *Repo, projectID pgtyp
 	// syncs (a poll and a later on-demand refresh) never both create it.
 	if err := q.LockIssueDuplicateKey(ctx, "githubissues:issue:"+util.UUIDToString(repo.workspaceID)+":"+
 		strconv.FormatInt(repo.id, 10)+":"+strconv.Itoa(int(gh.Number))); err != nil {
-		return nil, nil, err
+		return nil, nil, db.Issue{}, err
 	}
 	existing, err := q.GetIssueExternalByNumber(ctx, db.GetIssueExternalByNumberParams{
 		WorkspaceID: repo.workspaceID, Provider: issuekey.ProviderGitHub,
@@ -126,18 +139,18 @@ func (s *Service) syncIssueOnce(ctx context.Context, repo *Repo, projectID pgtyp
 	case errors.Is(err, pgx.ErrNoRows):
 		issue, err := s.createIssue(ctx, tx, q, repo, projectID, gh)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, db.Issue{}, err
 		}
 		created = &issue
 	case err != nil:
-		return nil, nil, err
+		return nil, nil, db.Issue{}, err
 	default:
 		if gh.UpdatedAt.Before(existing.ExternalUpdatedAt.Time) {
-			return nil, nil, nil
+			return nil, nil, db.Issue{}, nil
 		}
 		issue, err := q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: existing.IssueID, WorkspaceID: repo.workspaceID})
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, db.Issue{}, err
 		}
 		params := db.UpdateGitHubIssueContentParams{
 			ID: issue.ID, WorkspaceID: repo.workspaceID,
@@ -148,12 +161,14 @@ func (s *Service) syncIssueOnce(ctx context.Context, repo *Repo, projectID pgtyp
 		if _, external := StripExternalIssuePrefix(issue.Description.String); external {
 			params.Description = pgtype.Text{String: ExternalIssueDescription(gh.User.Login, gh.body()), Valid: true}
 		}
+		current = issue
 		updated, err := q.UpdateGitHubIssueContent(ctx, params)
 		switch {
 		case err == nil:
 			changed = &updated
+			current = updated
 		case !errors.Is(err, pgx.ErrNoRows):
-			return nil, nil, err
+			return nil, nil, db.Issue{}, err
 		}
 		if existing.State != gh.State || existing.StateReason.String != stringValue(gh.StateReason) {
 			if changed == nil {
@@ -169,12 +184,12 @@ func (s *Service) syncIssueOnce(ctx context.Context, repo *Repo, projectID pgtyp
 		State: gh.State, StateReason: optionalText(gh.StateReason),
 		ExternalUpdatedAt: pgtype.Timestamptz{Time: gh.UpdatedAt, Valid: true},
 	}); err != nil {
-		return nil, nil, err
+		return nil, nil, db.Issue{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, nil, err
+		return nil, nil, db.Issue{}, err
 	}
-	return created, changed, nil
+	return created, changed, current, nil
 }
 
 func issueID(created, changed *db.Issue, existing db.IssueExternal) pgtype.UUID {
@@ -197,7 +212,7 @@ func (s *Service) createIssue(ctx context.Context, tx pgx.Tx, q *db.Queries, rep
 	if err != nil {
 		return db.Issue{}, err
 	}
-	status, err := initialStatus(ctx, q, repo.workspaceID, projectID, gh)
+	status, err := initialStatus(ctx, q, s.logger, repo.workspaceID, projectID, gh)
 	if err != nil {
 		return db.Issue{}, err
 	}
@@ -225,22 +240,17 @@ func (s *Service) createIssue(ctx context.Context, tx pgx.Tx, q *db.Queries, rep
 	})
 }
 
-// initialStatus is the status a GitHub issue starts on in Multica: backlog
-// while open, done or cancelled once closed, by GitHub's state_reason. Later
-// state changes are mapped by the status sync, not here. A project workflow
-// that does not list the status starts the issue on its first step, as every
-// other create path does.
-func initialStatus(ctx context.Context, q *db.Queries, workspaceID, projectID pgtype.UUID, gh githubIssue) (string, error) {
-	status := issuestatus.Backlog
-	if gh.State == "closed" {
-		status = issuestatus.Done
-		switch stringValue(gh.StateReason) {
-		case "not_planned", "duplicate":
-			status = issuestatus.Cancelled
-		}
+// initialStatus is the status a GitHub issue starts on in Multica: the one
+// its state and status labels map to (statusMapping.fromGitHub). Later state
+// changes go through syncStatus. A project workflow that does not list the
+// status starts the issue on its first step, as every other create path does.
+func initialStatus(ctx context.Context, q *db.Queries, logger *slog.Logger, workspaceID, projectID pgtype.UUID, gh githubIssue) (string, error) {
+	m, err := loadStatusMapping(ctx, q, logger, workspaceID, projectID)
+	if err != nil {
+		return "", err
 	}
+	status, _ := m.fromGitHub(gh.State, stringValue(gh.StateReason), gh.Labels, "")
 	var def *issueworkflow.Definition
-	var err error
 	if projectID.Valid {
 		def, _, err = issueworkflow.ForProject(ctx, q, workspaceID, projectID)
 	} else {
