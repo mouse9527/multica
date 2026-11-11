@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/githubissues"
+	"github.com/multica-ai/multica/server/internal/logger"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -141,4 +142,130 @@ func (c *capturedResponse) WriteHeader(code int) {
 func (c *capturedResponse) Write(p []byte) (int, error) {
 	c.wroteHeader = true
 	return c.body.Write(p)
+}
+
+// GitHub issues are written through to GitHub (docs/github-issues.md, "双写"):
+// each hook below sends the GitHub part of a write before the handler writes
+// the local copy, and reports the local outcome afterwards. With the feature
+// off GitHubIssues is nil, every hook returns nil, and the handlers behave as
+// upstream.
+
+// gitHubActor is who the request writes as, with an agent's name for the
+// signature line on GitHub.
+func (h *Handler) gitHubActor(r *http.Request, workspaceID pgtype.UUID) githubissues.Actor {
+	actorType, actorID := h.resolveActor(r, requestUserID(r), uuidToString(workspaceID))
+	actor := githubissues.Actor{Type: actorType, ID: parseUUIDOrZero(actorID)}
+	if actorType == "agent" {
+		if agent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+			ID: actor.ID, WorkspaceID: workspaceID,
+		}); err == nil {
+			actor.Name = agent.Name
+		}
+	}
+	return actor
+}
+
+// beginGitHubIssueUpdate sends the title, description and status of an issue
+// update to GitHub. params are the update as it will be written locally.
+func (h *Handler) beginGitHubIssueUpdate(r *http.Request, prev db.Issue, params db.UpdateIssueParams) (*githubissues.Write, error) {
+	if h.GitHubIssues == nil {
+		return nil, nil
+	}
+	change := githubissues.IssueChange{ProjectID: params.ProjectID}
+	if params.Title.Valid {
+		change.Title = &params.Title.String
+	}
+	if params.Description.Valid {
+		change.Description = &params.Description.String
+	}
+	if params.Status.Valid {
+		change.Status = &params.Status.String
+	}
+	return h.GitHubIssues.BeginIssueUpdate(r.Context(), h.gitHubActor(r, prev.WorkspaceID), prev, change)
+}
+
+// beginGitHubIssueCreate opens the issue on GitHub when the create names a
+// repository. With the feature off the field is ignored, as upstream ignores
+// fields it does not know.
+func (h *Handler) beginGitHubIssueCreate(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID, req CreateIssueRequest, status string, projectID pgtype.UUID) (*githubissues.Write, bool) {
+	if h.GitHubIssues == nil || req.Repo == nil {
+		return nil, true
+	}
+	description := ""
+	if req.Description != nil {
+		description = *req.Description
+	}
+	write, err := h.GitHubIssues.BeginIssueCreate(r.Context(), workspaceID, h.gitHubActor(r, workspaceID), githubissues.NewIssue{
+		Repo: *req.Repo, Title: req.Title, Description: description, Status: status, ProjectID: projectID,
+	})
+	if err != nil {
+		writeGitHubWriteError(w, r, err)
+		return nil, false
+	}
+	return write, true
+}
+
+// gitHubCreateInTx is the IssueCreateOpts.InTx of a create opened on GitHub.
+func gitHubCreateInTx(write *githubissues.Write) func(context.Context, *db.Queries, db.Issue) error {
+	if write == nil {
+		return nil
+	}
+	return write.InTx
+}
+
+// beginGitHubCommentCreate posts a new comment of a GitHub issue to GitHub.
+func (h *Handler) beginGitHubCommentCreate(w http.ResponseWriter, r *http.Request, issue db.Issue, content string) (*githubissues.Write, bool) {
+	if h.GitHubIssues == nil {
+		return nil, true
+	}
+	write, err := h.GitHubIssues.BeginCommentCreate(r.Context(), h.gitHubActor(r, issue.WorkspaceID), issue, content)
+	if err != nil {
+		writeGitHubWriteError(w, r, err)
+		return nil, false
+	}
+	return write, true
+}
+
+// beginGitHubCommentChange edits (content set) or deletes (content nil) a
+// comment that Multica posted on GitHub.
+func (h *Handler) beginGitHubCommentChange(w http.ResponseWriter, r *http.Request, comment db.Comment, content *string) (*githubissues.Write, bool) {
+	if h.GitHubIssues == nil {
+		return nil, true
+	}
+	actor := h.gitHubActor(r, comment.WorkspaceID)
+	var write *githubissues.Write
+	var err error
+	if content != nil {
+		write, err = h.GitHubIssues.BeginCommentUpdate(r.Context(), actor, comment, *content)
+	} else {
+		write, err = h.GitHubIssues.BeginCommentDelete(r.Context(), actor, comment)
+	}
+	if err != nil {
+		writeGitHubWriteError(w, r, err)
+		return nil, false
+	}
+	return write, true
+}
+
+// writeGitHubWriteError answers a write GitHub did not take. Nothing was
+// written locally.
+func writeGitHubWriteError(w http.ResponseWriter, r *http.Request, err error) {
+	var unmapped *githubissues.UnmappedStatusError
+	if errors.As(err, &unmapped) {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": unmapped.Error(), "code": "github_status_unmapped", "allowed_statuses": unmapped.Mappable,
+		})
+		return
+	}
+	var writeErr *githubissues.WriteError
+	if !errors.As(err, &writeErr) {
+		slog.Warn("github write failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to write to GitHub")
+		return
+	}
+	status, body, retryAfter := writeErr.HTTPResponse()
+	if retryAfter != "" {
+		w.Header().Set("Retry-After", retryAfter)
+	}
+	writeJSON(w, status, body)
 }

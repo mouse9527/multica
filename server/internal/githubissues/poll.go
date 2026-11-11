@@ -257,6 +257,12 @@ func (s *Service) pollRepo(ctx context.Context, t pollTarget) (int, error) {
 		var n int
 		n, err = s.pollComments(ctx, repo, pin.CommentsCursor)
 		synced += n
+		if err == nil {
+			// Writes from Multica the streams just read past are settled
+			// here, so a write is only given up after a poll that would
+			// have seen it.
+			err = s.reconcileIntents(ctx, repo, t.projectID)
+		}
 	}
 	// A cycle cut short (throttled elsewhere, or out of time) says nothing
 	// about this repository, so it leaves no error behind.

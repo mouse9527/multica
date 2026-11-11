@@ -67,6 +67,16 @@ func (s *Service) pollComments(ctx context.Context, repo *Repo, cursor pgtype.Ti
 			if err != nil {
 				return i, err
 			}
+			handled, changed, err := s.syncWrittenComment(ctx, repo, mirror.IssueID, number, c)
+			if err != nil {
+				return i, fmt.Errorf("sync comment %d on %s#%d: %w", c.ID, repo.FullName(), number, err)
+			}
+			if handled {
+				if changed {
+					synced++
+				}
+				continue
+			}
 			res, err := s.SyncExternalComment(ctx, ExternalComment{
 				WorkspaceID: repo.workspaceID, IssueID: mirror.IssueID, ExternalID: c.ID,
 				Login: c.User.Login, AvatarURL: c.User.AvatarURL, Body: c.Body, UpdatedAt: c.UpdatedAt,
@@ -77,7 +87,8 @@ func (s *Service) pollComments(ctx context.Context, repo *Repo, cursor pgtype.Ti
 					synced++
 				}
 			case errors.Is(err, ErrNotExternalComment):
-				// Written from Multica; its local row is already the mirror.
+				// Linked to a comment written from Multica since
+				// syncWrittenComment looked; the next poll follows it.
 			case errors.Is(err, ErrIssueNotFound), errors.Is(err, ErrCommentMoved):
 				s.logger.Warn("github issues poll: comment skipped", "repo", repo,
 					"issue_number", number, "comment_id", c.ID, "error", err)

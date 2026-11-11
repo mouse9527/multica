@@ -139,6 +139,11 @@ type IssueCreateOpts struct {
 	// still resolving, then promotes the returned task after attachment binding.
 	// Zero preserves the ordinary immediate enqueue path.
 	AssignedAgentRunFireAt time.Time
+
+	// InTx, if non-nil, runs inside the create transaction just before
+	// commit; an error rolls the create back. GitHub-native issues
+	// (mouse9527/multica fork) link the new issue to the GitHub issue here.
+	InTx func(ctx context.Context, q *db.Queries, issue db.Issue) error
 }
 
 // ErrActiveDuplicate signals that the duplicate guard found an active
@@ -564,6 +569,12 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 		assignedTask, err = s.TaskService.createDeferredChannelIssueTaskWithQueries(ctx, qtx, issue, opts.AssignedAgentRunFireAt)
 		if err != nil {
 			return IssueCreateResult{}, fmt.Errorf("create deferred channel issue task: %w", err)
+		}
+	}
+
+	if opts.InTx != nil {
+		if err := opts.InTx(ctx, qtx, issue); err != nil {
+			return IssueCreateResult{}, err
 		}
 	}
 

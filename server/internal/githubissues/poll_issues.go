@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -26,6 +25,7 @@ import (
 
 // githubIssue is the part of a GitHub issue the poller reads.
 type githubIssue struct {
+	ID          int64         `json:"id"`
 	NodeID      string        `json:"node_id"`
 	Number      int32         `json:"number"`
 	Title       string        `json:"title"`
@@ -127,8 +127,7 @@ func (s *Service) syncIssueOnce(ctx context.Context, repo *Repo, projectID pgtyp
 
 	// Serializes every writer of this GitHub issue in the workspace, so two
 	// syncs (a poll and a later on-demand refresh) never both create it.
-	if err := q.LockIssueDuplicateKey(ctx, "githubissues:issue:"+util.UUIDToString(repo.workspaceID)+":"+
-		strconv.FormatInt(repo.id, 10)+":"+strconv.Itoa(int(gh.Number))); err != nil {
+	if err := q.LockIssueDuplicateKey(ctx, issueLockKey(repo, gh.Number)); err != nil {
 		return nil, nil, db.Issue{}, err
 	}
 	existing, err := q.GetIssueExternalByNumber(ctx, db.GetIssueExternalByNumberParams{
@@ -137,7 +136,14 @@ func (s *Service) syncIssueOnce(ctx context.Context, repo *Repo, projectID pgtyp
 	})
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		issue, err := s.createIssue(ctx, tx, q, repo, projectID, gh)
+		var issue db.Issue
+		// An issue opened from Multica whose local create never committed is
+		// adopted under its author, not imported as someone else's.
+		if intent, ok := s.trustedIntent(ctx, q, repo, gh.body(), gh.User.Login, gh.ID, gh.Number, opCreateIssue); ok {
+			issue, err = s.adoptIssue(ctx, tx, q, repo, projectID, gh, intent)
+		} else {
+			issue, err = s.createIssue(ctx, tx, q, repo, projectID, gh)
+		}
 		if err != nil {
 			return nil, nil, db.Issue{}, err
 		}
@@ -156,10 +162,13 @@ func (s *Service) syncIssueOnce(ctx context.Context, repo *Repo, projectID pgtyp
 			ID: issue.ID, WorkspaceID: repo.workspaceID,
 			Title: NormalizeGitHubText(gh.Title), Description: issue.Description,
 		}
-		// Only a description written by the poller carries the external
-		// prefix. One written from Multica is left to the write path.
+		// A description written by the poller carries the external prefix
+		// and is rebuilt with it. One written from Multica follows GitHub
+		// too, without the marker of the write that produced it.
 		if _, external := StripExternalIssuePrefix(issue.Description.String); external {
 			params.Description = pgtype.Text{String: ExternalIssueDescription(gh.User.Login, gh.body()), Valid: true}
+		} else {
+			params.Description = pgtype.Text{String: ownIssueDescription(ctx, q, repo, issue.ID, gh), Valid: true}
 		}
 		current = issue
 		updated, err := q.UpdateGitHubIssueContent(ctx, params)

@@ -50,6 +50,14 @@ func (s *tokenState) markAccepted(login string, at time.Time) {
 	s.validatedAt = at
 }
 
+// login is the account GitHub last accepted the token for; empty before the
+// first acceptance.
+func (s *tokenState) login() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.accountLogin
+}
+
 func (s *tokenState) markRejected(at time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

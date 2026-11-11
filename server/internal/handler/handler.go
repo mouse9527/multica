@@ -26,6 +26,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/dbreader"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/githubissues"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
@@ -223,8 +224,11 @@ type RuntimeRecoveryNotifier interface {
 type Handler struct {
 	// ExternalComments and GitHubStatuses are set by the mouse9527/multica
 	// fork while GitHub-native issues are on (githubissues_hook.go).
-	ExternalComments       ExternalCommentGuard
-	GitHubStatuses         GitHubStatusGuard
+	ExternalComments ExternalCommentGuard
+	GitHubStatuses   GitHubStatusGuard
+	// GitHubIssues writes GitHub issues through to GitHub (githubissues_hook.go);
+	// nil while the fork's GitHub-native issues are off.
+	GitHubIssues           *githubissues.Service
 	Queries                *db.Queries
 	ReadSelector           *dbreader.Selector
 	DB                     dbExecutor
