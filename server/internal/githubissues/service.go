@@ -67,6 +67,10 @@ type Service struct {
 	pollResume resumeStore
 	// statusWriter applies status changes from GitHub (SetStatusWriter).
 	statusWriter StatusWriter
+	// pullMirror stores polled pull requests; nil leaves them unread.
+	pullMirror PullRequestMirror
+	// pullsResume is where each pulls read that stopped early continues.
+	pullsResume pullsResumeStore
 	// pollLimits overrides the page size and budget in tests; zero values
 	// keep the defaults.
 	pollLimits struct{ perPage, pages int }

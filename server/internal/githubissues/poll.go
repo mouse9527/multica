@@ -232,10 +232,11 @@ func (s *Service) pollTargets(ctx context.Context) ([]pollTarget, error) {
 	return targets, nil
 }
 
-// pollRepo reads the issues stream, then the comments stream, of one
-// repository. Comments are read only once the issues stream has caught up, so
-// a comment never arrives before the issue it belongs to has been imported.
-// It returns how many issues and comments it stored or changed.
+// pollRepo reads the issues stream, then the comments stream and the pull
+// requests, of one repository. Comments and pull requests are read only once
+// the issues stream has caught up, so neither arrives before the issue it
+// belongs to or closes has been imported. It returns how many issues,
+// comments and pull requests it stored or changed.
 func (s *Service) pollRepo(ctx context.Context, t pollTarget) (int, error) {
 	repo, err := s.RepoClient(ctx, t.workspaceID, t.name.owner, t.name.name)
 	switch {
@@ -257,6 +258,10 @@ func (s *Service) pollRepo(ctx context.Context, t pollTarget) (int, error) {
 		var n int
 		n, err = s.pollComments(ctx, repo, pin.CommentsCursor)
 		synced += n
+		if err == nil && s.pullMirror != nil {
+			n, err = s.pollPulls(ctx, repo, pin.PullsCursor)
+			synced += n
+		}
 	}
 	// A cycle cut short (throttled elsewhere, or out of time) says nothing
 	// about this repository, so it leaves no error behind.
@@ -315,6 +320,7 @@ type streamKey struct {
 	workspaceID pgtype.UUID
 	repoID      int64
 	comments    bool
+	pulls       bool
 }
 
 // streamResume is where a stream that stopped before its end asks next: the
