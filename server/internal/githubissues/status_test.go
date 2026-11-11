@@ -166,7 +166,9 @@ func TestPollSyncsStatusThroughTheWritePath(t *testing.T) {
 	t0 := testNow.Add(-time.Hour)
 	env.api.putIssue(1, "stranger", "Crash", "", "open", t0, nil)
 	env.api.putIssue(2, "stranger", "Typo", "", "open", t0, map[string]any{"labels": []any{map[string]any{"name": "status:review"}}})
-	env.poll(t)
+	env.importIssue(t, 1)
+	env.importIssue(t, 2)
+	env.rewindCursors(t, t0)
 	if got := env.issue(t, 1).status; got != "backlog" {
 		t.Fatalf("issue 1 starts on %q, want backlog", got)
 	}
@@ -224,7 +226,7 @@ func TestPollSeveralStatusLabelsSyncOnce(t *testing.T) {
 		env.project, env.ws, `{"in_progress":"status:in-progress","in_review":"status:review"}`)
 	t0 := testNow.Add(-time.Minute)
 	env.api.putIssue(1, "stranger", "Crash", "", "open", t0, map[string]any{"labels": []any{map[string]any{"name": "status:review"}}})
-	env.poll(t)
+	env.importIssue(t, 1)
 	if got := env.issue(t, 1).status; got != "in_review" {
 		t.Fatalf("issue starts on %q, want in_review", got)
 	}
@@ -256,7 +258,8 @@ func TestPollStatusWriteFailures(t *testing.T) {
 	env, w := newStatusEnv(t)
 	t0 := testNow.Add(-time.Hour)
 	env.api.putIssue(1, "stranger", "Crash", "", "open", t0, nil)
-	env.poll(t)
+	env.importIssue(t, 1)
+	env.rewindCursors(t, t0)
 
 	env.api.putIssue(1, "stranger", "Crash", "", "closed", t0.Add(time.Minute), nil)
 	w.err = &StatusWriteError{Code: 400, Message: "status not in workflow"}
@@ -296,7 +299,7 @@ func TestCheckGitHubStatus(t *testing.T) {
 	env.f.Exec(t, `INSERT INTO project_github_settings (project_id, workspace_id, status_label_map) VALUES ($1, $2, $3)`,
 		env.project, env.ws, `{"in_progress":"status:in-progress","bogus":"in-review"}`)
 	env.api.putIssue(1, "stranger", "Crash", "", "open", testNow.Add(-time.Hour), nil)
-	env.poll(t)
+	env.importIssue(t, 1)
 	ctx := context.Background()
 	q := db.New(env.svc.db)
 	issue, err := q.GetIssue(ctx, util.MustParseUUID(env.issue(t, 1).id))

@@ -20,6 +20,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -47,6 +48,15 @@ func (f *fakeGitHub) openPull(number int, body string, updated time.Time) {
 	})
 }
 
+// acceptanceIssue is issue #1, opened on GitHub by someone else an hour ago.
+func acceptanceIssue() map[string]any {
+	return map[string]any{
+		"node_id": "I_1", "number": 1, "title": "Crash on empty config", "body": "It crashes.",
+		"state": "open", "state_reason": nil, "updated_at": time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+		"user": map[string]any{"login": "stranger"},
+	}
+}
+
 func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Authorization") != "Bearer "+githubissues.TestToken {
 		f.t.Errorf("request without the token: %s", r.URL.Path)
@@ -62,13 +72,11 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/repositories/42/issues":
 		out = []any{}
 		if firstPage {
-			out = []any{map[string]any{
-				"node_id": "I_1", "number": 1, "title": "Crash on empty config", "body": "It crashes.",
-				"state": "open", "state_reason": nil, "updated_at": time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
-				"user": map[string]any{"login": "stranger"},
-			}}
+			out = []any{acceptanceIssue()}
 		}
-	case "/repositories/42/issues/comments":
+	case "/repositories/42/issues/1":
+		out = acceptanceIssue()
+	case "/repositories/42/issues/comments", "/repositories/42/issues/1/comments":
 		out = []any{}
 	case "/repositories/42/pulls":
 		out = []any{}
@@ -143,6 +151,13 @@ func TestPolledPullRequestReachesIssueCard(t *testing.T) {
 		if err != nil || stats.Failed != 0 {
 			t.Fatalf("poll: %+v %v", stats, err)
 		}
+	}
+	wsID, err := util.ParseUUID(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.ImportIssue(ctx, wsID, githubissues.IssueRef{Owner: "acme", Repo: "widgets", Number: 1}); err != nil {
+		t.Fatalf("import #1: %v", err)
 	}
 	poll()
 	var issueID string

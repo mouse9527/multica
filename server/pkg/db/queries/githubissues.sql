@@ -103,6 +103,15 @@ SELECT workspace_id, project_id, resource_ref FROM project_resource
 WHERE resource_type = 'github_repo'
 ORDER BY workspace_id, created_at, id;
 
+-- name: ListWorkspaceGitHubRepoResources :many
+-- The github_repo resources of one workspace with their projects, oldest
+-- first: an imported GitHub issue lands in the project that registered its
+-- repository first, as the poller's did. Read-only on project_resource.
+SELECT project_id, resource_ref FROM project_resource
+WHERE workspace_id = $1
+  AND resource_type = 'github_repo'
+ORDER BY created_at, id;
+
 -- name: ListAllGithubRepoSyncs :many
 -- Every pin with its poll state, across workspaces, for the poller.
 SELECT * FROM github_repo_sync
