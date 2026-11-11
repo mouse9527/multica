@@ -448,7 +448,7 @@ Multica 里对 github issue 的写入先写 GitHub，GitHub 接受后才落库�
 - 状态按「状态映射」一节反向写：done 类 → `closed` + `completed`；cancelled 类 → `closed` + `not_planned`；入口状态 → `open` 且不带状态标签；其他 → `open` 加 `status_label_map` 里的标签。改状态时先去掉该映射里的所有状态标签（不区分大小写），再加上新的，其他标签保留；只有项目配置了状态标签时才先读一次 issue 拿当前标签。无法表达的状态在改状态时已被「状态映射」的钩子拒绝；新建时同样拒绝（422 `github_status_unmapped`）。GitHub 新建 issue 只能是 open，所以新建时状态是 done 类、cancelled 类的也拒绝（403 `github_write_not_allowed`）。
 - 轮询把 GitHub 的状态同步回来时（`IsSyncedWrite`）不发请求，不会形成回写循环。
 - 导入的他人 issue（描述带外部前缀），描述在 Multica 里只读，改描述返回 403；标题、状态照常可改。
-- `repo` 参数在本任务只是「显式指定就建到这个仓库」。默认仓库、歧义报错、CLI `--repo`、界面下拉属于新建选仓库任务（#20）。功能关闭时忽略这个字段，与上游一致。
+- 新建时建到哪个仓库，按下一节「新建 issue 选仓库」决定。功能关闭时忽略 `repo` 与 `provider`，与上游一致。
 - 删除 issue 不发请求：GitHub REST 不能删除 issue。本地删除后不再跟踪它，要再跟踪就重新导入（见「按需导入」）。
 
 ### 顺序与失败语义
@@ -550,6 +550,56 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
 - 结果未知的写入交给人确认后没有界面，只有日志和 `github_write_intent` 表。
 - 回执在事务里删除，订阅了 `comment.created` 的插件仍会收到自愈评论的事件（与外部评论相同）。
 - `/repositories/{id}/issues/comments/{id}` 等写接口、GitHub 返回的正文是否原样保留（换行、末尾空白）在真实 GitHub 上未验证，见 PR 的 Owner 实测步骤。
+
+## 新建 issue 选仓库
+
+代码在 `create_repo.go`；handler 钩子 `beginGitHubIssueCreate` 在双写的创建准备之前调用 `ResolveCreateRepo`。
+
+### 候选与默认
+
+- 候选仓库是 issue 所在项目的 `github_repo` 资源（只认 github.com，与白名单同一套解析），按资源顺序，同名只列一次。子 issue 不带项目时用父 issue 的项目，与 `IssueService.Create` 一致。
+- 项目默认仓库存在 `project_github_settings.default_resource_id`，指向该项目的一条 `github_repo` 资源；资源被删后默认自动失效（按无默认处理），不改上游表。
+- 接口（功能开启时才挂载，关闭时 404）：`GET /api/projects/{id}/github-settings` 返回 `{repos: [{resource_id, repo}], default_resource_id, create_statuses}`，`create_statuses` 是新建 GitHub issue 可用的状态（项目入口状态排第一，其余为映射了状态标签的非终态；GitHub 新建的 issue 只能是 open）；`PUT` 同路径传 `{default_resource_id}`（`null` 清除），只能选本项目的 GitHub 仓库，`status_label_map` 不变。
+
+### 解析顺序
+
+请求体字段：`repo`（`owner/name`）与 `provider`（`local` 或 `github`）。
+
+1. `provider: "local"`：建 local issue，行为与上游一致；同时带 `repo` 返回 400 `github_provider_invalid`，未知的 `provider` 也是 400。
+2. 带 `repo`：建到这个仓库；工作区没有登记它返回 422 `github_repo_not_registered`。
+3. 没有项目，或项目没挂 GitHub 仓库：建 local issue（带了 `provider: "github"` 则 422 `github_repo_required`）。
+4. 智能体（Owner 决定：智能体必须显式指定）：一律拒绝，422。项目有默认仓库或只挂一个仓库时是 `github_repo_required`，否则 `github_repo_ambiguous`。
+5. 成员：项目默认仓库，否则项目唯一的仓库。
+6. 都定不下来：422 `github_repo_ambiguous`，由界面让人选。
+
+422 的响应体：`{code, error, candidates: ["owner/name", …], default_repo?}`，`error` 里也列出候选。被拒绝的创建不写任何东西，也不发 GitHub 请求。
+
+### CLI 与界面
+
+- `multica issue create --repo owner/name` 或 `--provider local`；两者同时给、`--provider` 取值不对、`--repo` 不是 `owner/name`，在发请求前就报错。服务端的 422 被 CLI 改写成候选列表，每行一个可直接用的 `--repo`，并提示 `--provider local`。
+- 创建对话框：项目挂了 GitHub 仓库时，项目选择后面出现仓库下拉，最后一项是「本地（不同步 GitHub）」。默认选中项目默认仓库，否则唯一的仓库；多个仓库且无默认时不预选，点创建会提示并打开下拉。换项目后清掉手选的值。功能关闭（接口 404）或项目没挂仓库时不出现下拉，请求与上游一致。从评论创建子 issue 的入口走另一个接口，不出现下拉。
+- 仓库列表还在加载或读取失败时，对话框不知道服务端会不会自动选仓库，所以不提交：加载中显示「正在加载仓库」，失败时显示「重新加载仓库」并在点创建时自动重试，两种情况点创建都只给提示。
+- 状态：目标变成某个仓库（预选或手选）时，如果当前状态不在 `create_statuses` 里，改成项目入口状态（通常是 backlog），这样默认操作不会得到 422 `github_status_unmapped`。之后手动改成 GitHub 表达不了的状态时不再改回，点创建会提示可用的状态或改选「本地」。
+
+### 对上游文件的钩子（本节）
+
+| 文件 | 改动 |
+|---|---|
+| `server/internal/handler/issue.go` | `CreateIssueRequest.Provider`；`beginGitHubIssueCreate` 多传 issue 所在项目与创建者类型（1 行） |
+| `server/cmd/server/router.go` | 功能开启时挂 `/api/projects/{id}/github-settings` 的 GET、PUT |
+| `server/cmd/multica/cmd_issue.go` | 注册 `--repo`、`--provider`，写入请求体，改写 422（各 1–3 行） |
+| `packages/core/api/client.ts` | `getProjectGitHubSettings`（404 返回 `null`） |
+| `packages/core/types/api.ts` | `CreateIssueRequest.repo`、`provider` |
+| `packages/core/package.json` | 导出 `./github-issues` |
+| `packages/views/modals/create-issue.tsx` | 仓库下拉、状态调整、提交前检查、请求体带上选择（各 1–4 行） |
+| `packages/views/locales/*/modals.json` | `create_issue.github_repo` 文案 |
+
+新文件：`server/internal/githubissues/create_repo.go`、`server/internal/handler/githubissues_project.go`、`server/cmd/multica/cmd_issue_github.go`、`packages/core/github-issues/`、`packages/views/modals/create-issue-github-repo.tsx`，以及 `server/pkg/db/queries/github_issue.sql` 里的 `SetProjectGithubDefaultResource`（只写 fork 表）。
+
+### 已知限制
+
+- 设置项目默认仓库目前只有接口，没有界面入口。
+- 新建 github issue 时的状态受「状态映射」约束：项目没有配置状态标签时，只有入口状态能建到 GitHub。对话框按上面的规则处理；CLI 与 API 直接创建时仍返回 422 `github_status_unmapped`（带可用状态）。
 
 ## 迁移号段规则
 

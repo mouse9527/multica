@@ -272,6 +272,18 @@
       "error_daemon_version": "该智能体的守护进程 CLI（{{current}}）低于要求的 {{min}}。请升级守护进程后再使用通过智能体创建。",
       "error_unknown": "提交失败，请重试。",
       "sub_issue_of": "作为 {{identifier}} 的子任务"
+    },
+    "github_repo": {
+      "tooltip": "GitHub 仓库",
+      "local": "本地（不同步 GitHub）",
+      "choose": "选择仓库",
+      "search_placeholder": "搜索仓库…",
+      "required": "请选择一个 GitHub 仓库，或选「本地」",
+      "loading": "正在加载仓库…",
+      "load_failed": "重新加载仓库",
+      "blocked_loading": "还在加载这个项目的 GitHub 仓库",
+      "blocked_error": "这个项目的 GitHub 仓库加载失败，正在重试；也可以换一个项目。",
+      "status_not_creatable": "这个项目新建的 GitHub issue 不能用「{{status}}」状态。请改用 {{allowed}}，或选「本地」。"
     }
   },
   "mark_duplicate": {
