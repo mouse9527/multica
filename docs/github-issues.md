@@ -1,6 +1,14 @@
 # GitHub 原生 issue（fork 专有）
 
-本文件属于 `mouse9527/multica` fork，上游 `multica-ai/multica` 没有这部分功能。代码在 `server/internal/githubissues/`。
+本文件属于 `mouse9527/multica` fork，上游 `multica-ai/multica` 没有这部分功能。代码在 `server/internal/githubissues/`。需要真实 GitHub 才能确认的行为见 [Owner 环境实测清单](github-issues-owner-checklist.md)。
+
+## 设计要点
+
+- **GitHub 是唯一写入方。** Multica 里对 github issue 的标题、正文、状态、评论的写入先写 GitHub，GitHub 接受后才落库（双写）；结果未知的写入不自动重试，过了宽限期找不到就交给人确认。见「双写、意图记录与署名」。
+- **读 = 轮询 + 按需刷新 + 每日对账，只看已导入的 issue。** GitHub 上的 issue 只有被明确导入（或从 Multica 新建）才进入 Multica；之后每 60 秒按游标读变化，打开 issue 时后台刷新一次，每天逐个核对一次是否已删除或转移。不用 webhook，不读整个仓库的历史。见「轮询」「按需导入」「按需刷新」「每日对账」。
+- **只经 `RepoClient` 访问 GitHub。** 仓库白名单 = 项目上登记的 `github_repo` 资源；令牌只在 `transport.go`、`config.go` 两个文件里出现，有语法树扫描测试守着。见「访问仓库」。
+- **local issue 不变，开关关闭时与上游一致。** 没有 `issue_external` 行的 issue 是 local issue；开关关闭时不注册路由、不发请求、不跑调度任务，标识按上游渲染。
+- **只新增表、薄钩子。** 5 张 fork 表（迁移 9000–9003），不改上游表结构；新逻辑放在新包和 fork 自己的文件里，对上游文件的改动列在各节的「对上游文件的钩子」里。见「迁移号段规则」「上游同步」。
 
 ## 功能开关与环境变量
 
@@ -279,7 +287,8 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 
 ### 已知限制
 
-- 删除、转移的 issue 与删除的评论，`since` 列表发现不了，留给每日对账（#23）。按需刷新（见下节）也只记日志，不处理它们。
+- 删除、转移的 issue，`since` 列表发现不了，由「每日对账」发现。
+- GitHub 上删除的评论，`since` 列表与对账都发现不了（对账不读评论），本地副本保留。从 Multica 删除的评论不受影响（双写）。
 - 本地删除的 github issue 同时删掉 `issue_external`，之后不再跟踪；要再跟踪就重新导入。
 - `since` 的边界语义、评论列表的排序参数、`/repositories/{id}/...` 路径在真实 GitHub 上未验证，见 PR 的 Owner 实测步骤。
 
@@ -328,7 +337,7 @@ GitHub 上的 issue 只有被明确要求时才进入 Multica（#50）。代码�
 - **节流：** 每个 issue 15 秒内最多刷新一次；一次刷新还没结束时，同一 issue 的再次打开不发请求（进程内存表加在途标记，相当于 singleflight）。表只保留最近 15 秒内打开过的 issue。多副本时各副本各自节流。
 - **请求：** `GET /repositories/{id}/issues/{N}`，再 `GET /repositories/{id}/issues/{N}/comments?per_page=100&page=…`，最多 10 页，超出的留给轮询。一次刷新最长 30 秒。
 - **不发请求的情况：** 功能关闭；令牌不是 `ok`；轮询因限流暂停中；本地 issue（没有 `issue_external`，查库后直接结束）；仓库已不在白名单或名字现在指向另一个仓库 id。
-- **失败：** 只记一行警告，issue 保持已存的数据；限流时按 GitHub 给的等待时长暂停轮询与按需刷新（共用同一个暂停）。删除（404/410）、转移（301）的 issue 也只记日志，见「轮询 · 已知限制」。
+- **失败：** 只记一行警告，issue 保持已存的数据；限流时按 GitHub 给的等待时长暂停轮询与按需刷新（共用同一个暂停）。删除（404/410）、转移（301）的 issue 也只记日志，留给「每日对账」处理；对账标记过的 issue 打开时不再发请求。
 - **乱序：** 与轮询相同，旧快照不回滚，评论按 `(workspace, 评论 id)` 去重，与轮询同时写同一 issue 由 advisory lock 串行。
 
 ### 对上游文件的钩子（本节）
@@ -341,6 +350,45 @@ GitHub 上的 issue 只有被明确要求时才进入 Multica（#50）。代码�
 | `server/cmd/server/router.go` | 功能开启时 `h.IssueViews = opts.GitHubIssues` |
 
 功能关闭时 `IssueViews` 为 nil，三个接口与上游一致。
+
+## 每日对账
+
+`since` 列表不会返回已删除或已转移的 issue，所以每个已跟踪的 issue 每天单独读一次。代码在 `reconcile_issues.go`，在「轮询」的周期里分摊执行，请求经 `RepoClient`。
+
+### 何时、读哪些
+
+- 同一个仓库的 issue 流、评论流读到末尾（以及 PR 轮询）之后，在同一个周期里做。仓库刚刚正常回答过列表请求，所以这时读到的 404 是 issue 不在了，不是整个仓库读不到（例如令牌失去了仓库权限）。
+- 读这个仓库里 `issue_external.external_synced_at` 早于 24 小时前的已跟踪 issue，按同步时间从早到晚，每个周期每个仓库最多 10 个。轮询、按需刷新、导入同步过的 issue 不会到期，所以活跃的 issue 很少需要单独读。
+- 一轮读完（这个周期读到的少于 10 个）时写 `github_repo_sync.last_full_reconcile_at`。
+- 外呼量：每个已跟踪 issue 每天最多 1 个 `GET /issues/{n}`（转移时再加 1 个），与仓库里 issue 总数无关。**不列整个仓库**：#23 原文写的是「`state=all` 分页列出与本地对比」，但 2026-11-11 的已定决定（#24）是只轮询、刷新已导入的 issue，列整个仓库的成本随仓库大小增长、读的大多是没导入的 issue，所以改成逐个读已跟踪的 issue。两种做法发现的是同一件事（列表里没有的那些，原文本来也要逐个 `GET`）。
+
+### 结果
+
+| GitHub 的回答 | 处理 |
+|---|---|
+| 200 | 按轮询的规则同步（标题、正文、状态；旧快照不回滚），并记下这次核对的时间。所以对账也能补上 `since` 列表漏掉的变化 |
+| 404、410 | 标记为已删除 |
+| 301，`Location` 指向本工作区登记并已固定的另一个仓库（按 `/repositories/{id}/issues/{n}` 里的仓库 id 找固定绑定，再经 `RepoClient` 确认仍在白名单） | 读新位置的 issue，把 `issue_external` 改挂到新仓库与新编号（`MoveIssueExternal`，两处的 advisory lock 都拿），再按新位置同步。标识随之变成新的 `owner/repo#N` |
+| 301 指向未登记的仓库；新位置已被另一个本地 issue 跟踪；新位置读不到 | 标记为已转出 |
+| 其他（5xx、非限流的 403 等） | 这个仓库本周期的对账停在这一项，错误写进 `github_repo_sync.last_error`，下个周期重试。限流与令牌失效按「轮询」的规则停下整个周期 |
+
+### 标记
+
+- 标记记在 `issue_external.state_reason`：`multica:deleted` 或 `multica:transferred`。GitHub 自己的 `state_reason` 不会以 `multica:` 开头；不改表结构（只新增表的决定）。标记在 issue 的 advisory lock 下写，进行中的双写先做完。
+- 本地 issue、它的评论和标识都保留，**不删除任何本地数据**，不改 Multica 状态（不会触发交接）。打一条 Warn 日志（issue id、`owner/repo#N`、原因）。目前没有界面展示，查 `issue_external.state_reason` 即可。
+- 标记后的 issue 按 local issue 继续用：
+  - 不再读：对账、按需刷新、PR 时间线都跳过它（`ListTrackedGitHubIssuesInRepo` 排除带标记的行）。
+  - 写入只落库：改标题、正文、状态，评论新建、编辑、删除都不再发 GitHub 请求（GitHub 上已经没有可写的对象）；导入的他人 issue 的描述也不再只读。
+  - 任何状态都可以用（不再有「GitHub 表达不了」的拒绝）。
+  - 外部评论仍然只读（那是 GitHub 用户写的原文）。
+- 万一这个 issue 之后又出现在仓库的 `since` 列表里（例如 404 只是暂时的），轮询照常同步，标记被 GitHub 的真实 `state_reason` 覆盖，恢复跟踪。
+
+### 已知限制
+
+- 对账不读评论：GitHub 上删除的评论发现不了，见「轮询 · 已知限制」。
+- 改挂只改 `issue_external`：改挂前写下、还没核对完的双写意图仍指向旧位置；已镜像的 PR 关联不动。
+- 本节没有对上游文件的钩子：代码都在 fork 的文件里（`reconcile_issues.go`，`poll.go` 里调用一行；查询在 `githubissues.sql`，只写 fork 表）。
+- 404 与 410、301 的 `Location` 格式按 GitHub 文档实现，未在真实 GitHub 上验证，见实测清单。
 
 ## 状态映射
 
@@ -400,7 +448,7 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 
 - 在「轮询」的同一个周期里、同一个仓库的 issue 流读到末尾、评论流成功之后找 PR。请求都经 `RepoClient`。
 - **发现：** 列出这个仓库的已跟踪 issue（有 `issue_external` 的，新查询 `ListTrackedGitHubIssuesInRepo`，只读），读它们的时间线 `GET /repositories/{id}/issues/{N}/timeline`。PR 提到 issue 时（`Closes #N`、`owner/repo#N` 都算）GitHub 在 issue 的时间线上记一条 `cross-referenced` 事件，`source.issue` 是那个 PR 的**当前**状态（标题、正文、`state`、`updated_at`、`pull_request.merged_at`）。只看来源是 PR 的这类事件，其余事件跳过。
-- **读哪些 issue：** 每个周期都读的：开着的已跟踪 issue；关掉了、但还关联着轮询镜像的未合并 PR 的 issue（查询里的 `has_unmerged_pull`：`issue_pull_request` 连 `github_pull_request`，安装 id 为 `StaticInstallationID`、状态不是 `merged`）。这样 issue 被手动关闭后，PR 再修改、关闭、重开或合并都还能同步，PR 不再引用时也能去掉关联。其余关掉的 issue：GitHub 上的 `updated_at`（`issue_external.external_updated_at`）变了就读一次（PR 合并、issue 随之关闭时补上 PR 的最终状态），否则每 30 分钟读一次，用来发现之后才引用它的 PR。
+- **读哪些 issue：** 每个周期都读的：开着的已跟踪 issue；关掉了、但还关联着轮询镜像的未合并 PR 的 issue（查询里的 `has_unmerged_pull`：`issue_pull_request` 连 `github_pull_request`，安装 id 为 `StaticInstallationID`、状态不是 `merged`）。这样 issue 被手动关闭后，PR 再修改、关闭、重开或合并都还能同步，PR 不再引用时也能去掉关联。其余关掉的 issue：GitHub 上的 `updated_at`（`issue_external.external_updated_at`）变了就读一次（PR 合并、issue 随之关闭时补上 PR 的最终状态），否则每 30 分钟读一次，用来发现之后才引用它的 PR。「每日对账」标记为已删除或已转出的 issue 不读。
 - **镜像哪些 PR：** 只在 PR 的标题或正文按「与 issue 关联」的规则关闭本工作区的某个已跟踪 issue，或者轮询以前镜像过它（`github_pull_request` 里有安装 id 为 `StaticInstallationID` 的行，这样不再引用的 PR 能去掉关联）时，才 `GET /repositories/{id}/pulls/{n}` 读出完整 PR（head 分支与 SHA）交给镜像。只提到 issue、不带关闭关键词的 PR，和关闭未跟踪 issue 的 PR，不发请求、不入库。
 - **不重复读：** 时间线显示的 PR `updated_at` 与上次从这个 issue 的时间线镜像它时相同，就不再读它。按「issue + PR」记，所以一个 PR 后来被导入的另一个 issue 的时间线看到时会重读一次，补上新关联。
 - **别的仓库的 PR：** 来源 PR 所在仓库没登记在本工作区时跳过，不发请求；登记了就用那个仓库的 `RepoClient` 读。
@@ -450,6 +498,7 @@ Multica 里对 github issue 的写入先写 GitHub，GitHub 接受后才落库�
 - 导入的他人 issue（描述带外部前缀），描述在 Multica 里只读，改描述返回 403；标题、状态照常可改。
 - 新建时建到哪个仓库，按下一节「新建 issue 选仓库」决定。功能关闭时忽略 `repo` 与 `provider`，与上游一致。
 - 删除 issue 不发请求：GitHub REST 不能删除 issue。本地删除后不再跟踪它，要再跟踪就重新导入（见「按需导入」）。
+- 「每日对账」标记为已删除或已转出的 issue，所有写入只落库，不发请求。
 
 ### 顺序与失败语义
 
@@ -601,6 +650,52 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
 - 设置项目默认仓库目前只有接口，没有界面入口。
 - 新建 github issue 时的状态受「状态映射」约束：项目没有配置状态标签时，只有入口状态能建到 GitHub。对话框按上面的规则处理；CLI 与 API 直接创建时仍返回 422 `github_status_unmapped`（带可用状态）。
 
+## 失败注入测试集
+
+验收判据要求：失败注入（5xx、断连、超时、429、落库失败）下无重复评论、无重复 issue，结果未知不自动重试。测试都用假 GitHub（`httptest`），不需要令牌；需要数据库（`DATABASE_URL`）。
+
+### 汇总矩阵
+
+`faults_test.go` 的 `TestFailureInjectionMatrix` 把每一种写入和每一种故障组合起来跑一遍（5 × 8 = 40 个子测试，约 30 秒）：
+
+| 写入 | 请求 |
+|---|---|
+| 新建 issue | `POST /issues` |
+| 改 issue | `PATCH /issues/{n}` |
+| 新建评论 | `POST /issues/{n}/comments` |
+| 改评论 | `PATCH /issues/comments/{id}` |
+| 删评论 | `DELETE /issues/comments/{id}` |
+
+| 故障 | GitHub 是否已执行 | 调用方看到 | 最终结果 | 意图 |
+|---|---|---|---|---|
+| 5xx | 是 / 否 | `WriteUnknown`（502） | 已执行：两边都生效；未执行：两边都不变 | `applied` / `unknown` + `needs_confirmation` |
+| 断连 | 是 / 否 | 同上 | 同上 | 同上 |
+| 超时 | 是 / 否 | 同上 | 同上 | 同上 |
+| 429 | 否 | `WriteRateLimited`（429） | 两边都不变 | `failed` |
+| GitHub 成功、落库失败 | 是 | 落库自己的错误 | 两边都生效（轮询或协调器自愈） | `applied` |
+
+每个组合在两次轮询、两次越过宽限期之后检查：GitHub 只收到这一次请求（从不重试）；GitHub 与 Multica 一致，新建的东西最多一份；生效与否只取决于 GitHub 是否执行了；结果未知又找不到的交给人确认。
+
+### 细节测试
+
+矩阵只看结果。作者、署名、wakeup 等细节由下面的测试分别覆盖：
+
+| 方面 | 测试 |
+|---|---|
+| 新建评论的失败与自愈（作者是原作者、不唤醒智能体） | `write_test.go`：`TestWriteCommentFailureInjection`、`TestWriteCommentLocalFailureHealsOnPoll`、`TestWriteCommentSignsLinksAndEchoesSilently` |
+| 新建 issue 不重复（落库失败、答复丢失、从未创建） | `TestWriteIssueCreateNeverDuplicates` |
+| 改 issue 结果未知：按摘要确认或交给人 | `TestWriteIssueUpdateUnknownIsConfirmedOrHandedOver` |
+| 删评论的自愈（以 owner 身份、标记为同步写入） | `TestWriteCommentDeleteHealsLocally`、`TestWriteCommentDeleteHealsAsOwner` |
+| 被拒绝的写入不留痕、过时的修改发请求前拒绝、轮询等进行中的写入 | `TestWriteRejectionsAndReadOnlyDescription`、`TestWriteStaleChangesAreRefusedBeforeSending`、`TestWritePollWaitsForInFlightWrite`；handler 层 `githubissues_write_test.go` |
+| 伪造的标记按外部作者处理 | `TestWriteForgedMarkersStayExternal` |
+| 读路径：限流暂停、令牌不可用不发请求、单仓库失败记错 | `poll_test.go`：`TestPollBacksOffWhenRateLimited`、`TestPollSendsNothingWithUnusableToken`、`TestPollRecordsRepositoryErrors`；`TestRefreshOnViewThrottledPausesPolling`；`TestImportReadsEveryComment`（导入中途失败） |
+| 每日对账遇到 5xx 不标记、记错、下周期重试 | `reconcile_issues_test.go`：`TestReconcileStopsOnUnexpectedAnswers` |
+| `RepoClient`：401 置令牌失效、限流与其他状态码、不跟随重定向 | `repoclient_test.go`：`TestRepoDoUnauthorizedTurnsTokenInvalid`、`TestRepoDoRateLimitAndOtherStatuses`、`TestRepoDoSendsBodyAndDoesNotFollowRedirects` |
+| 令牌校验：限流退避、暂时失败重试、网络错误 | `service_test.go`：`TestValidateRateLimitedBacksOffAndKeepsVerdict`、`TestValidateTransientFailureRetriesWithBackoff`、`TestValidateNetworkErrorIsTransient` |
+| 令牌不出现在日志、响应、错误里；不绕过 `RepoClient` | `config_test.go`、`TestFetchLoginErrorsCarryNoBody`、`scan_test.go` |
+
+运行：`cd server && go test ./internal/githubissues/ -run 'TestFailureInjectionMatrix|TestWrite|TestReconcile' -count=1`。
+
 ## 迁移号段规则
 
 ### 规则
@@ -640,3 +735,36 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
 - 上游最大号是否接近 9000（`migrations_rule_test.go` 会在号段被占用时失败）。
 - 上游到 1000 号后是否改了排序方式或命名（例如改成数值排序）。数值排序下 fork 号段仍在最后，规则不受影响；如果改成别的方案，重新评估本规则。
 - 上游是否新增了「号必须连续」之类的检查。
+
+## 上游同步
+
+fork 的改动按「新包、新文件、薄钩子」组织，同步上游时冲突应只出现在钩子处。验收判据：手工冲突不超过 5 处、耗时不超过半天；超过就回头减少钩子。
+
+### 步骤
+
+1. `git fetch upstream main`（`upstream` = `https://github.com/multica-ai/multica`，只读）。
+2. 从 `origin/main` 开一个同步分支，合入 `upstream/main`。正式同步用 merge，开 PR 合到 `main`，**不 rebase、不 force push `main`**；演练时用 `git rebase --onto upstream/main <上次同步的上游提交>` 逐个重放 fork 的提交，冲突处与 merge 相同，但能看出每处冲突来自哪个任务。
+3. 冲突处理：
+   - `server/pkg/db/generated/` 下的文件**不手合**：任取一边，然后 `make sqlc`（`go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate`）重新生成。
+   - **没有冲突也要重新生成一次**：上游给表加了列时，fork 查询里 `RETURNING *` 的生成代码能自动合并、能编译，但扫描时少一列，运行时才报错（2026-11-11 的演练里 `UpdateGitHubIssueContent` 就是这样）。CI 的 `sqlc-check` 也会发现。
+   - 其余文件按「对上游文件的钩子」各表核对：保留上游的改动，再把 fork 的一行钩子放回原位。
+4. 检查迁移号：`migrations_rule_test.go`（上游号段接近 9000 时失败）；上游迁移号不会和 fork 的 9000 段冲突。
+5. `cd server && go build ./... && go vet ./...`，全量测试（`make test` 或 `scripts/test-go.sh`），前端改动处跑 `pnpm typecheck` 与相关 vitest。
+6. 跑各任务的验收测试：`go test ./internal/githubissues/... ./internal/handler/ -run 'GitHub|Github|github' -count=1`，以及上面的失败注入矩阵。
+
+### 钩子分布
+
+fork 相对上游新增约 100 个文件，修改 49 个上游已有文件（不含生成代码、测试与翻译文件是 29 个），集中在 `server/internal/handler/`（`issue.go`、`comment.go`、`handler.go`、`github.go` 等）、`server/cmd/server/{main,router}.go`、`server/internal/service/`、`server/cmd/multica/`、`packages/core/api/client.ts`、`packages/views/modals/create-issue.tsx`。冲突最可能出现在这些文件里上游也在改的地方。
+
+### 演练记录
+
+| 项 | 2026-11-11（M-31） |
+|---|---|
+| fork 基线 | `origin/main` `135250df5`（M-28 合并后，16 个 fork 提交，基于上游 `f68c891d3`） |
+| 上游 | `upstream/main` `6ccbdd178`，比基线新 133 个提交 |
+| 方式 | 测试分支上 `git rebase --onto upstream/main f68c891d3` |
+| 手工冲突 | **2 个文件、3 处**：`server/internal/handler/comment.go` 2 处（上游在 `UpdateComment`、`DeleteComment` 里同一行加了可见性检查 `requireIssueIDVisible`，与 fork 的外部评论只读钩子相邻，两者都保留，上游的在前）；`packages/core/api/client.ts` 1 处（上游在 fork 追加 `getProjectGitHubSettings` 的位置加了项目成员与订阅方法，两边都保留） |
+| 生成文件 | `server/pkg/db/generated/models.go` 冲突 1 次（M-20 提交）；最终状态 `githubissues.sql.go` 无冲突但已过时（上游给 `issue` 加了 `requester_user_id`）。都用 sqlc 重新生成，没有手合 |
+| 耗时 | rebase、解决冲突、重新生成到编译通过约 6 分钟；全量测试约 16 分钟；含重跑与核对约 1 小时 |
+| 结果 | `go build ./...`、`go vet` 通过；`githubissues` 全部通过（单独跑 7 分钟；与全部包并行时超过默认 10 分钟超时，属机器负载）；`handler` 并行跑时 7 个 `TestClaimTask*` 失败，单独跑在演练分支与纯上游 `main` 上都通过；`service` 的 1 个 wakeup 条件测试在负载下超过 5 秒期限，单独跑（3 次）在演练分支与上游上都通过；其余失败（`daemon`、`daemon/execenv`、`daemon/repocache`、`integrations/wecom`）所在包没有 fork 改动，是本机环境（git 身份、并行负载） |
+| 结论 | **达标**：手工冲突 3 处（判据不超过 5 处），耗时约 1 小时（判据不超过半天），不需要减少钩子 |
