@@ -68,8 +68,8 @@ func (h *Handler) githubIssueRefs(ctx context.Context, wsID pgtype.UUID, in prMi
 // in more than one of them (prLinkPolicy) has no counterpart here.
 //
 // A snapshot no newer than the stored row is mirrored again rather than
-// skipped: its links may have failed last time, and an error here keeps the
-// poller's cursor behind the PR, so the next cycle repairs them. It reports a
+// skipped: its links may have failed last time, and after an error here the
+// poller reads the PR again next cycle, which repairs them. It reports a
 // change only for a new row or a newer snapshot.
 func (h *Handler) MirrorPolledPullRequest(ctx context.Context, wsID pgtype.UUID, pr githubissues.PullRequest) (bool, error) {
 	state := "open"
@@ -102,8 +102,8 @@ func (h *Handler) MirrorPolledPullRequest(ctx context.Context, wsID pgtype.UUID,
 		changed = pr.UpdatedAt.After(prev.PrUpdatedAt.Time)
 		snapshotCurrent = prev.SnapshotFetchedAt.Valid && prev.SnapshotHeadSha == pr.HeadSHA
 		prevState = prev.State
-		// The pulls list carries no line counts or mergeability: keep the
-		// stored ones, and drop a verdict that belongs to an older head.
+		// The poller reads no line counts or mergeability: keep the stored
+		// ones, and drop a verdict that belongs to an older head.
 		in.Additions, in.Deletions, in.ChangedFiles = prev.Additions, prev.Deletions, prev.ChangedFiles
 		in.ClearMergeableState = prev.HeadSha != pr.HeadSHA
 	case !errors.Is(err, pgx.ErrNoRows):

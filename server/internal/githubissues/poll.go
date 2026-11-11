@@ -233,10 +233,10 @@ func (s *Service) pollTargets(ctx context.Context) ([]pollTarget, error) {
 }
 
 // pollRepo reads the issues stream, then the comments stream and the pull
-// requests, of one repository. Comments and pull requests are read only once
-// the issues stream has caught up, so neither arrives before the issue it
-// belongs to or closes has been imported. It returns how many issues,
-// comments and pull requests it stored or changed.
+// requests of the tracked issues, of one repository. Comments and pull
+// requests are read only once the issues stream has caught up, so neither
+// arrives before the issue it belongs to or closes is up to date. It returns
+// how many issues, comments and pull requests it stored or changed.
 func (s *Service) pollRepo(ctx context.Context, t pollTarget) (int, error) {
 	repo, err := s.RepoClient(ctx, t.workspaceID, t.name.owner, t.name.name)
 	switch {
@@ -265,7 +265,7 @@ func (s *Service) pollRepo(ctx context.Context, t pollTarget) (int, error) {
 			err = s.reconcileIntents(ctx, repo, t.projectID)
 		}
 		if err == nil && s.pullMirror != nil {
-			n, err = s.pollPulls(ctx, repo, pin.PullsCursor)
+			n, err = s.pollLinkedPulls(ctx, repo)
 			synced += n
 		}
 	}

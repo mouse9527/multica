@@ -299,6 +299,68 @@ func (q *Queries) ListGitHubTokenExpiryRecipients(ctx context.Context) ([]ListGi
 	return items, nil
 }
 
+const listTrackedGitHubIssuesInRepo = `-- name: ListTrackedGitHubIssuesInRepo :many
+SELECT x.issue_id, x.external_number, x.state, x.external_updated_at,
+    EXISTS (
+        SELECT 1 FROM issue_pull_request ipr
+        JOIN github_pull_request pr ON pr.id = ipr.pull_request_id
+        WHERE ipr.issue_id = x.issue_id
+          AND pr.workspace_id = x.workspace_id
+          AND pr.installation_id = $1
+          AND pr.state <> 'merged'
+    ) AS has_unmerged_pull
+FROM issue_external x
+WHERE x.workspace_id = $2
+  AND x.provider = 'github'
+  AND x.external_repo_id = $3
+ORDER BY x.external_number
+`
+
+type ListTrackedGitHubIssuesInRepoParams struct {
+	InstallationID int64       `json:"installation_id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	ExternalRepoID int64       `json:"external_repo_id"`
+}
+
+type ListTrackedGitHubIssuesInRepoRow struct {
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	ExternalNumber    int32              `json:"external_number"`
+	State             string             `json:"state"`
+	ExternalUpdatedAt pgtype.Timestamptz `json:"external_updated_at"`
+	HasUnmergedPull   bool               `json:"has_unmerged_pull"`
+}
+
+// The GitHub issues of one repository that the workspace tracks (imported, or
+// opened from Multica), by number: the issues whose linked pull requests the
+// poller looks for. has_unmerged_pull is whether a pull request the poller
+// mirrored (installation_id) and has not seen merged is linked to the issue:
+// its timeline is then read even while the issue is closed. Read-only.
+func (q *Queries) ListTrackedGitHubIssuesInRepo(ctx context.Context, arg ListTrackedGitHubIssuesInRepoParams) ([]ListTrackedGitHubIssuesInRepoRow, error) {
+	rows, err := q.db.Query(ctx, listTrackedGitHubIssuesInRepo, arg.InstallationID, arg.WorkspaceID, arg.ExternalRepoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTrackedGitHubIssuesInRepoRow{}
+	for rows.Next() {
+		var i ListTrackedGitHubIssuesInRepoRow
+		if err := rows.Scan(
+			&i.IssueID,
+			&i.ExternalNumber,
+			&i.State,
+			&i.ExternalUpdatedAt,
+			&i.HasUnmergedPull,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkspaceGitHubRepoRefs = `-- name: ListWorkspaceGitHubRepoRefs :many
 SELECT resource_ref FROM project_resource
 WHERE workspace_id = $1
