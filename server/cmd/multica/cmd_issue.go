@@ -680,6 +680,7 @@ func init() {
 	issueCreateCmd.Flags().String("start-date", "", "Start date (calendar day, YYYY-MM-DD)")
 	issueCreateCmd.Flags().String("due-date", "", "Due date (calendar day, YYYY-MM-DD)")
 	issueCreateCmd.Flags().Bool("allow-duplicate", false, "Allow creating an issue even when an active duplicate exists")
+	registerIssueCreateGitHubFlags(issueCreateCmd) // GitHub-native issues (fork)
 	issueCreateCmd.Flags().String("output", "json", "Output format: table or json")
 	issueCreateCmd.Flags().StringArray("attachment", nil, "File path to attach (one literal path per flag; repeat --attachment for multiple files). Each file is uploaded and its markdown reference is appended to the description, which is what makes it render on the issue page")
 	issueCreateCmd.Flags().StringSlice("attachment-id", nil, "Existing attachment UUID(s) to bind to the created issue (can be specified multiple times)")
@@ -1636,6 +1637,9 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 	if v, _ := cmd.Flags().GetBool("allow-duplicate"); v {
 		body["allow_duplicate"] = true
 	}
+	if err := applyIssueCreateGitHubFlags(cmd, body); err != nil { // GitHub-native issues (fork)
+		return err
+	}
 	aType, aID, hasAssignee, resolveErr := pickIssueCreateAssignee(ctx, client, cmd)
 	if resolveErr != nil {
 		return fmt.Errorf("resolve assignee: %w", resolveErr)
@@ -1704,6 +1708,9 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 	var result map[string]any
 	if err := client.PostJSON(ctx, "/api/issues", body, &result); err != nil {
 		if msg, ok := activeDuplicateIssueCreateMessage(err); ok {
+			return errors.New(msg)
+		}
+		if msg, ok := githubRepoChoiceMessage(err); ok { // GitHub-native issues (fork)
 			return errors.New(msg)
 		}
 		return fmt.Errorf("create issue: %w", err)
