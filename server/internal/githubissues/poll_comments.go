@@ -67,25 +67,38 @@ func (s *Service) pollComments(ctx context.Context, repo *Repo, cursor pgtype.Ti
 			if err != nil {
 				return i, err
 			}
-			res, err := s.SyncExternalComment(ctx, ExternalComment{
-				WorkspaceID: repo.workspaceID, IssueID: mirror.IssueID, ExternalID: c.ID,
-				Login: c.User.Login, AvatarURL: c.User.AvatarURL, Body: c.Body, UpdatedAt: c.UpdatedAt,
-			})
-			switch {
-			case err == nil:
-				if res.Created || res.Changed {
-					synced++
-				}
-			case errors.Is(err, ErrNotExternalComment):
-				// Written from Multica; its local row is already the mirror.
-			case errors.Is(err, ErrIssueNotFound), errors.Is(err, ErrCommentMoved):
-				s.logger.Warn("github issues poll: comment skipped", "repo", repo,
-					"issue_number", number, "comment_id", c.ID, "error", err)
-			default:
-				return i, fmt.Errorf("sync comment %d on %s#%d: %w", c.ID, repo.FullName(), number, err)
+			changed, err := s.syncComment(ctx, repo, mirror.IssueID, number, c)
+			if err != nil {
+				return i, err
+			}
+			if changed {
+				synced++
 			}
 		}
 		return len(items), nil
 	})
 	return synced, err
+}
+
+// syncComment stores one GitHub comment on the issue that mirrors GitHub
+// issue number and reports whether it stored or changed anything. A comment
+// written from Multica, or one that can no longer be placed, is skipped.
+func (s *Service) syncComment(ctx context.Context, repo *Repo, issueID pgtype.UUID, number int32, c githubComment) (bool, error) {
+	res, err := s.SyncExternalComment(ctx, ExternalComment{
+		WorkspaceID: repo.workspaceID, IssueID: issueID, ExternalID: c.ID,
+		Login: c.User.Login, AvatarURL: c.User.AvatarURL, Body: c.Body, UpdatedAt: c.UpdatedAt,
+	})
+	switch {
+	case err == nil:
+		return res.Created || res.Changed, nil
+	case errors.Is(err, ErrNotExternalComment):
+		// Written from Multica; its local row is already the mirror.
+		return false, nil
+	case errors.Is(err, ErrIssueNotFound), errors.Is(err, ErrCommentMoved):
+		s.logger.Warn("github issues: comment skipped", "repo", repo,
+			"issue_number", number, "comment_id", c.ID, "error", err)
+		return false, nil
+	default:
+		return false, fmt.Errorf("sync comment %d on %s#%d: %w", c.ID, repo.FullName(), number, err)
+	}
 }

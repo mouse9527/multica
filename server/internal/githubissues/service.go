@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -69,6 +70,10 @@ type Service struct {
 	// pollLimits overrides the page size and budget in tests; zero values
 	// keep the defaults.
 	pollLimits struct{ perPage, pages int }
+	// refreshGate throttles the on-view refresh of each issue.
+	refreshGate refreshGate
+	// refreshing counts on-view refreshes still running.
+	refreshing sync.WaitGroup
 }
 
 // New logs whether the feature is on and returns its Service, or nil when it

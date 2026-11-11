@@ -95,6 +95,9 @@ func (f *fakeIssuesAPI) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"message":"rate limited"}`))
 		return
 	}
+	if f.serveIssue(w, r) {
+		return
+	}
 	var items []map[string]any
 	switch r.URL.Path {
 	case fmt.Sprintf("/repositories/%d/issues", pollRepoID):
