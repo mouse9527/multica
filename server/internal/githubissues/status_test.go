@@ -71,10 +71,10 @@ func TestStatusFromGitHub(t *testing.T) {
 		{"labels match without regard to case", "open", "", []string{"STATUS:REVIEW"}, "backlog", "in_review", false},
 		{"unknown status label is ignored", "open", "", []string{"status:someday"}, "in_progress", "backlog", false},
 		{"label for a done status is ignored", "open", "", []string{"status:shipped"}, "backlog", "backlog", false},
-		{"the label added after the current status wins", "open", "", []string{"status:review", "status:in-progress"}, "in_review", "in_progress", false},
-		{"the same, in the other label order", "open", "", []string{"status:in-progress", "status:review"}, "in_review", "in_progress", false},
-		{"undecidable: last label wins", "open", "", []string{"status:review", "status:blocked", "status:in-progress"}, "in_review", "in_progress", true},
-		{"undecidable from the entry status", "open", "", []string{"status:blocked", "status:review"}, "backlog", "in_review", true},
+		{"several labels: the last wins", "open", "", []string{"status:review", "status:in-progress"}, "backlog", "in_progress", true},
+		{"several labels: the last wins over the current status", "open", "", []string{"status:in-progress", "status:review"}, "in_progress", "in_review", true},
+		{"several labels: the current status does not decide", "open", "", []string{"status:review", "status:in-progress"}, "in_progress", "in_progress", true},
+		{"several labels: unknown and done labels do not count", "open", "", []string{"status:blocked", "status:review", "status:someday", "status:shipped"}, "backlog", "in_review", true},
 		{"repeated label counts once", "open", "", []string{"status:review", "Status:Review"}, "backlog", "in_review", false},
 	}
 	for _, tc := range cases {
@@ -82,6 +82,11 @@ func TestStatusFromGitHub(t *testing.T) {
 			got, ambiguous := m.fromGitHub(tc.state, tc.reason, labelsOf(tc.labels...), tc.current)
 			if got != tc.want || ambiguous != tc.ambiguous {
 				t.Fatalf("fromGitHub = %q (ambiguous %v), want %q (ambiguous %v)", got, ambiguous, tc.want, tc.ambiguous)
+			}
+			// Syncing the same snapshot again, now from the status it
+			// produced, must change nothing.
+			if again, _ := m.fromGitHub(tc.state, tc.reason, labelsOf(tc.labels...), got); again != got {
+				t.Fatalf("not idempotent: %q then %q for the same snapshot", got, again)
 			}
 		})
 	}
@@ -207,6 +212,41 @@ func TestPollSyncsStatusThroughTheWritePath(t *testing.T) {
 	id := env.issue(t, 1).id
 	if calls := w.take(); !slices.Equal(calls, []statusWrite{{env.owner, id, "backlog"}, {env.owner, id, "cancelled"}}) {
 		t.Fatalf("reopen and close as not planned wrote %+v", calls)
+	}
+}
+
+// Several mapped status labels on one issue: the last label wins, and
+// re-reading the same snapshot in later cycles (the overlap window) writes
+// nothing more, whatever the current status was.
+func TestPollSeveralStatusLabelsSyncOnce(t *testing.T) {
+	env, w := newStatusEnv(t)
+	env.f.Exec(t, `INSERT INTO project_github_settings (project_id, workspace_id, status_label_map) VALUES ($1, $2, $3)`,
+		env.project, env.ws, `{"in_progress":"status:in-progress","in_review":"status:review"}`)
+	t0 := testNow.Add(-time.Minute)
+	env.api.putIssue(1, "stranger", "Crash", "", "open", t0, map[string]any{"labels": []any{map[string]any{"name": "status:review"}}})
+	env.poll(t)
+	if got := env.issue(t, 1).status; got != "in_review" {
+		t.Fatalf("issue starts on %q, want in_review", got)
+	}
+
+	env.api.putIssue(1, "stranger", "Crash", "", "open", t0.Add(time.Second), map[string]any{"labels": []any{
+		map[string]any{"name": "status:review"}, map[string]any{"name": "status:in-progress"},
+	}})
+	for cycle := 1; cycle <= 3; cycle++ {
+		before := len(env.api.seen())
+		*env.now = testNow.Add(time.Duration(cycle) * pollInterval)
+		if stats := env.poll(t); stats.Failed != 0 {
+			t.Fatalf("cycle %d stats = %+v", cycle, stats)
+		}
+		if len(env.api.seen()) == before {
+			t.Fatalf("cycle %d sent no request; the snapshot was not re-read", cycle)
+		}
+	}
+	id := env.issue(t, 1).id
+	// One write to the last label's status. Deciding by the current status
+	// would flip back to in_review on the next re-read, and so on.
+	if calls := w.take(); !slices.Equal(calls, []statusWrite{{env.owner, id, "in_progress"}}) {
+		t.Fatalf("status writes = %+v, want one write of in_progress", calls)
 	}
 }
 

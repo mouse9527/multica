@@ -302,7 +302,7 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 
 - 状态标签用保留前缀 `status:`，每个项目在 `project_github_settings.status_label_map` 里配置，形如 `{"in_progress": "status:in-progress", "in_review": "status:review"}`（状态 key → 标签名）。标签名比较不区分大小写（GitHub 的标签名不区分大小写唯一）。不以 `status:` 开头的条目、和别的 key 重复的标签忽略并记告警。没有配置时只有入口状态、done 类、cancelled 类可以表达。
 - 带 `status:` 前缀但不在映射里的标签、映射到 done 类或 cancelled 类状态的标签（这两类只由关闭表达）忽略。
-- **同一 issue 出现多个状态标签：** GitHub 的 issue 列表不带每个标签的添加时间。与当前 Multica 状态不同的那些标签是在当前状态之后加上的：只剩一个时，它就是最新的，取它；剩多个（判定不了）时取 GitHub 标签顺序里的最后一个，并记告警 `several status labels; took the last`。不回写清理多余标签（写 GitHub 属于双写任务）。
+- **同一 issue 出现多个状态标签：** 取 GitHub 标签顺序里的最后一个，并记告警 `several status labels; took the last`。哪个标签最新无法核实：GitHub 的 issue 列表不带每个标签的添加时间，之前见过的标签也没有存。结果只取决于这份快照本身、不看当前状态，所以轮询在重叠窗口里重读同一份快照时不会再改状态（不会来回改派、反复触发运行）。不回写清理多余标签（写 GitHub 属于双写任务）。
 - 算出的状态与当前状态相同时什么都不做，所以只改标题、正文的 GitHub 更新不会动状态；本地状态与 GitHub 等价（例如当前是自定义的 done 类状态而 GitHub 是 closed completed）也不动。
 
 ### 走与普通写入相同的入口
@@ -324,7 +324,7 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 
 - 新建 issue（他人在 GitHub 上新建）直接落在交接步时不触发交接，见「他人新建的 issue」。
 - 项目移动、工作流切换时的状态重映射（`MoveTarget`）不经过本节的拒绝钩子。
-- 多个状态标签的判定基于当前状态推断，不读 GitHub 的标签事件时间线；需要精确判定时要多一次请求，本期不做。
+- 多个状态标签时不判定哪个最新（需要读 GitHub 的标签事件时间线，多一次请求，本期不做），固定取最后一个。
 
 ### 对上游文件的钩子（本节）
 

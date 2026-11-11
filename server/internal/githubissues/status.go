@@ -32,11 +32,12 @@ const StatusLabelPrefix = "status:"
 //   - open with one mapped status label: the status the label maps to.
 //   - open with no mapped status label: the project's entry status
 //     (entryStatus).
-//   - open with several mapped status labels: GitHub's issues list does not
-//     say when each label was added. The labels whose status differs from the
-//     current one were added after it; when exactly one is left, it is the
-//     newest and wins. Otherwise the last of them in GitHub's label order
-//     wins and a warning is logged.
+//   - open with several mapped status labels: the last of them in GitHub's
+//     label order, and a warning is logged. GitHub's issues list does not say
+//     when each label was added, and the labels seen before are not stored,
+//     so which label is newest cannot be verified. The choice depends on the
+//     snapshot alone, never on the current status, so syncing one snapshot
+//     again (the poll re-reads behind its cursor) changes nothing.
 //
 // Labels with the prefix that the map does not know, and labels mapped to a
 // done or cancelled status (only closing the issue says that), are ignored.
@@ -166,7 +167,7 @@ func (m statusMapping) labelKeys(labels []githubLabel) []string {
 
 // fromGitHub returns the status GitHub's state calls for, given the issue's
 // current status ("" for an issue not created yet). ambiguous is true when
-// several status labels were present and none could be told newest.
+// several status labels were present.
 func (m statusMapping) fromGitHub(state, stateReason string, labels []githubLabel, current string) (status string, ambiguous bool) {
 	if state == "closed" {
 		want, category := issuestatus.Done, issuestatus.CategoryDone
@@ -185,16 +186,7 @@ func (m statusMapping) fromGitHub(state, stateReason string, labels []githubLabe
 	case 1:
 		return keys[0], false
 	}
-	var added []string
-	for _, key := range keys {
-		if key != current {
-			added = append(added, key)
-		}
-	}
-	if len(added) == 1 {
-		return added[0], false
-	}
-	return added[len(added)-1], true
+	return keys[len(keys)-1], true
 }
 
 func closedAsNotPlanned(stateReason string) bool {
