@@ -144,9 +144,20 @@ RETURNING *;
 -- name: ListTrackedGitHubIssuesInRepo :many
 -- The GitHub issues of one repository that the workspace tracks (imported, or
 -- opened from Multica), by number: the issues whose linked pull requests the
--- poller looks for. Read-only on issue_external.
-SELECT issue_id, external_number, state, external_updated_at FROM issue_external
-WHERE workspace_id = @workspace_id
-  AND provider = 'github'
-  AND external_repo_id = @external_repo_id
-ORDER BY external_number;
+-- poller looks for. has_unmerged_pull is whether a pull request the poller
+-- mirrored (installation_id) and has not seen merged is linked to the issue:
+-- its timeline is then read even while the issue is closed. Read-only.
+SELECT x.issue_id, x.external_number, x.state, x.external_updated_at,
+    EXISTS (
+        SELECT 1 FROM issue_pull_request ipr
+        JOIN github_pull_request pr ON pr.id = ipr.pull_request_id
+        WHERE ipr.issue_id = x.issue_id
+          AND pr.workspace_id = x.workspace_id
+          AND pr.installation_id = @installation_id
+          AND pr.state <> 'merged'
+    ) AS has_unmerged_pull
+FROM issue_external x
+WHERE x.workspace_id = @workspace_id
+  AND x.provider = 'github'
+  AND x.external_repo_id = @external_repo_id
+ORDER BY x.external_number;

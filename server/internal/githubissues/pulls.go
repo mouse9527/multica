@@ -86,6 +86,11 @@ type githubPull struct {
 	} `json:"base"`
 }
 
+// closedRescanInterval is how often the timeline of a closed tracked issue
+// with no unmerged pull request is read again although the issue did not
+// change, so a pull request that starts closing it is still found.
+const closedRescanInterval = 30 * time.Minute
+
 // errLinkedBudget ends a cycle's linked pull request scan of a repository
 // when its request budget is spent; the scan continues there next cycle.
 var errLinkedBudget = errors.New("githubissues: linked pull request budget spent")
@@ -111,10 +116,9 @@ type linkedKey struct {
 type linkedPullsState struct {
 	mu     sync.Mutex
 	resume map[streamKey]linkedResume
-	// scanned is each tracked issue's external_updated_at when its timeline
-	// was last read to the end: a closed issue is read again only after it
-	// changes.
-	scanned map[pgtype.UUID]time.Time
+	// scanned is when each tracked issue's timeline was last read to the
+	// end, and its external_updated_at then.
+	scanned map[pgtype.UUID]linkedScan
 	// mirrored is the updated_at a timeline showed for a pull request when it
 	// was last mirrored from that issue's timeline: an unchanged pull request
 	// is not read again.
@@ -143,20 +147,25 @@ func (l *linkedPullsState) clearResume(key streamKey) {
 	delete(l.resume, key)
 }
 
-func (l *linkedPullsState) scannedAt(issueID pgtype.UUID) (time.Time, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	at, ok := l.scanned[issueID]
-	return at, ok
+// linkedScan is one complete read of a tracked issue's timeline.
+type linkedScan struct {
+	at, issueUpdatedAt time.Time
 }
 
-func (l *linkedPullsState) markScanned(issueID pgtype.UUID, at time.Time) {
+func (l *linkedPullsState) lastScan(issueID pgtype.UUID) (linkedScan, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	scan, ok := l.scanned[issueID]
+	return scan, ok
+}
+
+func (l *linkedPullsState) markScanned(issueID pgtype.UUID, scan linkedScan) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.scanned == nil {
-		l.scanned = map[pgtype.UUID]time.Time{}
+		l.scanned = map[pgtype.UUID]linkedScan{}
 	}
-	l.scanned[issueID] = at
+	l.scanned[issueID] = scan
 }
 
 func (l *linkedPullsState) mirroredAt(key linkedKey) (time.Time, bool) {
@@ -228,9 +237,8 @@ func (t timelineSource) repo() (repoName, bool) {
 // read, so what the poller sends grows with the tracked issues, not with the
 // repository.
 //
-// It reads the timeline of each tracked issue that is open, or closed and
-// changed since its timeline was last read to the end, and takes the pull
-// requests in its "cross-referenced" events: GitHub records one whenever a
+// It reads the timeline of each tracked issue that is due (timelineDue), and
+// takes the pull requests in its "cross-referenced" events: GitHub records one whenever a
 // pull request mentions the issue, "Closes #N" and "owner/repo#N" included,
 // and shows the pull request as it is now. A pull request is read
 // (GET /pulls/{n}) and mirrored only when its title or body closes a tracked
@@ -245,14 +253,14 @@ func (t timelineSource) repo() (repoName, bool) {
 // way, so the pull request is read again.
 func (s *Service) pollLinkedPulls(ctx context.Context, repo *Repo) (synced int, err error) {
 	tracked, err := db.New(s.db).ListTrackedGitHubIssuesInRepo(ctx, db.ListTrackedGitHubIssuesInRepoParams{
-		WorkspaceID: repo.workspaceID, ExternalRepoID: repo.id,
+		WorkspaceID: repo.workspaceID, ExternalRepoID: repo.id, InstallationID: ghsnapshot.StaticInstallationID,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("githubissues: list tracked issues: %w", err)
 	}
 	var due []db.ListTrackedGitHubIssuesInRepoRow
 	for _, issue := range tracked {
-		if at, ok := s.linkedPulls.scannedAt(issue.IssueID); issue.State == "open" || !ok || !at.Equal(issue.ExternalUpdatedAt.Time) {
+		if s.timelineDue(issue) {
 			due = append(due, issue)
 		}
 	}
@@ -289,10 +297,24 @@ func (s *Service) pollLinkedPulls(ctx context.Context, repo *Repo) (synced int, 
 			}
 			page++
 		}
-		s.linkedPulls.markScanned(issue.IssueID, issue.ExternalUpdatedAt.Time)
+		s.linkedPulls.markScanned(issue.IssueID, linkedScan{at: s.now(), issueUpdatedAt: issue.ExternalUpdatedAt.Time})
 	}
 	s.linkedPulls.clearResume(key)
 	return synced, nil
+}
+
+// timelineDue reports whether a tracked issue's timeline is read this cycle:
+// every cycle while the issue is open, or while a pull request the poller
+// mirrored and has not seen merged is linked to it (a pull request edited,
+// closed, reopened or merged after its issue was closed); otherwise when the
+// issue changed on GitHub since its timeline was last read, and at least
+// every closedRescanInterval.
+func (s *Service) timelineDue(issue db.ListTrackedGitHubIssuesInRepoRow) bool {
+	if issue.State == "open" || issue.HasUnmergedPull {
+		return true
+	}
+	last, ok := s.linkedPulls.lastScan(issue.IssueID)
+	return !ok || !last.issueUpdatedAt.Equal(issue.ExternalUpdatedAt.Time) || s.now().Sub(last.at) >= closedRescanInterval
 }
 
 // scanTimelinePage reads one page of a tracked issue's timeline and mirrors

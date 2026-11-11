@@ -32,6 +32,8 @@ type fakeGitHub struct {
 	t     *testing.T
 	mu    sync.Mutex
 	pulls []map[string]any
+	// closedAt, when set, is when issue #1 was closed on GitHub.
+	closedAt *time.Time
 }
 
 func (f *fakeGitHub) openPull(number int, body string, updated time.Time) {
@@ -84,13 +86,26 @@ func (f *fakeGitHub) pull(number int) any {
 	return nil
 }
 
-// acceptanceIssue is issue #1, opened on GitHub by someone else an hour ago.
-func acceptanceIssue() map[string]any {
-	return map[string]any{
+// acceptanceIssue is issue #1, opened on GitHub by someone else an hour ago,
+// and closed by hand if f.closedAt is set. Called with f.mu held.
+func (f *fakeGitHub) acceptanceIssue() map[string]any {
+	issue := map[string]any{
 		"node_id": "I_1", "number": 1, "title": "Crash on empty config", "body": "It crashes.",
 		"state": "open", "state_reason": nil, "updated_at": time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
 		"user": map[string]any{"login": "stranger"},
 	}
+	if f.closedAt != nil {
+		issue["state"], issue["state_reason"] = "closed", "completed"
+		issue["updated_at"] = f.closedAt.UTC().Format(time.RFC3339)
+	}
+	return issue
+}
+
+// closeIssue closes issue #1 on GitHub.
+func (f *fakeGitHub) closeIssue(at time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closedAt = &at
 }
 
 func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -108,10 +123,10 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/repositories/42/issues":
 		out = []any{}
 		if firstPage {
-			out = []any{acceptanceIssue()}
+			out = []any{f.acceptanceIssue()}
 		}
 	case "/repositories/42/issues/1":
-		out = acceptanceIssue()
+		out = f.acceptanceIssue()
 	case "/repositories/42/issues/comments", "/repositories/42/issues/1/comments":
 		out = []any{}
 	case "/repositories/42/issues/1/timeline":
@@ -142,8 +157,9 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // a pull request opened on GitHub with "Closes #1" is on issue #1's PR card
 // after the cycle that follows it, with its CI state, read with the server
 // token through the poller (issue #1's timeline, then the pull request), the
-// PR mirror and the snapshot pipeline. The pull request list is never read;
-// a pull request edited to stop closing #1 leaves the card.
+// PR mirror and the snapshot pipeline. The pull request list is never read.
+// After #1 is closed by hand while the pull request is open, the pull request
+// is still followed: edited to stop closing #1, it leaves the card.
 func TestPolledPullRequestReachesIssueCard(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -261,7 +277,18 @@ func TestPolledPullRequestReachesIssueCard(t *testing.T) {
 		t.Fatalf("github_pull_request rows = %d, want 1", rows)
 	}
 
-	// The pull request stops claiming #1: it is read again and unlinked.
+	// #1 is closed by hand on GitHub; the cycle that follows reads that, and
+	// the one after finds nothing new.
+	api.closeIssue(time.Now().Add(-30 * time.Second))
+	poll()
+	var state string
+	f.QueryRow(t, `SELECT state FROM issue_external WHERE issue_id = $1`, issueID).Scan(&state)
+	if state != "closed" {
+		t.Fatalf("issue #1 state = %q after closing it on GitHub", state)
+	}
+	poll()
+
+	// The open pull request stops claiming #1: it is read again and unlinked.
 	api.editPull(7, "Fixes the crash.", time.Now())
 	poll()
 	if prs := listPRs(); len(prs) != 0 {

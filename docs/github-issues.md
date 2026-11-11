@@ -258,7 +258,7 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 - 每个周期每个登记仓库：issue 流、评论流各至少 1 个列表请求，带 `since`（游标减 2 分钟），页数取决于这段时间里仓库有多少项被更新，每流最多 10 页；读到的项按已跟踪集合过滤，不为未跟踪的 issue 再发任何请求。**从不为了发现未导入的 issue 去翻页读历史**：没有不带 `since` 的列表请求。
 - 导入一个 issue：1 个 `GET /issues/{N}` 加它的全部评论页；再次导入只重读它的评论页。按需刷新同样只读那一个 issue（评论最多 10 页）。
 - 所以与仓库里 issue 总数无关；与已跟踪的 issue 有关的只有导入与按需刷新，加上轮询窗口里被更新的项数（允许的做法：「读取游标之后更新的 issue 并过滤到已跟踪集合」）。
-- PR：不读仓库的 PR 列表。每个周期每个仓库读已跟踪 issue 的时间线（开着的每个周期读；关掉的只在它在 GitHub 上变了之后读一次），再为关闭已跟踪 issue、且有变化的 PR 各发 1 个 `GET /pulls/{n}`；两者合计每周期每仓库最多 10 个请求，超出的下个周期接着读。所以与仓库里 PR 总数无关，见「PR 轮询与关联」。
+- PR：不读仓库的 PR 列表。每个周期每个仓库读已跟踪 issue 的时间线（开着的、或关掉但还挂着未合并的轮询 PR 的，每个周期读；其余关掉的在 GitHub 上变了之后读一次，否则每 30 分钟读一次），再为关闭已跟踪 issue、且有变化的 PR 各发 1 个 `GET /pulls/{n}`；两者合计每周期每仓库最多 10 个请求，超出的下个周期接着读。所以与仓库里 PR 总数无关，见「PR 轮询与关联」。
 
 ### 已有 issue 的更新与乱序
 
@@ -400,7 +400,7 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 
 - 在「轮询」的同一个周期里、同一个仓库的 issue 流读到末尾、评论流成功之后找 PR。请求都经 `RepoClient`。
 - **发现：** 列出这个仓库的已跟踪 issue（有 `issue_external` 的，新查询 `ListTrackedGitHubIssuesInRepo`，只读），读它们的时间线 `GET /repositories/{id}/issues/{N}/timeline`。PR 提到 issue 时（`Closes #N`、`owner/repo#N` 都算）GitHub 在 issue 的时间线上记一条 `cross-referenced` 事件，`source.issue` 是那个 PR 的**当前**状态（标题、正文、`state`、`updated_at`、`pull_request.merged_at`）。只看来源是 PR 的这类事件，其余事件跳过。
-- **读哪些 issue：** 开着的已跟踪 issue 每个周期都读；关掉的读完一次后，只在它在 GitHub 上的 `updated_at`（`issue_external.external_updated_at`）变了之后再读一次，这样 PR 合并、issue 随之关闭时能补上 PR 的最终状态。
+- **读哪些 issue：** 每个周期都读的：开着的已跟踪 issue；关掉了、但还关联着轮询镜像的未合并 PR 的 issue（查询里的 `has_unmerged_pull`：`issue_pull_request` 连 `github_pull_request`，安装 id 为 `StaticInstallationID`、状态不是 `merged`）。这样 issue 被手动关闭后，PR 再修改、关闭、重开或合并都还能同步，PR 不再引用时也能去掉关联。其余关掉的 issue：GitHub 上的 `updated_at`（`issue_external.external_updated_at`）变了就读一次（PR 合并、issue 随之关闭时补上 PR 的最终状态），否则每 30 分钟读一次，用来发现之后才引用它的 PR。
 - **镜像哪些 PR：** 只在 PR 的标题或正文按「与 issue 关联」的规则关闭本工作区的某个已跟踪 issue，或者轮询以前镜像过它（`github_pull_request` 里有安装 id 为 `StaticInstallationID` 的行，这样不再引用的 PR 能去掉关联）时，才 `GET /repositories/{id}/pulls/{n}` 读出完整 PR（head 分支与 SHA）交给镜像。只提到 issue、不带关闭关键词的 PR，和关闭未跟踪 issue 的 PR，不发请求、不入库。
 - **不重复读：** 时间线显示的 PR `updated_at` 与上次从这个 issue 的时间线镜像它时相同，就不再读它。按「issue + PR」记，所以一个 PR 后来被导入的另一个 issue 的时间线看到时会重读一次，补上新关联。
 - **别的仓库的 PR：** 来源 PR 所在仓库没登记在本工作区时跳过，不发请求；登记了就用那个仓库的 `RepoClient` 读。
@@ -428,7 +428,7 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 
 - 已在公开仓库上匿名读取核实：同仓库的 `Closes #N` 与全名写法 `owner/repo#N` 都会在 issue 时间线上产生 `cross-referenced` 事件，且事件里的 PR 是当前状态（含 `merged_at`）。跨仓库 PR、按 id 寻址的 `/repositories/{id}/issues/{N}/timeline` 与 `/repositories/{id}/pulls/{n}`、静态令牌读 check-runs 未在真实 GitHub 上验证，见 PR 的 Owner 实测步骤。
 - CI 变化不会改变 PR 的 `updated_at`，轮询发现不了。之后的 CI 状态靠上游已有的刷新：打开 issue 时快照过期就刷新，后台定时刷新状态未定的 PR。
-- issue 已关闭、而关闭它的 PR 仍开着（例如手动关闭 issue）时，issue 不再变化就不再读它的时间线，这个 PR 之后的状态变化（合并、关闭）不会同步。
+- 已关闭、没有未合并关联 PR 的 issue，被新 PR 引用时最长要 30 分钟才发现。
 - 一个 issue 先被 PR 引用、后被导入时，导入后的下一个周期读它的时间线就会关联，不再需要等 PR 更新。
 
 ## 双写、意图记录与署名

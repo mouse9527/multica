@@ -342,9 +342,11 @@ func TestPollLinkedPullsRetriesFailedMirror(t *testing.T) {
 	}
 }
 
-// TestPollLinkedPullsReadsClosedIssueOnce: a closed tracked issue's timeline
-// is read once, and again only after the issue changes on GitHub.
-func TestPollLinkedPullsReadsClosedIssueOnce(t *testing.T) {
+// TestPollLinkedPullsRereadsClosedIssues: a closed tracked issue with no
+// unmerged pull request linked is read once, then again when it changes on
+// GitHub, and otherwise every closedRescanInterval. (One with an unmerged
+// pull request linked is read every cycle: TestPolledPullRequestReachesIssueCard.)
+func TestPollLinkedPullsRereadsClosedIssues(t *testing.T) {
 	env := newPollEnv(t)
 	env.api.putIssue(1, "stranger", "Crash", "", "closed", testNow.Add(-time.Hour), nil)
 	env.importIssue(t, 1)
@@ -364,11 +366,20 @@ func TestPollLinkedPullsReadsClosedIssueOnce(t *testing.T) {
 		t.Fatalf("closed issue's timeline read %d times over two cycles, want once", timelines)
 	}
 
-	env.api.putIssue(1, "stranger", "Crash", "", "open", testNow.Add(pollInterval+time.Second), nil)
+	env.api.putIssue(1, "stranger", "Crash", "", "closed", testNow.Add(pollInterval+time.Second), map[string]any{"labels": []any{map[string]any{"name": "bug"}}})
 	*env.now = testNow.Add(2 * pollInterval)
 	env.poll(t)
 	if timelines, _ := env.api.linkedRequests(t); timelines != 1 {
-		t.Fatalf("issue reopened on GitHub: timeline read %d times, want once", timelines)
+		t.Fatalf("issue changed on GitHub: timeline read %d times, want once", timelines)
+	}
+
+	// Unchanged: not read until closedRescanInterval has passed.
+	*env.now = testNow.Add(3 * pollInterval)
+	env.poll(t)
+	*env.now = testNow.Add(2*pollInterval + closedRescanInterval)
+	env.poll(t)
+	if timelines, _ := env.api.linkedRequests(t); timelines != 1 {
+		t.Fatalf("timeline read %d times by the rescan interval, want once", timelines)
 	}
 }
 
