@@ -35,6 +35,15 @@ func (c *Client) WithStaticSource(transport http.RoundTripper) *Client {
 	return c
 }
 
+// UseStaticSource adds the static token source (see WithStaticSource) to the
+// manager's client. Call it before Start; a nil transport changes nothing.
+func (m *Manager) UseStaticSource(transport http.RoundTripper) {
+	if m == nil || transport == nil {
+		return
+	}
+	m.client = m.client.WithStaticSource(transport)
+}
+
 // credentials returns the HTTP client and bearer token for installationID.
 // The static source has no token here: its transport adds the credentials.
 func (c *Client) credentials(ctx context.Context, installationID int64) (*http.Client, string, error) {

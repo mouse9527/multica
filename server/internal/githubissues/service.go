@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -69,9 +70,17 @@ type Service struct {
 	// commentDeleter removes the local copy of a comment deleted on GitHub
 	// (SetCommentDeleter).
 	commentDeleter CommentDeleter
+	// pullMirror stores polled pull requests; nil leaves them unread.
+	pullMirror PullRequestMirror
+	// pullsResume is where each pulls read that stopped early continues.
+	pullsResume pullsResumeStore
 	// pollLimits overrides the page size and budget in tests; zero values
 	// keep the defaults.
 	pollLimits struct{ perPage, pages int }
+	// refreshGate throttles the on-view refresh of each issue.
+	refreshGate refreshGate
+	// refreshing counts on-view refreshes still running.
+	refreshing sync.WaitGroup
 }
 
 // New logs whether the feature is on and returns its Service, or nil when it

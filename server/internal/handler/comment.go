@@ -352,6 +352,7 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	h.refreshIssueOnView(r, issue) // mouse9527/multica fork
 
 	q := r.URL.Query()
 

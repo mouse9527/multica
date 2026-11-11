@@ -1310,8 +1310,9 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
 	// writes, and treat that verdict as authoritative for the whole delivery.
 	// See prLinkPolicy.
 	linkPolicy := h.resolvePRLinkPolicy(ctx, insts, &p)
+	in := p.mirrorInput()
 	for _, inst := range insts {
-		h.mirrorPullRequestForWorkspace(ctx, inst.WorkspaceID, inst.InstallationID, &p, linkPolicy)
+		_ = h.mirrorPullRequestForWorkspace(ctx, inst.WorkspaceID, inst.InstallationID, in, linkPolicy)
 	}
 	// The PR row(s) now carry the new head; ask the API pipeline for the
 	// authoritative CI + mergeability snapshot for that head. The webhook is
@@ -1536,61 +1537,100 @@ func (h *Handler) triggerPRRefreshFromCIEvent(ctx context.Context, body []byte) 
 	}
 }
 
-// mirrorPullRequestForWorkspace mirrors a pull_request webhook into a single
+// Modified by the mouse9527/multica fork: mirrorPullRequestForWorkspace takes
+// a normalized pull request instead of the webhook payload.
+//
+// prMirrorInput is a pull request as mirrorPullRequestForWorkspace stores it,
+// normalized from whichever source delivered it: a pull_request webhook, or
+// the mouse9527/multica fork's poller (githubissues_pulls.go).
+type prMirrorInput struct {
+	RepoOwner, RepoName string
+	Number              int32
+	Title, Body         string
+	// State is the derived PR state (derivePRState).
+	State, HTMLURL, Branch, HeadSHA          string
+	AuthorLogin, AuthorAvatarURL             string
+	MergedAt, ClosedAt, CreatedAt, UpdatedAt string
+	// MergeableState and ClearMergeableState follow derivePRMergeableState.
+	MergeableState                     pgtype.Text
+	ClearMergeableState                bool
+	Additions, Deletions, ChangedFiles int32
+	// Idents are the identifiers the PR claims (prClaimedIdentifiers).
+	Idents []string
+}
+
+func (p *ghPullRequestPayload) mirrorInput() prMirrorInput {
+	mergeable, clearMergeable := derivePRMergeableState(p.Action, p.PullRequest.MergeableState, baseRefChanged(p.Changes))
+	return prMirrorInput{
+		RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name, Number: p.PullRequest.Number,
+		Title: p.PullRequest.Title, Body: p.PullRequest.Body,
+		State:   derivePRState(p.PullRequest.State, p.PullRequest.Draft, p.PullRequest.Merged),
+		HTMLURL: p.PullRequest.HTMLURL, Branch: p.PullRequest.Head.Ref, HeadSHA: p.PullRequest.Head.SHA,
+		AuthorLogin: p.PullRequest.User.Login, AuthorAvatarURL: p.PullRequest.User.AvatarURL,
+		MergedAt: p.PullRequest.MergedAt, ClosedAt: p.PullRequest.ClosedAt,
+		CreatedAt: p.PullRequest.CreatedAt, UpdatedAt: p.PullRequest.UpdatedAt,
+		MergeableState: mergeable, ClearMergeableState: clearMergeable,
+		Additions: p.PullRequest.Additions, Deletions: p.PullRequest.Deletions, ChangedFiles: p.PullRequest.ChangedFiles,
+		Idents: prClaimedIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref),
+	}
+}
+
+// mirrorPullRequestForWorkspace mirrors a pull request into a single
 // workspace: it upserts the PR row, replays any check_suite events that
 // arrived before the PR was mirrored, auto-links referenced issues (gated by
 // the workspace's github toggles), completes issues on a merge, and broadcasts
 // the change. Invoked once per workspace bound to the delivering installation.
+// It returns the error of the PR row write, or of reading or writing its
+// links; those are logged too, and the webhook goes on as before.
 //
 // linkPolicy is the delivery-wide verdict on which identifiers this workspace
 // may link; this function only ever narrows it.
-func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype.UUID, installationID int64, p *ghPullRequestPayload, linkPolicy prLinkPolicy) {
-	state := derivePRState(p.PullRequest.State, p.PullRequest.Draft, p.PullRequest.Merged)
-	mergeable, clearMergeable := derivePRMergeableState(p.Action, p.PullRequest.MergeableState, baseRefChanged(p.Changes))
+func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype.UUID, installationID int64, in prMirrorInput, linkPolicy prLinkPolicy) error {
+	state := in.State
 	// The stored state before this event, so a merge is acted on once — when it
 	// happens — and not again on a later edit/label event of a merged PR (that
 	// would re-complete an issue someone reopened on purpose).
 	prevState := ""
 	if prev, err := h.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
 		WorkspaceID: wsID,
-		RepoOwner:   p.Repository.Owner.Login,
-		RepoName:    p.Repository.Name,
-		PrNumber:    p.PullRequest.Number,
+		RepoOwner:   in.RepoOwner,
+		RepoName:    in.RepoName,
+		PrNumber:    in.Number,
 	}); err == nil {
 		prevState = prev.State
 	}
 	pr, err := h.Queries.UpsertGitHubPullRequest(ctx, db.UpsertGitHubPullRequestParams{
 		WorkspaceID:         wsID,
 		InstallationID:      installationID,
-		RepoOwner:           p.Repository.Owner.Login,
-		RepoName:            p.Repository.Name,
-		PrNumber:            p.PullRequest.Number,
-		Title:               p.PullRequest.Title,
+		RepoOwner:           in.RepoOwner,
+		RepoName:            in.RepoName,
+		PrNumber:            in.Number,
+		Title:               in.Title,
 		State:               state,
-		HtmlUrl:             p.PullRequest.HTMLURL,
-		Branch:              ptrToText(strPtrOrNil(p.PullRequest.Head.Ref)),
-		AuthorLogin:         ptrToText(strPtrOrNil(p.PullRequest.User.Login)),
-		AuthorAvatarUrl:     ptrToText(strPtrOrNil(p.PullRequest.User.AvatarURL)),
-		MergedAt:            parseGHTime(p.PullRequest.MergedAt),
-		ClosedAt:            parseGHTime(p.PullRequest.ClosedAt),
-		PrCreatedAt:         parseGHTimeRequired(p.PullRequest.CreatedAt),
-		PrUpdatedAt:         parseGHTimeRequired(p.PullRequest.UpdatedAt),
-		HeadSha:             p.PullRequest.Head.SHA,
-		MergeableState:      mergeable,
-		ClearMergeableState: pgtype.Bool{Bool: clearMergeable, Valid: true},
-		Additions:           p.PullRequest.Additions,
-		Deletions:           p.PullRequest.Deletions,
-		ChangedFiles:        p.PullRequest.ChangedFiles,
+		HtmlUrl:             in.HTMLURL,
+		Branch:              ptrToText(strPtrOrNil(in.Branch)),
+		AuthorLogin:         ptrToText(strPtrOrNil(in.AuthorLogin)),
+		AuthorAvatarUrl:     ptrToText(strPtrOrNil(in.AuthorAvatarURL)),
+		MergedAt:            parseGHTime(in.MergedAt),
+		ClosedAt:            parseGHTime(in.ClosedAt),
+		PrCreatedAt:         parseGHTimeRequired(in.CreatedAt),
+		PrUpdatedAt:         parseGHTimeRequired(in.UpdatedAt),
+		HeadSha:             in.HeadSHA,
+		MergeableState:      in.MergeableState,
+		ClearMergeableState: pgtype.Bool{Bool: in.ClearMergeableState, Valid: true},
+		Additions:           in.Additions,
+		Deletions:           in.Deletions,
+		ChangedFiles:        in.ChangedFiles,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		// A stale redelivery: the stored row is newer, and the newer event
 		// already linked and published. Acting on this one would roll links
 		// and merge detection back.
-		return
+		return nil
 	}
 	if err != nil {
 		slog.Warn("github: upsert pr failed", "err", err)
-		return
+		return err
 	}
 
 	workspaceID := uuidToString(wsID)
@@ -1601,12 +1641,16 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	// GitHub features restores history without backfill), but links and status
 	// changes are side-effects gated by the master `github_enabled` switch.
 	ws, err := h.Queries.GetWorkspace(ctx, wsID)
-	if err == nil && githubFeaturesEnabled(ws) && !linkPolicy.indeterminate {
+	// Modified by the mouse9527/multica fork: GitHub-native issue references,
+	// and link failures reported to the caller.
+	linkErr := err
+	githubIssues, refsErr := h.githubIssueRefs(ctx, wsID, in)
+	if err == nil && githubFeaturesEnabled(ws) && !linkPolicy.indeterminate && refsErr == nil {
 		touched := map[pgtype.UUID]struct{}{}
-		idents := prClaimedIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
 		if autoLink, _ := autoLinkPRsEnabledForWorkspace(ws); autoLink {
-			linkedIssueIDs, touched = h.reconcileAutoLinks(ctx, ws, pr.ID, state, prAutoLinkInput{
-				idents:    idents,
+			linkedIssueIDs, touched, linkErr = h.reconcileAutoLinks(ctx, ws, pr.ID, state, prAutoLinkInput{
+				idents:    in.Idents,
+				issues:    githubIssues,
 				permits:   func(id string) bool { return linkPolicy.permits(id, workspaceID) },
 				ambiguous: func(id string) bool { return linkPolicy.ambiguous[id] },
 				link: func(issueID pgtype.UUID) (int64, error) {
@@ -1645,11 +1689,13 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		"pull_request":     resp,
 		"linked_issue_ids": linkedIssueIDs,
 	})
+	return errors.Join(linkErr, refsErr)
 }
 
 // prAutoLinkInput is what reconcileAutoLinks needs from one provider.
 type prAutoLinkInput struct {
 	idents    []string                         // identifiers the PR claims (see prClaimedIdentifiers)
+	issues    []pgtype.UUID                    // issues the PR claims by other references (githubIssueRefs)
 	permits   func(identifier string) bool     // cross-workspace verdict (always true for VCS)
 	ambiguous func(identifier string) bool     // resolved in several workspaces
 	link      func(pgtype.UUID) (int64, error) // automatic link; 1 when new
@@ -1669,13 +1715,40 @@ type prAutoLinkInput struct {
 //   - An automatic link for an identifier that turned out to be ambiguous
 //     across bound workspaces is always dropped (see prLinkPolicy).
 //
-// Manual links are never touched here.
-func (h *Handler) reconcileAutoLinks(ctx context.Context, ws db.Workspace, prID pgtype.UUID, state string, in prAutoLinkInput) ([]string, map[pgtype.UUID]struct{}) {
+// Manual links are never touched here. A failed read or write is logged and
+// skipped; the returned error joins them, for a caller that retries the PR.
+func (h *Handler) reconcileAutoLinks(ctx context.Context, ws db.Workspace, prID pgtype.UUID, state string, in prAutoLinkInput) ([]string, map[pgtype.UUID]struct{}, error) {
+	var failed []error
 	touched := map[pgtype.UUID]struct{}{}
 	linked := make([]string, 0)
 	claimed := map[pgtype.UUID]struct{}{}
 	ambiguousIssues := map[pgtype.UUID]struct{}{}
 	prefix := issuePrefixForWorkspace(ws)
+	claim := func(issueID pgtype.UUID) {
+		if _, dup := claimed[issueID]; dup {
+			return
+		}
+		excluded, err := h.Queries.IsPullRequestExcludedFromIssue(ctx, db.IsPullRequestExcludedFromIssueParams{IssueID: issueID, PullRequestID: prID})
+		if err != nil {
+			slog.Warn("pr link: exclusion lookup failed", "err", err)
+			failed = append(failed, err)
+			return
+		}
+		if excluded {
+			return
+		}
+		claimed[issueID] = struct{}{}
+		rows, err := in.link(issueID)
+		if err != nil {
+			slog.Warn("pr link: link failed", "err", err)
+			failed = append(failed, err)
+			return
+		}
+		linked = append(linked, uuidToString(issueID))
+		if rows > 0 {
+			touched[issueID] = struct{}{}
+		}
+	}
 	for _, id := range in.idents {
 		issue, ok := h.lookupIssueByIdentifier(ctx, ws.ID, prefix, id)
 		if !ok {
@@ -1687,31 +1760,18 @@ func (h *Handler) reconcileAutoLinks(ctx context.Context, ws db.Workspace, prID 
 			}
 			continue
 		}
-		excluded, err := h.Queries.IsPullRequestExcludedFromIssue(ctx, db.IsPullRequestExcludedFromIssueParams{IssueID: issue.ID, PullRequestID: prID})
-		if err != nil {
-			slog.Warn("pr link: exclusion lookup failed", "err", err)
-			continue
-		}
-		if excluded {
-			continue
-		}
-		claimed[issue.ID] = struct{}{}
-		rows, err := in.link(issue.ID)
-		if err != nil {
-			slog.Warn("pr link: link failed", "err", err)
-			continue
-		}
-		linked = append(linked, uuidToString(issue.ID))
-		if rows > 0 {
-			touched[issue.ID] = struct{}{}
-		}
+		claim(issue.ID)
+	}
+	// Modified by the mouse9527/multica fork: GitHub-native issue references.
+	for _, issueID := range in.issues {
+		claim(issueID)
 	}
 
 	terminal := state == "merged" || state == "closed"
 	current, err := in.listAuto()
 	if err != nil {
 		slog.Warn("pr link: list auto links failed", "err", err)
-		return linked, touched
+		return linked, touched, errors.Join(append(failed, err)...)
 	}
 	for _, issueID := range current {
 		if _, ok := claimed[issueID]; ok {
@@ -1724,6 +1784,7 @@ func (h *Handler) reconcileAutoLinks(ctx context.Context, ws db.Workspace, prID 
 		rows, err := in.unlink(issueID)
 		if err != nil {
 			slog.Warn("pr link: unlink failed", "err", err)
+			failed = append(failed, err)
 			continue
 		}
 		if rows > 0 {
@@ -1731,7 +1792,7 @@ func (h *Handler) reconcileAutoLinks(ctx context.Context, ws db.Workspace, prID 
 			touched[issueID] = struct{}{}
 		}
 	}
-	return linked, touched
+	return linked, touched, errors.Join(failed...)
 }
 
 // derivePRMergeableState resolves the upsert behaviour for the PR row's

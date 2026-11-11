@@ -126,7 +126,7 @@
   - 仓库必须登记为某个项目的 `github_repo` 资源，否则 `ErrRepoNotRegistered`。刷新队列不知道 PR 属于哪个工作区（只有安装 id、owner、repo、号），所以这里的白名单是**所有工作区的并集**（新查询 `ListGitHubRepoRefs`）；按工作区的约束由把 PR 放进队列的一方负责（任务 M 的 PR 轮询）。
 - **重定向：** transport 自己不跟随重定向，3xx 原样交回 `ghsnapshot` 的客户端；客户端跟随时新请求再次经过 transport，按同样条件检查。所以改名仓库重定向到 `/repositories/{id}/...` 时会被拒绝，快照失败，不会把令牌带到别的地址。
 - **权限：** `tokenCanRead` 对静态令牌恒为真（PAT 的权限无法逐项得知），所以存在失败的 Actions 检查时也会读 `actions/runs`。调用返回 403 就当不可用：这一次快照失败，保留上次的结果，错误里只有状态码；非限流的 403 不改令牌状态。401 → 令牌置为 `invalid`，与 `RepoClient` 相同。
-- **接线：** 本节只提供能力。把静态来源接到服务端的 `ghsnapshot` 客户端、并把 PR 以 `StaticInstallationID` 放进刷新队列，是任务 M（PR 轮询与关联）的范围。
+- **接线：** 功能开启时 `Handler.UseGitHubIssuePulls` 用 `Manager.UseStaticSource` 把静态来源接到服务端的 `ghsnapshot` 客户端，轮询到的 PR 以 `StaticInstallationID` 放进刷新队列，见下文「PR 轮询与关联」。
 
 ## 标识
 
@@ -276,7 +276,7 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 
 ### 已知限制
 
-- 删除、转移的 issue 与删除的评论，`since` 列表发现不了，留给每日对账与按需刷新（#21、#23）。
+- 删除、转移的 issue 与删除的评论，`since` 列表发现不了，留给每日对账（#23）。按需刷新（见下节）也只记日志，不处理它们。
 - `since` 的边界语义、评论列表的排序参数、`/repositories/{id}/...` 路径在真实 GitHub 上未验证，见 PR 的 Owner 实测步骤。
 
 ### 对上游文件的钩子（本节）
@@ -285,6 +285,27 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 |---|---|
 | `server/cmd/server/main.go` | 功能开启时调 `gitHubIssues.StartPolling(sweepCtx, pool)` |
 | `server/pkg/db/queries/githubissues.sql` | 新查询：跨工作区列出 `github_repo` 资源与轮询状态（只读 `project_resource`）、记录一次轮询结果（只写 `github_repo_sync`）、改写 github issue 的标题与描述 |
+
+## 按需刷新
+
+打开 github issue 的详情、评论列表或时间线时，后台拉取这个 issue 和它的评论，不等结果就返回已存的数据；拉到的变化经轮询同样的 `issue:updated`、`comment:created` / `comment:updated` 事件推给客户端。代码在 `refresh.go`，写库沿用轮询的 `syncIssue` 与 `syncComment`，所有请求经 `RepoClient`。
+
+- **节流：** 每个 issue 15 秒内最多刷新一次；一次刷新还没结束时，同一 issue 的再次打开不发请求（进程内存表加在途标记，相当于 singleflight）。表只保留最近 15 秒内打开过的 issue。多副本时各副本各自节流。
+- **请求：** `GET /repositories/{id}/issues/{N}`，再 `GET /repositories/{id}/issues/{N}/comments?per_page=100&page=…`，最多 10 页，超出的留给轮询。一次刷新最长 30 秒。
+- **不发请求的情况：** 功能关闭；令牌不是 `ok`；轮询因限流暂停中；本地 issue（没有 `issue_external`，查库后直接结束）；仓库已不在白名单或名字现在指向另一个仓库 id。
+- **失败：** 只记一行警告，issue 保持已存的数据；限流时按 GitHub 给的等待时长暂停轮询与按需刷新（共用同一个暂停）。删除（404/410）、转移（301）的 issue 也只记日志，见「轮询 · 已知限制」。
+- **乱序：** 与轮询相同，旧快照不回滚，评论按 `(workspace, 评论 id)` 去重，与轮询同时写同一 issue 由 advisory lock 串行。
+
+### 对上游文件的钩子（本节）
+
+| 文件 | 改动 |
+|---|---|
+| `server/internal/handler/githubissues_hook.go` | `IssueViewRefresher` 接口与 `refreshIssueOnView` |
+| `server/internal/handler/handler.go` | `Handler.IssueViews` 字段 |
+| `server/internal/handler/{issue,comment,activity}.go` | `GetIssue`、`ListComments`、`ListTimeline` 载入 issue 后各调一次 `refreshIssueOnView` |
+| `server/cmd/server/router.go` | 功能开启时 `h.IssueViews = opts.GitHubIssues` |
+
+功能关闭时 `IssueViews` 为 nil，三个接口与上游一致。
 
 ## 状态映射
 
@@ -335,6 +356,40 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 | `server/cmd/server/router.go` | 功能开启时设置 `h.GitHubStatuses` 并 `SetStatusWriter(h)` |
 
 钩子实现与 `WriteGitHubStatus` 在 fork 自己的 `server/internal/handler/githubissues_hook.go`。
+
+## PR 轮询与关联
+
+没有 GitHub App 也能在 issue 的 PR 卡片上看到 PR 和 CI。代码在 `pulls.go`（轮询与引用解析）和 `server/internal/handler/githubissues_pulls.go`（写入 PR 镜像）。
+
+### 轮询
+
+- 在「轮询」的同一个周期里、同一个仓库的 issue 流读到末尾、评论流成功之后读 PR，所以 PR 引用的 issue 已经导入。请求经 `RepoClient`：`GET /repositories/{id}/pulls?state=all&sort=updated&direction=desc`。
+- `pulls` 列表没有 `since`（文档未列出，未在真实 GitHub 上验证），所以按更新时间倒序读，读到第一条早于「`pulls_cursor` 减 2 分钟」的 PR 为止；首次（游标为空）读到列表末尾。读完才把 `pulls_cursor` 推进到这次读到的最大 `updated_at`。
+- 每周期最多 10 页（每页 100 条）。没读完时记下下一页页码，下个周期接着读，游标不动。倒序列表里，读的过程中被更新的 PR 移到最前面，由下一次读取覆盖；其余 PR 只会往后挪，所以按页码接续可能重读、不会漏读。进度只在进程内存里，规则同 issue 流。
+- 某个 PR 写入失败时，这次读取停在这一页，游标不动，错误写进 `github_repo_sync.last_error`，下个周期重试。
+- 列表项没有 `merged` 字段，以 `merged_at` 非空判定已合并；也没有增删行数与可合并状态：已有行保留原值，新行为 0（卡片不显示行数），可合并状态由快照提供，head 变了就清空旧的 `mergeable_state`。
+- 仓库名用登记的名字；与 GitHub 返回的 `base.repo` 只差大小写时用 GitHub 的写法，这样与 App webhook 写的是同一行（`github_pull_request` 按 owner/name 区分大小写）。仓库改名后仍用登记的名字，因为快照白名单只认登记的名字。
+
+### 写入 PR 镜像
+
+- `mirrorPullRequestForWorkspace`（`handler/github.go`）的入参从 webhook 载荷改成归一化结构 `prMirrorInput`；webhook 用 `ghPullRequestPayload.mirrorInput()` 转换，行为不变。轮询到的 PR 经 `Handler.MirrorPolledPullRequest` 走同一个函数，安装 id 是 `StaticInstallationID`，之后放进快照刷新队列（合并时另外刷新冲突监听），CI 状态由静态来源读取。
+- 已有一行且它的安装 id 是真实的 App 安装 id 时，这一行归 App webhook 维护，轮询不改它。`updated_at` 比已存的旧时什么都不写。
+- **关联失败可恢复：** 读引用失败、读工作区失败、关联的读写失败都会作为错误返回给轮询器（webhook 照旧只记日志）。轮询器因此不推进游标，下个周期重读这个 PR；`updated_at` 与已存的相同的快照会再走一遍镜像，补上关联，不需要有人改 PR。只有新行或更新的快照才算「有变化」；快照队列只在有变化、或已有快照不是当前 head 时才入队。重叠窗口里的重读会再发一次 `pull_request:updated`。
+
+### 与 issue 关联
+
+- PR 的标题或正文里紧跟关闭关键词的 GitHub 引用会关联到 github issue：`Closes #N`（PR 所在仓库）、`fixes owner/repo#N`（本工作区登记过的任一仓库）。关键词同上游（`close[sd]`、`fix(e[sd])`、`resolve[sd]`）。按「工作区的仓库绑定 → `repo_id`」加 `issue_external (repo_id, number)` 匹配，不看工作区前缀；没导入的 issue 跳过。
+- **不带关键词的 `#N` 不关联**：squash 合并的标题以 `(#<PR 号>)` 结尾，按它关联会挂错。
+- 这条规则在 webhook 与轮询两条路径上都生效（`Handler.GitHubIssueRefs`，功能关闭时为 nil，行为与上游一致）。引用读取失败时这次不改关联、不触发合并完成，避免误删关联。
+- 轮询到的 PR **不按 `PREFIX-N` 关联本地 issue**：同一个仓库可以登记在多个工作区，webhook 用 `prLinkPolicy` 防止同一个标识在多个工作区里同时关联，轮询路径没有对应的判断。本地 issue 仍可以手动关联 PR；装了 App 的仓库照旧由 webhook 关联。
+- 关联之后的卡片、开着的 PR 不再引用时去掉自动关联，与上游相同。
+- **合并不改 github issue 的状态。** 上游在关联的 PR 都合并后按工作区设置把 issue 移到目标状态（`maybeAutoCompleteIssue`），对 github issue 这是绕过 GitHub 的本地写入（例如 PR 合并到非默认分支，GitHub 不会关闭 issue）。功能开启时，带 `issue_external` 的 issue 的自动完成决定是新状态 `github`：不移动，issue 页不显示提示（客户端对不认识的状态什么都不渲染）。GitHub 关闭 issue 后，由轮询与状态映射把它带到 done。读 `issue_external` 失败时按错误处理，不当作本地 issue。本地 issue 不受影响。
+
+### 已知限制
+
+- `pulls` 列表的排序参数、`/repositories/{id}/pulls` 路径、静态令牌读 check-runs 未在真实 GitHub 上验证，见 PR 的 Owner 实测步骤。
+- CI 变化不会改变 PR 的 `updated_at`，轮询发现不了。之后的 CI 状态靠上游已有的刷新：打开 issue 时快照过期就刷新，后台定时刷新状态未定的 PR。
+- 一个 issue 先被 PR 引用、后被导入（跨仓库引用的仓库还没轮询到）时，要等这个 PR 下次更新才会关联。
 
 ## 双写、意图记录与署名
 
@@ -435,6 +490,13 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
 
 | 文件 | 改动 |
 |---|---|
+| `server/internal/handler/github.go` | `mirrorPullRequestForWorkspace` 入参改为 `prMirrorInput`，返回写行与关联的错误；`reconcileAutoLinks` 把单个 issue 的关联提成闭包，另外关联 `GitHubIssueRefs` 给出的 issue，并返回读写失败的合并错误 |
+| `server/internal/handler/vcs_webhook.go` | 调 `reconcileAutoLinks` 时忽略新增的错误返回值（1 行） |
+| `server/internal/handler/pr_auto_complete.go` | `decidePRAutoComplete` 对 github issue 返回 `github` 状态（5 行） |
+| `server/internal/handler/handler.go` | `Handler.GitHubIssueRefs` 字段 |
+| `server/cmd/server/router.go` | 功能开启时调 `h.UseGitHubIssuePulls`（1 行） |
+| `server/internal/integrations/ghsnapshot/static_source.go` | fork 文件：`Manager.UseStaticSource` |
+
 | `server/internal/handler/issue.go` | `CreateIssueRequest.Repo`；`CreateIssue` 准备（`beginGitHubIssueCreate`）、`InTx` 里发请求、之后 `Abandon` 与 `writeGitHubCreateFailure`；`UpdateIssue`、`BatchUpdateIssues` 在状态映射的拒绝钩子之后、落库前 `beginGitHubIssueUpdate`（GitHub 接受后清掉 `params.ExpectedRevision`），落库后 `Finish`，单个更新另 `defer Close`（批量里被 GitHub 拒绝的 issue 跳过，与其他逐项校验一致） |
 | `server/internal/handler/comment.go` | `CreateComment` 先发评论并用预定 id 插入；`UpdateComment`、`DeleteComment` 先改/删 GitHub 上的评论（编辑带上 `content_base`、`expected_revision`，GitHub 接受后本地不再按版本号拒绝）；各自落库后 `Finish`，并 `defer Close` |
 | `server/internal/handler/handler.go` | `Handler.GitHubIssues` 字段 |

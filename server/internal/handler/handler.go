@@ -222,12 +222,14 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
-	// ExternalComments and GitHubStatuses are set by the mouse9527/multica
-	// fork while GitHub-native issues are on (githubissues_hook.go).
-	ExternalComments ExternalCommentGuard
-	GitHubStatuses   GitHubStatusGuard
-	// GitHubIssues writes GitHub issues through to GitHub (githubissues_hook.go);
-	// nil while the fork's GitHub-native issues are off.
+	// ExternalComments, GitHubStatuses, IssueViews and GitHubIssueRefs are
+	// set by the mouse9527/multica fork while GitHub-native issues are on
+	// (githubissues_hook.go, githubissues_pulls.go), and so is GitHubIssues,
+	// the write path to GitHub.
+	ExternalComments       ExternalCommentGuard
+	GitHubStatuses         GitHubStatusGuard
+	IssueViews             IssueViewRefresher
+	GitHubIssueRefs        GitHubIssueRefs
 	GitHubIssues           *githubissues.Service
 	Queries                *db.Queries
 	ReadSelector           *dbreader.Selector

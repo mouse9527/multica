@@ -84,14 +84,15 @@ func (f *fakeIssuesAPI) commentBodies() []string {
 	return out
 }
 
-// serveItem answers the single-item routes and reports whether it did. The
-// lists (GET /issues, GET /issues/comments) are left to serve.
+// serveItem answers the write routes and the read of one comment, and
+// reports whether it did. Everything else is left to serve.
 func (f *fakeIssuesAPI) serveItem(w http.ResponseWriter, r *http.Request) bool {
 	path := r.URL.Path
-	isList := r.Method == http.MethodGet && (path == issuesPath || path == issuesPath+"/comments")
-	isItem := itemIssuePath.MatchString(path) || itemCommentsPath.MatchString(path) || itemCommentPath.MatchString(path) ||
-		(r.Method == http.MethodPost && path == issuesPath)
-	if isList || !isItem {
+	// Reads of an issue and its comments are serveIssue's (refresh_test.go);
+	// this serves the writes and the read of one comment.
+	isWrite := r.Method != http.MethodGet && (itemIssuePath.MatchString(path) || itemCommentsPath.MatchString(path) ||
+		itemCommentPath.MatchString(path) || (r.Method == http.MethodPost && path == issuesPath))
+	if !isWrite && !(r.Method == http.MethodGet && itemCommentPath.MatchString(path)) {
 		return false
 	}
 
@@ -183,16 +184,6 @@ func (f *fakeIssuesAPI) applyItem(r *http.Request, path string, body map[string]
 		return http.StatusOK, item
 	case itemCommentsPath.MatchString(path):
 		n, _ := strconv.Atoi(itemCommentsPath.FindStringSubmatch(path)[1])
-		if r.Method == http.MethodGet {
-			var items []map[string]any
-			for _, c := range f.comments {
-				if c["issue_url"] == fmt.Sprintf("https://api.github.com/repos/acme/widgets/issues/%d", n) {
-					items = append(items, c)
-				}
-			}
-			sort.Slice(items, func(i, j int) bool { return fmt.Sprint(items[i]["id"]) < fmt.Sprint(items[j]["id"]) })
-			return http.StatusOK, items
-		}
 		f.writes.nextCommentID++
 		id := 7000 + f.writes.nextCommentID
 		item := map[string]any{

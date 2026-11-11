@@ -468,10 +468,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// Modified by the mouse9527/multica fork: GitHub-native issues.
 	if opts.GitHubIssues != nil {
 		h.ExternalComments = opts.GitHubIssues
+		h.IssueViews = opts.GitHubIssues
 		h.GitHubStatuses = opts.GitHubIssues
 		opts.GitHubIssues.SetStatusWriter(h)
 		opts.GitHubIssues.SetCommentDeleter(h)
 		h.GitHubIssues = opts.GitHubIssues
+		h.UseGitHubIssuePulls(opts.GitHubIssues)
 	}
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
