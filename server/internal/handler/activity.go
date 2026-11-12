@@ -159,7 +159,6 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	h.refreshIssueOnView(r, issue) // mouse9527/multica fork
 	ctx := r.Context()
 
 	comments, err := h.Queries.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{

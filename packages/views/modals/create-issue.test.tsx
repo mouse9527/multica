@@ -55,8 +55,6 @@ const mockShowIssueLimitUpgradePrompt = vi.hoisted(() => vi.fn());
 // `api.uploadFile(file, ctx, signal)` (MUL-5181 L2). Tests drive uploads by
 // mocking that call; it resolves a plain server Attachment row.
 const mockApiUploadFile = vi.hoisted(() => vi.fn());
-// GitHub-native issues (fork): null is a server with the feature off.
-const mockGetProjectGitHubSettings = vi.hoisted(() => vi.fn(async () => null as unknown));
 
 const sourceContextPanelData = () => ({
   anchor_comment_id: "comment-source",
@@ -352,7 +350,6 @@ vi.mock("@multica/core/api", async () => {
       listProperties: mockListProperties,
       setIssueProperty: mockSetIssueProperty,
       uploadFile: mockApiUploadFile,
-      getProjectGitHubSettings: mockGetProjectGitHubSettings,
     },
     ApiError,
     parseWithFallback,
@@ -804,79 +801,6 @@ describe("CreateIssueModal", () => {
       priority: "high", start_date: "2026-11-05", due_date: undefined,
       properties: { "property-tier": "option-enterprise" }, parent_issue_id: "parent-copy",
     }));
-  });
-
-  // GitHub-native issues (fork): the project's repository goes with the create.
-  it("opens the issue on the project's only GitHub repository", async () => {
-    const user = userEvent.setup();
-    mockGetProjectGitHubSettings.mockResolvedValueOnce({
-      repos: [{ resource_id: "r1", repo: "acme/widgets" }], default_resource_id: null, create_statuses: ["backlog"],
-    });
-    mockDraftStore.draft.manual.title = "Synced";
-    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "proj-1" }} />);
-    expect(await screen.findByRole("button", { name: /acme\/widgets/ })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Create Issue" }));
-    await waitFor(() =>
-      // The dialog's todo cannot open a GitHub issue without a status label, so
-      // it starts in the entry status.
-      expect(mockCreateIssue).toHaveBeenCalledWith(
-        expect.objectContaining({ project_id: "proj-1", repo: "acme/widgets", status: "backlog" }),
-      ),
-    );
-  });
-
-  it("asks for a GitHub repository before creating when the project has several", async () => {
-    const user = userEvent.setup();
-    mockGetProjectGitHubSettings.mockResolvedValueOnce({
-      repos: [{ resource_id: "r1", repo: "acme/widgets" }, { resource_id: "r2", repo: "acme/gadgets" }],
-      default_resource_id: null,
-      create_statuses: ["backlog"],
-    });
-    mockDraftStore.draft.manual.title = "Which repository";
-    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "proj-1" }} />);
-    await screen.findByRole("button", { name: /choose repository/i });
-    await user.click(screen.getByRole("button", { name: "Create Issue" }));
-    expect(mockCreateIssue).not.toHaveBeenCalled();
-    expect(mockToastError).toHaveBeenCalledWith("Choose a GitHub repository, or Local");
-
-    await user.click(await screen.findByRole("button", { name: /local \(not synced to github\)/i }));
-    await user.click(screen.getByRole("button", { name: "Create Issue" }));
-    await waitFor(() =>
-      expect(mockCreateIssue).toHaveBeenCalledWith(expect.objectContaining({ project_id: "proj-1", provider: "local" })),
-    );
-  });
-
-  it("waits for the project's GitHub repositories before creating", async () => {
-    const user = userEvent.setup();
-    let resolve: (v: unknown) => void = () => {};
-    mockGetProjectGitHubSettings.mockImplementationOnce(() => new Promise((r) => (resolve = r)));
-    mockDraftStore.draft.manual.title = "Too early";
-    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "proj-1" }} />);
-    await screen.findByRole("button", { name: /loading repositories/i });
-    await user.click(screen.getByRole("button", { name: "Create Issue" }));
-    expect(mockCreateIssue).not.toHaveBeenCalled();
-    expect(mockToastError).toHaveBeenCalledWith("Still loading this project's GitHub repositories");
-
-    resolve({ repos: [{ resource_id: "r1", repo: "acme/widgets" }], default_resource_id: null, create_statuses: ["backlog"] });
-    await screen.findByRole("button", { name: /acme\/widgets/ });
-    await user.click(screen.getByRole("button", { name: "Create Issue" }));
-    await waitFor(() =>
-      expect(mockCreateIssue).toHaveBeenCalledWith(expect.objectContaining({ repo: "acme/widgets", status: "backlog" })),
-    );
-  });
-
-  it("does not create when the project's GitHub repositories could not be read", async () => {
-    const user = userEvent.setup();
-    mockGetProjectGitHubSettings.mockRejectedValueOnce(new Error("network down"));
-    mockGetProjectGitHubSettings.mockReturnValueOnce(new Promise(() => {}));
-    mockDraftStore.draft.manual.title = "Unknown destination";
-    renderModal(<CreateIssueModal onClose={vi.fn()} data={{ project_id: "proj-1" }} />);
-    await screen.findByRole("button", { name: /retry loading repositories/i });
-    await user.click(screen.getByRole("button", { name: "Create Issue" }));
-    expect(mockCreateIssue).not.toHaveBeenCalled();
-    expect(mockToastError).toHaveBeenCalledWith(
-      "Couldn't load this project's GitHub repositories. Retrying; you can also choose another project.",
-    );
   });
 
   it("uses the same compact attachment control as agent mode", () => {

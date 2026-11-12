@@ -448,5 +448,5 @@ func lookupIssueIdentifier(ctx context.Context, queries *db.Queries, workspaceID
 	if err != nil {
 		return "", false
 	}
-	return service.LookupIssueIdentifier(ctx, queries, row.WorkspaceID, row.ID, ws.IssuePrefix, row.Number), true // GitHub-native issues (fork)
+	return service.IssueIdentifier(ws.IssuePrefix, row.Number), true
 }

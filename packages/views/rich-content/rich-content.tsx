@@ -46,7 +46,6 @@ import { api } from "@multica/core/api";
 import type { Attachment } from "@multica/core/types";
 import { attachmentIdFromDownloadURL } from "@multica/core/types";
 import {
-  githubIssueKeyFromMentionId,
   isAllowedFileCardHref,
   isIssueIdentifier,
   markdownSanitizeSchema,
@@ -274,12 +273,11 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
     if (match?.[1] === "issue" && match[2]) {
       // A bare identifier (from the autolink preprocessor) is carried as the id
       // segment; a real mention carries a UUID. Dispatch on the id shape.
-      const identifier = githubIssueKeyFromMentionId(match[2]) ?? match[2]; // GitHub-native issues (fork): `owner/repo#N`
-      if (identifier !== match[2] || isIssueIdentifier(identifier)) {
+      if (isIssueIdentifier(match[2])) {
         return (
           <IdentifierIssueMentionLink
-            identifier={identifier}
-            fallback={identifier}
+            identifier={match[2]}
+            fallback={match[2]}
           />
         );
       }

@@ -22,7 +22,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/channelmedia"
 	"github.com/multica-ai/multica/server/internal/dispatch"
-	"github.com/multica-ai/multica/server/internal/githubissues/issuekey"
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
@@ -110,10 +109,6 @@ type IssueResponse struct {
 	// SourceContext is detail-only. List, board, search, and children responses
 	// deliberately omit the potentially large immutable snapshot.
 	SourceContext *sourceContextDetailResponse `json:"source_context,omitempty"`
-	// Provider is "local", or "github" for an issue backed by a GitHub issue,
-	// which GitHub then names; see fillIssueKeys. GitHub-native issues (fork).
-	Provider string               `json:"provider"`
-	GitHub   *IssueGitHubResponse `json:"github,omitempty"`
 	// duplicateOfIssueID is the raw mark, kept off the wire; see DuplicateOf.
 	duplicateOfIssueID pgtype.UUID
 }
@@ -362,7 +357,6 @@ func (h *Handler) fillStatusCategories(ctx context.Context, wsID pgtype.UUID, hi
 	for i := range resps {
 		fill(&resps[i])
 	}
-	h.fillIssueKeySlice(ctx, wsID, resps) // GitHub-native issues (fork)
 }
 
 // newStatusCategoryFiller returns a request-scoped filler backed by ONE
@@ -404,7 +398,6 @@ func (h *Handler) newStatusCategoryFiller(ctx context.Context, wsID pgtype.UUID,
 // exactly ONE response; anything looping must use newStatusCategoryFiller.
 func (h *Handler) fillStatusCategory(ctx context.Context, wsID pgtype.UUID, hidden projectaccess.Hidden, resp *IssueResponse) {
 	h.newStatusCategoryFiller(ctx, wsID, hidden)(resp)
-	h.fillIssueKeys(ctx, wsID, resp) // GitHub-native issues (fork)
 }
 
 // duplicateOfPointer keeps a duplicate mark only while the issue is
@@ -494,7 +487,6 @@ func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 		WorkspaceID:        uuidToString(i.WorkspaceID),
 		Number:             i.Number,
 		Identifier:         identifier,
-		Provider:           issuekey.ProviderLocal, // GitHub-native issues (fork): see fillIssueKeys
 		Title:              i.Title,
 		Description:        textToPtr(i.Description),
 		Status:             i.Status,
@@ -534,7 +526,6 @@ func issueListRowToResponse(i db.ListIssuesRow, issuePrefix string) IssueRespons
 		WorkspaceID:        uuidToString(i.WorkspaceID),
 		Number:             i.Number,
 		Identifier:         identifier,
-		Provider:           issuekey.ProviderLocal, // GitHub-native issues (fork): see fillIssueKeys
 		Title:              i.Title,
 		Description:        textToPtr(i.Description),
 		Status:             i.Status,
@@ -606,7 +597,6 @@ func openIssueRowToResponse(i db.ListOpenIssuesRow, issuePrefix string) IssueRes
 		WorkspaceID:        uuidToString(i.WorkspaceID),
 		Number:             i.Number,
 		Identifier:         identifier,
-		Provider:           issuekey.ProviderLocal, // GitHub-native issues (fork): see fillIssueKeys
 		Title:              i.Title,
 		Description:        textToPtr(i.Description),
 		Status:             i.Status,
@@ -1325,11 +1315,6 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		resp[i] = sir
 	}
-	searchKeys := make([]*IssueResponse, len(resp)) // GitHub-native issues (fork)
-	for i := range resp {
-		searchKeys[i] = &resp[i].IssueResponse
-	}
-	h.fillIssueKeys(ctx, wsUUID, searchKeys...)
 
 	if writeQueryCancellation(w, r, ctx.Err()) {
 		return
@@ -1506,7 +1491,6 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 			}
 			resp[i].Labels = &labels
 		}
-		h.fillIssueKeySlice(ctx, wsUUID, resp) // GitHub-native issues (fork)
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"created_by_user_id": r.URL.Query().Get("created_by_user_id"),
@@ -2585,13 +2569,6 @@ ORDER BY
 		issue.Labels = &labels
 		groups[idx].Issues = append(groups[idx].Issues, issue)
 	}
-	var groupedKeys []*IssueResponse // GitHub-native issues (fork)
-	for g := range groups {
-		for i := range groups[g].Issues {
-			groupedKeys = append(groupedKeys, &groups[g].Issues[i])
-		}
-	}
-	h.fillIssueKeys(ctx, wsUUID, groupedKeys...)
 
 	writeJSON(w, http.StatusOK, GroupedIssuesResponse{Groups: groups, CreatedByUserID: r.URL.Query().Get("created_by_user_id")})
 }
@@ -2606,7 +2583,6 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	h.refreshIssueOnView(r, issue) // mouse9527/multica fork
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
 	h.fillStatusCategory(r.Context(), issue.WorkspaceID, hidden, &resp)
@@ -2702,7 +2678,6 @@ func (h *Handler) ListChildIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		resp[i].Labels = &labels
 	}
-	h.fillIssueKeySlice(r.Context(), issue.WorkspaceID, resp) // GitHub-native issues (fork)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issues": resp,
 	})
@@ -2794,7 +2769,6 @@ func (h *Handler) ListChildrenByParents(w http.ResponseWriter, r *http.Request) 
 		}
 		resp[i].Labels = &labels
 	}
-	h.fillIssueKeySlice(r.Context(), wsUUID, resp) // GitHub-native issues (fork)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issues": resp,
 	})
@@ -3252,12 +3226,6 @@ type CreateIssueRequest struct {
 
 	AllowDuplicate         bool `json:"allow_duplicate,omitempty"`
 	PRAutoCompleteDisabled bool `json:"pr_auto_complete_disabled,omitempty"`
-
-	// Repo ("owner/name") opens the issue on that GitHub repository first;
-	// Provider "local" keeps it local. GitHub-native issues (mouse9527/multica
-	// fork); ignored while they are off.
-	Repo     *string `json:"repo,omitempty"`
-	Provider *string `json:"provider,omitempty"`
 }
 
 // CreateIssueResponse echoes the atomic PR setting without expanding issue reads.
@@ -3680,12 +3648,6 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		return out
 	}
 
-	// GitHub-native issues (fork): an issue for a GitHub repository is opened there, from InTx.
-	ghWrite, ok := h.beginGitHubIssueCreate(w, r, wsUUID, workflowProjectID, creatorType, req)
-	if !ok {
-		return
-	}
-
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		WorkspaceID:            wsUUID,
 		Title:                  req.Title,
@@ -3711,7 +3673,6 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	}, service.IssueCreateOpts{
 		ActorID:          actualCreatorID,
 		AnalyticsAgentID: analyticsAgentID,
-		InTx:             gitHubCreateInTx(ghWrite), // GitHub-native issues (fork)
 		Platform:         func() string { p, _, _ := middleware.ClientMetadataFromContext(r.Context()); return p }(),
 		BroadcastPayload: func(issue db.Issue, atts []db.Attachment, labels []db.IssueLabel) map[string]any {
 			payload := issueToResponse(issue, prefix)
@@ -3721,7 +3682,6 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			// the HTTP response so a custom-status create reads the catalog once
 			// per request, not once per payload. (MUL-6243)
 			fillCreated(&payload)
-			h.fillIssueKeys(r.Context(), wsUUID, &payload) // GitHub-native issues (fork)
 			payload.Attachments = buildAttachmentResponses(atts)
 			// Carry the authoritative label snapshot so every online client
 			// renders the new issue already labeled. Non-nil (even empty)
@@ -3732,10 +3692,6 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			return map[string]any{"issue": payload}
 		},
 	})
-	ghWrite.Abandon(r.Context(), err) // GitHub-native issues (fork)
-	if writeGitHubCreateFailure(w, r, err) {
-		return
-	}
 
 	if errors.Is(err, service.ErrActiveDuplicate) {
 		dup := *res.DuplicateIssue
@@ -3785,7 +3741,6 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 
 	resp := issueToResponse(issue, prefix)
 	fillCreated(&resp)
-	h.fillIssueKeys(r.Context(), wsUUID, &resp) // GitHub-native issues (fork)
 	resp.Attachments = buildAttachmentResponses(res.Attachments)
 	// Echo the authoritative labels attached in the create transaction. Always
 	// non-nil (empty slice when none) so a newer client can tell the backend
@@ -4296,10 +4251,6 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		// A project move remapped the status; guard the key actually written.
 		statusKeyForGuard = params.Status.String
 	}
-	// mouse9527/multica fork: GitHub-native issues (githubissues_hook.go).
-	if h.rejectUnmappedGitHubStatus(w, r, prevIssue, params) {
-		return
-	}
 	if touchedType || touchedID || handoff != nil {
 		if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
 			writeError(w, status, msg)
@@ -4321,14 +4272,6 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// GitHub-native issues (fork): GitHub takes title, description and status first.
-	ghWrite, err := h.beginGitHubIssueUpdate(r, prevIssue, &params, req.TitleBase)
-	if err != nil {
-		writeGitHubWriteError(w, r, err, "issue", prevIssue.ID)
-		return
-	}
-	defer ghWrite.Close(r.Context())
-
 	// The agent this write hands the issue to gets the change as its own run,
 	// not also through its event wakeups.
 	writeCtx := withWakeupHandedTo(r.Context(), h.handedToAgent(r.Context(), prevIssue, params, handoff != nil))
@@ -4345,7 +4288,6 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	} else {
 		issue, err = h.updateIssueWithStatusGuard(writeCtx, prevIssue.WorkspaceID, statusKeyForGuard, params)
 	}
-	ghWrite.Finish(r.Context(), err) // GitHub-native issues (fork)
 	if err != nil {
 		if writeIssueStatusRaceError(w, err) {
 			return
@@ -4800,10 +4742,6 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 		} else if !errors.Is(contextErr, pgx.ErrNoRows) {
 			return issueDeleteResult{}, fmt.Errorf("load issue source context for delete: %w", contextErr)
 		}
-		// GitHub-native issues (fork): issue_external has no FK to issue.
-		if err := qtx.DeleteIssueExternal(ctx, db.DeleteIssueExternalParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
-			return issueDeleteResult{}, fmt.Errorf("delete issue external: %w", err)
-		}
 		if err := qtx.DeleteIssue(ctx, db.DeleteIssueParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
 			return issueDeleteResult{}, fmt.Errorf("delete issue: %w", err)
 		}
@@ -4837,7 +4775,7 @@ func (h *Handler) publishClearedDuplicates(ctx context.Context, cleared []cleare
 			"issue":                        response,
 			"duplicate_of_issue_id":        liveDuplicateMark(c.Issue.Status, c.Issue.DuplicateOfIssueID),
 			"prev_duplicate_of_issue_id":   liveDuplicateMark(c.Issue.Status, c.Original.ID),
-			"prev_duplicate_of_identifier": h.issueKey(ctx, c.Original), // GitHub-native issues (fork)
+			"prev_duplicate_of_identifier": prefix + "-" + strconv.Itoa(int(c.Original.Number)),
 		})
 	}
 }
@@ -5131,10 +5069,6 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		// mouse9527/multica fork: GitHub-native issues (githubissues_hook.go).
-		if h.gitHubStatusRejected(r.Context(), prevIssue, params) {
-			continue
-		}
 		issueStatusGuard := batchStatusKey
 		if params.Status.Valid {
 			issueStatusGuard = params.Status.String
@@ -5145,12 +5079,6 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// GitHub-native issues (fork): an issue GitHub refuses is skipped like the other per-item guards.
-		ghWrite, err := h.beginGitHubIssueUpdate(r, prevIssue, &params, nil)
-		if err != nil {
-			slog.Warn("batch update issue: github write failed", "issue_id", issueID, "error", err)
-			continue
-		}
 		writeCtx := withWakeupHandedTo(r.Context(), h.handedToAgent(r.Context(), prevIssue, params, handoff != nil))
 		var issue db.Issue
 		if req.Updates.Description != nil {
@@ -5167,7 +5095,6 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		} else {
 			issue, err = h.updateIssueWithStatusGuard(writeCtx, wsUUID, issueStatusGuard, params)
 		}
-		ghWrite.Finish(r.Context(), err) // GitHub-native issues (fork)
 		if err != nil {
 			// The archive race is a property of the batch's shared target
 			// status, not of one issue, so every remaining item would fail the
@@ -5185,7 +5112,6 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
 
 		fillBatch(&resp)
-		h.fillIssueKeys(r.Context(), issue.WorkspaceID, &resp) // GitHub-native issues (fork)
 		assigneeChanged := (req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil || handoff != nil) &&
 			(prevIssue.AssigneeType.String != issue.AssigneeType.String || uuidToString(prevIssue.AssigneeID) != uuidToString(issue.AssigneeID))
 		statusChanged := (req.Updates.Status != nil || params.Status.Valid) && prevIssue.Status != issue.Status

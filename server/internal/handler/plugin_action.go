@@ -541,7 +541,6 @@ func (h *Handler) pluginIssuePayload(r *http.Request, caller service.PluginActio
 		prefix = workspace.IssuePrefix
 	}
 	app := issueToResponse(issue, prefix)
-	h.fillIssueKeys(r.Context(), issue.WorkspaceID, &app) // GitHub-native issues (fork)
 	return publicapiv1.Issue{
 		ID:             app.ID,
 		WorkspaceID:    app.WorkspaceID,

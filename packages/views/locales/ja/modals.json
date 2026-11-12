@@ -272,18 +272,6 @@
       "error_daemon_version": "このエージェントのデーモン CLI（{{current}}）が必要なバージョン {{min}} を下回っています。エージェントで作成を使用するには、デーモンをアップグレードしてください。",
       "error_unknown": "送信できませんでした。再試行してください。",
       "sub_issue_of": "{{identifier}} のサブタスク"
-    },
-    "github_repo": {
-      "tooltip": "GitHub リポジトリ",
-      "local": "ローカル（GitHub と同期しない）",
-      "choose": "リポジトリを選択",
-      "search_placeholder": "リポジトリを検索…",
-      "required": "GitHub リポジトリか「ローカル」を選択してください",
-      "loading": "リポジトリを読み込み中…",
-      "load_failed": "リポジトリを再読み込み",
-      "blocked_loading": "このプロジェクトの GitHub リポジトリを読み込み中です",
-      "blocked_error": "このプロジェクトの GitHub リポジトリを読み込めませんでした。再試行しています。別のプロジェクトを選ぶこともできます。",
-      "status_not_creatable": "このプロジェクトの新しい GitHub issue は「{{status}}」で開始できません。{{allowed}} を使うか、「ローカル」を選択してください。"
     }
   },
   "mark_duplicate": {

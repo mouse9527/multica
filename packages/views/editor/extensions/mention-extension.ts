@@ -3,7 +3,6 @@ import { mergeAttributes } from "@tiptap/core";
 import { ReactNodeViewRenderer } from "@tiptap/react";
 import { MentionView } from "./mention-view";
 import { escapeMarkdownLabel } from "../utils/escape-markdown-label";
-import { githubKeyMentionMarkdown } from "./github-issue-key-chips"; // GitHub-native issues (fork)
 
 const MENTION_LINK_MARKER = "](mention://";
 
@@ -112,8 +111,6 @@ export const BaseMentionExtension = Mention.extend({
     return helpers.createNode("mention", token.attributes);
   },
   renderMarkdown: (node: any) => {
-    const githubKey = githubKeyMentionMarkdown(node.attrs); // GitHub-native issues (fork): saved as the bare `owner/repo#N`
-    if (githubKey) return githubKey;
     const { id, label, type = "member" } = node.attrs || {};
     const prefix = type === "issue" || type === "project" ? "" : "@";
     // Escape [ ] \ ( ) in the label so the markdown link syntax is not broken

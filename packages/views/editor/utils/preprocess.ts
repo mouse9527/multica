@@ -3,7 +3,6 @@ import {
   preprocessMentionShortcodes,
   preprocessFileCards,
   preprocessIssueIdentifiers,
-  preprocessGitHubIssueKeys,
 } from "@multica/ui/markdown";
 import { stripChannelMediaMarkers } from "@multica/core/types";
 
@@ -52,7 +51,7 @@ export function preprocessMarkdown(
   const visibleMarkdown = stripChannelMediaMarkers(markdown);
   const step1 = preprocessMentionShortcodes(visibleMarkdown);
   const step2 = opts?.autolinkIssueIdentifiers
-    ? preprocessIssueIdentifiers(preprocessGitHubIssueKeys(step1)) // GitHub-native issues (fork): `owner/repo#N` first
+    ? preprocessIssueIdentifiers(step1)
     : step1;
   const step3 = preprocessLinks(step2);
   const step4 = preprocessFileCards(step3, cdnDomain);

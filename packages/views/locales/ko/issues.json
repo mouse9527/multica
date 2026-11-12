@@ -541,8 +541,6 @@
     "prop_start_date": "시작일",
     "prop_due_date": "마감일",
     "prop_project": "프로젝트",
-    "prop_github": "GitHub",
-    "github_copy_link": "GitHub 링크 복사",
     "prop_labels": "라벨",
     "add_property_action": "속성 추가",
     "prop_created_by": "생성자",

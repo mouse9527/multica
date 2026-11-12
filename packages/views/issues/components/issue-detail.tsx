@@ -128,7 +128,6 @@ import { useFeatureEnabled } from "@multica/core/config";
 import { PLUGINS_V1_FLAG } from "@multica/core/feature-flags";
 import { DeliverablesSection } from "./deliverables/deliverables-section";
 import { IssueAppsSection } from "./issue-apps-section";
-import { GitHubIssueLinkRow } from "./github-issue-link-row"; // GitHub-native issues (mouse9527/multica fork)
 import { DeliverablesOverview } from "./deliverables/deliverables-overview";
 import {
   DESCRIPTION_BLOCK_ID,
@@ -3153,8 +3152,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             />
           </PropRow>
           <IssueWorkflowPropRow projectId={issue.project_id} status={issue.status} label={t(($) => $.workflows.project.label)} />
-          {/* GitHub-native issues (mouse9527/multica fork) */}
-          <GitHubIssueLinkRow issue={issue} />
 
           {/* Optional props — rendered only when set on the issue OR added
               via "+ Add property" in this session. Row order follows the

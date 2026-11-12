@@ -36,7 +36,6 @@
     "./issue-statuses/queries": "./issue-statuses/queries.ts",
     "./issue-statuses/hooks": "./issue-statuses/hooks.ts",
     "./issue-statuses/mutations": "./issue-statuses/mutations.ts",
-    "./github-issues": "./github-issues/index.ts",
     "./issue-workflows": "./issue-workflows/index.ts",
     "./issue-workflows/queries": "./issue-workflows/queries.ts",
     "./issue-workflows/hooks": "./issue-workflows/hooks.ts",

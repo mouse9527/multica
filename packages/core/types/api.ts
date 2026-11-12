@@ -24,11 +24,6 @@ export interface CreateIssueRequest {
   /** ID-keyed custom-property values validated and persisted atomically with
    * the issue. */
   properties?: IssuePropertyValues;
-  /** GitHub-native issues (mouse9527/multica fork): the repository
-   *  ("owner/name") to open the issue on, or provider "local" to keep it
-   *  local. Servers without the feature ignore both. */
-  repo?: string;
-  provider?: "local" | "github";
 }
 
 export interface CreateCommentSubIssueManualRequest {
