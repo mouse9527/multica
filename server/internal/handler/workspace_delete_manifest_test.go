@@ -164,6 +164,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_write_intent":     workspaceDelete,
 	"project_github_settings": workspaceDelete,
 	"comment_external":        workspaceDelete,
+	// Modified for the mouse9527/multica fork: password login. A password
+	// belongs to the account, like "user", not to a workspace.
+	"user_credential": workspaceDeleteKeep,
 }
 
 func TestWorkspaceDeletionManifestCoversPublicSchema(t *testing.T) {

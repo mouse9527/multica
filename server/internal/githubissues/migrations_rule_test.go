@@ -13,13 +13,17 @@ import (
 )
 
 // The fork's migration numbering rule, documented in docs/github-issues.md:
-// fork migrations take 9000–9999 and are named 9NNN_githubissues_<desc>.
+// fork migrations take 9000–9999 and are named 9NNN_<feature>_<desc>, where
+// <feature> is the fork package the migration belongs to.
 const (
 	forkMigrationFirst = 9000
 	forkMigrationLast  = 9999
 )
 
-var forkMigrationStem = regexp.MustCompile(`^9[0-9]{3}_githubissues_[a-z0-9_]+$`)
+var (
+	forkMigrationStem    = regexp.MustCompile(`^9[0-9]{3}_(githubissues|passwordauth)_[a-z0-9_]+$`)
+	forkMigrationFeature = regexp.MustCompile(`githubissues|passwordauth`)
+)
 
 func migrationNumber(stem string) (int, bool) {
 	prefix, _, ok := strings.Cut(stem, "_")
@@ -50,12 +54,12 @@ func TestForkMigrationsFollowNumberingRule(t *testing.T) {
 	for _, stem := range realMigrationStems(t) {
 		n, ok := migrationNumber(stem)
 		inRange := ok && n >= forkMigrationFirst && n <= forkMigrationLast
-		isFork := strings.Contains(stem, "githubissues")
+		isFork := forkMigrationFeature.MatchString(stem)
 		switch {
 		case isFork && !inRange:
 			t.Errorf("%s: fork migrations must be numbered %d-%d", stem, forkMigrationFirst, forkMigrationLast)
 		case inRange && !forkMigrationStem.MatchString(stem):
-			t.Errorf("%s: numbers %d-%d are reserved for fork migrations named 9NNN_githubissues_<desc>; "+
+			t.Errorf("%s: numbers %d-%d are reserved for fork migrations named 9NNN_<feature>_<desc>; "+
 				"if upstream reached this range, revisit the rule in docs/github-issues.md",
 				stem, forkMigrationFirst, forkMigrationLast)
 		case ok && n > forkMigrationLast:
@@ -84,6 +88,7 @@ func TestForkMigrationRangeOrdering(t *testing.T) {
 	fork := []string{
 		"9000_githubissues_first",
 		"9001_githubissues_first_idx",
+		"9002_passwordauth_second",
 		"9010_githubissues_tenth",
 	}
 	for _, stem := range append(slices.Clone(upstream), fork...) {

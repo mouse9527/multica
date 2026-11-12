@@ -32,6 +32,9 @@ require (
 	github.com/spf13/pflag v1.0.10
 	github.com/tdewolff/parse/v2 v2.8.16
 	github.com/yuin/goldmark v1.8.6
+	// Modified by the mouse9527/multica fork: argon2id for password login
+	// (internal/passwordauth).
+	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.62.0
 	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.49.0

@@ -822,7 +822,7 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
 ### 规则
 
 1. fork 自有迁移使用 **9000–9999** 号段，四位数，从 `9000` 起按顺序分配。
-2. 文件名 `9NNN_githubissues_<描述>.up.sql` / `.down.sql`，必须成对。
+2. 文件名 `9NNN_<功能>_<描述>.up.sql` / `.down.sql`，必须成对。`<功能>` 是迁移所属的 fork 包：`githubissues`（GitHub 原生 issue）或 `passwordauth`（密码登录，见 `docs/password-auth.md`）。新增 fork 功能时把包名加进 `migrations_rule_test.go` 的两个正则。
 3. 已发布的迁移**不改号、不改名**。
 4. fork 迁移只新建自己的表和索引，不修改上游表结构，DDL 不引用上游 900 号及以后迁移才创建的对象。
 5. 其余照 `AGENTS.md`「Database and Migration Rules」：无外键；每个 `CONCURRENTLY` 索引单独一个迁移文件，并在 `server/cmd/migrate/main.go` 的 `concurrentIndexCleanups`（down 方向重建索引时是 `concurrentDownIndexCleanups`）登记，否则上游测试 `TestEveryConcurrentUpBuildHasCleanup` 会失败。这是每个索引迁移对上游文件的一行钩子。
