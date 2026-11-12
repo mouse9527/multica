@@ -21,7 +21,7 @@
 | `server/cmd/multica/cmd_issue.go` | M-22、M-28 | `--fields` 加 `provider`；`issue create` 的 `--repo`、`--provider` 与 422 改写 | 有 |
 | `server/cmd/server/activity_listeners.go` | M-22 | 活动记录里的 issue 标识 | 有 |
 | `server/cmd/server/main.go` | M-19、M-22、M-23、M-24 | 读配置建 `githubissues.Service`、令牌校验与到期提醒、标识开关、启动轮询 | 有 |
-| `server/cmd/server/router.go` | M-18、M-19、M-23、M-26、M-27、M-28、M-29、M-30、M-46 | 功能开启时注册路由并把 `Service` 接到 handler 的各个钩子字段 | 有 |
+| `server/cmd/server/router.go` | M-18、M-19、M-23、M-26、M-27、M-28、M-29、M-30、M-46、M-56 | 功能开启时注册路由并把 `Service` 接到 handler 的各个钩子字段 | 有 |
 | `server/internal/handler/activity.go` | M-29 | 时间线接口载入 issue 后触发按需刷新 | 有 |
 | `server/internal/handler/comment.go` | M-23、M-27、M-29 | 外部评论只读；评论新建、编辑、删除的双写；评论列表触发按需刷新 | 有 |
 | `server/internal/handler/daemon.go` | M-22 | 认领任务时的 issue 标识 | 有 |
