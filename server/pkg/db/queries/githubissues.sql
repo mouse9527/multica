@@ -245,7 +245,7 @@ WHERE issue_id = @issue_id
 -- sync of the project (multica issue sync --project), by repository and
 -- number. Issues the reconcile found deleted or transferred away are left
 -- out, and with open_only so are issues closed on GitHub. Read-only.
-SELECT x.issue_id, x.external_repo, x.external_number, x.state
+SELECT x.issue_id, i.number, x.external_repo, x.external_number, x.state
 FROM issue_external x
 JOIN issue i ON i.id = x.issue_id AND i.workspace_id = x.workspace_id
 WHERE x.workspace_id = @workspace_id

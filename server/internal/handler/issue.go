@@ -109,9 +109,9 @@ type IssueResponse struct {
 	// deliberately omit the potentially large immutable snapshot.
 	SourceContext *sourceContextDetailResponse `json:"source_context,omitempty"`
 	// Provider is "local", or "github" for an issue backed by a GitHub issue,
-	// whose Identifier is then "owner/repo#N"; see fillIssueKeys.
-	// GitHub-native issues (fork).
-	Provider string `json:"provider"`
+	// which GitHub then names; see fillIssueKeys. GitHub-native issues (fork).
+	Provider string               `json:"provider"`
+	GitHub   *IssueGitHubResponse `json:"github,omitempty"`
 	// duplicateOfIssueID is the raw mark, kept off the wire; see DuplicateOf.
 	duplicateOfIssueID pgtype.UUID
 }

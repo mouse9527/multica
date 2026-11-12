@@ -222,13 +222,26 @@ describe("IssueSchema (via ListIssuesResponseSchema)", () => {
   it("carries provider and drops only a malformed one", () => {
     const parsed = ListIssuesResponseSchema.parse({
       issues: [
-        { ...baseIssue, provider: "github", identifier: "acme/widgets#42" },
+        { ...baseIssue, provider: "github" },
         { ...baseIssue, provider: 42 },
         baseIssue,
       ],
       total: 3,
     });
     expect(parsed.issues.map((issue) => issue.provider)).toEqual(["github", undefined, undefined]);
+  });
+  it("carries the github field and drops only a malformed one", () => {
+    const github = { repo: "acme/widgets", number: 42, url: "https://github.com/acme/widgets/issues/42" };
+    const parsed = ListIssuesResponseSchema.parse({
+      issues: [
+        { ...baseIssue, provider: "github", github },
+        { ...baseIssue, provider: "github", github: { repo: "acme/widgets", number: "42" } },
+        baseIssue,
+      ],
+      total: 3,
+    });
+    expect(parsed.issues.map((issue) => issue.github)).toEqual([github, undefined, undefined]);
+    expect(parsed.issues.map((issue) => issue.id)).toEqual([baseIssue.id, baseIssue.id, baseIssue.id]);
   });
   it("drops only a malformed status_name, keeping the issue and the list", () => {
     for (const bad of [42, { name: "x" }, ["x"], true]) {

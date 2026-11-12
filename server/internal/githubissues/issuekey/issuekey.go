@@ -1,16 +1,18 @@
-// Package issuekey renders and parses the identifier of GitHub-backed issues
-// for the mouse9527/multica fork. It is fork-only and not part of upstream
-// multica-ai/multica.
+// Package issuekey reads and parses the GitHub identity of GitHub-backed
+// issues for the mouse9527/multica fork. It is fork-only and not part of
+// upstream multica-ai/multica.
 //
-// An issue is GitHub-backed exactly when it has an issue_external row; its
-// identifier is then "owner/repo#N" instead of the workspace's "PREFIX-N".
+// An issue is GitHub-backed exactly when it has an issue_external row. Its
+// identifier stays the workspace's "PREFIX-N", like any other issue; the
+// GitHub issue ("owner/repo#N") is carried beside it as provider "github" and
+// a separate github field, and "owner/repo#N" still resolves to the issue.
 // The package depends only on the generated queries so that service, handler
 // and githubissues can all use it without an import cycle.
 //
-// Rendering follows the feature switch: while it is off (the default) no
+// Reading follows the feature switch: while it is off (the default) no
 // issue_external row is read and every issue renders as local, exactly as
 // upstream does. Rows written while the feature was on are kept, so turning
-// it back on restores the GitHub identifiers.
+// it back on restores the GitHub fields.
 package issuekey
 
 import (
@@ -39,19 +41,24 @@ var enabled atomic.Bool
 // The server calls it once at startup with githubissues.Config.Enabled.
 func SetEnabled(on bool) { enabled.Store(on) }
 
-// Enabled reports whether GitHub identifiers are rendered and resolved.
+// Enabled reports whether GitHub fields are rendered and GitHub keys resolved.
 func Enabled() bool { return enabled.Load() }
 
-// GitHub renders the identifier of a GitHub-backed issue: "owner/repo#N".
+// GitHub renders the GitHub key of a GitHub-backed issue: "owner/repo#N".
 func GitHub(ext db.IssueExternal) string {
 	return ext.ExternalRepo + "#" + strconv.Itoa(int(ext.ExternalNumber))
+}
+
+// URL is the page of a GitHub-backed issue on GitHub.
+func URL(ext db.IssueExternal) string {
+	return "https://github.com/" + ext.ExternalRepo + "/issues/" + strconv.Itoa(int(ext.ExternalNumber))
 }
 
 // GitHub owner and repository names: owners are alphanumerics and hyphens,
 // repositories also allow dots and underscores.
 var githubKey = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100})#([0-9]{1,10})$`)
 
-// ParseGitHub splits an "owner/repo#N" identifier. ok is false for anything
+// ParseGitHub splits an "owner/repo#N" key. ok is false for anything
 // else, including local "PREFIX-N" identifiers and numbers outside int32.
 func ParseGitHub(key string) (repo string, number int32, ok bool) {
 	m := githubKey.FindStringSubmatch(key)
@@ -110,15 +117,6 @@ func LoadOne(ctx context.Context, q Querier, workspaceID, issueID pgtype.UUID) E
 		return Externals{}
 	}
 	return Externals{issueID: row}
-}
-
-// Key returns the GitHub identifier of issueID, or local when it is not
-// GitHub-backed.
-func (e Externals) Key(issueID pgtype.UUID, local string) string {
-	if ext, ok := e[issueID]; ok {
-		return GitHub(ext)
-	}
-	return local
 }
 
 // Provider returns ProviderGitHub or ProviderLocal for issueID.

@@ -106,6 +106,7 @@ func TestImportGitHubIssue(t *testing.T) {
 	issuekey.SetEnabled(true)
 	t.Cleanup(func() { issuekey.SetEnabled(previous) })
 
+	setWorkspaceIssuePrefixForTest(t, issueKeyTestPrefix)
 	projectID := dbfx.Project(t, "GitHub imports")
 	dbfx.Insert(t, "project_resource", testutil.Cols{
 		"project_id": projectID, "workspace_id": testWorkspaceID,
@@ -132,9 +133,11 @@ func TestImportGitHubIssue(t *testing.T) {
 
 	var first IssueResponse
 	importRef("https://github.com/acme/widgets/issues/1").Want(http.StatusCreated).JSON(&first)
-	if first.Identifier != "acme/widgets#1" || first.Provider != "github" || first.ProjectID == nil || *first.ProjectID != projectID {
+	if first.Identifier != issueKeyTestPrefix+"-"+strconv.Itoa(issueKeyTestNumber(t, first.ID)) || first.Provider != "github" ||
+		first.ProjectID == nil || *first.ProjectID != projectID {
 		t.Fatalf("imported issue = %+v", first)
 	}
+	wantGitHubField(t, first.GitHub, "acme/widgets", 1)
 	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, first.ID); n != 1 {
 		t.Fatalf("imported comments = %d, want 1", n)
 	}

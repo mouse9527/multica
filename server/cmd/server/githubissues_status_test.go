@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -78,6 +79,7 @@ func TestGitHubCloseReachesDoneThroughRouterWiring(t *testing.T) {
 	owner := f.User(t, "Owner", ownerEmail)
 	ws := f.Workspace(t, "Status", "status-"+suffix)
 	f.WorkspaceID, f.UserID = ws, owner
+	f.Exec(t, `UPDATE workspace SET issue_prefix = 'STA' WHERE id = $1`, ws)
 	f.Member(t, ws, owner, "owner")
 	project := f.Project(t, "Widgets")
 	f.Insert(t, "project_resource", testutil.Cols{
@@ -125,7 +127,7 @@ func TestGitHubCloseReachesDoneThroughRouterWiring(t *testing.T) {
 			t.Fatalf("poll: %+v %v", stats, err)
 		}
 	}
-	// main.go turns GitHub identifiers on together with the feature.
+	// main.go turns GitHub fields on together with the feature.
 	previous := issuekey.Enabled()
 	issuekey.SetEnabled(true)
 	t.Cleanup(func() { issuekey.SetEnabled(previous) })
@@ -153,8 +155,13 @@ func TestGitHubCloseReachesDoneThroughRouterWiring(t *testing.T) {
 		var body map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&body)
 		resp.Body.Close()
-		if resp.StatusCode != want || body["identifier"] != "acme/widgets#1" {
-			t.Fatalf("import: %d %v, want %d with the GitHub identifier", resp.StatusCode, body, want)
+		var number int
+		f.QueryRow(t, `SELECT number FROM issue WHERE id = $1`, body["id"]).Scan(&number)
+		key := "STA-" + strconv.Itoa(number)
+		gh, _ := body["github"].(map[string]any)
+		if resp.StatusCode != want || body["identifier"] != key || body["provider"] != "github" ||
+			gh["repo"] != "acme/widgets" || gh["number"] != float64(1) {
+			t.Fatalf("import: %d %v, want %d with identifier %s and the GitHub field", resp.StatusCode, body, want, key)
 		}
 	}
 	if got := status(); got != "backlog" {

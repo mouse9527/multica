@@ -15,6 +15,8 @@ import (
 	"github.com/multica-ai/multica/server/internal/githubissues"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/service"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // GitHubSyncResponse is the answer of a manual sync: what changed, and the
@@ -100,9 +102,10 @@ func setRetryAfter(w http.ResponseWriter, body map[string]any, wait time.Duratio
 
 // ProjectGitHubIssueResponse is a tracked GitHub issue of a project.
 type ProjectGitHubIssueResponse struct {
-	ID         string `json:"id"`
-	Identifier string `json:"identifier"`
-	State      string `json:"state"`
+	ID         string              `json:"id"`
+	Identifier string              `json:"identifier"`
+	GitHub     IssueGitHubResponse `json:"github"`
+	State      string              `json:"state"`
 }
 
 // ListProjectGitHubIssues serves GET /api/projects/{id}/github-issues: the
@@ -125,9 +128,16 @@ func (h *Handler) ListProjectGitHubIssues(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to list the project's GitHub issues")
 		return
 	}
+	prefix := h.getIssuePrefix(r.Context(), project.WorkspaceID)
 	out := make([]ProjectGitHubIssueResponse, 0, len(issues))
 	for _, issue := range issues {
-		out = append(out, ProjectGitHubIssueResponse{ID: uuidToString(issue.IssueID), Identifier: issue.Identifier, State: issue.State})
+		ext := db.IssueExternal{ExternalRepo: issue.Repo, ExternalNumber: issue.GitHubNumber}
+		out = append(out, ProjectGitHubIssueResponse{
+			ID:         uuidToString(issue.IssueID),
+			Identifier: service.IssueIdentifier(prefix, issue.Number),
+			GitHub:     *issueGitHubResponse(ext),
+			State:      issue.State,
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"issues": out})
 }

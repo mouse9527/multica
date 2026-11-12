@@ -51,6 +51,7 @@ func TestSyncGitHubIssue(t *testing.T) {
 	issuekey.SetEnabled(true)
 	t.Cleanup(func() { issuekey.SetEnabled(previous) })
 
+	setWorkspaceIssuePrefixForTest(t, issueKeyTestPrefix)
 	projectID := dbfx.Project(t, "GitHub syncs")
 	dbfx.Insert(t, "project_resource", testutil.Cols{
 		"project_id": projectID, "workspace_id": testWorkspaceID,
@@ -80,9 +81,10 @@ func TestSyncGitHubIssue(t *testing.T) {
 		return testutil.Call(t, h.SyncGitHubIssue, withURLParam(req, "id", ref))
 	}
 
+	key := issueKeyTestPrefix + "-" + strconv.Itoa(issueKeyTestNumber(t, imported.ID))
 	var got GitHubSyncResponse
 	syncRef("acme/widgets#1").Want(http.StatusOK).JSON(&got)
-	if got.Identifier != "acme/widgets#1" || got.IssueID != imported.ID || got.RequestsUsed != 2 ||
+	if got.Identifier != key || got.IssueID != imported.ID || got.RequestsUsed != 2 ||
 		got.NewComments != 0 || got.RateLimit == nil || got.RateLimit.Remaining != 4000 {
 		t.Fatalf("sync = %+v", got)
 	}
@@ -96,9 +98,10 @@ func TestSyncGitHubIssue(t *testing.T) {
 	}
 	listReq := newRequest(http.MethodGet, "/api/projects/"+projectID+"/github-issues?open_only=true", nil)
 	testutil.Call(t, h.ListProjectGitHubIssues, withURLParam(listReq, "id", projectID)).Want(http.StatusOK).JSON(&list)
-	if len(list.Issues) != 1 || list.Issues[0].ID != imported.ID || list.Issues[0].Identifier != "acme/widgets#1" || list.Issues[0].State != "open" {
+	if len(list.Issues) != 1 || list.Issues[0].ID != imported.ID || list.Issues[0].Identifier != key || list.Issues[0].State != "open" {
 		t.Fatalf("project issues = %+v", list.Issues)
 	}
+	wantGitHubField(t, &list.Issues[0].GitHub, "acme/widgets", 1)
 
 	local := dbfx.Issue(t, "Local only")
 	var refused map[string]any

@@ -7985,12 +7985,10 @@ func IssueToMapResolved(ctx context.Context, q IssueMapQuerier, issue db.Issue, 
 	category, name := issuestatus.CategoryAndName(ctx, q, issue.WorkspaceID, issue.Status)
 	m["status_category"] = issuestatus.WireCategory(issue.Status, category)
 	m["status_name"] = name
-	var original *pgtype.UUID
 	if ref := resolveDuplicateOf(ctx, q, issue, issuePrefix); ref != nil {
 		m["duplicate_of"] = ref
-		original = &issue.DuplicateOfIssueID
 	}
-	applyIssueKeyToMap(ctx, q, m, issue.WorkspaceID, issue.ID, issuePrefix, issue.Number, original) // GitHub-native issues (fork)
+	applyIssueKeyToMap(ctx, q, m, issue.WorkspaceID, issue.ID) // GitHub-native issues (fork)
 	return m
 }
 
