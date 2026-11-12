@@ -7,6 +7,12 @@ export {
   isIssueIdentifier,
   ISSUE_IDENTIFIER_PATTERN,
 } from './issue-identifiers'
+export {
+  preprocessGitHubIssueKeys,
+  isGitHubIssueKey,
+  githubIssueKeyFromMentionId,
+  GITHUB_ISSUE_KEY_TOKEN_SOURCE,
+} from './github-issue-keys' // GitHub-native issues (mouse9527/multica fork)
 export { preprocessMentionShortcodes } from './mentions'
 export { markdownSanitizeSchema, markdownUrlTransform } from './sanitize'
 export {

@@ -22,9 +22,13 @@ import { NodeViewWrapper } from "@tiptap/react";
 import type { NodeViewProps } from "@tiptap/react";
 import { IssueMentionCard } from "../../issues/components/issue-mention-card";
 import { ProjectMentionCard } from "../../projects/components/project-mention-card";
+import { githubKeyMentionMarkdown } from "./github-issue-key-chips"; // GitHub-native issues (fork)
+import { GitHubIssueKeyMentionView } from "./github-issue-key-mention-view"; // GitHub-native issues (fork)
 
 export function MentionView({ node }: NodeViewProps) {
   const { type, id, label } = node.attrs;
+  const githubKey = githubKeyMentionMarkdown(node.attrs); // GitHub-native issues (fork): `owner/repo#N`
+  if (githubKey) return <GitHubIssueKeyMentionView issueKey={githubKey} />;
 
   // stopPropagation mirrors the readonly renderer's mention wrappers: a chip
   // click must not reach surrounding click handlers.

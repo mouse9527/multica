@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { issueIdentifierOptions } from "@multica/core/issues/queries";
 import { useCurrentWorkspace } from "@multica/core/paths";
-import { isIssueIdentifier } from "@multica/ui/markdown";
+import { isGitHubIssueKey, isIssueIdentifier } from "@multica/ui/markdown";
 import type { Issue } from "@multica/core/types";
 
 /**
@@ -31,7 +31,10 @@ export function useResolveIssueIdentifier(identifier: string): Issue | null {
 
   const { data } = useQuery({
     ...issueIdentifierOptions(wsId, identifier),
-    enabled: Boolean(wsId) && isIssueIdentifier(identifier) && prefixMatches,
+    enabled:
+      Boolean(wsId) &&
+      ((isIssueIdentifier(identifier) && prefixMatches) ||
+        isGitHubIssueKey(identifier)), // GitHub-native issues (fork): `owner/repo#N`
   });
 
   return data ?? null;
