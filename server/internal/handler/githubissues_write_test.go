@@ -163,6 +163,9 @@ func newGitHubWriteHandler(t *testing.T) (*Handler, *fakeWriteGitHub, string) {
 			githubissues.EnvEnabled:        "true",
 			githubissues.EnvToken:          fakeGitHubToken,
 			githubissues.EnvTokenExpiresAt: "never",
+			// Refreshes run only for a test that wires the service as
+			// IssueViews.
+			githubissues.EnvRefreshOnView: "true",
 		}[key]
 	}), githubissues.Options{DB: testPool, APIBase: fake.server.URL})
 	ctx, cancel := context.WithCancel(context.Background())
