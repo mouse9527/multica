@@ -118,38 +118,6 @@ func (s *Service) CreateStatuses(ctx context.Context, workspaceID, projectID pgt
 // on the project.
 var ErrNotProjectRepo = errors.New("githubissues: the resource is not a GitHub repository of this project")
 
-// SetProjectDefaultRepo makes the project's resource resourceID its default
-// repository for new issues; an invalid resourceID clears the default. The
-// status label mapping is kept.
-func (s *Service) SetProjectDefaultRepo(ctx context.Context, workspaceID, projectID, resourceID pgtype.UUID) error {
-	q, err := s.queries()
-	if err != nil {
-		return err
-	}
-	if resourceID.Valid {
-		repos, _, err := s.ProjectRepos(ctx, workspaceID, projectID)
-		if err != nil {
-			return err
-		}
-		found := false
-		for _, repo := range repos {
-			found = found || repo.ResourceID == resourceID
-		}
-		if !found {
-			return ErrNotProjectRepo
-		}
-	}
-	_, err = q.SetProjectGithubDefaultResource(ctx, db.SetProjectGithubDefaultResourceParams{
-		ProjectID: projectID, WorkspaceID: workspaceID, DefaultResourceID: resourceID,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		// The settings row belongs to another workspace; the project id was
-		// checked against this one, so this does not happen in practice.
-		return ErrNotProjectRepo
-	}
-	return err
-}
-
 // RepoChoice is what a create says about where the issue lives.
 type RepoChoice struct {
 	// Repo is the "owner/name" the request named, or "".

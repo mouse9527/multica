@@ -11,7 +11,6 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/githubissues"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -24,20 +23,30 @@ type ProjectGitHubRepoResponse struct {
 	Repo       string `json:"repo"`
 }
 
-// ProjectGitHubSettingsResponse is what the create dialog needs to offer a
-// repository: the project's GitHub repositories, its default among them, and
-// the statuses a new GitHub issue of the project can start in (entry status
-// first).
+// ProjectGitHubSettingsResponse is a project's GitHub settings: what the
+// create dialog needs to offer a repository (the project's GitHub
+// repositories, its default among them, and the statuses a new GitHub issue
+// of the project can start in, entry status first), and the status label map
+// with the statuses it may map.
 type ProjectGitHubSettingsResponse struct {
 	Repos             []ProjectGitHubRepoResponse `json:"repos"`
 	DefaultResourceID *string                     `json:"default_resource_id"`
 	CreateStatuses    []string                    `json:"create_statuses"`
+	StatusLabelMap    map[string]string           `json:"status_label_map"`
+	MappableStatuses  []string                    `json:"mappable_statuses"`
 }
 
-// SetProjectGitHubSettingsRequest sets the project's default repository; null
-// clears it.
+// SetProjectGitHubSettingsRequest changes a project's GitHub settings. Each
+// field is optional:
+//
+//   - default_resource_id: the default repository; null clears it. Omitted,
+//     it is kept when status_label_map is given; a body with neither field
+//     clears it, as before status_label_map existed.
+//   - status_label_map: status key to "status:<name>" label; {} or null
+//     clears it, omitted keeps it.
 type SetProjectGitHubSettingsRequest struct {
-	DefaultResourceID *string `json:"default_resource_id"`
+	DefaultResourceID *string           `json:"default_resource_id"`
+	StatusLabelMap    map[string]string `json:"status_label_map"`
 }
 
 // GetProjectGitHubSettings serves GET /api/projects/{id}/github-settings. The
@@ -53,7 +62,7 @@ func (h *Handler) GetProjectGitHubSettings(w http.ResponseWriter, r *http.Reques
 
 // SetProjectGitHubSettings serves PUT /api/projects/{id}/github-settings. Any
 // member who may edit the project's resources may choose the default among
-// them.
+// them and set the status labels.
 func (h *Handler) SetProjectGitHubSettings(w http.ResponseWriter, r *http.Request) {
 	project, ok := h.loadProjectForResource(w, r, chi.URLParam(r, "id"))
 	if !ok {
@@ -62,24 +71,48 @@ func (h *Handler) SetProjectGitHubSettings(w http.ResponseWriter, r *http.Reques
 	if _, ok := requireUserID(w, r); !ok {
 		return
 	}
-	var req SetProjectGitHubSettingsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&fields); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	var resourceID pgtype.UUID
+	var req SetProjectGitHubSettingsRequest
+	for name, target := range map[string]any{
+		"default_resource_id": &req.DefaultResourceID,
+		"status_label_map":    &req.StatusLabelMap,
+	} {
+		if raw, ok := fields[name]; ok {
+			if err := json.Unmarshal(raw, target); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid "+name)
+				return
+			}
+		}
+	}
+	_, hasDefault := fields["default_resource_id"]
+	_, hasLabels := fields["status_label_map"]
+	update := githubissues.ProjectSettingsUpdate{
+		SetDefault:      hasDefault || !hasLabels,
+		SetStatusLabels: hasLabels,
+		StatusLabelMap:  req.StatusLabelMap,
+	}
 	if req.DefaultResourceID != nil {
-		if resourceID, ok = parseUUIDOrBadRequest(w, *req.DefaultResourceID, "default_resource_id"); !ok {
+		if update.DefaultResourceID, ok = parseUUIDOrBadRequest(w, *req.DefaultResourceID, "default_resource_id"); !ok {
 			return
 		}
 	}
-	err := h.GitHubIssues.SetProjectDefaultRepo(r.Context(), project.WorkspaceID, project.ID, resourceID)
+	err := h.GitHubIssues.UpdateProjectSettings(r.Context(), project.WorkspaceID, project.ID, update)
 	if errors.Is(err, githubissues.ErrNotProjectRepo) {
 		writeError(w, http.StatusBadRequest, "default_resource_id is not a GitHub repository of this project")
 		return
 	}
+	var refused *githubissues.StatusLabelMapError
+	if errors.As(err, &refused) {
+		status, body := refused.HTTPResponse()
+		writeJSON(w, status, body)
+		return
+	}
 	if err != nil {
-		slog.Warn("set project github default failed", append(logger.RequestAttrs(r), "error", err)...)
+		slog.Warn("set project github settings failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to save the project's GitHub settings")
 		return
 	}
@@ -103,6 +136,14 @@ func (h *Handler) writeProjectGitHubSettings(w http.ResponseWriter, r *http.Requ
 	}
 	if resp.CreateStatuses, err = h.GitHubIssues.CreateStatuses(r.Context(), project.WorkspaceID, project.ID); err != nil {
 		slog.Warn("list project github create statuses failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to read the project's GitHub settings")
+		return
+	}
+	if resp.StatusLabelMap, err = h.GitHubIssues.StatusLabelMap(r.Context(), project.WorkspaceID, project.ID); err == nil {
+		resp.MappableStatuses, err = h.GitHubIssues.MappableStatuses(r.Context(), project.WorkspaceID, project.ID)
+	}
+	if err != nil {
+		slog.Warn("read project github status labels failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to read the project's GitHub settings")
 		return
 	}
