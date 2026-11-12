@@ -13,6 +13,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/githubissues/issuekey"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -59,11 +60,11 @@ func TestPollLeavesIssuesNobodyImported(t *testing.T) {
 		env.api.putIssue(n, "stranger", "Issue "+strconv.Itoa(n), "", "open", old, nil)
 		env.api.putComment(int64(10_000+n), n, "stranger", "Comment on "+strconv.Itoa(n), old)
 	}
-	env.poll(t) // the first look at the repository starts its cursors now
-	// Every one of them is updated on GitHub after that, one a second, so
-	// the next two cycles read all of them.
+	env.poll(t)
+	// Every one of them is updated on GitHub after that, one a second. With
+	// nothing tracked the repository is not followed at all (#57).
 	for n := 1; n <= total; n++ {
-		at := testNow.Add(time.Duration(n) * time.Second)
+		at := old.Add(time.Duration(n) * time.Second)
 		env.api.putIssue(n, "stranger", "Issue "+strconv.Itoa(n)+" (edited)", "", "open", at, nil)
 		env.api.putComment(int64(20_000+n), n, "stranger", "New on "+strconv.Itoa(n), at)
 	}
@@ -79,6 +80,9 @@ func TestPollLeavesIssuesNobodyImported(t *testing.T) {
 	if n := env.count(t, `SELECT count(*) FROM comment WHERE workspace_id = $1`, env.ws); n != 0 {
 		t.Fatalf("comments after two cycles = %d, want 0", n)
 	}
+	if seen := env.api.seen(); len(seen) != 0 {
+		t.Fatalf("cycles with nothing tracked sent %v", seen)
+	}
 
 	const picked = 7
 	before := len(env.api.seen())
@@ -86,9 +90,10 @@ func TestPollLeavesIssuesNobodyImported(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("import = %s %v %v", id, created, err)
 	}
-	// One issue and its comments: nothing about the other issues is read.
+	// The repository's id (never resolved: nothing polled it), then one issue
+	// and its comments: nothing about the other issues is read.
 	for _, r := range env.api.seen()[before:] {
-		if path, _, _ := strings.Cut(r, "?"); path != fmt.Sprintf("/repositories/%d/issues/%d", pollRepoID, picked) &&
+		if path, _, _ := strings.Cut(r, "?"); path != "/repos/acme/widgets" && path != fmt.Sprintf("/repositories/%d/issues/%d", pollRepoID, picked) &&
 			path != fmt.Sprintf("/repositories/%d/issues/%d/comments", pollRepoID, picked) {
 			t.Fatalf("import sent %s", r)
 		}
@@ -135,6 +140,7 @@ func TestPollFirstLookDoesNotBackfill(t *testing.T) {
 	old := testNow.Add(-time.Hour)
 	env.api.putIssue(1, "stranger", "Old", "", "open", old, nil)
 	env.api.putComment(501, 1, "stranger", "Old comment", old)
+	env.trackWithoutCursors(t, 2)
 
 	if stats := env.poll(t); stats.Failed != 0 || stats.Synced != 0 {
 		t.Fatalf("first poll stats = %+v", stats)
@@ -380,4 +386,20 @@ func TestParseIssueRef(t *testing.T) {
 			t.Errorf("ParseIssueRef(%q) = %v, want ErrInvalidIssueRef", in, err)
 		}
 	}
+}
+
+// trackWithoutCursors makes acme/widgets a followed repository whose cursors
+// are still empty: it is pinned and tracks issue number (opened from Multica,
+// say, which starts no cursor), and nothing has polled it yet. Only followed
+// repositories are polled (#57).
+func (env *pollEnv) trackWithoutCursors(t *testing.T, number int) {
+	t.Helper()
+	if _, err := env.svc.RepoClient(context.Background(), util.MustParseUUID(env.ws), "acme", "widgets"); err != nil {
+		t.Fatalf("pin acme/widgets: %v", err)
+	}
+	issue := env.f.Issue(t, "tracked", testutil.Cols{"project_id": env.project})
+	env.f.Exec(t, `INSERT INTO issue_external (issue_id, workspace_id, provider, external_repo_id, external_repo,
+		external_number, external_node_id, state, external_updated_at)
+		VALUES ($1, $2, 'github', $3, 'acme/widgets', $4, 'I_tracked', 'open', $5)`,
+		issue, env.ws, pollRepoID, number, testNow.Add(-2*time.Hour))
 }

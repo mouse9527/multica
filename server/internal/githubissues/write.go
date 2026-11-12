@@ -124,8 +124,9 @@ type Write struct {
 	issue *githubIssue
 	// comment is GitHub's answer for comment writes.
 	comment *githubComment
-	// guard holds the target's lock until the local write is done; nil for
-	// creates, whose target does not exist yet.
+	// guard holds the target's lock until the local write is done: the
+	// edited issue or comment, or the reserved id of a new comment. nil for a
+	// new issue, which is serialized by its create transaction instead.
 	guard *writeGuard
 	// done is set once the local outcome has been recorded.
 	done bool
