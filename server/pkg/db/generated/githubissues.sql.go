@@ -193,6 +193,56 @@ func (q *Queries) ListAllGithubRepoSyncs(ctx context.Context) ([]GithubRepoSync,
 	return items, nil
 }
 
+const listFollowedGithubRepos = `-- name: ListFollowedGithubRepos :many
+SELECT s.workspace_id, s.repo_id FROM github_repo_sync s
+WHERE EXISTS (
+        SELECT 1 FROM issue_external x
+        WHERE x.workspace_id = s.workspace_id
+          AND x.provider = 'github'
+          AND x.external_repo_id = s.repo_id
+          AND (x.state_reason IS NULL OR x.state_reason NOT LIKE 'multica:%')
+    )
+   OR EXISTS (
+        SELECT 1 FROM github_write_intent i
+        WHERE i.workspace_id = s.workspace_id
+          AND i.repo_id = s.repo_id
+          AND i.state IN ('pending', 'github_ok', 'unknown')
+          AND (i.error IS NULL OR i.error NOT LIKE 'needs_confirmation:%')
+    )
+`
+
+type ListFollowedGithubReposRow struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RepoID      int64       `json:"repo_id"`
+}
+
+// The pinned repositories the poller follows: those with a tracked issue the
+// reconcile has not found deleted or transferred away, or with a write from
+// Multica still to settle (the reconciler runs inside the poll, so an
+// unanswered create in a repository with nothing tracked yet still gets
+// settled or handed over). Repositories with neither get no request at all,
+// so the poll's requests follow the tracked issues, not the registered
+// repositories. Read-only.
+func (q *Queries) ListFollowedGithubRepos(ctx context.Context) ([]ListFollowedGithubReposRow, error) {
+	rows, err := q.db.Query(ctx, listFollowedGithubRepos)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListFollowedGithubReposRow{}
+	for rows.Next() {
+		var i ListFollowedGithubReposRow
+		if err := rows.Scan(&i.WorkspaceID, &i.RepoID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitHubIssuesToReconcile = `-- name: ListGitHubIssuesToReconcile :many
 SELECT issue_id, workspace_id, provider, external_repo_id, external_repo, external_number, external_node_id, state, state_reason, external_updated_at, external_synced_at, created_at, updated_at FROM issue_external
 WHERE workspace_id = $1

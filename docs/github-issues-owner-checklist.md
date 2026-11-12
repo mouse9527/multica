@@ -150,6 +150,8 @@ gh_api "https://api.github.com/repositories/$RID_A/issues/1/timeline?per_page=10
 
 ### B2 导入与外部评论
 
+0. **只轮询被跟踪的仓库（#57）**：B1 登记了 A、B 之后、导入任何 issue 之前，等两个轮询周期，看令牌的限额消耗（`gh_api https://api.github.com/rate_limit | sed -n '/^{/,$p' | jq .resources.core`）或服务端日志。期望：轮询不对 A、B 发请求，`github_repo_sync` 里没有它们的行。导入 A 的 issue 后，下一个周期起只轮询 A；B 仍然不发请求，直到 B 也有了已跟踪的 issue。
+
 1. `multica issue import OWNER/REPO-A#1`。
    - 期望：返回 201；issue 页标识是 `OWNER/REPO-A#1`，描述开头是「由 @… 在 GitHub 创建（外部、不可信…）」，已有的两条评论都在，作者显示为系统、正文带外部前缀。
    - 再执行一次：返回 200，不出现第二个 issue、不出现重复评论。

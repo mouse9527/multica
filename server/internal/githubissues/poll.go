@@ -187,9 +187,14 @@ feed:
 	return stats, nil
 }
 
-// pollTargets lists the registered repositories of every workspace, one per
-// workspace and name, least recently polled first. Paused repositories are
-// left out.
+// pollTargets lists the registered repositories of every workspace that have
+// something to follow, one per workspace and name, least recently polled
+// first. A repository is followed when its pin has a tracked issue or a write
+// still to settle (ListFollowedGithubRepos); a registered repository with
+// neither, including one never pinned, gets no request, not even the one that
+// would pin it. Importing an issue pins the repository and tracks the issue,
+// so it is followed from the next cycle; once its last tracked issue is gone
+// it drops out. Paused repositories are left out.
 func (s *Service) pollTargets(ctx context.Context) ([]pollTarget, error) {
 	q := db.New(s.db)
 	resources, err := q.ListGitHubRepoResources(ctx)
@@ -199,6 +204,18 @@ func (s *Service) pollTargets(ctx context.Context) ([]pollTarget, error) {
 	pins, err := q.ListAllGithubRepoSyncs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("githubissues: list repository poll state: %w", err)
+	}
+	rows, err := q.ListFollowedGithubRepos(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("githubissues: list followed repositories: %w", err)
+	}
+	type pinKey struct {
+		workspaceID pgtype.UUID
+		repoID      int64
+	}
+	followed := make(map[pinKey]bool, len(rows))
+	for _, row := range rows {
+		followed[pinKey{row.WorkspaceID, row.RepoID}] = true
 	}
 	var targets []pollTarget
 	for _, res := range resources {
@@ -217,14 +234,14 @@ func (s *Service) pollTargets(ctx context.Context) ([]pollTarget, error) {
 			continue
 		}
 		t := pollTarget{workspaceID: res.WorkspaceID, projectID: res.ProjectID, name: name}
-		paused := false
+		follow := false
 		for _, pin := range pins {
 			if pin.WorkspaceID == res.WorkspaceID && name.sameAs(repoName{owner: pin.Owner, name: pin.Name}) {
-				paused = pin.Status == "paused"
+				follow = pin.Status != "paused" && followed[pinKey{pin.WorkspaceID, pin.RepoID}]
 				t.lastPolled = pin.LastPolledAt.Time
 			}
 		}
-		if !paused {
+		if follow {
 			targets = append(targets, t)
 		}
 	}
