@@ -13,8 +13,14 @@
 | `.github/workflows/release.yml` | M-58 | `verify` 只在 `multica-ai` 运行，整个上游发布在 fork 上不跑（fork 用 `release-fork.yml`） | 有 |
 | `Dockerfile` | M-49 | 构建镜像升级到 `golang:1.27.4-alpine`（一行）。上游 `6ccbdd178` 已是同一行，下次同步后不再是修改 | 无 |
 | `packages/core/api/client.ts` | M-28 | `getProjectGitHubSettings`（404 返回 `null`） | 有 |
+| `packages/core/api/schemas.ts` | #70 | `IssueSchema.provider`（格式不对时丢弃该字段） | 有 |
+| `packages/core/api/schemas.test.ts` | #70 | 上面这个字段的测试 | 有 |
 | `packages/core/package.json` | M-28 | 导出 `./github-issues` | 无 |
 | `packages/core/types/api.ts` | M-28 | `CreateIssueRequest.repo`、`provider` | 有 |
+| `packages/core/types/issue.ts` | #70 | `Issue.provider` | 有 |
+| `packages/views/issues/components/issue-detail.tsx` | #70 | 属性栏挂 `GitHubIssueLinkRow`（2 行） | 有 |
+| `packages/views/issues/components/issue-detail.test.tsx` | #70 | 详情页显示 / 不显示 GitHub 链接的测试 | 有 |
+| `packages/views/locales/{en,es,fr,ja,ko,ru,zh-Hans,zh-Hant}/issues.json`（8 个） | #70 | 详情页 GitHub 链接文案 `detail.prop_github`、`detail.github_copy_link` | 无（JSON） |
 | `packages/views/locales/{en,es,fr,ja,ko,ru,zh-Hans,zh-Hant}/modals.json`（8 个） | M-28 | 新建 issue 对话框的仓库下拉文案 `create_issue.github_repo` | 无（JSON） |
 | `packages/views/modals/create-issue.tsx` | M-28 | 仓库下拉、状态调整、提交前检查、请求体带上选择 | 有 |
 | `packages/views/modals/create-issue.test.tsx` | M-28 | 上面这些行为的测试 | 有 |
@@ -67,7 +73,7 @@
 | `server/internal/handler/webhook_status_resolver_test.go` | M-30 | 无 |
 | `server/internal/handler/workspace_delete_manifest_test.go` | M-20 | 有 |
 
-合计：修改过的上游文件 56 个（含 8 个翻译文件与 11 个测试文件），其中 14 个文件内没有修改说明，以本清单为准。
+合计：修改过的上游文件 69 个（含 16 个翻译文件与 13 个测试文件），其中 22 个文件内没有修改说明，以本清单为准。
 
 ## fork 新增的文件
 
@@ -78,7 +84,7 @@
 - `server/internal/integrations/ghsnapshot/`：`ratelimit_export.go`、`static_source.go` 及其测试。
 - `server/cmd/multica/`：`cmd_issue_github.go`、`cmd_issue_import.go` 及测试；`server/cmd/server/githubissues_*_test.go`；`server/cmd/migrate/github_issue_migrations.go`；`server/internal/service/issue_key.go`；`server/internal/testutil/ddl.go`；`server/internal/migrations/` 下的 fork 测试。
 - `server/migrations/9000_*`–`9003_*`：fork 迁移；`server/pkg/db/queries/` 下的 `github_issue.sql`、`githubissues.sql`、`githubissues_write.sql` 与 `server/pkg/db/generated/` 里对应的生成文件。
-- `packages/core/github-issues/`、`packages/views/modals/create-issue-github-repo*.tsx`。
+- `packages/core/github-issues/`、`packages/views/modals/create-issue-github-repo*.tsx`、`packages/views/issues/components/github-issue-link-row*.tsx`。
 - `.github/workflows/build-image.yml`：fork 的镜像构建（M-58 起 `latest` 只随最新的 `-mouse.N` tag 移动）。
 - `.github/workflows/release-fork.yml`、`.goreleaser.fork.yml`、`scripts/fork-release-is-newest*.sh`：fork 的二进制发布与 `latest` 判断（M-58）；`server/internal/cli/update_fork*.go`、`server/internal/daemon/auto_update_fork_test.go`、`server/cmd/multica/cmd_update_fork_test.go`：从 fork Release 更新（M-58）。
 - `docs/fork-release.md`：发布与 runner 更新说明（M-58）。

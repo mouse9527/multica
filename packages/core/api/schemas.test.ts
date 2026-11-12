@@ -218,6 +218,18 @@ describe("IssueSchema (via ListIssuesResponseSchema)", () => {
     });
     expect(parsed.issues[0]?.status_name).toBe("客户确认");
   });
+  // GitHub-native issues (mouse9527/multica fork)
+  it("carries provider and drops only a malformed one", () => {
+    const parsed = ListIssuesResponseSchema.parse({
+      issues: [
+        { ...baseIssue, provider: "github", identifier: "acme/widgets#42" },
+        { ...baseIssue, provider: 42 },
+        baseIssue,
+      ],
+      total: 3,
+    });
+    expect(parsed.issues.map((issue) => issue.provider)).toEqual(["github", undefined, undefined]);
+  });
   it("drops only a malformed status_name, keeping the issue and the list", () => {
     for (const bad of [42, { name: "x" }, ["x"], true]) {
       const parsed = ListIssuesResponseSchema.parse({
