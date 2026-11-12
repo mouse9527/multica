@@ -1319,6 +1319,9 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		slog.Warn("task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
 		return db.AgentTaskQueue{}, err
 	}
+	if err := s.guardRunProjectAccess(ctx, issue, agent, attr.UserID, attr.AccountableUserID); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -1490,6 +1493,9 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
 	if err != nil {
 		slog.Warn("mention task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
+		return db.AgentTaskQueue{}, err
+	}
+	if err := s.guardRunProjectAccess(ctx, issue, agent, attr.UserID, attr.AccountableUserID); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	originatorUserID := attr.UserID
@@ -1692,6 +1698,11 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	// owner), or is refused if the workspace is fail-closed (MUL-4302 §3.5).
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
 	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	// The claim hands this run the project's description and resources (and
+	// the parent issue for a sub-issue), so it is gated like an issue run.
+	if err := s.guardQuickCreateProjectAccess(ctx, workspaceID, agent, requesterID, attr.AccountableUserID, projectID, parentIssueID); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -4402,7 +4413,7 @@ func (s *TaskService) PromoteDueDeferredTasksForRuntime(ctx context.Context, run
 // maybeLogClaimSlow emits one structured log per ClaimTask call when its total
 // latency exceeds 300ms, so the prod tail can be diagnosed without flooding
 // logs at normal poll rates. Called via defer so it captures the full path
-// including post-claim updateAgentStatus / broadcastTaskDispatch (both of
+// including post-claim ReconcileAgentStatus / broadcastTaskDispatch (both of
 // which can hit the DB) and any error exit.
 func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, start time.Time, getAgentMs, countRunningMs, claimAgentMs, reanchorMs, updateStatusMs, dispatchMs int64) {
 	totalMs := time.Since(start).Milliseconds()
@@ -6289,6 +6300,26 @@ func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Quer
 		if err != nil {
 			return err
 		}
+		// A terminal infrastructure error does not stop an independent Muse
+		// worker. Persist that uncertainty in this transaction, before retry
+		// decisions or another claim can observe the failed rows.
+		var startedIDs []pgtype.UUID
+		indices := make(map[pgtype.UUID]int)
+		for i, task := range failed {
+			if task.Status == "failed" && task.StartedAt.Valid {
+				startedIDs = append(startedIDs, task.ID)
+				indices[task.ID] = i
+			}
+		}
+		if len(startedIDs) > 0 {
+			unconfirmed, err := qtx.MarkMuseAppRecoveryCleanupUnconfirmed(ctx, startedIDs)
+			if err != nil {
+				return fmt.Errorf("record Muse recovery cleanup: %w", err)
+			}
+			for _, task := range unconfirmed {
+				failed[indices[task.ID]] = task
+			}
+		}
 		return SettleTerminalTaskState(ctx, qtx, failed...)
 	}); err != nil {
 		return nil, err
@@ -6327,12 +6358,14 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 			}
 		}
 		if !retryPending {
-			if _, err := s.recoverDelegatedTaskFailure(ctx, t); err != nil {
-				slog.Warn("handle failed tasks: delegated failure recovery failed",
-					"task_id", util.UUIDToString(t.ID),
-					"delegated_from_task_id", util.UUIDToString(t.DelegatedFromTaskID),
-					"error", err,
-				)
+			if t.FailureReason.String != taskfailure.ReasonProcessCleanupUnconfirmed.String() && t.FailureReason.String != taskfailure.ReasonProcessCleanupBlocked.String() {
+				if _, err := s.recoverDelegatedTaskFailure(ctx, t); err != nil {
+					slog.Warn("handle failed tasks: delegated failure recovery failed",
+						"task_id", util.UUIDToString(t.ID),
+						"delegated_from_task_id", util.UUIDToString(t.DelegatedFromTaskID),
+						"error", err,
+					)
+				}
 			}
 			// Same terminal-failure comment FailTaskWithTransition posts, so
 			// swept tasks are not silent on their issue.
@@ -6932,6 +6965,13 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		if !ruleVersionID.Valid {
 			ruleVersionID = target.source.RuleVersionID
 		}
+		// The signal stays pending, so a later sweep recovers once access is back.
+		if err := s.guardRunProjectAccess(ctx, target.issue, target.agent, originator, accountable); err != nil {
+			if errors.Is(err, ErrProjectAccessDenied) {
+				return delegatedFailureRecoveryCovered, nil
+			}
+			return delegatedFailureRecoveryCovered, err
+		}
 		overlay := s.buildRuntimeMCPOverlay(ctx, originator, target.agent)
 		task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 			ID:                   dbid.NewV7(),
@@ -7110,17 +7150,6 @@ func (s *TaskService) ReconcileAgentStatus(ctx context.Context, agentID pgtype.U
 		return
 	}
 	slog.Debug("agent status reconciled", "agent_id", util.UUIDToString(agentID), "status", agent.Status)
-	s.publishAgentStatus(agent)
-}
-
-func (s *TaskService) updateAgentStatus(ctx context.Context, agentID pgtype.UUID, status string) {
-	agent, err := s.Queries.UpdateAgentStatus(ctx, db.UpdateAgentStatusParams{
-		ID:     agentID,
-		Status: status,
-	})
-	if err != nil {
-		return
-	}
 	s.publishAgentStatus(agent)
 }
 
@@ -7518,17 +7547,14 @@ func (s *TaskService) notifyRuntimeMayHaveWork(runtimeID pgtype.UUID, taskID str
 }
 
 func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTaskQueue) {
-	var payload map[string]any
-	if task.Context != nil {
-		json.Unmarshal(task.Context, &payload)
+	// Dispatch is a workspace-wide invalidation hint. Task context may contain
+	// private prompts; the daemon receives it through the claim response.
+	payload := map[string]any{
+		"task_id":    util.UUIDToString(task.ID),
+		"runtime_id": util.UUIDToString(task.RuntimeID),
+		"issue_id":   util.UUIDToString(task.IssueID),
+		"agent_id":   util.UUIDToString(task.AgentID),
 	}
-	if payload == nil {
-		payload = map[string]any{}
-	}
-	payload["task_id"] = util.UUIDToString(task.ID)
-	payload["runtime_id"] = util.UUIDToString(task.RuntimeID)
-	payload["issue_id"] = util.UUIDToString(task.IssueID)
-	payload["agent_id"] = util.UUIDToString(task.AgentID)
 	// chat_session_id is the routing key the chat window uses to writethrough
 	// `chatKeys.pendingTask` to status="running" the moment the daemon claims
 	// the task. Without it the pill stays stuck at "Queued" until completion.
@@ -7749,6 +7775,18 @@ func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQu
 		}
 		if msg.ElapsedMs.Valid {
 			payload.ElapsedMs = msg.ElapsedMs.Int64
+		}
+		if msg.MessageKind == "message" {
+			session, sessionErr := s.Queries.GetChatSession(ctx, task.ChatSessionID)
+			origin, originErr := s.Queries.GetTaskChannelOrigin(ctx, task.ID)
+			if sessionErr == nil && originErr == nil && !origin.ChannelIngested &&
+				session.Status == "active" && !session.IsAgentIntro && util.UUIDToString(session.WorkspaceID) == workspaceID {
+				title := strings.TrimSpace(session.Title)
+				if title == "" {
+					title = "Chat reply"
+				}
+				payload.Notification = &protocol.ChatReplyNotification{WorkspaceID: workspaceID, Title: title}
+			}
 		}
 	}
 	s.Bus.Publish(events.Event{
@@ -8043,6 +8081,7 @@ func IssueToMap(issue db.Issue, issuePrefix string) map[string]any {
 		"assignee_type":   util.TextToPtr(issue.AssigneeType),
 		"assignee_id":     util.UUIDToPtr(issue.AssigneeID),
 		"creator_type":    issue.CreatorType,
+		"requester_id":    util.UUIDToPtr(issue.RequesterUserID),
 		"creator_id":      util.UUIDToString(issue.CreatorID),
 		"parent_issue_id": util.UUIDToPtr(issue.ParentIssueID),
 		// Mirrors handler.IssueResponse.DuplicateOf. Null is only true for a

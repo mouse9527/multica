@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import Script from "next/script";
-import { Inter, Geist_Mono, Source_Serif_4 } from "next/font/google";
+import { Inter, Geist_Mono, JetBrains_Mono, Source_Serif_4 } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@multica/ui/components/ui/sonner";
 import { cn } from "@multica/ui/lib/utils";
@@ -12,6 +12,7 @@ import { SITE_TITLE, TITLE_TEMPLATE } from "@/platform/document-title";
 import {
   resolveBrowserApiBaseUrl,
   resolveBrowserWsUrl,
+  resolveDevRemoteApiUrl,
 } from "@/config/runtime-urls";
 import { resolveGoogleAnalyticsId } from "@/config/google-analytics";
 import { GoogleAnalytics } from "@/components/google-analytics";
@@ -47,28 +48,30 @@ const inter = Inter({
 // Mono font has no explicit CJK fallback: CJK chars in code blocks are inherently
 // non-aligned with a mono grid (Chinese is proportional), so listing CJK fonts
 // here would falsely signal alignment guarantees. Browser default fallback handles
-// the rare mixed case correctly.
+// the rare mixed case correctly. `--font-mono` itself is composed in
+// ./globals.css so the Appearance code font can replace it without losing the
+// Geist family, which the monospace UI font still uses.
 const geistMono = Geist_Mono({
   subsets: ["latin"],
-  variable: "--font-mono",
-  fallback: ["ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
+  variable: "--font-geist-mono",
 });
-// Editorial serif used for onboarding headlines. Italic support for h1 em
-// accents (e.g. "...on one shared board."). Only loaded on routes that
-// render the font; layout-shift-prevention handled by next/font's synthetic
-// fallback metrics, same as Inter.
+// Optional code font from the Appearance settings. Not preloaded: the face is
+// only fetched once something renders with it.
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-jetbrains-mono",
+  preload: false,
+});
+// Editorial serif used for onboarding headlines and the Appearance "Serif"
+// font. Italic support for h1 em accents (e.g. "...on one shared board.").
+// Only loaded on routes that render the font; layout-shift-prevention handled
+// by next/font's synthetic fallback metrics, same as Inter. No `fallback`:
+// next/font writes it into the variable, and the stacks built on it in
+// ./globals.css differ in whether they may end with a generic family.
 const sourceSerif = Source_Serif_4({
   subsets: ["latin"],
   style: ["normal", "italic"],
-  variable: "--font-serif",
-  fallback: [
-    "ui-serif",
-    "Iowan Old Style",
-    "Apple Garamond",
-    "Baskerville",
-    "Times New Roman",
-    "serif",
-  ],
+  variable: "--font-source-serif",
 });
 
 export const viewport: Viewport = {
@@ -138,12 +141,21 @@ export default async function RootLayout({
   const wsUrl = resolveBrowserWsUrl(process.env);
   // Opt-in Google Analytics: omitted entirely unless GOOGLE_ANALYTICS_ID is set.
   const googleAnalyticsId = resolveGoogleAnalyticsId(process.env);
+  // Dev toolbar: a status bar pinned to the bottom of the window. Opt-in per
+  // developer with VITE_DEV_TOOLBAR=1, the same convention and var prefix as
+  // react-grab below, so one variable enables it on web and desktop. Without
+  // an explicit API URL the browser goes through the dev proxy, so the
+  // toolbar reports the proxy's upstream.
+  const devToolbarApiUrl =
+    process.env.NODE_ENV === "development" && process.env.VITE_DEV_TOOLBAR
+      ? apiBaseUrl || resolveDevRemoteApiUrl(process.env)
+      : undefined;
 
   return (
     <html
       lang={HTML_LANG[locale]}
       suppressHydrationWarning
-      className={cn("antialiased font-sans h-full", inter.variable, geistMono.variable, sourceSerif.variable)}
+      className={cn("antialiased font-sans h-full", inter.variable, geistMono.variable, jetbrainsMono.variable, sourceSerif.variable)}
     >
       <body className="h-full overflow-hidden">
         {/*
@@ -170,6 +182,7 @@ export default async function RootLayout({
             resources={resources}
             apiBaseUrl={apiBaseUrl}
             wsUrl={wsUrl}
+            devToolbarApiUrl={devToolbarApiUrl}
           >
             {children}
           </WebProviders>
