@@ -75,6 +75,35 @@ func TestGitHubIssueImportRouteAbsentWhileOff(t *testing.T) {
 	}
 }
 
+// With the feature off the sync routes answer like any other unknown path
+// under an issue or a project, as upstream.
+func TestGitHubSyncRoutesAbsentWhileOff(t *testing.T) {
+	call := func(method, path string) int {
+		t.Helper()
+		req, err := http.NewRequest(method, testServer.URL+path, strings.NewReader(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.Header.Set("X-Workspace-ID", testWorkspaceID)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	const id = "00000000-0000-4000-8000-000000000001"
+	for _, c := range []struct{ method, route, unknown string }{
+		{http.MethodPost, "/api/issues/" + id + "/github-sync", "/api/issues/" + id + "/no-such-route"},
+		{http.MethodGet, "/api/projects/" + id + "/github-issues", "/api/projects/" + id + "/no-such-route"},
+	} {
+		if got, upstream := call(c.method, c.route), call(c.method, c.unknown); got != upstream || got < 400 {
+			t.Errorf("%s %s while off = %d, want %d like any unknown path", c.method, c.route, got, upstream)
+		}
+	}
+}
+
 func TestGitHubTokenStatusRouteIsAdminOnly(t *testing.T) {
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-OAuth-Scopes", "repo")

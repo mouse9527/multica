@@ -47,7 +47,14 @@ const (
 // until ctx is done. A cycle takes up to pollRunTimeout, and the scheduler runs
 // handlers one after another, so sharing the main scheduler would hold back
 // every other job (issue wakeups tick every 30 seconds) behind GitHub.
+//
+// The poll is off unless MULTICA_GITHUB_POLL_ENABLED=true: StartPolling then
+// registers nothing, and GitHub is read only by manual syncs (SyncIssue).
 func (s *Service) StartPolling(ctx context.Context, pool *pgxpool.Pool) error {
+	if !s.cfg.PollEnabled() {
+		s.logger.Info("github issues poll off (" + EnvPollEnabled + " is not true); sync manually")
+		return nil
+	}
 	mgr := scheduler.NewManager(pool, scheduler.Options{TickInterval: pollTickInterval})
 	if err := mgr.Register(s.PollJob()); err != nil {
 		return err
@@ -107,6 +114,13 @@ func (g *pollGate) paused(now time.Time) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return now.Before(g.pausedUntil)
+}
+
+// until is when the pause ends; zero or past when there is none.
+func (g *pollGate) until() time.Time {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pausedUntil
 }
 
 func (g *pollGate) pause(until time.Time) {

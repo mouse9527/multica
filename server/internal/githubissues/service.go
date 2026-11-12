@@ -82,6 +82,9 @@ type Service struct {
 	refreshGate refreshGate
 	// refreshing counts on-view refreshes still running.
 	refreshing sync.WaitGroup
+	// quota is the request quota GitHub last reported, for the manual sync
+	// guard.
+	quota quotaState
 }
 
 // New logs whether the feature is on and returns its Service, or nil when it
