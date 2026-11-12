@@ -188,6 +188,13 @@ MULTICA_GITHUB_TOKEN_EXPIRES_AT=2027-03-01
 
 没改的：PR 关联按 `PREFIX-N` 匹配（`handler/github.go`，任务 M 处理）、插件上下文和 IM 渠道回复里的标识（`service/plugin_action.go`、`channel/engine/router.go`）。
 
+### 正文里的 `owner/repo#N`（M-60）
+
+- 只读渲染（聊天、评论）：`packages/ui/markdown/github-issue-keys.ts` 在 `PREFIX-N` 之前把正文里完整的 `owner/repo#N` 改写成 `[owner/repo#N](mention://issue/owner%2Frepo%23N)`；`RichLink` 解码后和 `PREFIX-N` 走同一个查找（`GET /api/issues/{id}`），命中渲染成 issue 卡片，未命中（未跟踪、别的工作区、开关关闭时服务端 404）还原成原文。代码块、行内代码、已有链接、URL、更长的路径（`a/owner/repo#1`、`github.com/...`）不改写。
+- 编辑器（issue 正文、评论输入）：和 `PREFIX-N` 一样，只在用户输入或粘贴时识别，命中后替换成 `[owner/repo#N](mention://issue/<uuid>)` 节点；打开已有内容不改写。
+- 不识别没有 owner 的 `repo#N`、`#N`。服务端没有改动：标识解析在 M-22 已有。
+- 智能体的写法见 multica-platform skill 的 `references/mentions.md`：评论、聊天里写完整的 `owner/repo#N` 纯文本。它在 Multica 渲染成卡片，在 GitHub 上是原生的交叉引用；`mention://issue/<uuid>` 链接同步到 GitHub 后打不开。
+
 ## 外部作者
 
 GitHub 上工作区以外的人写的评论和新建的 issue，在 Multica 里归到固定身份，GitHub 作者写在正文前缀里。**不改任何现有表约束**（Owner 选定，见 #26）。代码在 `external_author.go`、`external_comment.go`、`sync_account.go`，由轮询（#16）与导入（#50）调用。

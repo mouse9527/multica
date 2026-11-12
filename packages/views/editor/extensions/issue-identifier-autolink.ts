@@ -31,6 +31,7 @@ import type { EditorState, Transaction } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import type { Mark, Node as PMNode, NodeType } from "@tiptap/pm/model";
 import type { RefObject } from "react";
+import { GITHUB_ISSUE_KEY_TOKEN_SOURCE } from "@multica/ui/markdown";
 
 export interface ResolvedIssueRef {
   /** Issue UUID. */
@@ -52,8 +53,12 @@ export interface IssueIdentifierAutolinkOptions {
 }
 
 // Boundary-delimited, case-sensitive identifier — same shape as the readonly
-// detector in @multica/ui/markdown.
-const IDENTIFIER_RE = /(?<![A-Za-z0-9_-])([A-Z][A-Z0-9]*-\d+)(?![A-Za-z0-9_-])/g;
+// detector in @multica/ui/markdown. Modified by the mouse9527/multica fork: a
+// GitHub-native issue key (`owner/repo#N`, group 2) is a candidate too.
+const IDENTIFIER_RE = new RegExp(
+  `(?<![A-Za-z0-9_-])([A-Z][A-Z0-9]*-\\d+)(?![A-Za-z0-9_-])|${GITHUB_ISSUE_KEY_TOKEN_SOURCE}`,
+  "g",
+);
 const BOUNDARY_RE = /[A-Za-z0-9_-]/;
 
 // Set on our own replacement transactions with the list of pending keys they
@@ -108,7 +113,7 @@ function collectCandidates(
     IDENTIFIER_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = IDENTIFIER_RE.exec(text)) !== null) {
-      const identifier = m[1];
+      const identifier = m[1] ?? m[2];
       if (!identifier) continue;
       const localEnd = m.index + identifier.length;
       if (localEnd >= text.length) continue; // no trailing boundary in-node

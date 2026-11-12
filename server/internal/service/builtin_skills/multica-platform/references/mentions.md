@@ -53,6 +53,22 @@ a project reference should never be able to start a run. Use it freely to point
 at a project; everything else in this document is about the four types (plus
 `all`) the parser does recognize.
 
+<!-- Modified by the mouse9527/multica fork: GitHub-native issue keys. -->
+### Referencing a GitHub-native issue
+
+On a server with GitHub-native issues, a GitHub-hosted issue's identifier is
+`owner/repo#N`, and the issue lives on GitHub too: its body and the comments on
+it are copied there as written. To reference such an issue in prose, write the
+full key as plain text — `mouse9527/multica#21`. In comments and chat, readers'
+clients render a full key of an issue this workspace tracks as the same issue
+chip as `MUL-123`; on GitHub the same text is a native cross-reference. Do not
+wrap it in `[…](mention://issue/<uuid>)` there: GitHub cannot open that link.
+
+Short forms are not references: `multica#21` and `#21` stay plain text in
+Multica (on GitHub `#21` would point into whichever repository shows the text).
+Inside code, links and URLs a key is never converted. A key this workspace does
+not track stays plain text.
+
 ## Step 1 — look up the UUID
 
 A name is not a UUID. Look the UUID up first, from the matching list command:

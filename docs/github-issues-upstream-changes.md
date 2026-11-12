@@ -14,9 +14,15 @@
 | `packages/core/api/client.ts` | M-28 | `getProjectGitHubSettings`（404 返回 `null`） | 有 |
 | `packages/core/package.json` | M-28 | 导出 `./github-issues` | 无 |
 | `packages/core/types/api.ts` | M-28 | `CreateIssueRequest.repo`、`provider` | 有 |
+| `packages/ui/markdown/index.ts` | M-60 | 导出 `github-issue-keys` | 有 |
+| `packages/views/editor/content-editor.tsx` | M-60 | 编辑器识别的解析器接受 `owner/repo#N`，不比对前缀 | 有 |
+| `packages/views/editor/extensions/issue-identifier-autolink.ts` | M-60 | 候选正则加上 `owner/repo#N` | 有 |
+| `packages/views/editor/utils/preprocess.ts` | M-60 | 只读渲染先识别 `owner/repo#N`，再识别 `PREFIX-N` | 有 |
+| `packages/views/issues/hooks/use-resolve-issue-identifier.ts` | M-60 | 对 `owner/repo#N` 发起查找 | 有 |
 | `packages/views/locales/{en,es,fr,ja,ko,ru,zh-Hans,zh-Hant}/modals.json`（8 个） | M-28 | 新建 issue 对话框的仓库下拉文案 `create_issue.github_repo` | 无（JSON） |
 | `packages/views/modals/create-issue.tsx` | M-28 | 仓库下拉、状态调整、提交前检查、请求体带上选择 | 有 |
 | `packages/views/modals/create-issue.test.tsx` | M-28 | 上面这些行为的测试 | 有 |
+| `packages/views/rich-content/rich-content.tsx` | M-60 | `mention://issue/<转义后的 owner/repo#N>` 交给标识查找 | 有 |
 | `server/cmd/multica/cmd_id_resolver.go` | M-22 | 接受 `owner/repo#N` | 有 |
 | `server/cmd/multica/cmd_issue.go` | M-22、M-28 | `--fields` 加 `provider`；`issue create` 的 `--repo`、`--provider` 与 422 改写 | 有 |
 | `server/cmd/server/activity_listeners.go` | M-22 | 活动记录里的 issue 标识 | 有 |
@@ -39,6 +45,7 @@
 | `server/internal/handler/vcs_webhook.go` | M-30 | 调 `reconcileAutoLinks` 时忽略新增的错误返回值（1 行） | 无 |
 | `server/internal/handler/workspace.go` | M-20 | 删除工作区时清理 fork 表 | 有 |
 | `server/internal/integrations/ghsnapshot/client.go` | M-25 | PR 快照的静态令牌来源 | 有 |
+| `server/internal/service/builtin_skills/multica-platform/references/mentions.md` | M-60 | 智能体引用 GitHub 托管 issue 的写法 | 有 |
 | `server/internal/service/issue.go` | M-27 | `IssueCreateOpts.InTx`：提交前在创建事务里执行 | 有 |
 | `server/internal/service/source_context.go` | M-22 | 来源快照里的 issue 标识改用 `LookupIssueIdentifier`（1 行） | 无 |
 | `server/internal/service/task.go` | M-22 | `IssueToMap` 带 `provider`，`IssueToMapResolved` 改写标识 | 有 |
@@ -61,7 +68,7 @@
 | `server/internal/handler/webhook_status_resolver_test.go` | M-30 | 无 |
 | `server/internal/handler/workspace_delete_manifest_test.go` | M-20 | 有 |
 
-合计：修改过的上游文件 50 个（含 8 个翻译文件与 10 个测试文件），其中 14 个文件内没有修改说明，以本清单为准。
+合计：修改过的上游文件 57 个（含 8 个翻译文件与 10 个测试文件），其中 14 个文件内没有修改说明，以本清单为准。
 
 ## fork 新增的文件
 
@@ -73,5 +80,6 @@
 - `server/cmd/multica/`：`cmd_issue_github.go`、`cmd_issue_import.go` 及测试；`server/cmd/server/githubissues_*_test.go`；`server/cmd/migrate/github_issue_migrations.go`；`server/internal/service/issue_key.go`；`server/internal/testutil/ddl.go`；`server/internal/migrations/` 下的 fork 测试。
 - `server/migrations/9000_*`–`9003_*`：fork 迁移；`server/pkg/db/queries/` 下的 `github_issue.sql`、`githubissues.sql`、`githubissues_write.sql` 与 `server/pkg/db/generated/` 里对应的生成文件。
 - `packages/core/github-issues/`、`packages/views/modals/create-issue-github-repo*.tsx`。
+- `packages/ui/markdown/github-issue-keys.ts`；测试 `packages/views/editor/utils/github-issue-keys.test.ts`、`packages/views/editor/extensions/github-issue-key-autolink.test.ts`、`packages/views/rich-content/github-issue-key-rendering.test.tsx`。
 - `.github/workflows/build-image.yml`：fork 的镜像构建。
 - `docs/github-issues*.md`。
