@@ -47,7 +47,7 @@ import { useWorkspaceSlug } from "@multica/core/paths";
 import { useQueryClient } from "@tanstack/react-query";
 import { issueIdentifierOptions } from "@multica/core/issues/queries";
 import { workspaceListOptions } from "@multica/core/workspace/queries";
-import { isIssueIdentifier } from "@multica/ui/markdown";
+import { isGitHubIssueKey, isIssueIdentifier } from "@multica/ui/markdown";
 import type { Attachment } from "@multica/core/types";
 import {
   parseMarkdownChunked,
@@ -535,7 +535,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       undefined,
     );
     resolveIssueIdentifierRef.current = async (identifier) => {
-      if (!isIssueIdentifier(identifier)) return null;
+      const githubKey = isGitHubIssueKey(identifier); // GitHub-native issues (fork): `owner/repo#N` has no prefix
+      if (!githubKey && !isIssueIdentifier(identifier)) return null;
       const slug = workspaceSlugRef.current;
       if (!slug) return null;
       const workspaces = await queryClient.fetchQuery(workspaceListOptions());
@@ -543,6 +544,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       if (!ws) return null;
       const prefix = ws.issue_prefix;
       if (
+        !githubKey &&
         prefix &&
         !identifier.toUpperCase().startsWith(`${prefix.toUpperCase()}-`)
       ) {
