@@ -130,6 +130,7 @@ type Config struct {
 	GCTaskTempLegacyTTL            time.Duration         // reclaim a per-task temp dir (<temp base>/multica-task-*) that carries no execution lock — i.e. left by a daemon predating the lock — once nothing inside it has been touched for this long. Dirs that DO carry the lock are reclaimed on liveness, never on age, so this knob does not apply to them. Neither does it reclaim a dir holding no task content — an old empty leftover, or a shell left by a daemon that died between creating the dir and publishing its lock — because holding no content is exactly what a dir currently being published looks like (default: 0, disabled — see DefaultGCTaskTempLegacyTTL)
 	AutoUpdateEnabled              bool                  // periodically check for a newer CLI release and self-update when idle (default: true on Multica Cloud, false on self-host)
 	AutoUpdateCheckInterval        time.Duration         // how often the auto-update loop polls for a new release (default: 6h)
+	AutoUpdateTarget               string                // fork: which release auto-update installs — "server" (match the server's version, default) or "latest"; empty means "latest" (auto_update_fork.go)
 	AutoReloadEnabled              bool                  // restart when the multica binary on disk no longer matches the running version (default: true for CLI-launched daemons)
 	PollInterval                   time.Duration
 	WSClaimPollInterval            time.Duration // upper bound for healthy WS batch-claim safety polls; actual sleeps use downward-only jitter
@@ -615,6 +616,11 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	if overrides.AutoUpdateCheckInterval > 0 {
 		autoUpdateInterval = overrides.AutoUpdateCheckInterval
 	}
+	// Modified by the mouse9527/multica fork: auto-update target (auto_update_fork.go).
+	autoUpdateTarget, err := autoUpdateTargetFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
 
 	// Auto-reload is deliberately NOT gated on autoUpdateEnabled. "Don't pull
 	// new versions from GitHub" and "follow the binary I replaced myself" are
@@ -651,6 +657,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		GCTaskTempLegacyTTL:             gcTaskTempLegacyTTL,
 		AutoUpdateEnabled:               autoUpdateEnabled,
 		AutoUpdateCheckInterval:         autoUpdateInterval,
+		AutoUpdateTarget:                autoUpdateTarget,
 		AutoReloadEnabled:               autoReloadEnabled,
 		HealthPort:                      healthPort,
 		MaxConcurrentTasks:              maxConcurrentTasks,

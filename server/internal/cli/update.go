@@ -253,8 +253,14 @@ func verifyAssetSHA256(data []byte, expectedHex, assetName string) error {
 }
 
 func fetchReleaseByTag(tag string) (*GitHubRelease, error) {
+	// Modified by the mouse9527/multica fork: the repository is configurable
+	// and defaults to the fork (update_fork.go).
+	repoPath, err := releaseRepoAPIPath()
+	if err != nil {
+		return nil, err
+	}
 	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, releaseAPIBaseURL()+"/repos/multica-ai/multica/releases/tags/"+url.PathEscape(tag), nil)
+	req, err := http.NewRequest(http.MethodGet, releaseAPIBaseURL()+repoPath+"/releases/tags/"+url.PathEscape(tag), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -277,10 +283,16 @@ func fetchReleaseByTag(tag string) (*GitHubRelease, error) {
 	return &release, nil
 }
 
-// FetchLatestRelease fetches the latest release tag from the multica GitHub repo.
+// FetchLatestRelease fetches the latest release tag from the configured
+// release repository (ReleaseRepo).
 func FetchLatestRelease() (*GitHubRelease, error) {
+	// Modified by the mouse9527/multica fork: configurable repository.
+	repoPath, err := releaseRepoAPIPath()
+	if err != nil {
+		return nil, err
+	}
 	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, releaseAPIBaseURL()+"/repos/multica-ai/multica/releases/latest", nil)
+	req, err := http.NewRequest(http.MethodGet, releaseAPIBaseURL()+repoPath+"/releases/latest", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -389,8 +401,9 @@ func UpdateViaDownload(targetVersion string) (string, error) {
 
 // UpdateViaDownloadWithTimeout downloads the latest release binary with a caller-selected timeout.
 func UpdateViaDownloadWithTimeout(targetVersion string, downloadTimeout time.Duration) (string, error) {
-	// Determine current binary path.
-	exePath, err := selfexec.Resolve()
+	// Determine current binary path. Modified by the mouse9527/multica fork:
+	// resolved through an indirection so tests replace a temp file.
+	exePath, err := updateExecutablePath()
 	if err != nil {
 		return "", fmt.Errorf("resolve executable path: %w", err)
 	}

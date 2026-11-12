@@ -20,6 +20,10 @@ concurrency:
 
 jobs:
   verify:
+    # Modified by the mouse9527/multica fork: every job below needs verify, so
+    # this keeps the whole upstream release off forks. The fork publishes
+    # through release-fork.yml and build-image.yml (docs/fork-release.md).
+    if: github.repository_owner == 'multica-ai'
     runs-on: ubuntu-latest
     outputs:
       tag_name: ${{ steps.release_meta.outputs.tag_name }}

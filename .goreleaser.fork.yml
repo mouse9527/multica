@@ -1,0 +1,66 @@
+# Fork-only GoReleaser config (not present upstream), used by
+# .github/workflows/release-fork.yml. It publishes the `multica` CLI/daemon
+# archives and checksums.txt to this fork's GitHub Release. Compared with
+# upstream .goreleaser.yml it drops the Homebrew tap (needs a token for
+# multica-ai/homebrew-tap) and the legacy `multica_{os}_{arch}` archive name,
+# and it marks fork releases as the latest release even though their tags
+# carry a "-fork.N" suffix. See docs/fork-release.md.
+version: 2
+
+project_name: multica
+
+release:
+  # Same-tag reruns replace only the matching assets.
+  replace_existing_artifacts: true
+  # "-fork.N" tags are regular releases, not pre-releases: `multica update`
+  # and the daemon read /releases/latest, which skips pre-releases.
+  prerelease: "false"
+  make_latest: "true"
+
+builds:
+  - id: multica
+    main: ./cmd/multica
+    dir: server
+    binary: multica
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.buildCommit={{.FullCommit}}
+      - -X main.date={{.Date}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  # The name `multica update` looks for first (cli.releaseAssetCandidates).
+  - id: versioned
+    files:
+      - LICENSE*
+      - README*
+      - NOTICE
+      - docs/github-issues-upstream-changes.md
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "{{ .ProjectName }}-cli-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
