@@ -263,7 +263,7 @@ func (env *pollEnv) importIssue(t *testing.T, number int) polledIssue {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := env.svc.ImportIssue(context.Background(), ws, IssueRef{Owner: "acme", Repo: "widgets", Number: int32(number)}); err != nil {
+	if _, _, err := env.svc.ImportIssue(context.Background(), ws, IssueRef{Owner: "acme", Repo: "widgets", Number: int32(number)}, seeAllProjects); err != nil {
 		t.Fatalf("import #%d: %v", number, err)
 	}
 	return env.issue(t, number)

@@ -432,6 +432,7 @@ GitHub 上的 issue 只有被明确要求时才进入 Multica（#50）。代码�
 ### 规则
 
 - 仓库必须登记在本工作区某个项目上（白名单，经 `RepoClient`），名字不区分大小写，存的是登记的写法。不在白名单：403 `github_repo_not_registered`，不发请求。
+- 私有项目（上游的项目可见性）：调用者看不到仓库所属的目标项目时，同样答 403 `github_repo_not_registered`；已导入的 issue 后来被移进调用者看不到的项目时，答 404 `github_issue_not_found`。两者都在发任何请求、写任何数据之前判断，新导入、重复导入、补完未完成的导入都一样（#73）。
 - **幂等：** 本地已有这个 issue 的 `issue_external` 时不重复建，返回已有的 issue（200）；返回前重读它的全部评论（按 GitHub 评论 id 去重，不产生重复评论），用来补完上次没读完的导入。并发的两次导入由轮询的 advisory lock 串行，只建一个。
 - 读 `GET /repositories/{id}/issues/{N}`：编号是 PR（带 `pull_request` 键，或 URL 是 `/pull/N`）时 422 `github_pull_request`，不入库；404、410、301（删除或转移）时 404 `github_issue_not_found`。
 - 入库与轮询原来导入他人 issue 的规则相同：创建者是同步账号（`IssueCreator`，见「外部作者」），描述是带前缀的原文，不指派任何人，项目是最早登记该仓库的项目，优先级 `none`。同一事务写 `issue_external`。工作区编号冲突时按上游的做法修复计数器后重试一次。同步账号不可用时 409 `github_sync_account_unavailable`，不入库。

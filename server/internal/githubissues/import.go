@@ -105,7 +105,13 @@ func ParseIssueRef(raw string) (IssueRef, error) {
 // stored and returned with an error wrapping ErrImportIncomplete. Importing
 // an issue that is already imported reads its comments again, which is how
 // such an import is finished; it never creates a second issue.
-func (s *Service) ImportIssue(ctx context.Context, workspaceID pgtype.UUID, ref IssueRef) (issueID pgtype.UUID, created bool, err error) {
+//
+// canSee reports whether the caller may see a project (upstream's private
+// projects). It is asked before anything is written or sent to GitHub: a
+// repository whose target project is hidden answers ErrRepoNotRegistered, and
+// an imported issue in a hidden project answers ErrGitHubIssueNotFound, so a
+// private project's repositories and issues look absent to outsiders.
+func (s *Service) ImportIssue(ctx context.Context, workspaceID pgtype.UUID, ref IssueRef, canSee func(projectID pgtype.UUID) bool) (issueID pgtype.UUID, created bool, err error) {
 	if s == nil {
 		return pgtype.UUID{}, false, ErrFeatureOff
 	}
@@ -118,6 +124,9 @@ func (s *Service) ImportIssue(ctx context.Context, workspaceID pgtype.UUID, ref 
 	if err != nil {
 		return pgtype.UUID{}, false, err
 	}
+	if !canSeeProject(canSee, projectID) {
+		return pgtype.UUID{}, false, ErrRepoNotRegistered
+	}
 	repo, err := s.RepoClient(ctx, workspaceID, name.owner, name.name)
 	if err != nil {
 		return pgtype.UUID{}, false, err
@@ -125,6 +134,16 @@ func (s *Service) ImportIssue(ctx context.Context, workspaceID pgtype.UUID, ref 
 	id, found, err := importedIssue(ctx, q, repo, ref.Number)
 	if err != nil {
 		return pgtype.UUID{}, false, err
+	}
+	if found {
+		// The issue may have been moved since it was imported.
+		issue, err := q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: id, WorkspaceID: workspaceID})
+		if err != nil {
+			return pgtype.UUID{}, false, fmt.Errorf("githubissues: load imported issue: %w", err)
+		}
+		if !canSeeProject(canSee, issue.ProjectID) {
+			return pgtype.UUID{}, false, ErrGitHubIssueNotFound
+		}
 	}
 	if s.pollGate.paused(s.now()) {
 		return id, false, ErrImportPaused
@@ -205,6 +224,15 @@ func importedIssue(ctx context.Context, q *db.Queries, repo *Repo, number int32)
 	default:
 		return pgtype.UUID{}, false, err
 	}
+}
+
+// canSeeProject treats an issue outside any project as visible, as upstream
+// does; a nil canSee sees nothing.
+func canSeeProject(canSee func(pgtype.UUID) bool, projectID pgtype.UUID) bool {
+	if !projectID.Valid {
+		return true
+	}
+	return canSee != nil && canSee(projectID)
 }
 
 // importTarget finds the repository of ref among those registered in the
