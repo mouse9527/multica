@@ -59,12 +59,18 @@ jobs:
       # `latest` image rule in build-image.yml.
       - name: Decide whether this is the newest release
         id: latest
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           bash scripts/fork-release-is-newest.test.sh
-          newest="$(gh api "repos/$GITHUB_REPOSITORY/tags" --paginate --jq '.[].name' | bash scripts/fork-release-is-newest.sh "$TAG")"
+          # Fails the job, and so the release, when the tag list cannot be read.
+          newest="$(bash scripts/fork-release-is-newest.sh "$TAG")"
+          if [ "$newest" != "true" ] && [ "$newest" != "false" ]; then
+            echo "::error::unexpected newest-release decision '$newest'"
+            exit 1
+          fi
           echo "make_latest=$newest" >> "$GITHUB_OUTPUT"
 
       - name: Setup Go
@@ -127,7 +133,9 @@ jobs:
             "multica-cli-${version}-darwin-arm64.tar.gz" \
             "multica-cli-${version}-darwin-amd64.tar.gz" \
             "multica-cli-${version}-linux-amd64.tar.gz" \
-            "multica-cli-${version}-linux-arm64.tar.gz"; do
+            "multica-cli-${version}-linux-arm64.tar.gz" \
+            "multica-cli-${version}-windows-amd64.zip" \
+            "multica-cli-${version}-windows-arm64.zip"; do
             if ! grep -qxF "$want" <<< "$assets"; then
               echo "::error::release $TAG is missing $want"
               missing=1

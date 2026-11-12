@@ -22,7 +22,7 @@
    ```
 
 3. 推送后两个工作流同时运行，都会先检查 tag 格式和 tag 指向的提交在 `main` 上，不满足就什么都不发布：
-   - `.github/workflows/release-fork.yml`：跑更新相关测试和 `govulncheck`，用 `.goreleaser.fork.yml` 构建并发布 Release。产物是 `multica-cli-<版本>-{darwin,linux,windows}-{amd64,arm64}.{tar.gz,zip}` 和 `checksums.txt`；每个压缩包带 `LICENSE`、`NOTICE`、`README*` 和修改清单 `docs/github-issues-upstream-changes.md`。最后核对 4 个必需平台（darwin/linux × amd64/arm64）的包和 `checksums.txt` 都在、Release 不是 pre-release、并且（最新版本时）是 latest。
+   - `.github/workflows/release-fork.yml`：跑更新相关测试和 `govulncheck`，用 `.goreleaser.fork.yml` 构建并发布 Release。产物是 `multica-cli-<版本>-{darwin,linux,windows}-{amd64,arm64}.{tar.gz,zip}` 和 `checksums.txt`；每个压缩包带 `LICENSE`、`NOTICE`、`README*` 和修改清单 `docs/github-issues-upstream-changes.md`。最后核对 6 个平台的包和 `checksums.txt` 都在、Release 不是 pre-release、并且（最新版本时）是 latest。
    - `.github/workflows/build-image.yml`：构建并推送 `ghcr.io/mouse9527/multica-backend:<tag>` 和 `multica-web:<tag>`。
 
 ### `latest` 的规则
@@ -33,9 +33,16 @@
 | 推 `-mouse.N` tag，且它是最新的 `-mouse.N` | 推 `<tag>`，并把 `latest` 移到这次构建 | 发布，标为 latest |
 | 推 `-mouse.N` tag，但已有更新的 `-mouse.N`（比如重跑旧 tag） | 只推 `<tag>`，不动 `latest` | 发布，不标为 latest |
 
-「最新」由 `scripts/fork-release-is-newest.sh` 按上面的版本比较规则判断（测试：`scripts/fork-release-is-newest.test.sh`，发布时会先跑）。这样 server 取 `latest` 镜像、runner 取最新 Release，两者指向同一个版本。
+「最新」由 `scripts/fork-release-is-newest.sh` 按上面的版本比较规则判断（测试：`scripts/fork-release-is-newest.test.sh`，两个工作流用它之前都会先跑）。它通过 GitHub API 读仓库的 tag 列表；读取失败时脚本报错退出，所在步骤失败，`latest` 不会移动，Release 也不会发布。这样 server 取 `latest` 镜像、runner 取最新 Release，两者指向同一个版本。
 
-同一 tag 重跑会替换同名产物。撤回一个坏版本：把 Release 删掉或改回草稿，`/releases/latest` 回到上一个版本；`latest` 镜像要手动移回（或发一个新的 `-mouse.N`）；已经更新的 runner 需要手动装回旧版本（见下文）。
+同一 tag 重跑会替换同名产物。
+
+**只成功了一半**（两个工作流互相独立）：
+- Release 成功、镜像失败：runner 会先升到新版本，server 还在旧的 `latest` 镜像上。在 Actions 里重跑这个 tag 的 Build Image 运行；短时间内修不好就先把这个 Release 改回草稿，runner 停在旧版本，等镜像修好再发布。
+- 镜像成功、Release 失败：server 先更新，runner 不变。重跑这个 tag 的 Release (fork) 运行。
+- 判断「是否最新」时 GitHub API 出错导致的失败，直接重跑即可。
+
+撤回一个坏版本：把 Release 删掉或改回草稿，`/releases/latest` 回到上一个版本；`latest` 镜像要手动移回（或发一个新的 `-mouse.N`）；已经更新的 runner 需要手动装回旧版本（见下文）。
 
 ### 上游发布流程里关掉的部分
 
@@ -95,7 +102,7 @@ tar -xzf "$F" multica && install -m 755 multica "$(dirname "$(command -v multica
 multica --version
 ```
 
-Homebrew 装的需要先 `brew uninstall multica`，再把二进制放到 `PATH` 里的目录。daemon 会在空闲时自己重启进新二进制（auto-reload），或者手动 `multica daemon restart`。装回旧版本也用同样的步骤换成旧 tag。
+仓库自带的 `scripts/install.sh`、`scripts/install.ps1` 仍从上游下载，装出来的是上游二进制，不要用它们安装 fork 版本。Homebrew 装的需要先 `brew uninstall multica`，再把二进制放到 `PATH` 里的目录。daemon 会在空闲时自己重启进新二进制（auto-reload），或者手动 `multica daemon restart`。装回旧版本也用同样的步骤换成旧 tag。
 
 ## 不做的
 
