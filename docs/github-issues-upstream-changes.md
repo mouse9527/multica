@@ -34,7 +34,7 @@
 | `server/internal/daemon/auto_update.go` | M-58 | 版本判断接受 `-mouse.N`（两行） | 有 |
 | `server/internal/daemon/daemon.go` | M-58 | `runUpdate` 前的 Homebrew 检查 | 有 |
 | `server/internal/handler/activity.go` | M-29 | 时间线接口载入 issue 后触发按需刷新 | 有 |
-| `server/internal/handler/comment.go` | M-23、M-27、M-29 | 外部评论只读；评论新建、编辑、删除的双写；评论列表触发按需刷新 | 有 |
+| `server/internal/handler/comment.go` | M-27、M-29 | 评论新建、编辑、删除的双写（外部评论只读检查在编辑、删除的双写钩子里）；评论列表触发按需刷新 | 有 |
 | `server/internal/handler/daemon.go` | M-22 | 认领任务时的 issue 标识 | 有 |
 | `server/internal/handler/github.go` | M-30 | PR 镜像入参归一化（`prMirrorInput`）、关联 GitHub issue、返回写入错误 | 有 |
 | `server/internal/handler/handler.go` | M-22、M-23、M-26、M-27、M-29、M-30 | `Handler` 的 fork 钩子字段；`owner/repo#N` 解析 | 有 |

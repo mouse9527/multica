@@ -3366,9 +3366,6 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "comment not found")
 		return
 	}
-	if h.rejectExternalCommentWrite(w, r, existing) { // mouse9527/multica fork
-		return
-	}
 	if bound, err := h.Queries.CommentHasTaskSupplement(r.Context(), db.CommentHasTaskSupplementParams{
 		CommentID: existing.ID, WorkspaceID: wsUUID,
 	}); err != nil {
@@ -3655,9 +3652,6 @@ func (h *Handler) DeleteComment(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "comment not found")
-		return
-	}
-	if h.rejectExternalCommentWrite(w, r, comment) { // mouse9527/multica fork
 		return
 	}
 

@@ -243,7 +243,7 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 
 ### 只读
 
-外部评论在 Multica 里只读：`PUT`、`DELETE /api/comments/{id}` 对「`system` 作者且有 `comment_external` 行」的评论返回 403，owner、admin 也一样。其他评论（成员、智能体、平台通知）不受影响。功能关闭时不做这项检查，与上游一致。
+外部评论在 Multica 里只读：`PUT`、`DELETE /api/comments/{id}` 对「`system` 作者且有 `comment_external` 行」的评论返回 403，owner、admin 也一样。其他评论（成员、智能体、平台通知）不受影响。功能关闭时不做这项检查，与上游一致。检查放在 `UpdateComment`、`DeleteComment` 原有的双写钩子 `beginGitHubCommentChange` 的开头（#73 起），不再单独占上游文件的行；所以它排在上游的作者 / 管理员检查和请求体校验之后：非作者先得到上游的 403，请求体不合法先得到 400，都不会改到外部评论。
 
 ### 对上游文件的钩子（本节）
 
@@ -252,8 +252,8 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 | `server/cmd/server/main.go` | 建 `githubissues.Service` 时传入数据库连接池和事件总线（`RepoClient` 也用这个连接池查白名单、写绑定） |
 | `server/cmd/server/router.go` | 功能开启时把 `Service` 设为 `Handler.ExternalComments` |
 | `server/internal/handler/handler.go` | `Handler.ExternalComments` 字段 |
-| `server/internal/handler/comment.go` | `UpdateComment`、`DeleteComment` 各一行只读检查 |
-| `server/internal/handler/githubissues_hook.go` | 新文件：只读检查 |
+| `server/internal/handler/comment.go` | 无单独的行：只读检查在 M-27 的 `beginGitHubCommentChange` 钩子里 |
+| `server/internal/handler/githubissues_hook.go` | 新文件：只读检查（`beginGitHubCommentChange` 开头调用） |
 | `server/pkg/db/queries/githubissues.sql` | 新查询：按 GitHub 评论 id 加锁、删除外部评论产生的 wakeup 回执、默认同步账号 |
 
 ## 手动同步
