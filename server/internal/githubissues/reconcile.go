@@ -24,6 +24,9 @@ const (
 	reconcileBatch = 20
 	// reconcilePages bounds the list pages read to find one unknown create.
 	reconcilePages = 3
+	// issueIntentScan bounds the intents of a repository a manual sync of
+	// one issue looks through for that issue's.
+	issueIntentScan = 500
 )
 
 // reconcileIntents settles the writes of one repository that the polls have
@@ -41,6 +44,21 @@ const (
 //     finished locally; not found, it is handed to a person
 //     ("needs_confirmation: ...") and never retried.
 func (s *Service) reconcileIntents(ctx context.Context, repo *Repo, projectID pgtype.UUID) error {
+	return s.reconcileIntentsWhere(ctx, repo, projectID, reconcileBatch, func(db.GithubWriteIntent) bool { return true })
+}
+
+// reconcileIssueIntents settles the writes to one issue the way
+// reconcileIntents does, for a manual sync that has just read the issue and
+// its comments: with the poll off nothing else would settle them.
+func (s *Service) reconcileIssueIntents(ctx context.Context, repo *Repo, projectID, issueID pgtype.UUID) error {
+	return s.reconcileIntentsWhere(ctx, repo, projectID, issueIntentScan, func(intent db.GithubWriteIntent) bool {
+		return intent.IssueID == issueID
+	})
+}
+
+// reconcileIntentsWhere settles the first limit intents of the repository
+// due for it, skipping those keep refuses.
+func (s *Service) reconcileIntentsWhere(ctx context.Context, repo *Repo, projectID pgtype.UUID, limit int32, keep func(db.GithubWriteIntent) bool) error {
 	q := db.New(s.db)
 	intents, err := q.ListGithubWriteIntentsToReconcile(ctx, db.ListGithubWriteIntentsToReconcileParams{
 		WorkspaceID: repo.workspaceID, RepoID: repo.id,
@@ -48,12 +66,15 @@ func (s *Service) reconcileIntents(ctx context.Context, repo *Repo, projectID pg
 		// of a local write still in flight.
 		AcceptedBefore:   pgtype.Timestamptz{Time: s.now().Add(-pollInterval), Valid: true},
 		UnansweredBefore: pgtype.Timestamptz{Time: s.now().Add(-unknownGrace), Valid: true},
-		RowLimit:         reconcileBatch,
+		RowLimit:         limit,
 	})
 	if err != nil {
 		return fmt.Errorf("githubissues: list write intents: %w", err)
 	}
 	for _, intent := range intents {
+		if !keep(intent) {
+			continue
+		}
 		if err := s.reconcileIntent(ctx, repo, projectID, intent); err != nil {
 			var limited *ghsnapshot.RateLimitError
 			if errors.As(err, &limited) || errors.Is(err, ErrTokenNotUsable) || ctx.Err() != nil {

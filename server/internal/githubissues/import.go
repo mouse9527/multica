@@ -178,7 +178,7 @@ func (s *Service) ImportIssue(ctx context.Context, workspaceID pgtype.UUID, ref 
 // list longer than importCommentPages, is an error wrapping
 // ErrImportIncomplete.
 func (s *Service) importComments(ctx context.Context, repo *Repo, issueID pgtype.UUID, number int32) error {
-	complete, err := s.syncIssueComments(ctx, repo, issueID, number, importCommentPages)
+	complete, _, err := s.syncIssueComments(ctx, repo, issueID, number, importCommentPages)
 	if err == nil && complete {
 		return nil
 	}

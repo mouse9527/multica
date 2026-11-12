@@ -77,9 +77,10 @@ func (g *refreshGate) done(issueID pgtype.UUID) {
 // comments from GitHub in the background, at most once per issue every
 // refreshInterval, and returns at once: the caller answers with what is
 // stored, and the changes reach clients through the usual realtime events.
-// Local issues send nothing.
+// Local issues send nothing, and so does every issue unless
+// MULTICA_GITHUB_REFRESH_ON_VIEW=true.
 func (s *Service) RefreshIssueOnView(ctx context.Context, issue db.Issue) {
-	if s == nil || s.db == nil || !s.Usable() || s.pollGate.paused(s.now()) {
+	if s == nil || !s.cfg.RefreshOnView() || s.db == nil || !s.Usable() || s.pollGate.paused(s.now()) {
 		return
 	}
 	if !s.refreshGate.admit(issue.ID, s.now()) {
@@ -152,40 +153,45 @@ func (s *Service) refreshIssue(ctx context.Context, issue db.Issue) error {
 		return fmt.Errorf("sync %s#%d: %w", repo.FullName(), number, err)
 	}
 	// Comments past these pages are left to the poller.
-	_, err = s.syncIssueComments(ctx, repo, ext.IssueID, number, refreshCommentPages)
+	_, _, err = s.syncIssueComments(ctx, repo, ext.IssueID, number, refreshCommentPages)
 	return err
 }
 
 // syncIssueComments reads the comments of one GitHub issue, up to maxPages
 // pages, and stores them on the local issue issueID. complete is false when
-// the last page read was full, so more comments may follow it.
-func (s *Service) syncIssueComments(ctx context.Context, repo *Repo, issueID pgtype.UUID, number int32, maxPages int) (complete bool, err error) {
+// the last page read was full, so more comments may follow it; changed counts
+// the comments stored or changed.
+func (s *Service) syncIssueComments(ctx context.Context, repo *Repo, issueID pgtype.UUID, number int32, maxPages int) (complete bool, changed int, err error) {
 	path := "/issues/" + strconv.Itoa(int(number))
 	perPage := s.pollPageSize()
 	for page := 1; page <= maxPages; page++ {
 		query := url.Values{"per_page": {strconv.Itoa(perPage)}, "page": {strconv.Itoa(page)}}
 		resp, err := repo.Do(ctx, http.MethodGet, path+"/comments?"+query.Encode(), nil)
 		if err != nil {
-			return false, err
+			return false, changed, err
 		}
 		if resp.StatusCode != http.StatusOK {
-			return false, fmt.Errorf("github GET %s/comments: unexpected status %d", path, resp.StatusCode)
+			return false, changed, fmt.Errorf("github GET %s/comments: unexpected status %d", path, resp.StatusCode)
 		}
 		var comments []githubComment
 		if err := json.Unmarshal(resp.Body, &comments); err != nil {
-			return false, fmt.Errorf("github GET %s/comments: malformed response", path)
+			return false, changed, fmt.Errorf("github GET %s/comments: malformed response", path)
 		}
 		for _, c := range comments {
 			if c.ID <= 0 || c.UpdatedAt.IsZero() {
-				return false, fmt.Errorf("github GET %s/comments: malformed comment", path)
+				return false, changed, fmt.Errorf("github GET %s/comments: malformed comment", path)
 			}
-			if _, err := s.syncComment(ctx, repo, issueID, number, c); err != nil {
-				return false, err
+			stored, err := s.syncComment(ctx, repo, issueID, number, c)
+			if err != nil {
+				return false, changed, err
+			}
+			if stored {
+				changed++
 			}
 		}
 		if len(comments) < perPage {
-			return true, nil
+			return true, changed, nil
 		}
 	}
-	return false, nil
+	return false, changed, nil
 }
