@@ -48,11 +48,17 @@ func (s *Service) exchange(ctx context.Context, client *http.Client, op, method,
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := s.guardManualSyncRead(ctx, method); err != nil {
+		return nil, nil, err
+	}
+	s.warnLowQuota(method, op)
+	countRequest(ctx)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("github %s: %w", op, err)
 	}
 	defer resp.Body.Close()
+	s.quota.observe(resp.Header)
 	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, nil, fmt.Errorf("github %s: failed to read response", op)
@@ -75,6 +81,7 @@ func (s *Service) sendWithToken(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.quota.observe(resp.Header)
 	resp.Request = req
 	return resp, nil
 }

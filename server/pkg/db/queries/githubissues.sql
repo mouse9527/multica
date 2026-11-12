@@ -239,3 +239,18 @@ WHERE issue_id = @issue_id
   AND workspace_id = @workspace_id
   AND external_repo_id = @from_repo_id
   AND external_number = @from_number;
+
+-- name: ListProjectGitHubIssues :many
+-- The GitHub issues of one project that the workspace tracks, for a manual
+-- sync of the project (multica issue sync --project), by repository and
+-- number. Issues the reconcile found deleted or transferred away are left
+-- out, and with open_only so are issues closed on GitHub. Read-only.
+SELECT x.issue_id, x.external_repo, x.external_number, x.state
+FROM issue_external x
+JOIN issue i ON i.id = x.issue_id AND i.workspace_id = x.workspace_id
+WHERE x.workspace_id = @workspace_id
+  AND i.project_id = @project_id
+  AND x.provider = 'github'
+  AND (x.state_reason IS NULL OR x.state_reason NOT LIKE 'multica:%')
+  AND (NOT @open_only::boolean OR x.state = 'open')
+ORDER BY lower(x.external_repo), x.external_number;

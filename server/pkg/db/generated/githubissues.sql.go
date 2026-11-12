@@ -411,6 +411,60 @@ func (q *Queries) ListGitHubTokenExpiryRecipients(ctx context.Context) ([]ListGi
 	return items, nil
 }
 
+const listProjectGitHubIssues = `-- name: ListProjectGitHubIssues :many
+SELECT x.issue_id, x.external_repo, x.external_number, x.state
+FROM issue_external x
+JOIN issue i ON i.id = x.issue_id AND i.workspace_id = x.workspace_id
+WHERE x.workspace_id = $1
+  AND i.project_id = $2
+  AND x.provider = 'github'
+  AND (x.state_reason IS NULL OR x.state_reason NOT LIKE 'multica:%')
+  AND (NOT $3::boolean OR x.state = 'open')
+ORDER BY lower(x.external_repo), x.external_number
+`
+
+type ListProjectGitHubIssuesParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+	OpenOnly    bool        `json:"open_only"`
+}
+
+type ListProjectGitHubIssuesRow struct {
+	IssueID        pgtype.UUID `json:"issue_id"`
+	ExternalRepo   string      `json:"external_repo"`
+	ExternalNumber int32       `json:"external_number"`
+	State          string      `json:"state"`
+}
+
+// The GitHub issues of one project that the workspace tracks, for a manual
+// sync of the project (multica issue sync --project), by repository and
+// number. Issues the reconcile found deleted or transferred away are left
+// out, and with open_only so are issues closed on GitHub. Read-only.
+func (q *Queries) ListProjectGitHubIssues(ctx context.Context, arg ListProjectGitHubIssuesParams) ([]ListProjectGitHubIssuesRow, error) {
+	rows, err := q.db.Query(ctx, listProjectGitHubIssues, arg.WorkspaceID, arg.ProjectID, arg.OpenOnly)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProjectGitHubIssuesRow{}
+	for rows.Next() {
+		var i ListProjectGitHubIssuesRow
+		if err := rows.Scan(
+			&i.IssueID,
+			&i.ExternalRepo,
+			&i.ExternalNumber,
+			&i.State,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTrackedGitHubIssuesInRepo = `-- name: ListTrackedGitHubIssuesInRepo :many
 SELECT x.issue_id, x.external_number, x.state, x.external_updated_at,
     EXISTS (
