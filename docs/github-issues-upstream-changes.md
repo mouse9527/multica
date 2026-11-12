@@ -2,100 +2,46 @@
 
 本文件属于 `mouse9527/multica` fork。上游 `multica-ai/multica` 的许可证（`LICENSE`，Apache 2.0 加附加条件）要求：被修改的文件要带有显著的修改说明。分发 fork 的源码或镜像时，请把本清单和 `LICENSE`、`NOTICE` 一起附上。
 
-- **基线**：上游 `5b8a15082`（#73 同步进 fork 的上游 `main`；之前是 fork 开始时的 `f68c891d3`）。下表是 fork `main` 相对这个基线**修改过的上游文件**。fork 新增的文件不在表里，见文末。
-- **「文件内说明」** 一列：「有」表示文件里有 fork 的修改说明（形如 `Modified by the mouse9527/multica fork`、`mouse9527/multica fork` 或 `GitHub-native issues (fork)` 的注释）；「无」表示文件里没有，**以本清单作为它的修改说明**。JSON 文件不能写注释；其余几处是合并时漏掉的。按 Owner 的要求，本任务**不改任何已合并文件的内容**，只在这里补齐。
-- **重新生成**：`git diff --name-status 5b8a15082 origin/main | grep '^M'`（两个提交之间用空格、不用 `..`：同步后基线已并入 `main`，要比较两棵树，不是取提交区间）；每个文件涉及的任务：`git log --format=%s f68c891d3..origin/main -- <文件>`。同步上游之后，基线改为那次同步的上游提交。fork 改动又碰到上游文件时，在同一个 PR 里更新本表。
+- **基线**：上游 `5b8a15082`（#73 同步进 fork 的上游 `main`）。下表是 fork `main` 相对这个基线**修改过的上游文件**。fork 新增的文件不在表里，见文末。
+- **「文件内说明」** 一列：「有」表示文件里有 fork 的修改说明（形如 `Modified by the mouse9527/multica fork` 或 `mouse9527/multica fork` 的注释）；「无」表示文件里没有，**以本清单作为它的修改说明**。
+- **重新生成**：`git diff --name-status 5b8a15082 origin/main | grep '^M'`（两个提交之间用空格、不用 `..`：基线已并入 `main`，要比较两棵树，不是取提交区间）。同步上游之后，基线改为那次同步的上游提交。fork 改动又碰到上游文件时，在同一个 PR 里更新本表。
+- **GitHub 原生 issue 已撤回**（M-70，代码改动见 M-72）：它在上游文件里的钩子已全部还原成上游版本，fork 对上游文件的修改从 77 个降到 17 个。说明见 [github-issues.md](github-issues.md)。
 
 ## 修改过的上游文件
 
 | 文件 | 任务 | 改动 | 文件内说明 |
 |---|---|---|---|
 | `.github/workflows/release.yml` | M-58 | `verify` 只在 `multica-ai` 运行，整个上游发布在 fork 上不跑（fork 用 `release-fork.yml`） | 有 |
-| `packages/core/api/client.ts` | M-28 | `getProjectGitHubSettings`（404 返回 `null`） | 有 |
-| `packages/core/api/schemas.ts` | #70、M-65 | `IssueSchema.provider`、`IssueSchema.github`（格式不对时丢弃该字段） | 有 |
-| `packages/core/api/schemas.test.ts` | #70、M-65 | 上面这两个字段的测试 | 有 |
-| `packages/core/package.json` | M-28 | 导出 `./github-issues` | 无 |
-| `packages/core/types/api.ts` | M-28 | `CreateIssueRequest.repo`、`provider` | 有 |
-| `packages/core/types/issue.ts` | #70、M-65 | `Issue.provider`、`Issue.github` | 有 |
-| `packages/ui/markdown/index.ts` | M-60 | 导出 `github-issue-keys` | 有 |
-| `packages/views/editor/content-editor.tsx` | M-60 | 编辑器识别的解析器接受 `owner/repo#N`，不比对前缀 | 有 |
-| `packages/views/editor/extensions/index.ts` | M-60 | 注册 `owner/repo#N` 卡片扩展 | 有 |
-| `packages/views/editor/extensions/mention-extension.ts` | M-60 | 代表 `owner/repo#N` 的 mention 节点存成原文 | 有 |
-| `packages/views/editor/extensions/mention-view.tsx` | M-60 | 这种节点交给 fork 的卡片视图 | 有 |
-| `packages/views/editor/utils/preprocess.ts` | M-60 | 只读渲染先识别 `owner/repo#N`，再识别 `PREFIX-N` | 有 |
-| `packages/views/issues/components/issue-detail.tsx` | #70 | 属性栏挂 `GitHubIssueLinkRow`（2 行） | 有 |
-| `packages/views/issues/components/issue-detail.test.tsx` | #70 | 详情页显示 / 不显示 GitHub 链接的测试 | 有 |
-| `packages/views/issues/hooks/use-resolve-issue-identifier.ts` | M-60 | 对 `owner/repo#N` 发起查找 | 有 |
-| `packages/views/locales/{en,es,fr,ja,ko,ru,zh-Hans,zh-Hant}/issues.json`（8 个） | #70 | 详情页 GitHub 链接文案 `detail.prop_github`、`detail.github_copy_link` | 无（JSON） |
-| `packages/views/locales/{en,es,fr,ja,ko,ru,zh-Hans,zh-Hant}/modals.json`（8 个） | M-28 | 新建 issue 对话框的仓库下拉文案 `create_issue.github_repo` | 无（JSON） |
-| `packages/views/modals/create-issue.tsx` | M-28 | 仓库下拉、状态调整、提交前检查、请求体带上选择 | 有 |
-| `packages/views/modals/create-issue.test.tsx` | M-28 | 上面这些行为的测试 | 有 |
-| `packages/views/rich-content/rich-content.tsx` | M-60 | `mention://issue/<转义后的 owner/repo#N>` 交给标识查找 | 有 |
 | `server/cmd/multica/cmd_update.go` | M-58 | Homebrew 安装且更新源不是上游时报错，不跑 `brew upgrade` | 有 |
-| `server/cmd/multica/cmd_id_resolver.go` | M-22 | 接受 `owner/repo#N` | 有 |
-| `server/cmd/multica/cmd_issue.go` | M-22、M-28 | `--fields` 加 `provider`；`issue create` 的 `--repo`、`--provider` 与 422 改写 | 有 |
-| `server/cmd/server/activity_listeners.go` | M-22 | 活动记录里的 issue 标识 | 有 |
-| `server/cmd/server/main.go` | M-19、M-22、M-23、M-24 | 读配置建 `githubissues.Service`、令牌校验与到期提醒、标识开关、启动轮询 | 有 |
-| `server/cmd/server/router.go` | M-18、M-19、M-23、M-26、M-27、M-28、M-29、M-30、M-46、M-56 | 功能开启时注册路由并把 `Service` 接到 handler 的各个钩子字段 | 有 |
 | `server/internal/cli/update.go` | M-58 | Release 仓库可配置、默认 fork；替换的可执行文件路径经变量解析（测试用） | 有 |
 | `server/internal/daemon/auto_update.go` | M-58 | 版本判断接受 `-mouse.N`（两行） | 有 |
 | `server/internal/daemon/daemon.go` | M-58 | `runUpdate` 前的 Homebrew 检查 | 有 |
-| `server/internal/handler/activity.go` | M-29 | 时间线接口载入 issue 后触发按需刷新 | 有 |
-| `server/internal/handler/comment.go` | M-27、M-29 | 评论新建、编辑、删除的双写（外部评论只读检查在编辑、删除的双写钩子里）；评论列表触发按需刷新 | 有 |
-| `server/internal/handler/daemon.go` | M-22 | 认领任务时的 issue 标识 | 有 |
-| `server/internal/handler/github.go` | M-30 | PR 镜像入参归一化（`prMirrorInput`）、关联 GitHub issue、返回写入错误 | 有 |
-| `server/internal/handler/handler.go` | M-22、M-23、M-26、M-27、M-29、M-30 | `Handler` 的 fork 钩子字段；`owner/repo#N` 解析 | 有 |
-| `server/internal/handler/issue.go` | M-22、M-26、M-27、M-28、M-29、M-65 | `provider`、`github` 字段（M-65 起不再改写标识）；删除时删 `issue_external`；状态映射拒绝钩子；issue 新建、更新的双写；新建选仓库；详情触发按需刷新 | 有 |
-| `server/internal/handler/issue_duplicate.go` | M-22 | 构造完一页后改写标识 | 有 |
-| `server/internal/handler/issue_system_wakeup.go` | M-22 | 等待中的子 issue 的标识 | 有 |
-| `server/internal/handler/issue_table_rows.go` | M-22 | 构造完一页后改写标识 | 有 |
-| `server/internal/handler/issue_workflow_entry.go` | M-22 | 工作流提示词里的标识 | 有 |
-| `server/internal/handler/plugin_action.go` | M-22 | 构造完一页后改写标识 | 有 |
-| `server/internal/handler/pr_auto_complete.go` | M-30 | GitHub issue 的 PR 合并不改本地状态（新决定 `github`） | 有 |
-| `server/internal/handler/search_index.go` | M-22 | 构造完一页后改写标识 | 有 |
-| `server/internal/handler/squad.go` | M-22 | squad 活跃 issue 的标识 | 有 |
-| `server/internal/handler/vcs_webhook.go` | M-30 | 调 `reconcileAutoLinks` 时忽略新增的错误返回值（1 行） | 无 |
-| `server/internal/handler/workspace.go` | M-20 | 删除工作区时清理 fork 表 | 有 |
-| `server/internal/integrations/ghsnapshot/client.go` | M-25 | PR 快照的静态令牌来源 | 有 |
-| `server/internal/service/builtin_skills/multica-platform/references/mentions.md` | M-60、M-65 | 智能体引用 GitHub 托管 issue 的写法（M-65 起写 `PREFIX-N`） | 有 |
-| `server/internal/service/issue.go` | M-27 | `IssueCreateOpts.InTx`：提交前在创建事务里执行 | 有 |
-| `server/internal/service/source_context.go` | M-22 | 来源快照里的 issue 标识改用 `LookupIssueIdentifier`（1 行） | 无 |
-| `server/internal/service/task.go` | M-22、M-65 | `IssueToMap` 带 `provider`，`IssueToMapResolved` 填 `provider`、`github`（M-65 起不改写标识） | 有 |
-| `server/pkg/db/generated/models.go` | M-20 | sqlc 按 fork 新表生成的模型（生成文件，不手改） | 无（生成） |
-
-M-65 起 github issue 的标识回到 `PREFIX-N`（M-64 的决定）。上表里 M-22 为「标识」加的钩子（`activity_listeners.go`、`daemon.go`、`issue_duplicate.go`、`issue_system_wakeup.go`、`issue_table_rows.go`、`issue_workflow_entry.go`、`plugin_action.go`、`search_index.go`、`squad.go`、`source_context.go` 和 `task.go` 里 quick-create 那一行）仍在，但输出已与上游相同：`service.IssueKey`、`LookupIssueIdentifier` 只返回 `PREFIX-N`。其中 `issue_table_rows.go`、`search_index.go`、`issue_duplicate.go`、`plugin_action.go` 的 `fillIssueKeys` 仍负责填 `provider` 与 `github`。删除这些钩子是下一步（另开任务）。
+| `server/internal/handler/workspace.go` | M-20 | 删除工作区时清理迁移 9000 建的 5 张表（功能撤回后表仍在，见 [github-issues.md](github-issues.md)） | 有 |
+| `server/pkg/db/generated/models.go` | M-20 | sqlc 按迁移 9000 的表生成的模型（生成文件，不手改） | 无（生成） |
 
 ### 只改测试的上游文件
 
-这些文件只为让上游测试在 fork 的 CI 里稳定运行（M-24：删触发器的 DDL 改走 `testutil.ExecDDL`；M-30：适配 `mirrorPullRequestForWorkspace` 的新入参；M-20：登记 fork 新表）：
+| 文件 | 任务 | 改动 | 文件内说明 |
+|---|---|---|---|
+| `server/internal/cli/update_source_test.go` | M-58 | 适配可配置的 Release 仓库 | 有 |
+| `server/internal/handler/workspace_delete_manifest_test.go` | M-20 | 登记迁移 9000 的 5 张表 | 有 |
+| `server/internal/handler/autopilot_subscriber_test.go` | M-24 | 删触发器的 DDL 改走 `testutil.ExecDDL` | 有 |
+| `server/internal/handler/daemon_runtime_access_test.go` | M-24 | 同上 | 有 |
+| `server/internal/handler/task_supplement_test.go` | M-24 | 同上 | 有 |
+| `server/internal/handler/webhook_delivery_test.go` | M-24 | 同上 | 有 |
+| `server/internal/handler/workspace_delete_fence_test.go` | M-24 | 同上 | 有 |
+| `server/internal/handler/worktree_claim_gate_test.go` | M-24 | 同上 | 有 |
+| `server/internal/service/autopilot_quota_test.go` | M-24 | 同上 | 有 |
+| `server/internal/service/delegated_failure_recovery_settled_test.go` | M-24 | 同上 | 有 |
 
-| 文件 | 任务 | 文件内说明 |
-|---|---|---|
-| `server/internal/cli/update_source_test.go` | M-58 | 有 |
-| `server/internal/handler/autopilot_subscriber_test.go` | M-24 | 有 |
-| `server/internal/handler/daemon_runtime_access_test.go` | M-24 | 有 |
-| `server/internal/handler/task_supplement_test.go` | M-24 | 有 |
-| `server/internal/handler/webhook_delivery_test.go` | M-24 | 有 |
-| `server/internal/handler/workspace_delete_fence_test.go` | M-24 | 有 |
-| `server/internal/handler/worktree_claim_gate_test.go` | M-24 | 有 |
-| `server/internal/service/autopilot_quota_test.go` | M-24 | 有 |
-| `server/internal/service/delegated_failure_recovery_settled_test.go` | M-24 | 有 |
-| `server/internal/handler/webhook_status_resolver_test.go` | M-30 | 无 |
-| `server/internal/handler/workspace_delete_manifest_test.go` | M-20 | 有 |
-
-合计：修改过的上游文件 77 个（含 16 个翻译文件与 14 个测试文件），其中 21 个文件内没有修改说明，以本清单为准。M-49 的 `Dockerfile` 一行在 #73 同步后与上游相同，不再是修改。
+合计：修改过的上游文件 17 个（含 10 个测试文件），其中 1 个（生成的 `models.go`）文件内没有修改说明，以本清单为准。
 
 ## fork 新增的文件
 
 下面这些都是 fork 新写的文件，不是对上游文件的修改，许可证意义上属于 fork 自己的代码（仍按上游许可证分发）：
 
-- `server/internal/githubissues/`（含 `issuekey/`）：功能主体。
-- `server/internal/handler/githubissues_*.go`、`issue_key.go`：handler 侧的钩子实现与测试。
-- `server/internal/integrations/ghsnapshot/`：`ratelimit_export.go`、`static_source.go` 及其测试。
-- `server/cmd/multica/`：`cmd_issue_github.go`、`cmd_issue_import.go` 及测试；`server/cmd/server/githubissues_*_test.go`；`server/cmd/migrate/github_issue_migrations.go`；`server/internal/service/issue_key.go`；`server/internal/testutil/ddl.go`；`server/internal/migrations/` 下的 fork 测试。
-- `server/migrations/9000_*`–`9003_*`：fork 迁移；`server/pkg/db/queries/` 下的 `github_issue.sql`、`githubissues.sql`、`githubissues_write.sql` 与 `server/pkg/db/generated/` 里对应的生成文件。
-- `packages/core/github-issues/`、`packages/views/modals/create-issue-github-repo*.tsx`、`packages/views/issues/components/github-issue-link-row*.tsx`、`packages/views/issues/components/issue-chip-github.test.tsx`。
-- `packages/ui/markdown/github-issue-keys.ts`；`packages/views/editor/extensions/github-issue-key-chips.ts`、`github-issue-key-mention-view.tsx`；测试 `packages/views/editor/utils/github-issue-keys.test.ts`、`packages/views/editor/extensions/github-issue-key-chips.test.ts`、`packages/views/rich-content/github-issue-key-rendering.test.tsx`。
+- `server/migrations/9000_*`–`9003_*`：GitHub 原生 issue 的建表迁移（功能已撤回，表暂留）；`server/cmd/migrate/github_issue_migrations.go`：这几个迁移的并发建索引清理；`server/internal/migrations/github_issue_tables_migration_test.go`：迁移往返与工作区清理测试；`server/pkg/db/queries/github_issue.sql` 与 `server/pkg/db/generated/github_issue.sql.go`：只剩工作区清理查询。
+- `server/internal/testutil/ddl.go` 及测试：测试里的 DDL 不卡住并行运行的其他测试包（M-24）。
 - `.github/workflows/build-image.yml`：fork 的镜像构建（M-58 起 `latest` 只随最新的 `-mouse.N` tag 移动）。
 - `.github/workflows/release-fork.yml`、`.goreleaser.fork.yml`、`scripts/fork-release-is-newest*.sh`：fork 的二进制发布与 `latest` 判断（M-58）；`server/internal/cli/update_fork*.go`、`server/internal/daemon/auto_update_fork_test.go`、`server/cmd/multica/cmd_update_fork_test.go`：从 fork Release 更新（M-58）。
 - `docs/fork-release.md`：发布与 runner 更新说明（M-58）。
