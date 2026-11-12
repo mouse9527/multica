@@ -59,9 +59,10 @@ at a project; everything else in this document is about the four types (plus
 On a server with GitHub-native issues, a GitHub-hosted issue's identifier is
 `owner/repo#N`, and the issue lives on GitHub too: its body and the comments on
 it are copied there as written. To reference such an issue in prose, write the
-full key as plain text — `mouse9527/multica#21`. In comments and chat, readers'
-clients render a full key of an issue this workspace tracks as the same issue
-chip as `MUL-123`; on GitHub the same text is a native cross-reference. Do not
+full key as plain text — `mouse9527/multica#21`. In comments, chat and issue
+bodies, readers' clients render a full key of an issue this workspace tracks
+as the same issue chip as `MUL-123`, and the stored text stays the bare key;
+on GitHub the same text is a native cross-reference. Do not
 wrap it in `[…](mention://issue/<uuid>)` there: GitHub cannot open that link.
 
 Short forms are not references: `multica#21` and `#21` stay plain text in

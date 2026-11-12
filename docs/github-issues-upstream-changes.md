@@ -16,7 +16,9 @@
 | `packages/core/types/api.ts` | M-28 | `CreateIssueRequest.repo`、`provider` | 有 |
 | `packages/ui/markdown/index.ts` | M-60 | 导出 `github-issue-keys` | 有 |
 | `packages/views/editor/content-editor.tsx` | M-60 | 编辑器识别的解析器接受 `owner/repo#N`，不比对前缀 | 有 |
-| `packages/views/editor/extensions/issue-identifier-autolink.ts` | M-60 | 候选正则加上 `owner/repo#N` | 有 |
+| `packages/views/editor/extensions/index.ts` | M-60 | 注册 `owner/repo#N` 卡片扩展 | 有 |
+| `packages/views/editor/extensions/mention-extension.ts` | M-60 | 代表 `owner/repo#N` 的 mention 节点存成原文 | 有 |
+| `packages/views/editor/extensions/mention-view.tsx` | M-60 | 这种节点交给 fork 的卡片视图 | 有 |
 | `packages/views/editor/utils/preprocess.ts` | M-60 | 只读渲染先识别 `owner/repo#N`，再识别 `PREFIX-N` | 有 |
 | `packages/views/issues/hooks/use-resolve-issue-identifier.ts` | M-60 | 对 `owner/repo#N` 发起查找 | 有 |
 | `packages/views/locales/{en,es,fr,ja,ko,ru,zh-Hans,zh-Hant}/modals.json`（8 个） | M-28 | 新建 issue 对话框的仓库下拉文案 `create_issue.github_repo` | 无（JSON） |
@@ -68,7 +70,7 @@
 | `server/internal/handler/webhook_status_resolver_test.go` | M-30 | 无 |
 | `server/internal/handler/workspace_delete_manifest_test.go` | M-20 | 有 |
 
-合计：修改过的上游文件 57 个（含 8 个翻译文件与 10 个测试文件），其中 14 个文件内没有修改说明，以本清单为准。
+合计：修改过的上游文件 59 个（含 8 个翻译文件与 10 个测试文件），其中 14 个文件内没有修改说明，以本清单为准。
 
 ## fork 新增的文件
 
@@ -80,6 +82,6 @@
 - `server/cmd/multica/`：`cmd_issue_github.go`、`cmd_issue_import.go` 及测试；`server/cmd/server/githubissues_*_test.go`；`server/cmd/migrate/github_issue_migrations.go`；`server/internal/service/issue_key.go`；`server/internal/testutil/ddl.go`；`server/internal/migrations/` 下的 fork 测试。
 - `server/migrations/9000_*`–`9003_*`：fork 迁移；`server/pkg/db/queries/` 下的 `github_issue.sql`、`githubissues.sql`、`githubissues_write.sql` 与 `server/pkg/db/generated/` 里对应的生成文件。
 - `packages/core/github-issues/`、`packages/views/modals/create-issue-github-repo*.tsx`。
-- `packages/ui/markdown/github-issue-keys.ts`；测试 `packages/views/editor/utils/github-issue-keys.test.ts`、`packages/views/editor/extensions/github-issue-key-autolink.test.ts`、`packages/views/rich-content/github-issue-key-rendering.test.tsx`。
+- `packages/ui/markdown/github-issue-keys.ts`；`packages/views/editor/extensions/github-issue-key-chips.ts`、`github-issue-key-mention-view.tsx`；测试 `packages/views/editor/utils/github-issue-keys.test.ts`、`packages/views/editor/extensions/github-issue-key-chips.test.ts`、`packages/views/rich-content/github-issue-key-rendering.test.tsx`。
 - `.github/workflows/build-image.yml`：fork 的镜像构建。
 - `docs/github-issues*.md`。
