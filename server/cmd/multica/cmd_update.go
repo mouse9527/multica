@@ -44,6 +44,12 @@ func runUpdate(_ *cobra.Command, _ []string) error {
 		fmt.Fprintf(os.Stderr, "Latest version:  %s\n\n", latest.TagName)
 	}
 
+	// Modified by the mouse9527/multica fork: a Homebrew install follows the
+	// upstream tap, so it cannot update from the fork's releases.
+	if err := cli.BrewUpdateBlocked(); err != nil {
+		return err
+	}
+
 	// Detect installation method and update accordingly.
 	if cli.IsBrewInstall() {
 		fmt.Fprintln(os.Stderr, "Updating via Homebrew...")

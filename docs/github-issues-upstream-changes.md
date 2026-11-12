@@ -10,6 +10,7 @@
 
 | 文件 | 任务 | 改动 | 文件内说明 |
 |---|---|---|---|
+| `.github/workflows/release.yml` | M-58 | `verify` 只在 `multica-ai` 运行，整个上游发布在 fork 上不跑（fork 用 `release-fork.yml`） | 有 |
 | `Dockerfile` | M-49 | 构建镜像升级到 `golang:1.27.4-alpine`（一行）。上游 `6ccbdd178` 已是同一行，下次同步后不再是修改 | 无 |
 | `packages/core/api/client.ts` | M-28 | `getProjectGitHubSettings`（404 返回 `null`） | 有 |
 | `packages/core/api/schemas.ts` | #70 | `IssueSchema.provider`（格式不对时丢弃该字段） | 有 |
@@ -31,11 +32,15 @@
 | `packages/views/modals/create-issue.tsx` | M-28 | 仓库下拉、状态调整、提交前检查、请求体带上选择 | 有 |
 | `packages/views/modals/create-issue.test.tsx` | M-28 | 上面这些行为的测试 | 有 |
 | `packages/views/rich-content/rich-content.tsx` | M-60 | `mention://issue/<转义后的 owner/repo#N>` 交给标识查找 | 有 |
+| `server/cmd/multica/cmd_update.go` | M-58 | Homebrew 安装且更新源不是上游时报错，不跑 `brew upgrade` | 有 |
 | `server/cmd/multica/cmd_id_resolver.go` | M-22 | 接受 `owner/repo#N` | 有 |
 | `server/cmd/multica/cmd_issue.go` | M-22、M-28 | `--fields` 加 `provider`；`issue create` 的 `--repo`、`--provider` 与 422 改写 | 有 |
 | `server/cmd/server/activity_listeners.go` | M-22 | 活动记录里的 issue 标识 | 有 |
 | `server/cmd/server/main.go` | M-19、M-22、M-23、M-24 | 读配置建 `githubissues.Service`、令牌校验与到期提醒、标识开关、启动轮询 | 有 |
 | `server/cmd/server/router.go` | M-18、M-19、M-23、M-26、M-27、M-28、M-29、M-30、M-46、M-56 | 功能开启时注册路由并把 `Service` 接到 handler 的各个钩子字段 | 有 |
+| `server/internal/cli/update.go` | M-58 | Release 仓库可配置、默认 fork；替换的可执行文件路径经变量解析（测试用） | 有 |
+| `server/internal/daemon/auto_update.go` | M-58 | 版本判断接受 `-mouse.N`（两行） | 有 |
+| `server/internal/daemon/daemon.go` | M-58 | `runUpdate` 前的 Homebrew 检查 | 有 |
 | `server/internal/handler/activity.go` | M-29 | 时间线接口载入 issue 后触发按需刷新 | 有 |
 | `server/internal/handler/comment.go` | M-23、M-27、M-29 | 外部评论只读；评论新建、编辑、删除的双写；评论列表触发按需刷新 | 有 |
 | `server/internal/handler/daemon.go` | M-22 | 认领任务时的 issue 标识 | 有 |
@@ -65,6 +70,7 @@
 
 | 文件 | 任务 | 文件内说明 |
 |---|---|---|
+| `server/internal/cli/update_source_test.go` | M-58 | 有 |
 | `server/internal/handler/autopilot_subscriber_test.go` | M-24 | 有 |
 | `server/internal/handler/daemon_runtime_access_test.go` | M-24 | 有 |
 | `server/internal/handler/task_supplement_test.go` | M-24 | 有 |
@@ -76,7 +82,7 @@
 | `server/internal/handler/webhook_status_resolver_test.go` | M-30 | 无 |
 | `server/internal/handler/workspace_delete_manifest_test.go` | M-20 | 有 |
 
-合计：修改过的上游文件 72 个（含 16 个翻译文件与 12 个测试文件），其中 22 个文件内没有修改说明，以本清单为准。
+合计：修改过的上游文件 78 个（含 16 个翻译文件与 13 个测试文件），其中 22 个文件内没有修改说明，以本清单为准。
 
 ## fork 新增的文件
 
@@ -89,5 +95,7 @@
 - `server/migrations/9000_*`–`9003_*`：fork 迁移；`server/pkg/db/queries/` 下的 `github_issue.sql`、`githubissues.sql`、`githubissues_write.sql` 与 `server/pkg/db/generated/` 里对应的生成文件。
 - `packages/core/github-issues/`、`packages/views/modals/create-issue-github-repo*.tsx`、`packages/views/issues/components/github-issue-link-row*.tsx`。
 - `packages/ui/markdown/github-issue-keys.ts`；`packages/views/editor/extensions/github-issue-key-chips.ts`、`github-issue-key-mention-view.tsx`；测试 `packages/views/editor/utils/github-issue-keys.test.ts`、`packages/views/editor/extensions/github-issue-key-chips.test.ts`、`packages/views/rich-content/github-issue-key-rendering.test.tsx`。
-- `.github/workflows/build-image.yml`：fork 的镜像构建。
+- `.github/workflows/build-image.yml`：fork 的镜像构建（M-58 起 `latest` 只随最新的 `-mouse.N` tag 移动）。
+- `.github/workflows/release-fork.yml`、`.goreleaser.fork.yml`、`scripts/fork-release-is-newest*.sh`：fork 的二进制发布与 `latest` 判断（M-58）；`server/internal/cli/update_fork*.go`、`server/internal/daemon/auto_update_fork_test.go`、`server/cmd/multica/cmd_update_fork_test.go`：从 fork Release 更新（M-58）。
+- `docs/fork-release.md`：发布与 runner 更新说明（M-58）。
 - `docs/github-issues*.md`。

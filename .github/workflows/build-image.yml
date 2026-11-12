@@ -2,10 +2,12 @@
 # web images for this fork and pushes them to GHCR.
 #
 # Tags:
-#   - main:        `sha-<full commit SHA>`, then `latest` is moved to the same
-#                  digest only if the commit is still the tip of main, so a
-#                  late or re-run build of an older commit never rolls it back.
-#   - v*.*.* tags: only the version tag; `latest` is left untouched.
+#   - main:              only `sha-<full commit SHA>`; `latest` is never moved.
+#   - vX.Y.Z-mouse.N:    the version tag, then `latest` is moved to the same
+#                        digest only if this is the newest -mouse.N tag, so a
+#                        re-run of an older release never rolls it back.
+#                        release-fork.yml publishes the runner binaries for the
+#                        same tag, so server and runner share one version.
 #
 # Only linux/amd64 is built. Pull requests never push images.
 name: Build Image
@@ -14,15 +16,15 @@ on:
   push:
     branches: [main]
     tags:
-      - "v*.*.*"
-      - "!v*-dirty*"
+      - "v*.*.*-mouse.*"
   workflow_dispatch:
 
 permissions: {}
 
 # No workflow-level concurrency: a concurrency group keeps only one pending run
 # and cancels the rest, so a re-run of an old commit could displace the newest
-# commit's build. Ordering of `latest` is enforced by the tip check below.
+# commit's build. Only the newest release tag moves `latest` (see the last
+# build step), so the order in which runs finish does not matter.
 
 jobs:
   build:
@@ -50,6 +52,25 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+
+      # Validated before anything is pushed. Only reviewed code is released:
+      # the tagged commit must be on main.
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-mouse\.[0-9]+$ ]]; then
+            echo "::error::Release tags must look like vX.Y.Z-mouse.N; got '$TAG'."
+            exit 1
+          fi
+          # "identical" or "behind": the tagged commit is main or an ancestor.
+          status="$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)"
+          if [ "$status" != "identical" ] && [ "$status" != "behind" ]; then
+            echo "::error::$TAG points at $GITHUB_SHA, which is not on main ($status)."
+            exit 1
+          fi
 
       - name: Compute image tags
         id: meta
@@ -126,19 +147,22 @@ jobs:
           docker pull --platform linux/amd64 "$IMAGE_REF"
           docker run --rm --entrypoint sh "$IMAGE_REF" -c 'test -s LICENSE && test -s NOTICE'
 
-      # Checked after the push, immediately before tagging, so the window in
-      # which a newer main build could finish first is seconds, not the length
-      # of a build. Re-runs of older commits see a newer tip and skip.
-      - name: Move latest to this build if it is still the tip of main
-        if: github.ref == 'refs/heads/main'
+      # Checked after the push, immediately before tagging. Only the newest
+      # release moves latest; see scripts/fork-release-is-newest.sh, which
+      # fails (and so fails this step) when the tag list cannot be read.
+      - name: Move latest to this build if it is the newest release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          tip="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
-          if [ "$tip" != "$GITHUB_SHA" ]; then
-            echo "::notice::main is now at $tip; latest left unchanged for $GITHUB_SHA"
+          bash scripts/fork-release-is-newest.test.sh
+          newest="$(bash scripts/fork-release-is-newest.sh "$TAG")"
+          if [ "$newest" != "true" ]; then
+            echo "::notice::$TAG is not the newest release; latest left unchanged"
             exit 0
           fi
           docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE@$DIGEST"
