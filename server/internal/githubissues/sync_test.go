@@ -172,7 +172,11 @@ func TestManualSyncQuotaGuard(t *testing.T) {
 	}
 
 	env.quotaHeaders(defaultSyncMinRemaining-1, reset)
-	env.sync(t, issue) // checked before its requests: still the old quota
+	// Starts on the old quota; its first answer reports the new one, which
+	// stops it (TestManualSyncStopsWhenQuotaDropsMidway).
+	if got, err := env.svc.SyncIssue(context.Background(), issue); got.RequestsUsed != 1 || err == nil {
+		t.Fatalf("sync as the quota drops = %+v, %v", got, err)
+	}
 	before := len(env.api.seen())
 	_, err := env.svc.SyncIssue(context.Background(), issue)
 	var low *QuotaLowError
@@ -195,6 +199,51 @@ func TestManualSyncQuotaGuard(t *testing.T) {
 	var limited *ghsnapshot.RateLimitError
 	if !errors.As(err, &limited) || limited.RetryAfter != time.Minute || len(env.api.seen()) != before {
 		t.Fatalf("sync during a pause = %v, sent %d", err, len(env.api.seen())-before)
+	}
+}
+
+// The guard is checked again before each read of a sync, against the quota
+// the latest answer reported: a sync that starts with enough quota, and
+// whose first answer reports less than the guard (other users of the
+// account spent it), stops there. It sends no comment, timeline or pull
+// request read, keeps what it stored, and reports it.
+func TestManualSyncStopsWhenQuotaDropsMidway(t *testing.T) {
+	env := newManualSyncEnv(t)
+	reset := testNow.Add(30 * time.Minute)
+	env.quotaHeaders(4000, reset)
+	t0 := testNow.Add(-time.Hour)
+	env.api.putIssue(1, "stranger", "Crash on start", "", "open", t0, nil)
+	issue := env.loadIssue(t, env.importIssue(t, 1).id)
+	env.api.putPull(7, "Fix crash", "Closes #1", "open", t0)
+	env.api.mention(1, 7)
+	mirror := &fakePullMirror{}
+	env.svc.SetPullRequestMirror(mirror)
+
+	env.api.putIssue(1, "stranger", "Crash on start (macOS)", "", "open", testNow.Add(-time.Minute), nil)
+	env.api.putComment(502, 1, "stranger", "Me too", testNow.Add(-40*time.Second))
+	env.quotaHeaders(100, reset)
+	before := len(env.api.seen())
+
+	got, err := env.svc.SyncIssue(context.Background(), issue)
+	var low *QuotaLowError
+	if !errors.As(err, &low) || low.Remaining != 100 || low.RetryAfter != reset.Truncate(time.Second).Sub(testNow) {
+		t.Fatalf("sync = %v (%+v), want the guard to stop it", err, low)
+	}
+	issuePath := fmt.Sprintf("/repositories/%d/issues/1", pollRepoID)
+	if sent := env.api.seen()[before:]; len(sent) != 1 || !strings.HasPrefix(sent[0], issuePath+"?") {
+		t.Fatalf("requests after the drop = %v, want only the issue read", sent)
+	}
+	if got.RequestsUsed != 1 || !got.IssueUpdated || got.NewComments != 0 || got.PullsUpdated != 0 {
+		t.Fatalf("progress = %+v", got)
+	}
+	if stored := env.issue(t, 1); stored.title != "Crash on start (macOS)" {
+		t.Fatalf("issue read before the stop not kept: %+v", stored)
+	}
+	if n := env.count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, issue.ID); n != 0 {
+		t.Fatalf("comments read past the guard: %d", n)
+	}
+	if numbers := mirror.numbers(); len(numbers) != 0 {
+		t.Fatalf("pull requests read past the guard: %v", numbers)
 	}
 }
 

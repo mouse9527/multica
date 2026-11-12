@@ -302,7 +302,7 @@ multica issue sync --project <项目 id> --open-only   # 只同步 GitHub 上开
 | 评论超过 1000 页没读完 | 502 | `github_sync_incomplete` |
 | 其他 GitHub 错误 | 502 | `github_sync_failed` |
 
-出错时响应也带 `requests_used`。已经落库的部分保留，再同步一次接着读。
+出错或中途被守卫拦下时，响应也带已完成的进度：`issue_id`、`issue_updated`、`new_comments`、`comments_updated`、`pulls_updated`、`requests_used`。已经落库的部分保留，再同步一次接着读。
 
 ### 删除与转移
 
@@ -313,7 +313,7 @@ multica issue sync --project <项目 id> --open-only   # 只同步 GitHub 上开
 
 - 每个 GitHub 响应的 `X-RateLimit-Remaining`、`X-RateLimit-Reset` 都记下来（进程内存，按副本各自记）。额度属于令牌的主人，与智能体的 `gh` 等共用，所以看 GitHub 报告的值，不自己计数。
 - 手动同步发请求前检查：剩余低于 `MULTICA_GITHUB_SYNC_MIN_REMAINING`（默认 1000）且还没到重置时间时拒绝，返回 `github_quota_low` 与到重置的等待时间，**一个请求都不发**。重置时间过了就放行。限流暂停（GitHub 给的等待）期间同样拒绝（`github_rate_limited`）。
-- 一次同步内部不中途停下（一个 issue 只要几个请求）；守卫在每次同步开始前判断。
+- 一次同步里的**每个读请求**发出前都按最近一个响应报告的额度再判断一次（不只在开始时）：开始时额度够、但第一个响应报告已低于守卫（例如同账号的其他调用用掉了）时，同步在下一个读请求前停下，不再读评论页、时间线和 PR。已落库的部分保留，响应照样是 429 `github_quota_low`，并带上已完成的进度（见下）。
 - 批量同步（`--project`）逐个调用单个同步，遇到 `github_quota_low`、`github_rate_limited`、`github_token_unusable` 立即停下，输出已完成的进度：`total`、`synced`、`changed`、`failed`、`not_attempted`、`requests_used`、`stopped`（含 `retry_after_seconds` 和停在哪个 issue），命令以非零退出。单个 issue 自己的错误记为 `failed`，不影响后面的。
 - 写操作（双写）**不受**守卫限制：写入等额度会让 GitHub 与 Multica 不一致。额度低于守卫时发写请求会记一条告警日志 `github quota low; write sent anyway`。
 

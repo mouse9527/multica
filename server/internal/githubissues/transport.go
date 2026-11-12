@@ -48,6 +48,9 @@ func (s *Service) exchange(ctx context.Context, client *http.Client, op, method,
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := s.guardManualSyncRead(ctx, method); err != nil {
+		return nil, nil, err
+	}
 	s.warnLowQuota(method, op)
 	countRequest(ctx)
 	resp, err := client.Do(req)

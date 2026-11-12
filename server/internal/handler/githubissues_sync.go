@@ -47,10 +47,14 @@ func (h *Handler) SyncGitHubIssue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, GitHubSyncResponse{SyncResult: result, Identifier: resp.Identifier})
 }
 
-// writeSyncError answers a sync that failed or was refused. What the sync
-// stored before it failed stays stored; syncing again picks up the rest.
+// writeSyncError answers a sync that failed or was refused, with what it had
+// done by then: that stays stored, and syncing again picks up the rest.
 func writeSyncError(w http.ResponseWriter, r *http.Request, err error, result githubissues.SyncResult) {
-	body := map[string]any{"requests_used": result.RequestsUsed}
+	body := map[string]any{
+		"issue_id": result.IssueID, "issue_updated": result.IssueUpdated,
+		"new_comments": result.NewComments, "comments_updated": result.CommentsUpdated,
+		"pulls_updated": result.PullsUpdated, "requests_used": result.RequestsUsed,
+	}
 	var low *githubissues.QuotaLowError
 	var limited *ghsnapshot.RateLimitError
 	status := http.StatusBadGateway

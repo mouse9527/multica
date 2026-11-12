@@ -120,17 +120,29 @@ func (s *Service) QuotaStatus() *Quota {
 	return &quota
 }
 
-type requestCounterKey struct{}
+type manualSyncKey struct{}
 
-// withRequestCounter returns a context whose GitHub requests are counted in
-// the returned counter, for the requests_used of a manual sync.
-func withRequestCounter(ctx context.Context) (context.Context, *atomic.Int64) {
+// withManualSync marks ctx as a manual sync: each GitHub read sent under it
+// passes the quota guard first (guardManualSyncRead), and every request is
+// counted in the returned counter, for the requests_used of the sync.
+func withManualSync(ctx context.Context) (context.Context, *atomic.Int64) {
 	n := new(atomic.Int64)
-	return context.WithValue(ctx, requestCounterKey{}, n), n
+	return context.WithValue(ctx, manualSyncKey{}, n), n
+}
+
+// guardManualSyncRead applies the quota guard to a read sent by a manual sync,
+// against the quota the latest answer reported, so a sync whose own reads (or
+// anything else on the account) bring the quota below the guard stops before
+// its next read. Writes, and requests outside a manual sync, pass.
+func (s *Service) guardManualSyncRead(ctx context.Context, method string) error {
+	if method != http.MethodGet || ctx.Value(manualSyncKey{}) == nil {
+		return nil
+	}
+	return s.checkSyncQuota()
 }
 
 func countRequest(ctx context.Context) {
-	if n, ok := ctx.Value(requestCounterKey{}).(*atomic.Int64); ok {
+	if n, ok := ctx.Value(manualSyncKey{}).(*atomic.Int64); ok {
 		n.Add(1)
 	}
 }

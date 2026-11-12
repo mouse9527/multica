@@ -58,9 +58,10 @@ type SyncResult struct {
 // GitHub id, so syncing again, or after a write from Multica, stores nothing
 // twice.
 //
-// It is refused before any request while GitHub asked to wait
-// (*ghsnapshot.RateLimitError) or while the quota is below the guard
-// (*QuotaLowError).
+// It is refused while GitHub asked to wait (*ghsnapshot.RateLimitError) or
+// while the quota is below the guard (*QuotaLowError): before any request, and
+// again before each of its reads, against the quota the latest answer
+// reported. A sync stopped midway keeps what it stored, and result reports it.
 //
 // An issue GitHub answers 404 or 410 for, in a repository that still answers,
 // is marked deleted; one it redirects is followed as the daily reconcile
@@ -92,7 +93,7 @@ func (s *Service) SyncIssue(ctx context.Context, issue db.Issue) (SyncResult, er
 		return result, err
 	}
 
-	ctx, requests := withRequestCounter(ctx)
+	ctx, requests := withManualSync(ctx)
 	err = s.syncIssueNow(ctx, issue, ext, &result)
 	s.pauseIfThrottled(err)
 	result.RequestsUsed = int(requests.Load())

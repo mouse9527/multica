@@ -107,9 +107,18 @@ func TestSyncGitHubIssue(t *testing.T) {
 		t.Fatalf("local issue = %v", refused)
 	}
 
+	// The quota drops under the guard: the next sync stops after its first
+	// read, which reports it, and says how far it got; the one after that
+	// sends nothing.
 	remaining.Store(10)
-	syncRef(imported.ID).Want(http.StatusOK) // reports the low quota
 	sent := fake.sent()
+	var stopped map[string]any
+	syncRef(imported.ID).Want(http.StatusTooManyRequests).JSON(&stopped)
+	if stopped["code"] != "github_quota_low" || stopped["requests_used"] != float64(1) || stopped["issue_id"] != imported.ID ||
+		stopped["new_comments"] != float64(0) || fake.sent() != sent+1 {
+		t.Fatalf("sync when the quota drops = %v after %d requests", stopped, fake.sent()-sent)
+	}
+	sent = fake.sent()
 	resp := syncRef(imported.ID).Want(http.StatusTooManyRequests)
 	var low map[string]any
 	resp.JSON(&low)

@@ -77,7 +77,8 @@ func (s *Service) reconcileIntentsWhere(ctx context.Context, repo *Repo, project
 		}
 		if err := s.reconcileIntent(ctx, repo, projectID, intent); err != nil {
 			var limited *ghsnapshot.RateLimitError
-			if errors.As(err, &limited) || errors.Is(err, ErrTokenNotUsable) || ctx.Err() != nil {
+			var low *QuotaLowError
+			if errors.As(err, &limited) || errors.As(err, &low) || errors.Is(err, ErrTokenNotUsable) || ctx.Err() != nil {
 				return err
 			}
 			// One intent's trouble does not hold back the others; it is
