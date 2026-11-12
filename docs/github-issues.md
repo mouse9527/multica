@@ -190,6 +190,14 @@ MULTICA_GITHUB_TOKEN_EXPIRES_AT=2027-03-01
 
 没改的：插件上下文和 IM 渠道回复里的标识（`service/plugin_action.go`、`channel/engine/router.go`），它们本来就是 `PREFIX-N`。
 
+### 正文里的 `owner/repo#N`（M-60）
+
+- 只读渲染（聊天、评论）：`packages/ui/markdown/github-issue-keys.ts` 在 `PREFIX-N` 之前把正文里完整的 `owner/repo#N` 改写成 `[owner/repo#N](mention://issue/owner%2Frepo%23N)`；`RichLink` 解码后和 `PREFIX-N` 走同一个查找（`GET /api/issues/{id}`），命中渲染成 issue 卡片（卡片上写的是 issue 的标识，也就是 `PREFIX-N`；载入前先显示原文），未命中（未跟踪、别的工作区、开关关闭时服务端 404）还原成原文。代码块、行内代码、已有链接、URL、更长的路径（`a/owner/repo#1`、`github.com/...`）不改写。
+- 编辑器（issue 正文、评论输入）：`editor/extensions/github-issue-key-chips.ts` 扫描文档，**包括打开时载入的内容**（智能体经 CLI 写的正文、从 GitHub 导入的正文）和用户输入、粘贴的文字，已跟踪的 key 换成 mention 节点（id 是转义后的 key），显示成卡片。这种节点保存时写回原文 `owner/repo#N`，所以保存出的 Markdown 不变：不会把 `mention://` 链接写进存储，也不会双写到 GitHub；替换不触发保存，不进撤销历史。光标紧跟在 key 后面时视为还在输入，等光标离开再换。带格式（粗体、斜体、删除线等）的 key 在编辑器里保持文字：Markdown 序列化器在行内节点前后关闭、重开格式，不写节点自己的格式，换成卡片会在下次保存时丢掉格式；只读渲染里它们仍显示成卡片。
+- 不识别没有 owner 的 `repo#N`、`#N`。服务端没有改动：标识解析在 M-22 已有。
+- M-65 起 github issue 的标识是 `PREFIX-N`，正文里写 `PREFIX-N` 就走上游已有的识别，显示成同样的卡片。这一节的识别保留，用来显示 M-65 之前写下的 `owner/repo#N`，以及别人在 GitHub 上写、轮询进来的引用（M-64 的 B1）。
+- 智能体的写法见 multica-platform skill 的 `references/mentions.md`：评论、聊天里写 `PREFIX-N` 纯文本；完整的 `owner/repo#N` 也会显示成卡片。`mention://issue/<uuid>` 链接同步到 GitHub 后打不开，不要用在会同步到 GitHub 的正文和评论里。
+
 ### 详情页的 GitHub 链接
 
 github issue 的详情页右侧属性栏（「项目」下面）有一行「GitHub」：显示 `owner/repo#N`，点击在新标签页打开 `https://github.com/owner/repo/issues/N`，旁边的按钮复制这个链接。链接由响应里的 `provider` 与 `github.repo`、`github.number` 生成（`packages/core/github-issues/issue-link.ts` 的 `githubIssueLink`，只认合法的 `owner/repo` 与正整数，只生成 `github.com` 的地址），不请求 GitHub。local issue、开关关闭（所有 issue 都是 `local`）或旧服务端（没有 `github` 字段）都不显示这一行。

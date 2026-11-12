@@ -43,6 +43,7 @@ import {
   createIssueIdentifierAutolinkExtension,
   type IssueIdentifierResolver,
 } from "./issue-identifier-autolink";
+import { createGitHubIssueKeyChipsExtension } from "./github-issue-key-chips"; // GitHub-native issues (fork)
 import { SlashCommandExtension } from "./slash-command-extension";
 import { createSlashCommandSuggestion, createBuiltinCommandSuggestion } from "./slash-command-suggestion";
 import type { BuiltinCommandSuggestionOptions } from "./slash-command-suggestion";
@@ -288,6 +289,10 @@ export function createEditorExtensions(
     ...(!options.disableMentions && options.resolveIssueIdentifierRef
       ? [
           createIssueIdentifierAutolinkExtension({
+            resolveRef: options.resolveIssueIdentifierRef,
+          }),
+          // GitHub-native issues (fork): tracked `owner/repo#N` as chips.
+          createGitHubIssueKeyChipsExtension({
             resolveRef: options.resolveIssueIdentifierRef,
           }),
         ]
