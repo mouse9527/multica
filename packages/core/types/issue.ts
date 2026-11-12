@@ -247,4 +247,8 @@ export interface Issue {
   last_activity_at?: string | null;
   /** Present only on issue detail responses for issues created from a comment. */
   source_context?: IssueSourceContext;
+  /** GitHub-native issues (mouse9527/multica fork): "github" when the issue is
+   *  backed by a GitHub issue and `identifier` is "owner/repo#N", else
+   *  "local". Servers without the feature omit it. */
+  provider?: "local" | "github" | (string & {});
 }

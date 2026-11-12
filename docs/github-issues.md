@@ -195,6 +195,12 @@ MULTICA_GITHUB_TOKEN_EXPIRES_AT=2027-03-01
 - 不识别没有 owner 的 `repo#N`、`#N`。服务端没有改动：标识解析在 M-22 已有。
 - 智能体的写法见 multica-platform skill 的 `references/mentions.md`：评论、聊天里写完整的 `owner/repo#N` 纯文本。它在 Multica 渲染成卡片，在 GitHub 上是原生的交叉引用；`mention://issue/<uuid>` 链接同步到 GitHub 后打不开。
 
+### 详情页的 GitHub 链接
+
+github issue 的详情页右侧属性栏（「项目」下面）有一行「GitHub」：显示 `owner/repo#N`，点击在新标签页打开 `https://github.com/owner/repo/issues/N`，旁边的按钮复制这个链接。链接只由响应里已有的 `provider` 和 `identifier` 生成（`packages/core/github-issues/issue-link.ts` 的 `githubIssueLink`），不请求 GitHub。local issue、开关关闭（所有 issue 都是 `local`）或旧服务端（没有 `provider`）都不显示这一行。
+
+前端钩子：`packages/core/types/issue.ts` 的 `Issue.provider`、`packages/core/api/schemas.ts` 的 `IssueSchema.provider`、`packages/views/issues/components/issue-detail.tsx` 属性栏里挂 `GitHubIssueLinkRow`（新文件 `github-issue-link-row.tsx`），以及 8 个 `issues.json` 的 `detail.prop_github`、`detail.github_copy_link`。
+
 ## 外部作者
 
 GitHub 上工作区以外的人写的评论和新建的 issue，在 Multica 里归到固定身份，GitHub 作者写在正文前缀里。**不改任何现有表约束**（Owner 选定，见 #26）。代码在 `external_author.go`、`external_comment.go`、`sync_account.go`，由轮询（#16）与导入（#50）调用。

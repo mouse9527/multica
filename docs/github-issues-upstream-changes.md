@@ -12,15 +12,21 @@
 |---|---|---|---|
 | `Dockerfile` | M-49 | 构建镜像升级到 `golang:1.27.4-alpine`（一行）。上游 `6ccbdd178` 已是同一行，下次同步后不再是修改 | 无 |
 | `packages/core/api/client.ts` | M-28 | `getProjectGitHubSettings`（404 返回 `null`） | 有 |
+| `packages/core/api/schemas.ts` | #70 | `IssueSchema.provider`（格式不对时丢弃该字段） | 有 |
+| `packages/core/api/schemas.test.ts` | #70 | 上面这个字段的测试 | 有 |
 | `packages/core/package.json` | M-28 | 导出 `./github-issues` | 无 |
 | `packages/core/types/api.ts` | M-28 | `CreateIssueRequest.repo`、`provider` | 有 |
+| `packages/core/types/issue.ts` | #70 | `Issue.provider` | 有 |
 | `packages/ui/markdown/index.ts` | M-60 | 导出 `github-issue-keys` | 有 |
 | `packages/views/editor/content-editor.tsx` | M-60 | 编辑器识别的解析器接受 `owner/repo#N`，不比对前缀 | 有 |
 | `packages/views/editor/extensions/index.ts` | M-60 | 注册 `owner/repo#N` 卡片扩展 | 有 |
 | `packages/views/editor/extensions/mention-extension.ts` | M-60 | 代表 `owner/repo#N` 的 mention 节点存成原文 | 有 |
 | `packages/views/editor/extensions/mention-view.tsx` | M-60 | 这种节点交给 fork 的卡片视图 | 有 |
 | `packages/views/editor/utils/preprocess.ts` | M-60 | 只读渲染先识别 `owner/repo#N`，再识别 `PREFIX-N` | 有 |
+| `packages/views/issues/components/issue-detail.tsx` | #70 | 属性栏挂 `GitHubIssueLinkRow`（2 行） | 有 |
+| `packages/views/issues/components/issue-detail.test.tsx` | #70 | 详情页显示 / 不显示 GitHub 链接的测试 | 有 |
 | `packages/views/issues/hooks/use-resolve-issue-identifier.ts` | M-60 | 对 `owner/repo#N` 发起查找 | 有 |
+| `packages/views/locales/{en,es,fr,ja,ko,ru,zh-Hans,zh-Hant}/issues.json`（8 个） | #70 | 详情页 GitHub 链接文案 `detail.prop_github`、`detail.github_copy_link` | 无（JSON） |
 | `packages/views/locales/{en,es,fr,ja,ko,ru,zh-Hans,zh-Hant}/modals.json`（8 个） | M-28 | 新建 issue 对话框的仓库下拉文案 `create_issue.github_repo` | 无（JSON） |
 | `packages/views/modals/create-issue.tsx` | M-28 | 仓库下拉、状态调整、提交前检查、请求体带上选择 | 有 |
 | `packages/views/modals/create-issue.test.tsx` | M-28 | 上面这些行为的测试 | 有 |
@@ -70,7 +76,7 @@
 | `server/internal/handler/webhook_status_resolver_test.go` | M-30 | 无 |
 | `server/internal/handler/workspace_delete_manifest_test.go` | M-20 | 有 |
 
-合计：修改过的上游文件 59 个（含 8 个翻译文件与 10 个测试文件），其中 14 个文件内没有修改说明，以本清单为准。
+合计：修改过的上游文件 72 个（含 16 个翻译文件与 12 个测试文件），其中 22 个文件内没有修改说明，以本清单为准。
 
 ## fork 新增的文件
 
@@ -81,7 +87,7 @@
 - `server/internal/integrations/ghsnapshot/`：`ratelimit_export.go`、`static_source.go` 及其测试。
 - `server/cmd/multica/`：`cmd_issue_github.go`、`cmd_issue_import.go` 及测试；`server/cmd/server/githubissues_*_test.go`；`server/cmd/migrate/github_issue_migrations.go`；`server/internal/service/issue_key.go`；`server/internal/testutil/ddl.go`；`server/internal/migrations/` 下的 fork 测试。
 - `server/migrations/9000_*`–`9003_*`：fork 迁移；`server/pkg/db/queries/` 下的 `github_issue.sql`、`githubissues.sql`、`githubissues_write.sql` 与 `server/pkg/db/generated/` 里对应的生成文件。
-- `packages/core/github-issues/`、`packages/views/modals/create-issue-github-repo*.tsx`。
+- `packages/core/github-issues/`、`packages/views/modals/create-issue-github-repo*.tsx`、`packages/views/issues/components/github-issue-link-row*.tsx`。
 - `packages/ui/markdown/github-issue-keys.ts`；`packages/views/editor/extensions/github-issue-key-chips.ts`、`github-issue-key-mention-view.tsx`；测试 `packages/views/editor/utils/github-issue-keys.test.ts`、`packages/views/editor/extensions/github-issue-key-chips.test.ts`、`packages/views/rich-content/github-issue-key-rendering.test.tsx`。
 - `.github/workflows/build-image.yml`：fork 的镜像构建。
 - `docs/github-issues*.md`。
