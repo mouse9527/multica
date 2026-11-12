@@ -11,41 +11,35 @@ import (
 	"github.com/multica-ai/multica/server/internal/githubissues/issuekey"
 )
 
-// IssueKey renders an issue's identifier: "owner/repo#N" when externals holds
-// its GitHub identity, IssueIdentifier otherwise. Callers rendering a page of
-// issues load externals once with issuekey.Load.
-func IssueKey(externals issuekey.Externals, issueID pgtype.UUID, issuePrefix string, number int32) string {
-	return externals.Key(issueID, IssueIdentifier(issuePrefix, number))
+// IssueKey renders an issue's identifier. A GitHub-backed issue keeps its
+// workspace key "PREFIX-N" like any other, so this is IssueIdentifier; it
+// stays as the seam the fork's call sites in upstream files go through until
+// they are removed.
+func IssueKey(_ issuekey.Externals, _ pgtype.UUID, issuePrefix string, number int32) string {
+	return IssueIdentifier(issuePrefix, number)
 }
 
-// LookupIssueIdentifier is IssueKey for one issue, reading its issue_external
-// row.
-func LookupIssueIdentifier(ctx context.Context, q issuekey.Querier, workspaceID, issueID pgtype.UUID, issuePrefix string, number int32) string {
-	return IssueKey(issuekey.LoadOne(ctx, q, workspaceID, issueID), issueID, issuePrefix, number)
+// LookupIssueIdentifier is IssueKey for one issue. It reads nothing.
+func LookupIssueIdentifier(_ context.Context, _ issuekey.Querier, _, _ pgtype.UUID, issuePrefix string, number int32) string {
+	return IssueIdentifier(issuePrefix, number)
 }
 
-// applyIssueKeyToMap sets identifier and provider on an IssueToMap payload,
-// and the identifier of its duplicate_of original, from one batch read.
+// applyIssueKeyToMap sets provider, and the github field of a GitHub-backed
+// issue, on an IssueToMap payload; the identifier stays the workspace key.
 // Queriers that cannot read issue_external (test fakes) leave the payload
 // local.
-func applyIssueKeyToMap(ctx context.Context, q any, m map[string]any, workspaceID, issueID pgtype.UUID, issuePrefix string, number int32, original *pgtype.UUID) {
+func applyIssueKeyToMap(ctx context.Context, q any, m map[string]any, workspaceID, issueID pgtype.UUID) {
 	kq, ok := q.(issuekey.Querier)
 	if !ok {
 		return
 	}
-	ids := []pgtype.UUID{issueID}
-	if original != nil {
-		ids = append(ids, *original)
-	}
-	externals := issuekey.Load(ctx, kq, workspaceID, ids)
-	m["identifier"] = IssueKey(externals, issueID, issuePrefix, number)
+	externals := issuekey.LoadOne(ctx, kq, workspaceID, issueID)
 	m["provider"] = externals.Provider(issueID)
-	if original == nil {
-		return
-	}
-	if ref, ok := m["duplicate_of"].(map[string]any); ok {
-		if ext, ok := externals[*original]; ok {
-			ref["identifier"] = issuekey.GitHub(ext)
+	if ext, ok := externals[issueID]; ok {
+		m["github"] = map[string]any{
+			"repo":   ext.ExternalRepo,
+			"number": ext.ExternalNumber,
+			"url":    issuekey.URL(ext),
 		}
 	}
 }

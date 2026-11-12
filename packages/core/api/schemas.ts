@@ -1533,6 +1533,7 @@ export const IssueSchema = z.object({
   // GitHub-native issues (mouse9527/multica fork): additive display data;
   // same disproportionate-failure reasoning as status_name above.
   provider: z.string().optional().catch(undefined),
+  github: z.object({ repo: z.string(), number: z.number(), url: z.string() }).nullable().optional().catch(undefined),
 }).loose();
 
 export const ListIssuesResponseSchema = z.object({

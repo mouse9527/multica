@@ -56,14 +56,15 @@ at a project; everything else in this document is about the four types (plus
 <!-- Modified by the mouse9527/multica fork: GitHub-native issue keys. -->
 ### Referencing a GitHub-native issue
 
-On a server with GitHub-native issues, a GitHub-hosted issue's identifier is
-`owner/repo#N`, and the issue lives on GitHub too: its body and the comments on
-it are copied there as written. To reference such an issue in prose, write the
-full key as plain text — `mouse9527/multica#21`. In comments, chat and issue
-bodies, readers' clients render a full key of an issue this workspace tracks
-as the same issue chip as `MUL-123`, and the stored text stays the bare key;
-on GitHub the same text is a native cross-reference. Do not
-wrap it in `[…](mention://issue/<uuid>)` there: GitHub cannot open that link.
+On a server with GitHub-native issues, a GitHub-hosted issue is identified like
+any other issue, by its workspace key (`MUL-123`); the GitHub issue it lives on
+(`owner/repo#N`) is shown beside it. To reference such an issue in prose, write
+its key as plain text — `MUL-123` — and readers' clients render it as an issue
+chip. The full GitHub key `mouse9527/multica#21` of an issue this workspace
+tracks renders as the same chip, and still resolves in the CLI and API. The
+body of a GitHub-hosted issue and the comments on it are copied to GitHub as
+written, so do not wrap a reference there in `[…](mention://issue/<uuid>)`:
+GitHub cannot open that link.
 
 Short forms are not references: `multica#21` and `#21` stay plain text in
 Multica (on GitHub `#21` would point into whichever repository shows the text).

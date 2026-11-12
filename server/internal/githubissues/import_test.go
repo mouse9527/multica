@@ -186,10 +186,11 @@ func TestPollFirstLookDoesNotBackfill(t *testing.T) {
 // and sends nothing, and the refusals that send nothing or store nothing.
 func TestImportIssue(t *testing.T) {
 	env := newPollEnv(t)
-	// main.go turns GitHub identifiers on together with the feature.
+	// main.go turns GitHub fields on together with the feature.
 	previous := issuekey.Enabled()
 	issuekey.SetEnabled(true)
 	t.Cleanup(func() { issuekey.SetEnabled(previous) })
+	env.f.Exec(t, `UPDATE workspace SET issue_prefix = 'IMP' WHERE id = $1`, env.ws)
 	t0 := testNow.Add(-time.Hour)
 	env.api.putIssue(1, "stranger", "Crash on start", "It crashes.", "open", t0, nil)
 	env.api.putComment(501, 1, "stranger", "Same here", t0.Add(time.Minute))
@@ -226,8 +227,14 @@ func TestImportIssue(t *testing.T) {
 		}
 	}
 	env.mu.Unlock()
-	if createdEvent == nil || createdEvent["description"] != nil || createdEvent["identifier"] != "acme/widgets#1" || createdEvent["provider"] != "github" {
-		t.Fatalf("issue:created payload = %v", createdEvent)
+	// The identifier is the workspace key; GitHub's key rides beside it.
+	var number int
+	env.f.QueryRow(t, `SELECT number FROM issue WHERE id = $1`, id).Scan(&number)
+	key := "IMP-" + strconv.Itoa(number)
+	gh, _ := createdEvent["github"].(map[string]any)
+	if createdEvent == nil || createdEvent["description"] != nil || createdEvent["identifier"] != key || createdEvent["provider"] != "github" ||
+		gh["repo"] != "acme/widgets" || gh["number"] != int32(1) || gh["url"] != "https://github.com/acme/widgets/issues/1" {
+		t.Fatalf("issue:created payload = %v, want identifier %s", createdEvent, key)
 	}
 
 	// Importing again returns the same issue, stores nothing new and reads

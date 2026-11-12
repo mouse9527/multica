@@ -230,11 +230,14 @@ func (s *Service) syncLinkedPullsNow(ctx context.Context, repo *Repo, ext db.Iss
 	return nil
 }
 
-// ProjectGitHubIssue is a tracked GitHub issue of a project.
+// ProjectGitHubIssue is a tracked GitHub issue of a project: the Multica
+// issue (IssueID, Number) and the GitHub issue (Repo, GitHubNumber).
 type ProjectGitHubIssue struct {
-	IssueID    pgtype.UUID
-	Identifier string
-	State      string
+	IssueID      pgtype.UUID
+	Number       int32
+	Repo         string
+	GitHubNumber int32
+	State        string
 }
 
 // ListProjectGitHubIssues lists the GitHub issues of a project that a manual
@@ -256,9 +259,9 @@ func (s *Service) ListProjectGitHubIssues(ctx context.Context, workspaceID, proj
 	out := make([]ProjectGitHubIssue, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, ProjectGitHubIssue{
-			IssueID:    row.IssueID,
-			Identifier: row.ExternalRepo + "#" + strconv.Itoa(int(row.ExternalNumber)),
-			State:      row.State,
+			IssueID: row.IssueID, Number: row.Number,
+			Repo: row.ExternalRepo, GitHubNumber: row.ExternalNumber,
+			State: row.State,
 		})
 	}
 	return out, nil

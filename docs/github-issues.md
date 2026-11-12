@@ -8,6 +8,7 @@
 - **按需导入：fork 不主动导入 GitHub 上的 issue 和 PR。** 只有被明确要求导入的 issue（目前入口只有 API `POST /api/issues/import` 和 CLI `multica issue import`，界面上的导入输入框还没做），以及从 Multica 新建的 issue，才进入 Multica；PR 只镜像关闭这些已跟踪 issue 的。见「按需导入」「PR 轮询与关联」。
 - **读 = 默认手动同步，只处理已导入的 issue。** Owner 决定（#24「已定决定」2026-11-12）：GitHub 到本地的同步默认手动，要最新内容时用 `multica issue sync` 或 `POST /api/issues/{id}/github-sync` 主动同步一个 issue 或一个项目，带额度守卫。定时轮询（每 60 秒按游标读变化，含每日对账）和打开 issue 时的后台刷新是两个开关，默认都关闭。不用 webhook，不读整个仓库的历史。见「手动同步」「轮询」「按需刷新」「每日对账」。
 - **只经 `RepoClient` 访问 GitHub。** 仓库白名单 = 项目上登记的 `github_repo` 资源；令牌只在 `transport.go`、`config.go` 两个文件里出现，有语法树扫描测试守着。见「访问仓库」。
+- **标识统一是 `PREFIX-N`。** github issue 和 local issue 一样用 Multica 编号做标识；GitHub 上的 `owner/repo#N` 放在响应的 `github` 字段与详情页的 GitHub 链接里，输入 `owner/repo#N` 仍能找到 issue。见「标识」。
 - **local issue 不变，开关关闭时与上游一致。** 没有 `issue_external` 行的 issue 是 local issue；开关关闭时不注册路由、不发请求、不跑调度任务，标识按上游渲染。
 - **只新增表、薄钩子。** 5 张 fork 表（迁移 9000–9003），不改上游表结构；新逻辑放在新包和 fork 自己的文件里，对上游文件的改动列在各节的「对上游文件的钩子」里，汇总见 [fork 对上游文件的修改清单](github-issues-upstream-changes.md)（分发时附上）。见「迁移号段规则」「上游同步」。
 
@@ -159,47 +160,49 @@ MULTICA_GITHUB_TOKEN_EXPIRES_AT=2027-03-01
 
 ### 规则
 
-- 有 `issue_external` 行的 issue 是 github issue，标识为 `owner/repo#N`（`external_repo` 加 GitHub 上的编号）；没有的就是 local issue，标识仍是 `PREFIX-N`，与上游一致。
-- issue 响应（HTTP 与事件载荷）多一个 `provider` 字段：`local` 或 `github`。`number` 仍是 Multica 内的编号，github issue 的 `PREFIX-N` 也能继续用来查找。
-- 标识跟随功能开关：`main.go` 启动时按 `githubissues.Config.Enabled()` 调 `issuekey.SetEnabled`。开关关闭（默认）时不读 `issue_external`、不解析 `owner/repo#N`，所有 issue 按 local 渲染，与上游一致；开启期间写下的关联行保留，重新开启后恢复 `owner/repo#N`。
-- 解析（仅开关开启时）：`/api/issues/{id}` 接受 `owner/repo#N`（含百分号转义的 `owner%2Frepo%23N`，CLI 就是这样发的），仓库名不区分大小写；CLI 的 `multica issue ... owner/repo#N` 交给服务端解析。
+- 所有 issue 的标识都是 `PREFIX-N`（Multica 内的编号），github issue 也一样，与上游一致。有 `issue_external` 行的 issue 是 github issue，没有的是 local issue。
+- issue 响应（HTTP 与事件载荷）多两个字段：`provider`（`local` 或 `github`）；github issue 另有 `github`：`{"repo": "owner/repo", "number": N, "url": "https://github.com/owner/repo/issues/N"}`，local issue 没有这个字段。
+- 字段跟随功能开关：`main.go` 启动时按 `githubissues.Config.Enabled()` 调 `issuekey.SetEnabled`。开关关闭（默认）时不读 `issue_external`、不解析 `owner/repo#N`，所有 issue 按 local 渲染，与上游一致；开启期间写下的关联行保留，重新开启后恢复 `provider` 与 `github`。
+- 解析（仅开关开启时）：`owner/repo#N` 仍然能找到对应 issue。`/api/issues/{id}` 接受 `owner/repo#N`（含百分号转义的 `owner%2Frepo%23N`，CLI 就是这样发的，旧链接 `/issues/owner%2Frepo%23N` 也照常可用），仓库名不区分大小写；CLI 的 `multica issue ... owner/repo#N` 交给服务端解析。
 - 删除 issue 时在同一事务里删除它的 `issue_external` 行（表没有外键）；这一步不看开关，免得关闭期间删除的 issue 留下孤儿行。工作区删除由 `DeleteWorkspaceGithubIssueData` 清理。
+- 从 M-22 到 M-65 合并前，github issue 的标识曾是 `owner/repo#N`（M-64 决定改回 `PREFIX-N`）。那段时间写入的活动记录、评论和正文保留原文，不迁移。
 
 ### 实现
 
-- 格式、解析与批量读取在 `server/internal/githubissues/issuekey/`。它只依赖生成的查询代码，`service`、`handler`、CLI 都能引用，不会形成循环依赖（`githubissues` 经 `scheduler` 依赖 `service`）。
-- `service.IssueIdentifier` 仍只渲染 local 标识，不改签名；按是否存在 `issue_external` 分支的是 `service.IssueKey`（已读好的一批）和 `service.LookupIssueIdentifier`（单条，多一次查询）。
-- 列表与详情：纯函数构造器先按 local 渲染，`handler.fillIssueKeys` 再用**一页一次** `ListIssueExternalsByIssueIDs` 改写 `identifier`、`provider` 和 `duplicate_of.identifier`。列表接口因此只多 1 次查询，`issue_key_test.go` 用计数的 `DBTX` 断言。
+- 解析与批量读取在 `server/internal/githubissues/issuekey/`。它只依赖生成的查询代码，`service`、`handler`、CLI 都能引用，不会形成循环依赖（`githubissues` 经 `scheduler` 依赖 `service`）。
+- `service.IssueKey`、`service.LookupIssueIdentifier`、`handler.issueKey` 现在都等于 `service.IssueIdentifier`，`handler.loadIssueKeys` 不再查询。它们留在上游文件的钩子里，第二步删除这些钩子时一并删掉。
+- 列表与详情：纯函数构造器先按 local 渲染，`handler.fillIssueKeys` 再用**一页一次** `ListIssueExternalsByIssueIDs` 填 `provider` 与 `github`，不改 `identifier`。列表接口因此只多 1 次查询，`issue_key_test.go` 用计数的 `DBTX` 断言。事件载荷由 `service.applyIssueKeyToMap` 填同样两个字段。
 - 读取 `issue_external` 失败时记一条警告、按 local 渲染，与标签加载失败时的处理一致。
 
 ### 对上游文件的钩子
 
 | 文件 | 改动 |
 |---|---|
-| `server/internal/handler/issue.go` | `IssueResponse.Provider`；三个构造器填 `local`；`fillStatusCategory(ies)`、搜索、open 列表、分组、子 issue、创建、批量更新后调 `fillIssueKeys`；删除事务删 `issue_external` |
+| `server/internal/handler/issue.go` | `IssueResponse.Provider`、`IssueResponse.GitHub`；三个构造器填 `local`；`fillStatusCategory(ies)`、搜索、open 列表、分组、子 issue、创建、批量更新后调 `fillIssueKeys`；删除事务删 `issue_external` |
 | `server/internal/handler/handler.go` | `resolveIssueByIdentifier` 先试 `owner/repo#N` |
 | `server/internal/handler/{issue_table_rows,search_index,issue_duplicate,plugin_action}.go` | 构造完一页后调 `fillIssueKeys` |
-| `server/internal/handler/{daemon,issue_workflow_entry,issue_system_wakeup,squad}.go` | 认领、工作流提示词、等待中的子 issue、squad 活跃 issue 的标识改用 `issueKey` / `service.IssueKey` |
-| `server/internal/service/{task,source_context}.go` | `IssueToMap` 带 `provider`，`IssueToMapResolved` 改写标识；quick-create 活动记录、来源快照的标识 |
+| `server/internal/handler/{daemon,issue_workflow_entry,issue_system_wakeup,squad}.go` | 标识经 `issueKey` / `service.IssueKey`（现在与上游结果相同，待第二步删除） |
+| `server/internal/service/{task,source_context}.go` | `IssueToMap` 带 `provider`，`IssueToMapResolved` 调 `applyIssueKeyToMap` 填 `provider`、`github`；quick-create 活动记录、来源快照的标识（现在与上游结果相同，待第二步删除） |
 | `server/cmd/server/main.go` | 启动时 `issuekey.SetEnabled(config.Enabled())` |
-| `server/cmd/server/activity_listeners.go` | 活动记录里的 issue 标识 |
+| `server/cmd/server/activity_listeners.go` | 活动记录里的 issue 标识（现在与上游结果相同，待第二步删除） |
 | `server/cmd/multica/{cmd_id_resolver,cmd_issue}.go` | 接受 `owner/repo#N`；`--fields` 加 `provider` |
 | `server/pkg/db/queries/github_issue.sql` | 新查询 `GetIssueExternalByRepoName`（只读 fork 表） |
 
-没改的：PR 关联按 `PREFIX-N` 匹配（`handler/github.go`，任务 M 处理）、插件上下文和 IM 渠道回复里的标识（`service/plugin_action.go`、`channel/engine/router.go`）。
+没改的：插件上下文和 IM 渠道回复里的标识（`service/plugin_action.go`、`channel/engine/router.go`），它们本来就是 `PREFIX-N`。
 
 ### 正文里的 `owner/repo#N`（M-60）
 
-- 只读渲染（聊天、评论）：`packages/ui/markdown/github-issue-keys.ts` 在 `PREFIX-N` 之前把正文里完整的 `owner/repo#N` 改写成 `[owner/repo#N](mention://issue/owner%2Frepo%23N)`；`RichLink` 解码后和 `PREFIX-N` 走同一个查找（`GET /api/issues/{id}`），命中渲染成 issue 卡片，未命中（未跟踪、别的工作区、开关关闭时服务端 404）还原成原文。代码块、行内代码、已有链接、URL、更长的路径（`a/owner/repo#1`、`github.com/...`）不改写。
+- 只读渲染（聊天、评论）：`packages/ui/markdown/github-issue-keys.ts` 在 `PREFIX-N` 之前把正文里完整的 `owner/repo#N` 改写成 `[owner/repo#N](mention://issue/owner%2Frepo%23N)`；`RichLink` 解码后和 `PREFIX-N` 走同一个查找（`GET /api/issues/{id}`），命中渲染成 issue 卡片（卡片上写的是 issue 的标识，也就是 `PREFIX-N`；载入前先显示原文），未命中（未跟踪、别的工作区、开关关闭时服务端 404）还原成原文。代码块、行内代码、已有链接、URL、更长的路径（`a/owner/repo#1`、`github.com/...`）不改写。
 - 编辑器（issue 正文、评论输入）：`editor/extensions/github-issue-key-chips.ts` 扫描文档，**包括打开时载入的内容**（智能体经 CLI 写的正文、从 GitHub 导入的正文）和用户输入、粘贴的文字，已跟踪的 key 换成 mention 节点（id 是转义后的 key），显示成卡片。这种节点保存时写回原文 `owner/repo#N`，所以保存出的 Markdown 不变：不会把 `mention://` 链接写进存储，也不会双写到 GitHub；替换不触发保存，不进撤销历史。光标紧跟在 key 后面时视为还在输入，等光标离开再换。带格式（粗体、斜体、删除线等）的 key 在编辑器里保持文字：Markdown 序列化器在行内节点前后关闭、重开格式，不写节点自己的格式，换成卡片会在下次保存时丢掉格式；只读渲染里它们仍显示成卡片。
 - 不识别没有 owner 的 `repo#N`、`#N`。服务端没有改动：标识解析在 M-22 已有。
-- 智能体的写法见 multica-platform skill 的 `references/mentions.md`：评论、聊天里写完整的 `owner/repo#N` 纯文本。它在 Multica 渲染成卡片，在 GitHub 上是原生的交叉引用；`mention://issue/<uuid>` 链接同步到 GitHub 后打不开。
+- M-65 起 github issue 的标识是 `PREFIX-N`，正文里写 `PREFIX-N` 就走上游已有的识别，显示成同样的卡片。这一节的识别保留，用来显示 M-65 之前写下的 `owner/repo#N`，以及别人在 GitHub 上写、轮询进来的引用（M-64 的 B1）。
+- 智能体的写法见 multica-platform skill 的 `references/mentions.md`：评论、聊天里写 `PREFIX-N` 纯文本；完整的 `owner/repo#N` 也会显示成卡片。`mention://issue/<uuid>` 链接同步到 GitHub 后打不开，不要用在会同步到 GitHub 的正文和评论里。
 
 ### 详情页的 GitHub 链接
 
-github issue 的详情页右侧属性栏（「项目」下面）有一行「GitHub」：显示 `owner/repo#N`，点击在新标签页打开 `https://github.com/owner/repo/issues/N`，旁边的按钮复制这个链接。链接只由响应里已有的 `provider` 和 `identifier` 生成（`packages/core/github-issues/issue-link.ts` 的 `githubIssueLink`），不请求 GitHub。local issue、开关关闭（所有 issue 都是 `local`）或旧服务端（没有 `provider`）都不显示这一行。
+github issue 的详情页右侧属性栏（「项目」下面）有一行「GitHub」：显示 `owner/repo#N`，点击在新标签页打开 `https://github.com/owner/repo/issues/N`，旁边的按钮复制这个链接。链接由响应里的 `provider` 与 `github.repo`、`github.number` 生成（`packages/core/github-issues/issue-link.ts` 的 `githubIssueLink`，只认合法的 `owner/repo` 与正整数，只生成 `github.com` 的地址），不请求 GitHub。local issue、开关关闭（所有 issue 都是 `local`）或旧服务端（没有 `github` 字段）都不显示这一行。
 
-前端钩子：`packages/core/types/issue.ts` 的 `Issue.provider`、`packages/core/api/schemas.ts` 的 `IssueSchema.provider`、`packages/views/issues/components/issue-detail.tsx` 属性栏里挂 `GitHubIssueLinkRow`（新文件 `github-issue-link-row.tsx`），以及 8 个 `issues.json` 的 `detail.prop_github`、`detail.github_copy_link`。
+前端钩子：`packages/core/types/issue.ts` 的 `Issue.provider`、`Issue.github`，`packages/core/api/schemas.ts` 的 `IssueSchema.provider`、`IssueSchema.github`，`packages/views/issues/components/issue-detail.tsx` 属性栏里挂 `GitHubIssueLinkRow`（新文件 `github-issue-link-row.tsx`），以及 8 个 `issues.json` 的 `detail.prop_github`、`detail.github_copy_link`。
 
 ## 外部作者
 
@@ -272,7 +275,7 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 ### 用法
 
 ```bash
-multica issue sync owner/repo#12              # 同步一个；也接受 MUL-123 这种 key 或 UUID
+multica issue sync MUL-123                    # 同步一个；也接受 owner/repo#12 或 UUID
 multica issue sync --project <项目 id>         # 同步项目里全部已跟踪的 GitHub issue，串行
 multica issue sync --project <项目 id> --open-only   # 只同步 GitHub 上开着的
 ```
@@ -290,19 +293,19 @@ multica issue sync --project <项目 id> --open-only   # 只同步 GitHub 上开
 
 ### 接口
 
-- `POST /api/issues/{id}/github-sync`，`{id}` 是 UUID、`MUL-123` 这类 key 或 `owner/repo#N`（URL 编码）。工作区成员可用。功能关闭时不注册这个路由，响应与 `/api/issues/{id}/` 下其他不存在的路径相同。
+- `POST /api/issues/{id}/github-sync`，`{id}` 是 UUID、`MUL-123` 这类标识或 `owner/repo#N`（URL 编码）。工作区成员可用。功能关闭时不注册这个路由，响应与 `/api/issues/{id}/` 下其他不存在的路径相同。
 - **同步执行**，在请求里读完再返回：issue 本身（标题、正文、状态、标签，状态按「状态映射」落到工作流）、**全部**评论（每页 100 条，按 GitHub 评论 id 去重）、这个 issue 还没落定的双写意图（与轮询里的协调器同一套规则，见「自愈与认领」）、时间线里关联的 PR（与「PR 轮询与关联」同一规则：只镜像关闭已跟踪 issue 的）。
 - 成功 200：
 
   ```json
-  {"issue_id": "…", "identifier": "owner/repo#12", "issue_updated": true,
+  {"issue_id": "…", "identifier": "MUL-123", "issue_updated": true,
    "new_comments": 1, "comments_updated": 0, "pulls_updated": 0,
    "requests_used": 3, "rate_limit": {"limit": 5000, "remaining": 4210, "reset_at": "…"}}
   ```
 
   `gone` 为 `deleted` 或 `transferred` 时，GitHub 上已经没有这个 issue（之后不再同步，不再发请求）。`rate_limit` 只有 GitHub 在本小时窗口里报告过额度时才有。
 - 不受按需刷新的「15 秒闸门」限制，但受额度守卫约束。幂等：连续同步、或从 Multica 写入后再同步，都不产生重复评论或重复 issue（测试见 `sync_test.go`）。
-- `GET /api/projects/{id}/github-issues[?open_only=true]`：列出项目里已跟踪的 GitHub issue（按仓库、编号排序，不含对账标记为已删除、已转出的），不发 GitHub 请求，供批量同步用。
+- `GET /api/projects/{id}/github-issues[?open_only=true]`：列出项目里已跟踪的 GitHub issue（按仓库、编号排序，不含对账标记为已删除、已转出的），不发 GitHub 请求，供批量同步用。每项是 `{"id", "identifier": "MUL-123", "github": {"repo", "number", "url"}, "state"}`。
 
 | 情况 | 状态码 | `code` |
 |---|---|---|
@@ -434,7 +437,7 @@ GitHub 上的 issue 只有被明确要求时才进入 Multica（#50）。代码�
 - API：`POST /api/issues/import`，正文 `{"ref": "owner/repo#N"}` 或 `{"ref": "https://github.com/owner/repo/issues/N"}`（可带查询串、`#issuecomment-…` 这类片段、结尾 `/`；主机只认 `github.com`、`www.github.com`）。工作区成员可用（与新建 issue 相同），工作区由 `X-Workspace-ID` 指定。功能关闭时不注册这个路由，响应与 `/api/issues` 下其他不存在的路径相同。
 - CLI：`multica issue import <owner/repo#N | GitHub issue 的 URL>`，`--output table|json`。引用原样交给服务端解析。
 - 界面：还没有导入入口（输入框未做），目前只能用 API 或 CLI。
-- 成功：新导入 201，已导入过 200，响应都是 issue（与 `GET /api/issues/{id}` 的字段相同，标识为 `owner/repo#N`）。
+- 成功：新导入 201，已导入过 200，响应都是 issue（与 `GET /api/issues/{id}` 的字段相同，标识为 `PREFIX-N`，`github` 字段是导入的 GitHub issue）。
 
 ### 规则
 
@@ -497,7 +500,7 @@ GitHub 上的 issue 只有被明确要求时才进入 Multica（#50）。代码�
 |---|---|
 | 200 | 按轮询的规则同步（标题、正文、状态；旧快照不回滚），并记下这次核对的时间。所以对账也能补上 `since` 列表漏掉的变化 |
 | 404、410 | 标记为已删除 |
-| 301，`Location` 指向本工作区登记并已固定的另一个仓库（按 `/repositories/{id}/issues/{n}` 里的仓库 id 找固定绑定，再经 `RepoClient` 确认仍在白名单） | 读新位置的 issue，把 `issue_external` 改挂到新仓库与新编号（`MoveIssueExternal`，两处的 advisory lock 都拿），再按新位置同步。标识随之变成新的 `owner/repo#N` |
+| 301，`Location` 指向本工作区登记并已固定的另一个仓库（按 `/repositories/{id}/issues/{n}` 里的仓库 id 找固定绑定，再经 `RepoClient` 确认仍在白名单） | 读新位置的 issue，把 `issue_external` 改挂到新仓库与新编号（`MoveIssueExternal`，两处的 advisory lock 都拿），再按新位置同步。标识不变，`github` 字段随之变成新的仓库与编号 |
 | 301 指向未登记的仓库；新位置已被另一个本地 issue 跟踪；新位置读不到 | 标记为已转出 |
 | 其他（5xx、非限流的 403 等） | 这个仓库本周期的对账停在这一项，错误写进 `github_repo_sync.last_error`，下个周期重试。限流与令牌失效按「轮询」的规则停下整个周期 |
 

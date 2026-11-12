@@ -19,12 +19,22 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// fillIssueKeys sets identifier and provider on responses built by the pure
-// builders (which render every issue as local), and the identifier of their
-// duplicate_of originals, from ONE read of issue_external for the whole page.
-//
-// Run it after the status filler: fillDuplicateOf derives the original's local
-// identifier from the response's own, so it must still be the local one.
+// IssueGitHubResponse is where a GitHub-backed issue lives on GitHub. The
+// issue's identifier stays its workspace key "PREFIX-N"; this is carried
+// beside it.
+type IssueGitHubResponse struct {
+	Repo   string `json:"repo"`
+	Number int32  `json:"number"`
+	URL    string `json:"url"`
+}
+
+func issueGitHubResponse(ext db.IssueExternal) *IssueGitHubResponse {
+	return &IssueGitHubResponse{Repo: ext.ExternalRepo, Number: ext.ExternalNumber, URL: issuekey.URL(ext)}
+}
+
+// fillIssueKeys sets provider and the github field on responses built by the
+// pure builders (which render every issue as local), from ONE read of
+// issue_external for the whole page. Identifiers are left as they are.
 func (h *Handler) fillIssueKeys(ctx context.Context, wsID pgtype.UUID, resps ...*IssueResponse) {
 	ids := make([]pgtype.UUID, 0, len(resps))
 	for _, resp := range resps {
@@ -33,11 +43,6 @@ func (h *Handler) fillIssueKeys(ctx context.Context, wsID pgtype.UUID, resps ...
 		}
 		if id, err := util.ParseUUID(resp.ID); err == nil {
 			ids = append(ids, id)
-		}
-		if resp.DuplicateOf != nil {
-			if id, err := util.ParseUUID(resp.DuplicateOf.ID); err == nil {
-				ids = append(ids, id)
-			}
 		}
 	}
 	externals := issuekey.Load(ctx, h.Queries, wsID, ids)
@@ -49,13 +54,8 @@ func (h *Handler) fillIssueKeys(ctx context.Context, wsID pgtype.UUID, resps ...
 			continue
 		}
 		if ext, ok := externals[parseUUIDOrZero(resp.ID)]; ok {
-			resp.Identifier = issuekey.GitHub(ext)
 			resp.Provider = ext.Provider
-		}
-		if resp.DuplicateOf != nil {
-			if ext, ok := externals[parseUUIDOrZero(resp.DuplicateOf.ID)]; ok {
-				resp.DuplicateOf.Identifier = issuekey.GitHub(ext)
-			}
+			resp.GitHub = issueGitHubResponse(ext)
 		}
 	}
 }
@@ -69,15 +69,16 @@ func (h *Handler) fillIssueKeySlice(ctx context.Context, wsID pgtype.UUID, resps
 	h.fillIssueKeys(ctx, wsID, ptrs...)
 }
 
-// issueKey renders one issue's identifier, reading its issue_external row.
+// issueKey renders one issue's identifier: its workspace key.
 func (h *Handler) issueKey(ctx context.Context, issue db.Issue) string {
-	return service.LookupIssueIdentifier(ctx, h.Queries, issue.WorkspaceID, issue.ID, h.getIssuePrefix(ctx, issue.WorkspaceID), issue.Number)
+	return service.IssueIdentifier(h.getIssuePrefix(ctx, issue.WorkspaceID), issue.Number)
 }
 
-// loadIssueKeys reads the GitHub identity of a set of issues in one query, for
-// loops that render identifiers outside IssueResponse.
-func (h *Handler) loadIssueKeys(ctx context.Context, wsID pgtype.UUID, ids []pgtype.UUID) issuekey.Externals {
-	return issuekey.Load(ctx, h.Queries, wsID, ids)
+// loadIssueKeys is what loops rendering identifiers outside IssueResponse
+// pass to service.IssueKey. Identifiers no longer depend on issue_external,
+// so it reads nothing.
+func (h *Handler) loadIssueKeys(context.Context, pgtype.UUID, []pgtype.UUID) issuekey.Externals {
+	return nil
 }
 
 // resolveIssueByGitHubKey resolves an "owner/repo#N" identifier in the
