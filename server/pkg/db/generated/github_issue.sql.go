@@ -769,6 +769,40 @@ func (q *Queries) SetProjectGithubDefaultResource(ctx context.Context, arg SetPr
 	return i, err
 }
 
+const setProjectGithubStatusLabelMap = `-- name: SetProjectGithubStatusLabelMap :one
+INSERT INTO project_github_settings (
+    project_id, workspace_id, status_label_map
+) VALUES (
+    $1, $2, $3
+)
+ON CONFLICT (project_id) DO UPDATE SET
+    status_label_map = EXCLUDED.status_label_map,
+    updated_at       = now()
+WHERE project_github_settings.workspace_id = EXCLUDED.workspace_id
+RETURNING project_id, workspace_id, default_resource_id, status_label_map, created_at, updated_at
+`
+
+type SetProjectGithubStatusLabelMapParams struct {
+	ProjectID      pgtype.UUID `json:"project_id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	StatusLabelMap []byte      `json:"status_label_map"`
+}
+
+// Sets only the status label map; default_resource_id is kept.
+func (q *Queries) SetProjectGithubStatusLabelMap(ctx context.Context, arg SetProjectGithubStatusLabelMapParams) (ProjectGithubSetting, error) {
+	row := q.db.QueryRow(ctx, setProjectGithubStatusLabelMap, arg.ProjectID, arg.WorkspaceID, arg.StatusLabelMap)
+	var i ProjectGithubSetting
+	err := row.Scan(
+		&i.ProjectID,
+		&i.WorkspaceID,
+		&i.DefaultResourceID,
+		&i.StatusLabelMap,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateGithubWriteIntentState = `-- name: UpdateGithubWriteIntentState :one
 UPDATE github_write_intent SET
     state           = $1,

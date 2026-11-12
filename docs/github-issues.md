@@ -412,7 +412,7 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 | open，没有映射到的状态标签 | 项目默认入口状态：`backlog`；项目工作流不含 `backlog` 时用工作流起始状态（`todo`） |
 | open，有多个映射到的状态标签 | 见下 |
 
-- 状态标签用保留前缀 `status:`，每个项目在 `project_github_settings.status_label_map` 里配置，形如 `{"in_progress": "status:in-progress", "in_review": "status:review"}`（状态 key → 标签名）。标签名比较不区分大小写（GitHub 的标签名不区分大小写唯一）。不以 `status:` 开头的条目、和别的 key 重复的标签忽略并记告警。没有配置时只有入口状态、done 类、cancelled 类可以表达。
+- 状态标签用保留前缀 `status:`，每个项目在 `project_github_settings.status_label_map` 里配置（用接口或 CLI，见下面「怎么配置」），形如 `{"in_progress": "status:in-progress", "in_review": "status:review"}`（状态 key → 标签名）。标签名比较不区分大小写（GitHub 的标签名不区分大小写唯一）。不以 `status:` 开头的条目、和别的 key 重复的标签忽略并记告警。没有配置时只有入口状态、done 类、cancelled 类可以表达。
 - 带 `status:` 前缀但不在映射里的标签、映射到 done 类或 cancelled 类状态的标签（这两类只由关闭表达）忽略。
 - **同一 issue 出现多个状态标签：** 取 GitHub 标签顺序里的最后一个，并记告警 `several status labels; took the last`。哪个标签最新无法核实：GitHub 的 issue 列表不带每个标签的添加时间，之前见过的标签也没有存。结果只取决于这份快照本身、不看当前状态，所以轮询在重叠窗口里重读同一份快照时不会再改状态（不会来回改派、反复触发运行）。不回写清理多余标签（写 GitHub 属于双写任务）。
 - 算出的状态与当前状态相同时什么都不做，所以只改标题、正文的 GitHub 更新不会动状态；本地状态与 GitHub 等价（例如当前是自定义的 done 类状态而 GitHub 是 closed completed）也不动。
@@ -432,9 +432,49 @@ GitHub 只有 open / closed（加 `state_reason`）和标签；Multica 是工作
 - 本地 issue、不改状态的写入不受影响。功能关闭时没有这个钩子，行为与上游一致。
 - 通过拒绝钩子的状态变化由双写写到 GitHub，见「双写、意图记录与署名」。
 
+### 怎么配置
+
+代码在 `status_labels.go`（校验与保存）、`server/internal/handler/githubissues_project.go`（接口）、`server/cmd/multica/cmd_project_github.go`（CLI，在自己的 `init` 里挂到 `project` 命令下）。不新增表或迁移，写的是已有的 `status_label_map` 列（`server/pkg/db/queries/github_issue.sql` 新增 `SetProjectGithubStatusLabelMap`，只写 fork 表）。不改上游文件。
+
+步骤：
+
+1. 看项目能映射哪些状态：`multica project github-settings get <project>`。`Mappable statuses` 是项目当前工作流里除入口状态、done 类、cancelled 类之外的状态；`Status labels` 是当前映射。
+2. 为每个要在 GitHub 上表达的状态给一个 `status:<name>` 标签，一次写全：`multica project github-settings set <project> --status-label <key>=status:<name> …`。**`--status-label` 替换整个映射**，没写到的状态会被去掉；`--clear-status-labels` 清空。输出是生效后的设置，`--output json` 给 JSON。
+3. GitHub 上可以不先建标签：第一次把 issue 移到该状态时，双写在 issue 上设置这个标签，GitHub 对不存在的标签会自动创建（真实 GitHub 上未验证，见 PR 的 Owner 实测步骤；想要自定颜色就先在仓库里建好）。之后在 GitHub 上给 issue 换成另一个映射了的状态标签，轮询或按需刷新会把 Multica 的状态同步过去。
+
+示例（「研发交付」工作流：入口状态是 `backlog`，`done`、`cancelled` 只由关闭表达，其余每个状态一个标签）：
+
+```sh
+multica project github-settings set <project> \
+  --status-label todo=status:todo \
+  --status-label in_progress=status:in-progress \
+  --status-label in_review=status:review \
+  --status-label started_2=status:needs-decision \
+  --status-label started_3=status:second-review \
+  --status-label started_4=status:acceptance \
+  --status-label started_5=status:research \
+  --status-label started_6=status:merge \
+  --status-label blocked=status:blocked
+```
+
+对应的接口请求：`PUT /api/projects/{id}/github-settings`，body `{"status_label_map": {"todo": "status:todo", "in_progress": "status:in-progress", …}}`。
+
+接口（功能开启时才挂载，关闭时 404，CLI 提示功能未开启）：
+
+- `GET` 返回 `{repos, default_resource_id, create_statuses, status_label_map, mappable_statuses}`；没有映射时 `status_label_map` 是 `{}`。
+- `PUT` 的两个字段都可省略：`status_label_map` 省略则不变，`{}` 或 `null` 清空；`default_resource_id` 见「新建 issue 选仓库」。两部分在一个事务里保存，任一部分被拒绝则都不保存。
+- 校验（不通过返回 400，带 `code`、`error` 和 `mappable_statuses`；CLI 原样输出 `error` 与 `code`，并列出可映射的状态）：
+  - `github_status_label_key_invalid`：key 不是项目当前工作流里的状态，或是入口状态，或属于 done 类、cancelled 类；
+  - `github_status_label_invalid`：标签不以 `status:` 开头（前缀不区分大小写），去掉前缀后为空，或超过 GitHub 的 50 个字符；
+  - `github_status_label_duplicate`：同一个标签（不区分大小写）映射给了两个 key。
+- 标签保存前去掉首尾空白，大小写按输入保存。
+
 ### 已知限制
 
 - 导入的 issue 直接落在交接步时不触发交接，见「按需导入」。
+- 项目换工作流后，映射里不再属于新工作流的 key 不会自动删除（读取时照常生效，只是这些状态已进不去）；下一次 `set` 会因为它们被拒绝，按 `mappable_statuses` 重写整个映射即可。
+- 改映射不回头改 GitHub 上已有 issue 的标签：已经带旧标签的 open issue，在下一次 GitHub 更新时按新映射解释（旧标签不在映射里时当作没有状态标签，回到入口状态）。改标签名前先把相关 issue 移到入口状态或在 GitHub 上手动改标签。
+- 只有接口和 CLI，没有界面入口。
 - 项目移动、工作流切换时的状态重映射（`MoveTarget`）不经过本节的拒绝钩子。
 - 多个状态标签时不判定哪个最新（需要读 GitHub 的标签事件时间线，多一次请求，本期不做），固定取最后一个。
 
@@ -620,7 +660,8 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
 
 - 候选仓库是 issue 所在项目的 `github_repo` 资源（只认 github.com，与白名单同一套解析），按资源顺序，同名只列一次。子 issue 不带项目时用父 issue 的项目，与 `IssueService.Create` 一致。
 - 项目默认仓库存在 `project_github_settings.default_resource_id`，指向该项目的一条 `github_repo` 资源；资源被删后默认自动失效（按无默认处理），不改上游表。
-- 接口（功能开启时才挂载，关闭时 404）：`GET /api/projects/{id}/github-settings` 返回 `{repos: [{resource_id, repo}], default_resource_id, create_statuses}`，`create_statuses` 是新建 GitHub issue 可用的状态（项目入口状态排第一，其余为映射了状态标签的非终态；GitHub 新建的 issue 只能是 open）；`PUT` 同路径传 `{default_resource_id}`（`null` 清除），只能选本项目的 GitHub 仓库，`status_label_map` 不变。
+- 接口（功能开启时才挂载，关闭时 404）：`GET /api/projects/{id}/github-settings` 返回 `{repos: [{resource_id, repo}], default_resource_id, create_statuses, status_label_map, mappable_statuses}`，`create_statuses` 是新建 GitHub issue 可用的状态（项目入口状态排第一，其余为映射了状态标签的非终态；GitHub 新建的 issue 只能是 open）；`PUT` 同路径传 `{default_resource_id}`（`null` 清除），只能选本项目的 GitHub 仓库。省略 `default_resource_id` 时：带了 `status_label_map` 则默认仓库不变；两个字段都省略（`{}`）与以前一样清除默认仓库。`status_label_map` 见「状态映射 · 怎么配置」。
+- CLI：`multica project github-settings set <project> --default-repo owner/name`（按名字找本项目的仓库，不区分大小写；不是本项目的仓库时列出本项目的仓库）或 `--clear-default-repo`；`get` 查看。
 
 ### 解析顺序
 
@@ -659,7 +700,7 @@ Owner 已决定：**结果未知不重试，过了宽限期仍找不到就停下
 
 ### 已知限制
 
-- 设置项目默认仓库目前只有接口，没有界面入口。
+- 设置项目默认仓库只有接口和 CLI，没有界面入口。
 - 新建 github issue 时的状态受「状态映射」约束：项目没有配置状态标签时，只有入口状态能建到 GitHub。对话框按上面的规则处理；CLI 与 API 直接创建时仍返回 422 `github_status_unmapped`（带可用状态）。
 
 ## 失败注入测试集

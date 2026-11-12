@@ -31,6 +31,39 @@ type fakeWriteGitHub struct {
 	bodies   []map[string]any
 	failNext int
 	nextID   int
+	// issues are the issues opened through the fake, by number, so their
+	// labels and state can be read back and changed on "GitHub".
+	issues map[int]*fakeGitHubIssue
+}
+
+// fakeGitHubIssue is an issue the fake keeps.
+type fakeGitHubIssue struct {
+	id      int
+	title   string
+	state   string
+	labels  []string
+	updated time.Time
+}
+
+// touch moves the issue's updated_at forward by at least a second, as the
+// API reports it to the second.
+func (i *fakeGitHubIssue) touch() {
+	next := time.Now().UTC().Truncate(time.Second)
+	if !next.After(i.updated) {
+		next = i.updated.Add(time.Second)
+	}
+	i.updated = next
+}
+
+func (i *fakeGitHubIssue) json(number int) map[string]any {
+	labels := make([]map[string]any, 0, len(i.labels))
+	for _, name := range i.labels {
+		labels = append(labels, map[string]any{"name": name})
+	}
+	return map[string]any{
+		"id": i.id, "node_id": "I_x", "number": number, "title": i.title, "state": i.state,
+		"labels": labels, "updated_at": i.updated.Format(time.RFC3339), "user": map[string]any{"login": "octocat"},
+	}
 }
 
 func newFakeWriteGitHub(t *testing.T) *fakeWriteGitHub {
@@ -71,13 +104,46 @@ func (f *fakeWriteGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	base := "/repositories/" + strconv.Itoa(writeTestRepoID)
+	number, _ := strconv.Atoi(r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:])
+	f.mu.Lock()
+	kept := f.issues[number]
+	f.mu.Unlock()
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == base+"/issues":
+		issue := &fakeGitHubIssue{id: 90000 + id, title: stringOf(body["title"]), state: "open", labels: stringsOf(body["labels"])}
+		issue.touch()
+		f.mu.Lock()
+		if f.issues == nil {
+			f.issues = map[int]*fakeGitHubIssue{}
+		}
+		f.issues[300+id] = issue
+		resp := issue.json(300 + id)
+		f.mu.Unlock()
+		resp["body"] = body["body"]
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id": 90000 + id, "node_id": "I_x", "number": 300 + id, "title": body["title"], "body": body["body"],
-			"state": "open", "updated_at": now, "user": map[string]any{"login": "octocat"},
-		})
+		_ = json.NewEncoder(w).Encode(resp)
+	case r.Method == http.MethodGet && kept != nil && r.URL.Path == base+"/issues/"+strconv.Itoa(number):
+		f.mu.Lock()
+		resp := kept.json(number)
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(resp)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, base+"/issues/") && strings.HasSuffix(r.URL.Path, "/comments"):
+		_, _ = w.Write([]byte(`[]`))
+	case r.Method == http.MethodPatch && kept != nil && r.URL.Path == base+"/issues/"+strconv.Itoa(number):
+		f.mu.Lock()
+		if title, ok := body["title"].(string); ok {
+			kept.title = title
+		}
+		if state, ok := body["state"].(string); ok {
+			kept.state = state
+		}
+		if _, ok := body["labels"]; ok {
+			kept.labels = stringsOf(body["labels"])
+		}
+		kept.touch()
+		resp := kept.json(number)
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(resp)
 	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, base+"/issues/comments/"),
 		r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
 		status := http.StatusOK
@@ -104,6 +170,36 @@ func (f *fakeWriteGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		f.t.Errorf("unexpected GitHub request %s %s", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// relabel changes an issue's labels on "GitHub", as someone editing them
+// there would.
+func (f *fakeWriteGitHub) relabel(number int, labels ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.issues[number].labels = labels
+	f.issues[number].touch()
+}
+
+// labels returns an issue's labels on "GitHub".
+func (f *fakeWriteGitHub) labels(number int) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.issues[number].labels...)
+}
+
+func stringOf(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+func stringsOf(v any) []string {
+	list, _ := v.([]any)
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		out = append(out, stringOf(item))
+	}
+	return out
 }
 
 func (f *fakeWriteGitHub) take() ([]string, []map[string]any) {

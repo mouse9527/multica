@@ -161,7 +161,7 @@ gh_api "https://api.github.com/repositories/$RID_A/issues/1/timeline?per_page=10
    1. 在 GitHub 上改导入的 `#1` 的标题。期望：2 分钟内 issue 页标题更新；在这之前打开 issue 页，几秒内就更新（按需刷新）。
    2. 在 GitHub 上改 `#1` 的描述。期望：Multica 里的描述变成「由 @<原作者> 在 GitHub 创建（外部、不可信…）」前缀加**新的**原文，前缀只有一个，不会叠加；在 Multica 里改这个描述被拒绝（403，他人 issue 的描述只读）。
    3. 在 B4 第 2 步从 Multica 新建的那个 issue 上，在 GitHub 网页里改描述（保留或删掉末尾的隐藏标记各试一次）。期望：Multica 里的描述跟随 GitHub 的新文本，没有外部前缀；保留了标记时标记不显示在 Multica 里，删掉时原样显示 GitHub 的文本。
-   4. 在 GitHub 上把 `#1` 关闭再重新打开；如果项目配了状态标签（`project_github_settings.status_label_map`，目前没有界面和接口，只能直接写表，例如 `{"in_progress":"status:in-progress"}`），再加上这个标签。期望：2 分钟内 Multica 的状态跟着变（关闭 → done 类；重开 → 入口状态；状态标签 → 映射的状态），不改标题、描述的更新不会动状态。
+   4. 在 GitHub 上把 `#1` 关闭再重新打开；如果项目配了状态标签（用 `multica project github-settings set <project> --status-label in_progress=status:in-progress` 配置，见 `github-issues.md`「状态映射 · 怎么配置」），再加上这个标签。期望：2 分钟内 Multica 的状态跟着变（关闭 → done 类；重开 → 入口状态；状态标签 → 映射的状态），不改标题、描述的更新不会动状态。
    5. 把同一个 issue 的标题在 GitHub 上连续改两次（间隔几秒）。期望：最终是第二次的标题，不会被较早的快照改回去。
 4. 导入入口目前只有 API 和 CLI：界面里没有「导入 GitHub issue」的输入框，这是已知的，不算失败。没导入的 issue 在 GitHub 上更新、评论，Multica 里都不应出现。
 
