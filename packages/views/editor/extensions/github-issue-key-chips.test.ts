@@ -137,6 +137,30 @@ describe("GitHub issue key chips in the editor", () => {
     expect(editor.getMarkdown().trim()).toBe(body);
   });
 
+  it("leaves formatted keys as text so the saved Markdown keeps its formatting", async () => {
+    const body =
+      "**mouse9527/multica#21** and *mouse9527/multica#21* and ~~mouse9527/multica#21~~ and **bold mouse9527/multica#21 text**";
+    editor = makeEditor(body);
+    await flush();
+    await flush();
+
+    expect(mentionIds(editor)).toEqual([]);
+    expect(resolveMock).not.toHaveBeenCalled();
+    expect(editor.getMarkdown().trim()).toBe(body);
+    expect(updates).toBe(0);
+  });
+
+  it("converts an unformatted key between formatted text without touching the formatting", async () => {
+    const body = "**bold** mouse9527/multica#21 *italic*";
+    editor = makeEditor(body);
+    await flush();
+    await flush();
+
+    expect(mentionIds(editor)).toEqual(["mouse9527%2Fmultica%2321"]);
+    expect(editor.getMarkdown().trim()).toBe(body);
+    expect(updates).toBe(0);
+  });
+
   it("converts a typed key once the caret moves past it, saving plain text", async () => {
     editor = makeEditor();
     await flush();

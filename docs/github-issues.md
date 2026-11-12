@@ -191,7 +191,7 @@ MULTICA_GITHUB_TOKEN_EXPIRES_AT=2027-03-01
 ### 正文里的 `owner/repo#N`（M-60）
 
 - 只读渲染（聊天、评论）：`packages/ui/markdown/github-issue-keys.ts` 在 `PREFIX-N` 之前把正文里完整的 `owner/repo#N` 改写成 `[owner/repo#N](mention://issue/owner%2Frepo%23N)`；`RichLink` 解码后和 `PREFIX-N` 走同一个查找（`GET /api/issues/{id}`），命中渲染成 issue 卡片，未命中（未跟踪、别的工作区、开关关闭时服务端 404）还原成原文。代码块、行内代码、已有链接、URL、更长的路径（`a/owner/repo#1`、`github.com/...`）不改写。
-- 编辑器（issue 正文、评论输入）：`editor/extensions/github-issue-key-chips.ts` 扫描文档，**包括打开时载入的内容**（智能体经 CLI 写的正文、从 GitHub 导入的正文）和用户输入、粘贴的文字，已跟踪的 key 换成 mention 节点（id 是转义后的 key），显示成卡片。这种节点保存时写回原文 `owner/repo#N`，所以保存出的 Markdown 不变：不会把 `mention://` 链接写进存储，也不会双写到 GitHub；替换不触发保存，不进撤销历史。光标紧跟在 key 后面时视为还在输入，等光标离开再换。
+- 编辑器（issue 正文、评论输入）：`editor/extensions/github-issue-key-chips.ts` 扫描文档，**包括打开时载入的内容**（智能体经 CLI 写的正文、从 GitHub 导入的正文）和用户输入、粘贴的文字，已跟踪的 key 换成 mention 节点（id 是转义后的 key），显示成卡片。这种节点保存时写回原文 `owner/repo#N`，所以保存出的 Markdown 不变：不会把 `mention://` 链接写进存储，也不会双写到 GitHub；替换不触发保存，不进撤销历史。光标紧跟在 key 后面时视为还在输入，等光标离开再换。带格式（粗体、斜体、删除线等）的 key 在编辑器里保持文字：Markdown 序列化器在行内节点前后关闭、重开格式，不写节点自己的格式，换成卡片会在下次保存时丢掉格式；只读渲染里它们仍显示成卡片。
 - 不识别没有 owner 的 `repo#N`、`#N`。服务端没有改动：标识解析在 M-22 已有。
 - 智能体的写法见 multica-platform skill 的 `references/mentions.md`：评论、聊天里写完整的 `owner/repo#N` 纯文本。它在 Multica 渲染成卡片，在 GitHub 上是原生的交叉引用；`mention://issue/<uuid>` 链接同步到 GitHub 后打不开。
 

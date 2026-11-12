@@ -55,10 +55,15 @@ interface KeyRange {
 const KEY_RE = new RegExp(GITHUB_ISSUE_KEY_TOKEN_SOURCE, "g");
 
 /**
- * Standalone keys in plain prose. Skips code, links and code blocks, the same
- * contexts the `PREFIX-N` autolink skips, plus path and dotted continuations
- * (`owner/repo#1/x`, `owner/repo#1.2`). A key the caret sits right behind is
- * still being typed and is left alone until the caret moves on.
+ * Standalone keys in plain, unformatted prose. Skips code blocks and any
+ * marked text: code and links like the `PREFIX-N` autolink, and also bold,
+ * italic, strike and the rest. The Markdown serializer closes every mark
+ * before an inline node and reopens it after, never writing the node's own
+ * marks, so a chip inside `**owner/repo#N**` would save as an unformatted key
+ * and change the body. Formatted keys therefore stay text in the editor; the
+ * readonly renderer still shows them as chips. Also skips path and dotted
+ * continuations (`owner/repo#1/x`, `owner/repo#1.2`). A key the caret sits
+ * right behind is still being typed and is left alone until the caret moves on.
  */
 function collectKeys(state: EditorState): KeyRange[] {
   const out: KeyRange[] = [];
@@ -66,7 +71,7 @@ function collectKeys(state: EditorState): KeyRange[] {
   const caret = selection.empty ? selection.from : -1;
   state.doc.descendants((node, pos, parent) => {
     if (!node.isText || !node.text) return;
-    if (node.marks.some((m) => m.type.name === "code" || m.type.name === "link")) return;
+    if (node.marks.length > 0) return;
     if (parent?.type.name === "codeBlock") return;
     const text = node.text;
     KEY_RE.lastIndex = 0;
