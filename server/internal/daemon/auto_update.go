@@ -14,10 +14,13 @@ import (
 // auto-update loop deterministically without reaching out to GitHub or
 // shelling out to brew/curl. Mirrors the pattern used at the top of daemon.go
 // for `isBrewInstall` / `getBrewPrefix` / `matchKnownBrewPrefix`.
+//
+// Modified by the mouse9527/multica fork: the version helpers accept the
+// fork's vX.Y.Z-mouse.N tags (cli/update_fork.go).
 var (
 	fetchLatestRelease = cli.FetchLatestRelease
-	isReleaseVersion   = cli.IsReleaseVersion
-	isNewerVersion     = cli.IsNewerVersion
+	isReleaseVersion   = cli.IsForkReleaseVersion
+	isNewerVersion     = cli.IsNewerForkVersion
 )
 
 // detectSelfVersion runs `<path> --version` and returns the version field.
