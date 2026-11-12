@@ -559,8 +559,6 @@
     "prop_start_date": "Дата начала",
     "prop_due_date": "Срок выполнения",
     "prop_project": "Проект",
-    "prop_github": "GitHub",
-    "github_copy_link": "Скопировать ссылку на GitHub",
     "prop_labels": "Метки",
     "add_property_action": "Добавить свойство",
     "prop_created_by": "Создано",

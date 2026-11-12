@@ -187,12 +187,6 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
 		d.State = prAutoCompleteNone
 		return d, nil
 	}
-	// Modified by the mouse9527/multica fork: GitHub sets the status of a
-	// GitHub-native issue (githubissues_pulls.go).
-	if fromGitHub, err := h.statusFromGitHub(ctx, issue); err != nil || fromGitHub {
-		d.State = prAutoCompleteGitHub
-		return d, err
-	}
 	// An unresolvable custom key is returned unchanged and treated as not
 	// terminal, the same direction the previous merge gate took.
 	effective := resolver.Effective(ctx, h.issueStatusCatalog(), issue.Status)

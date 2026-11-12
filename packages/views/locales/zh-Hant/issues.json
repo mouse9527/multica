@@ -541,8 +541,6 @@
     "prop_start_date": "開始日期",
     "prop_due_date": "截止日期",
     "prop_project": "專案",
-    "prop_github": "GitHub",
-    "github_copy_link": "複製 GitHub 連結",
     "prop_labels": "標籤",
     "add_property_action": "新增欄位",
     "prop_created_by": "建立者",

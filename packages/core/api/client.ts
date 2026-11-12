@@ -285,11 +285,6 @@ import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseWithFallback } from "./schema";
 import { getApiRequestObserver } from "./request-observer";
 import {
-  EMPTY_PROJECT_GITHUB_SETTINGS,
-  ProjectGitHubSettingsSchema,
-  type ProjectGitHubSettings,
-} from "../github-issues/schema"; // GitHub-native issues (fork)
-import {
   RuntimeProfileSchema,
   RuntimeProfileListSchema,
   AgentTaskListSchema,
@@ -4470,22 +4465,6 @@ export class ApiClient {
 
   async removeProjectMember(id: string, userId: string): Promise<void> {
     await this.fetch(`/api/projects/${id}/members/${userId}`, { method: "DELETE" });
-  }
-
-  // GitHub-native issues (mouse9527/multica fork): the repositories a new
-  // issue of the project can be opened on. The route exists only while the
-  // feature is on; its 404 means "no repository to offer".
-  async getProjectGitHubSettings(projectId: string): Promise<ProjectGitHubSettings | null> {
-    let raw: unknown;
-    try {
-      raw = await this.fetch<unknown>(`/api/projects/${projectId}/github-settings`);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 404) return null;
-      throw err;
-    }
-    return parseWithFallback(raw, ProjectGitHubSettingsSchema, EMPTY_PROJECT_GITHUB_SETTINGS, {
-      endpoint: "GET /api/projects/:id/github-settings",
-    });
   }
 
   // Project resources

@@ -274,18 +274,6 @@
       "error_daemon_version": "Le CLI du daemon de cet agent ({{current}}) est inférieur au minimum requis {{min}}. Mettez le daemon à jour pour utiliser la création avec un agent.",
       "error_unknown": "Échec de l'envoi. Réessayez.",
       "sub_issue_of": "Sous-tâche de {{identifier}}"
-    },
-    "github_repo": {
-      "tooltip": "Dépôt GitHub",
-      "local": "Local (non synchronisé avec GitHub)",
-      "choose": "Choisir un dépôt",
-      "search_placeholder": "Rechercher des dépôts…",
-      "required": "Choisissez un dépôt GitHub, ou Local",
-      "loading": "Chargement des dépôts…",
-      "load_failed": "Recharger les dépôts",
-      "blocked_loading": "Les dépôts GitHub de ce projet sont encore en cours de chargement",
-      "blocked_error": "Impossible de charger les dépôts GitHub de ce projet. Nouvelle tentative en cours ; vous pouvez aussi choisir un autre projet.",
-      "status_not_creatable": "Un nouveau ticket GitHub de ce projet ne peut pas commencer en « {{status}} ». Utilisez {{allowed}}, ou choisissez Local."
     }
   },
   "mark_duplicate": {

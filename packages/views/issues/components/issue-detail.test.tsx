@@ -1173,28 +1173,6 @@ describe("IssueDetail (shared)", () => {
     expect(contentEditorMounts.count).toBe(1);
   });
 
-  // GitHub-native issues (mouse9527/multica fork)
-  it("links a GitHub issue to GitHub in the sidebar and a local issue not at all", async () => {
-    mockApiObj.getIssue.mockResolvedValue({
-      ...mockIssue,
-      provider: "github",
-      github: { repo: "acme/widgets", number: 42, url: "https://github.com/acme/widgets/issues/42" },
-    });
-    const { unmount } = renderIssueDetail();
-    const link = await screen.findByRole("link", { name: "acme/widgets#42" });
-    expect(link).toHaveAttribute("href", "https://github.com/acme/widgets/issues/42");
-    expect(link).toHaveAttribute("target", "_blank");
-    // The issue itself is still named by its workspace key.
-    expect(screen.getByText("TES-1 Implement authentication")).toBeInTheDocument();
-    unmount();
-
-    mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, provider: "local" });
-    renderIssueDetail();
-    expect(await screen.findByDisplayValue("Add JWT auth to the backend")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Copy GitHub link" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /github/i })).not.toBeInTheDocument();
-  });
-
   it("reconciles a cached list snapshot so source context appears on first entry", async () => {
     const sourceContext: NonNullable<Issue["source_context"]> = {
       id: "context-1",

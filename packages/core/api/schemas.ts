@@ -1739,10 +1739,6 @@ export const IssueSchema = z.object({
   // Detail-only and potentially large. A malformed additive field must not
   // erase an otherwise usable issue returned by a mixed-version server.
   source_context: IssueSourceContextSchema.optional().catch(undefined),
-  // GitHub-native issues (mouse9527/multica fork): additive display data;
-  // same disproportionate-failure reasoning as status_name above.
-  provider: z.string().optional().catch(undefined),
-  github: z.object({ repo: z.string(), number: z.number(), url: z.string() }).nullable().optional().catch(undefined),
 }).loose();
 
 export const ListIssuesResponseSchema = z.object({

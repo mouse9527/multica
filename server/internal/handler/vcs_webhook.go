@@ -227,7 +227,7 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 	if err == nil {
 		var touched map[pgtype.UUID]struct{}
 		idents := prClaimedIdentifiers(ev.Title, ev.Body, ev.Branch)
-		linkedIssueIDs, touched, _ = h.reconcileAutoLinks(ctx, ws, pr.ID, ev.State, prAutoLinkInput{
+		linkedIssueIDs, touched = h.reconcileAutoLinks(ctx, ws, pr.ID, ev.State, prAutoLinkInput{
 			idents:    idents,
 			permits:   func(string) bool { return true },
 			ambiguous: func(string) bool { return false },

@@ -274,18 +274,6 @@
       "error_daemon_version": "This agent's daemon CLI ({{current}}) is below the required {{min}}. Upgrade the daemon to use Create with agent.",
       "error_unknown": "Failed to submit. Try again.",
       "sub_issue_of": "Sub-issue of {{identifier}}"
-    },
-    "github_repo": {
-      "tooltip": "GitHub repository",
-      "local": "Local (not synced to GitHub)",
-      "choose": "Choose repository",
-      "search_placeholder": "Search repositories…",
-      "required": "Choose a GitHub repository, or Local",
-      "loading": "Loading repositories…",
-      "load_failed": "Retry loading repositories",
-      "blocked_loading": "Still loading this project's GitHub repositories",
-      "blocked_error": "Couldn't load this project's GitHub repositories. Retrying; you can also choose another project.",
-      "status_not_creatable": "A new GitHub issue in this project can't start as “{{status}}”. Use {{allowed}}, or choose Local."
     }
   },
   "mark_duplicate": {

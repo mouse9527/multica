@@ -30,7 +30,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/gitca"
-	"github.com/multica-ai/multica/server/internal/githubissues"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
@@ -268,9 +267,6 @@ type RouterOptions struct {
 	// than read here, for the same fail-the-boot-in-main-only reason: the raw
 	// value is validated by parseLLMDisableThinking before the router exists.
 	LLMDisableThinking bool
-	// GitHubIssues is the fork's GitHub-native issues feature (mouse9527/multica);
-	// nil while it is off, which keeps its routes unregistered.
-	GitHubIssues *githubissues.Service
 }
 
 func buildChannelSupervisor(
@@ -465,16 +461,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	invitationRateLimits.Workspace.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_WORKSPACE_24H", invitationRateLimits.Workspace.Limit)
 	invitationRateLimits.Recipient.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_RECIPIENT_24H", invitationRateLimits.Recipient.Limit)
 	h.InvitationRateLimiters = handler.NewMemoryInvitationRateLimiters(invitationRateLimits)
-	// Modified by the mouse9527/multica fork: GitHub-native issues.
-	if opts.GitHubIssues != nil {
-		h.ExternalComments = opts.GitHubIssues
-		h.IssueViews = opts.GitHubIssues
-		h.GitHubStatuses = opts.GitHubIssues
-		opts.GitHubIssues.SetStatusWriter(h)
-		opts.GitHubIssues.SetCommentDeleter(h)
-		h.GitHubIssues = opts.GitHubIssues
-		h.UseGitHubIssuePulls(opts.GitHubIssues)
-	}
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
 	h.ThemeStore = themeStoreFromEnv()
@@ -1863,10 +1849,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 						r.Delete("/", h.DeleteMember)
 					})
 					r.Delete("/invitations/{invitationId}", h.RevokeInvitation)
-					// Modified by the mouse9527/multica fork: GitHub-native issues.
-					if opts.GitHubIssues != nil {
-						r.Get("/github-issues/token-status", opts.GitHubIssues.HandleTokenStatus)
-					}
 					// Curating the shared MCP library is an admin action.
 					// Creating an entry binds it to no agent; an agent owner
 					// adds it to their own agent through the agent routes.
@@ -2166,10 +2148,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/preview-trigger", h.PreviewIssueTrigger)
 				r.Post("/batch-update", h.BatchUpdateIssues)
 				r.Post("/batch-delete", h.BatchDeleteIssues)
-				// Modified by the mouse9527/multica fork: import a GitHub issue.
-				if opts.GitHubIssues != nil {
-					r.Post("/import", h.ImportGitHubIssue)
-				}
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssue)
 					r.Put("/", h.UpdateIssue)
@@ -2212,10 +2190,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/attachments", h.ListAttachments)
 					r.Get("/children", h.ListChildIssues)
 					r.Get("/duplicates", h.ListIssueDuplicates)
-					// Modified by the mouse9527/multica fork: sync a GitHub issue now.
-					if opts.GitHubIssues != nil {
-						r.Post("/github-sync", h.SyncGitHubIssue)
-					}
 					r.Get("/labels", h.ListLabelsForIssue)
 					r.Post("/labels", h.AttachLabel)
 					r.Delete("/labels/{labelId}", h.DetachLabel)
@@ -2323,12 +2297,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
 					r.Delete("/resources/{resourceId}", h.DeleteProjectResource)
-					// Modified by the mouse9527/multica fork: GitHub-native issues.
-					if opts.GitHubIssues != nil {
-						r.Get("/github-settings", h.GetProjectGitHubSettings)
-						r.Put("/github-settings", h.SetProjectGitHubSettings)
-						r.Get("/github-issues", h.ListProjectGitHubIssues)
-					}
 				})
 			})
 

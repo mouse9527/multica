@@ -541,8 +541,6 @@
     "prop_start_date": "開始日",
     "prop_due_date": "期限",
     "prop_project": "プロジェクト",
-    "prop_github": "GitHub",
-    "github_copy_link": "GitHub のリンクをコピー",
     "prop_labels": "ラベル",
     "add_property_action": "プロパティを追加",
     "prop_created_by": "作成者",
