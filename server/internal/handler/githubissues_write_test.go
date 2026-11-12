@@ -31,6 +31,11 @@ type fakeWriteGitHub struct {
 	bodies   []map[string]any
 	failNext int
 	nextID   int
+	// comments are the comments posted on issue #5, as GitHub lists them.
+	comments []map[string]any
+	// onComment, when set, runs after GitHub has stored a new comment and
+	// before it answers the POST. It may change how the comment is listed.
+	onComment func(listed map[string]any)
 }
 
 func newFakeWriteGitHub(t *testing.T) *fakeWriteGitHub {
@@ -72,6 +77,33 @@ func (f *fakeWriteGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	base := "/repositories/" + strconv.Itoa(writeTestRepoID)
 	switch {
+	case r.Method == http.MethodGet && r.URL.Path == base+"/issues/5":
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": 70005, "node_id": "I_5", "number": 5, "title": "Linked issue", "state": "open",
+			"updated_at": now, "user": map[string]any{"login": "octocat"},
+		})
+	case r.Method == http.MethodGet && r.URL.Path == base+"/issues/5/comments":
+		f.mu.Lock()
+		comments := append([]map[string]any{}, f.comments...)
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(comments)
+	case r.Method == http.MethodPost && r.URL.Path == base+"/issues/5/comments":
+		comment := map[string]any{
+			"id": int64(80000 + id), "body": body["body"], "updated_at": now, "user": map[string]any{"login": "octocat"},
+		}
+		listed := map[string]any{}
+		for k, v := range comment {
+			listed[k] = v
+		}
+		f.mu.Lock()
+		f.comments = append(f.comments, listed)
+		hook := f.onComment
+		f.mu.Unlock()
+		if hook != nil {
+			hook(listed)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(comment)
 	case r.Method == http.MethodPost && r.URL.Path == base+"/issues":
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -131,6 +163,9 @@ func newGitHubWriteHandler(t *testing.T) (*Handler, *fakeWriteGitHub, string) {
 			githubissues.EnvEnabled:        "true",
 			githubissues.EnvToken:          fakeGitHubToken,
 			githubissues.EnvTokenExpiresAt: "never",
+			// Refreshes run only for a test that wires the service as
+			// IssueViews.
+			githubissues.EnvRefreshOnView: "true",
 		}[key]
 	}), githubissues.Options{DB: testPool, APIBase: fake.server.URL})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -375,5 +410,78 @@ func TestGitHubCreateRefusedLocallySendsNothing(t *testing.T) {
 	})).Want(http.StatusUnprocessableEntity)
 	if n := dbfx.Count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1 AND title = 'Refused by GitHub'`, testWorkspaceID); n != 0 {
 		t.Fatalf("a create GitHub refused left %d local issues", n)
+	}
+}
+
+// A view of the issue while a new comment is in flight refreshes it from
+// GitHub, which already lists the comment, so the refresh adopts it under the
+// id reserved for the caller's insert. The adoption waits for that insert:
+// the post answers 201 and the comment exists once (#65, #49 item 1).
+func TestGitHubCommentAdoptedDuringCreateIsCreatedOnce(t *testing.T) {
+	h, fake, issueID := newGitHubWriteHandler(t)
+	h.IssueViews = h.GitHubIssues
+	listedAt := time.Now().UTC().Add(time.Minute).Truncate(time.Second)
+
+	fake.onComment = func(listed map[string]any) {
+		// Marks the listed copy, so the end of the refresh shows in comment_external.
+		listed["updated_at"] = listedAt.Format(time.RFC3339)
+		testutil.Call(t, h.GetIssue, withURLParam(newRequest(http.MethodGet, "/api/issues/"+issueID, nil), "id", issueID)).
+			Want(http.StatusOK)
+		// GitHub answers once the refresh either stored the comment first or
+		// waits for the comment lock.
+		for deadline := time.Now().Add(10 * time.Second); ; {
+			stored := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, issueID)
+			waiting := dbfx.Count(t, `SELECT count(*) FROM pg_locks l JOIN github_write_intent i
+				ON i.workspace_id = $1 AND i.issue_id = $2 AND i.op = 'create_comment' AND i.state = 'pending'
+				WHERE l.locktype = 'advisory' AND NOT l.granted AND l.objsubid = 1
+				AND ((l.classid::bigint << 32) | l.objid::bigint) = hashtextextended('githubissues:comment:' || i.comment_id::text, 0)`,
+				testWorkspaceID, issueID)
+			if stored > 0 || waiting > 0 {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Error("the refresh never reached the new comment")
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	var created map[string]any
+	testutil.Call(t, h.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
+		"content": "Posted during a refresh",
+	}), "id", issueID)).Want(http.StatusCreated).JSON(&created)
+
+	var externalID int64
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		var syncedAt time.Time
+		dbfx.QueryRow(t, `SELECT COALESCE(max(external_id), 0), COALESCE(max(external_updated_at), 'epoch')
+			FROM comment_external WHERE comment_id = $1`, created["id"]).Scan(&externalID, &syncedAt)
+		if syncedAt.Equal(listedAt) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the refresh never settled the comment (external_id %d, synced at %v)", externalID, syncedAt)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var posts int
+	requests, _ := fake.take()
+	for _, request := range requests {
+		if strings.HasPrefix(request, http.MethodPost+" ") {
+			posts++
+		}
+	}
+	if posts != 1 {
+		t.Fatalf("GitHub requests = %v, want one POST", requests)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, issueID); n != 1 {
+		t.Fatalf("comments on the issue = %d, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_write_intent WHERE issue_id = $1 AND state = 'applied'`, issueID); n != 1 {
+		t.Fatalf("applied intents = %d, want 1", n)
+	}
+	if externalID == 0 || created["content"] != "Posted during a refresh" {
+		t.Fatalf("created comment = %v, linked to GitHub comment %d", created, externalID)
 	}
 }
