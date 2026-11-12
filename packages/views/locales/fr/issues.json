@@ -533,6 +533,8 @@
     "prop_start_date": "Date de début",
     "prop_due_date": "Date d'échéance",
     "prop_project": "Projet",
+    "prop_github": "GitHub",
+    "github_copy_link": "Copier le lien GitHub",
     "prop_labels": "Étiquettes",
     "add_property_action": "Ajouter une propriété",
     "prop_created_by": "Créé par",
