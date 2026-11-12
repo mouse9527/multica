@@ -2,9 +2,9 @@
 
 本文件属于 `mouse9527/multica` fork。上游 `multica-ai/multica` 的许可证（`LICENSE`，Apache 2.0 加附加条件）要求：被修改的文件要带有显著的修改说明。分发 fork 的源码或镜像时，请把本清单和 `LICENSE`、`NOTICE` 一起附上。
 
-- **基线**：上游 `c3a9d8fd1`（#73 同步进 fork 的上游 `main`；之前是 fork 开始时的 `f68c891d3`）。下表是 fork `main` 相对这个基线**修改过的上游文件**。fork 新增的文件不在表里，见文末。
+- **基线**：上游 `66e534d8e`（#73 同步进 fork 的上游 `main`；之前是 fork 开始时的 `f68c891d3`）。下表是 fork `main` 相对这个基线**修改过的上游文件**。fork 新增的文件不在表里，见文末。
 - **「文件内说明」** 一列：「有」表示文件里有 fork 的修改说明（形如 `Modified by the mouse9527/multica fork`、`mouse9527/multica fork` 或 `GitHub-native issues (fork)` 的注释）；「无」表示文件里没有，**以本清单作为它的修改说明**。JSON 文件不能写注释；其余几处是合并时漏掉的。按 Owner 的要求，本任务**不改任何已合并文件的内容**，只在这里补齐。
-- **重新生成**：`git diff --name-status c3a9d8fd1 origin/main | grep '^M'`（两点之间是空格：同步后基线已并入 `main`，要比较两棵树，不是取提交区间）；每个文件涉及的任务：`git log --format=%s f68c891d3..origin/main -- <文件>`。同步上游之后，基线改为那次同步的上游提交。fork 改动又碰到上游文件时，在同一个 PR 里更新本表。
+- **重新生成**：`git diff --name-status 66e534d8e origin/main | grep '^M'`（两个提交之间用空格、不用 `..`：同步后基线已并入 `main`，要比较两棵树，不是取提交区间）；每个文件涉及的任务：`git log --format=%s f68c891d3..origin/main -- <文件>`。同步上游之后，基线改为那次同步的上游提交。fork 改动又碰到上游文件时，在同一个 PR 里更新本表。
 
 ## 修改过的上游文件
 
