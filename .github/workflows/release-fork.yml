@@ -1,9 +1,10 @@
 # Fork-only workflow (not present upstream). Publishes the `multica` CLI and
-# daemon binaries for this fork: pushing a vX.Y.Z-fork.N tag that points at a
+# daemon binaries for this fork: pushing a vX.Y.Z-mouse.N tag that points at a
 # commit on main builds darwin/linux/windows × amd64/arm64 archives plus
 # checksums.txt with .goreleaser.fork.yml and attaches them to this
 # repository's GitHub Release. build-image.yml builds the backend and web
-# images for the same tag, so images and binaries share one version.
+# images for the same tag; for the newest release both the Release and the
+# images become `latest`, so server and runner share one version.
 #
 # Upstream's release.yml is limited to multica-ai: its Homebrew, Helm and
 # Desktop steps need secrets and services this fork does not have, and its
@@ -14,7 +15,7 @@ name: Release (fork)
 on:
   push:
     tags:
-      - "v*.*.*-fork.*"
+      - "v*.*.*-mouse.*"
 
 permissions: {}
 
@@ -29,27 +30,42 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      make_latest: ${{ steps.latest.outputs.make_latest }}
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          fetch-depth: 0
           persist-credentials: false
 
       - name: Validate tag
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-fork\.[0-9]+$ ]]; then
-            echo "::error::Fork release tags must look like vX.Y.Z-fork.N; got '$TAG'."
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-mouse\.[0-9]+$ ]]; then
+            echo "::error::Fork release tags must look like vX.Y.Z-mouse.N; got '$TAG'."
             exit 1
           fi
-          # Only reviewed code is released: the tagged commit must be on main.
-          git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::$TAG points at $GITHUB_SHA, which is not on main."
+          # Only reviewed code is released: "identical" or "behind" means the
+          # tagged commit is main or an ancestor of it.
+          status="$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)"
+          if [ "$status" != "identical" ] && [ "$status" != "behind" ]; then
+            echo "::error::$TAG points at $GITHUB_SHA, which is not on main ($status)."
             exit 1
           fi
+
+      # Only the newest release becomes the "latest" Release, matching the
+      # `latest` image rule in build-image.yml.
+      - name: Decide whether this is the newest release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          bash scripts/fork-release-is-newest.test.sh
+          newest="$(gh api "repos/$GITHUB_REPOSITORY/tags" --paginate --jq '.[].name' | bash scripts/fork-release-is-newest.sh "$TAG")"
+          echo "make_latest=$newest" >> "$GITHUB_OUTPUT"
 
       - name: Setup Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -64,7 +80,7 @@ jobs:
         working-directory: server
         run: |
           go test ./internal/cli/ ./cmd/multica/
-          go test -run 'AutoUpdate|SelfReload|FetchServerVersion|LoadConfig' ./internal/daemon/
+          go test -run 'AutoUpdate|SelfReload' ./internal/daemon/
 
       - name: Scan Go vulnerabilities
         working-directory: server
@@ -96,11 +112,13 @@ jobs:
           args: release --clean --config .goreleaser.fork.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAKE_LATEST: ${{ needs.verify.outputs.make_latest }}
 
       - name: Verify release assets
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          MAKE_LATEST: ${{ needs.verify.outputs.make_latest }}
         run: |
           version="${TAG#v}"
           assets="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
@@ -115,8 +133,14 @@ jobs:
               missing=1
             fi
           done
+          prerelease="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)"
+          if [ "$prerelease" != "false" ]; then
+            echo "::error::release $TAG is marked as a pre-release; /releases/latest would skip it"
+            missing=1
+          fi
           latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
-          if [ "$latest" != "$TAG" ]; then
-            echo "::warning::releases/latest is $latest, not $TAG; runners following the latest release will not pick this one up"
+          if [ "$MAKE_LATEST" = "true" ] && [ "$latest" != "$TAG" ]; then
+            echo "::error::releases/latest is $latest, not $TAG"
+            missing=1
           fi
           exit "$missing"

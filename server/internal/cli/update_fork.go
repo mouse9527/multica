@@ -2,7 +2,7 @@
 //
 // It points `multica update` and the daemon's auto-update at the fork's own
 // GitHub Releases instead of multica-ai/multica, and teaches the version
-// helpers about the fork's tag scheme: vX.Y.Z-fork.N, where X.Y.Z is the
+// helpers about the fork's tag scheme: vX.Y.Z-mouse.N, where X.Y.Z is the
 // upstream release the fork is based on and N counts fork releases on top of
 // it. Upstream's IsReleaseVersion / IsNewerVersion reject any suffix, so a
 // fork build would otherwise look like a dev build and never self-update.
@@ -83,13 +83,13 @@ func BrewUpdateBlocked() error {
 		"install the binary from https://github.com/%s/releases instead (see docs/fork-release.md)", upstreamReleaseRepo, repo, repo)
 }
 
-// forkVersionPattern accepts "X.Y.Z" and "X.Y.Z-fork.N", each with an
+// forkVersionPattern accepts "X.Y.Z" and "X.Y.Z-mouse.N", each with an
 // optional "v". Anything else — a `git describe` dev suffix, "dev", an
 // upstream pre-release — is not a release this updater may install.
-var forkVersionPattern = regexp.MustCompile(`^v?(\d+)\.(\d+)\.(\d+)(?:-fork\.(\d+))?$`)
+var forkVersionPattern = regexp.MustCompile(`^v?(\d+)\.(\d+)\.(\d+)(?:-mouse\.(\d+))?$`)
 
-// parseForkVersion returns {major, minor, patch, fork}; a plain upstream
-// version has fork = 0, so v0.8.1 < v0.8.1-fork.1 < v0.8.1-fork.2 < v0.8.2.
+// parseForkVersion returns {major, minor, patch, N}; a plain upstream
+// version has N = 0, so v0.8.1 < v0.8.1-mouse.1 < v0.8.1-mouse.2 < v0.8.2.
 func parseForkVersion(v string) ([4]int, bool) {
 	m := forkVersionPattern.FindStringSubmatch(strings.TrimSpace(v))
 	if m == nil {
@@ -110,7 +110,7 @@ func parseForkVersion(v string) ([4]int, bool) {
 }
 
 // IsForkReleaseVersion reports whether v is a tagged release in the fork's
-// scheme (X.Y.Z or X.Y.Z-fork.N).
+// scheme (X.Y.Z or X.Y.Z-mouse.N).
 func IsForkReleaseVersion(v string) bool {
 	_, ok := parseForkVersion(v)
 	return ok

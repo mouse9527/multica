@@ -16,7 +16,7 @@ import (
 // for `isBrewInstall` / `getBrewPrefix` / `matchKnownBrewPrefix`.
 //
 // Modified by the mouse9527/multica fork: the version helpers accept the
-// fork's vX.Y.Z-fork.N tags (cli/update_fork.go).
+// fork's vX.Y.Z-mouse.N tags (cli/update_fork.go).
 var (
 	fetchLatestRelease = cli.FetchLatestRelease
 	isReleaseVersion   = cli.IsForkReleaseVersion
@@ -145,7 +145,7 @@ func (d *Daemon) autoUpdateLoop(ctx context.Context) {
 	// Log what each half will do before the startup delay, so a user reading
 	// daemon.log right after `daemon start` sees it immediately.
 	if pullEnabled {
-		d.logger.Info("auto-update: started", "interval", pullInterval, "current", d.cfg.CLIVersion, "target", d.cfg.AutoUpdateTarget)
+		d.logger.Info("auto-update: started", "interval", pullInterval, "current", d.cfg.CLIVersion)
 	}
 	if reloadEnabled {
 		d.logger.Info("auto-reload: watching the multica binary on disk",
@@ -219,11 +219,15 @@ func (d *Daemon) tryAutoUpdate(ctx context.Context) {
 		return
 	}
 
-	// Modified by the mouse9527/multica fork: the target is the server's
-	// version or the newest release, per Config.AutoUpdateTarget
-	// (auto_update_fork.go).
-	target, ok := d.autoUpdateTarget(ctx)
-	if !ok {
+	release, err := fetchLatestRelease()
+	if err != nil {
+		d.logger.Warn("auto-update: fetch latest release failed — will retry", "error", err)
+		return
+	}
+	if release == nil || release.TagName == "" {
+		return
+	}
+	if !isNewerVersion(release.TagName, d.cfg.CLIVersion) {
 		return
 	}
 
@@ -260,16 +264,16 @@ func (d *Daemon) tryAutoUpdate(ctx context.Context) {
 		}
 	}()
 
-	d.logger.Info("auto-update: target release differs from current, updating",
-		"current", d.cfg.CLIVersion, "target", target)
+	d.logger.Info("auto-update: newer release available, upgrading",
+		"current", d.cfg.CLIVersion, "target", release.TagName)
 
-	output, err := d.runUpdateFn(target)
+	output, err := d.runUpdateFn(release.TagName)
 	if err != nil {
 		d.logger.Warn("auto-update: upgrade failed — will retry", "error", err, "output", output)
 		return
 	}
 
-	d.logger.Info("auto-update: upgrade completed, restarting", "target", target, "output", output)
+	d.logger.Info("auto-update: upgrade completed, restarting", "target", release.TagName, "output", output)
 	if !d.triggerRestart() {
 		// The upgrade landed but the handoff target could not be resolved, so
 		// no process exit is coming. Fall through to both deferred restores:

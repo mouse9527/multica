@@ -22,14 +22,14 @@ func TestRunUpdateAlreadyLatestOnFork(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"tag_name":"v0.8.1-fork.2","assets":[]}`))
+		_, _ = w.Write([]byte(`{"tag_name":"v0.8.1-mouse.2","assets":[]}`))
 	}))
 	defer srv.Close()
 	t.Setenv("MULTICA_RELEASE_API_BASE_URL", srv.URL)
 	t.Setenv("MULTICA_RELEASE_REPO", "")
 
 	prevVersion := version
-	version = "0.8.1-fork.2"
+	version = "0.8.1-mouse.2"
 	t.Cleanup(func() { version = prevVersion })
 
 	if err := runUpdate(nil, nil); err != nil {
