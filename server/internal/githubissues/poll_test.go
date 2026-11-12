@@ -48,6 +48,17 @@ type fakeIssuesAPI struct {
 	commentsFault struct{ page, status int }
 	// writes is the single-item API of write_fake_test.go.
 	writes fakeWrites
+	// issueReplies answers the read of an issue with a status instead of
+	// the issue: deleted (404, 410) or transferred (301 and a Location).
+	issueReplies map[int]issueReply
+	// extra, when set, answers the requests it reports it answered, before
+	// the routes of this repository (another repository). Called with mu held.
+	extra func(w http.ResponseWriter, r *http.Request) bool
+}
+
+type issueReply struct {
+	status   int
+	location string
 }
 
 func newFakeIssuesAPI(t *testing.T) *fakeIssuesAPI {
@@ -106,6 +117,9 @@ func (f *fakeIssuesAPI) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", f.throttle)
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{"message":"rate limited"}`))
+		return
+	}
+	if f.extra != nil && f.extra(w, r) {
 		return
 	}
 	if f.serveLinked(w, r) || f.serveIssue(w, r) {

@@ -877,3 +877,94 @@ func TestWritePollWaitsForInFlightWrite(t *testing.T) {
 		t.Fatalf("comments after the write and the poll = %+v", got)
 	}
 }
+
+// A new comment's local insert and the poller's adoption of the same comment
+// are serialized (#49): a poll that sees the comment on GitHub before the
+// caller's insert waits for it, then only links it, so the insert never
+// collides with an adopted copy.
+func TestWritePollWaitsForNewCommentInFlight(t *testing.T) {
+	env := newWriteEnv(t)
+	ctx := context.Background()
+	issue := env.importedIssue(t, 1)
+
+	w, err := env.svc.BeginCommentCreate(ctx, env.member, issue, "racing")
+	if err != nil || w == nil {
+		t.Fatalf("begin comment: %v %v", w, err)
+	}
+	*env.now = env.now.Add(pollInterval)
+	env.api.setNow(*env.now)
+	done := make(chan error, 1)
+	go func() {
+		_, err := env.svc.PollOnce(ctx)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("poll ran past an in-flight new comment: %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	env.localComment(t, w, issue, env.member, "racing")
+	if err := <-done; err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if got := env.comments(t, issue); len(got) != 1 || got[0].id != util.UUIDToString(w.CommentID()) {
+		t.Fatalf("comments after the write and the poll = %+v", got)
+	}
+	if got := env.lastIntent(t); got.state != intentApplied {
+		t.Fatalf("intent = %+v", got)
+	}
+}
+
+// Intents that can never settle are handed to a person once instead of being
+// looked at every cycle (#49): a new comment whose issue was deleted and
+// imported again (the comment came back as external), and a delete without a
+// GitHub comment id, which must not ask GitHub for comment 0 or delete the
+// local copy on its 404.
+func TestWriteReconcileHandsOverIntentsThatCannotSettle(t *testing.T) {
+	env := newWriteEnv(t)
+	ctx := context.Background()
+	issue := env.importedIssue(t, 1)
+	w, err := env.svc.BeginCommentCreate(ctx, env.member, issue, "orphaned")
+	if err != nil || w == nil {
+		t.Fatalf("begin comment: %v %v", w, err)
+	}
+	orphan := w.intent.ID
+	w.Finish(ctx, errors.New("database unavailable"))
+	// The issue is deleted locally (with its link), then imported again: the
+	// comment comes in as someone else's.
+	env.f.Exec(t, `DELETE FROM issue_external WHERE issue_id = $1`, issue.ID)
+	env.f.Exec(t, `DELETE FROM issue WHERE id = $1`, issue.ID)
+	reimported := env.importedIssue(t, 1)
+	if got := env.comments(t, reimported); len(got) != 1 || got[0].authorType != externalAuthorType {
+		t.Fatalf("re-imported comments = %+v", got)
+	}
+
+	kept := env.postedComment(t, reimported, "kept")
+	env.f.Exec(t, `INSERT INTO github_write_intent (workspace_id, op, repo_id, external_repo, issue_id, external_number,
+		comment_id, payload_digest, actor_type, actor_id, state)
+		VALUES ($1, 'delete_comment', 42, 'acme/widgets', $2, 1, $3, ':', 'member', $4, 'unknown')`,
+		env.ws, reimported.ID, kept.ID, env.owner)
+
+	env.pastGrace(t)
+	commentReads := env.api.countPath("/repositories/42/issues/comments/7001")
+	env.pastGrace(t)
+	env.pastGrace(t)
+	if n := env.api.countPath("/repositories/42/issues/comments/7001"); n != commentReads {
+		t.Fatalf("the orphaned intent was looked at %d more times after it was handed over", n-commentReads)
+	}
+	var state, errText string
+	env.f.QueryRow(t, `SELECT state, COALESCE(error, '') FROM github_write_intent WHERE id = $1`, orphan).Scan(&state, &errText)
+	if !strings.HasPrefix(errText, needsConfirmation) {
+		t.Fatalf("orphaned create intent = %s %q, want it handed to a person", state, errText)
+	}
+	env.f.QueryRow(t, `SELECT COALESCE(error, '') FROM github_write_intent WHERE op = 'delete_comment' AND workspace_id = $1`, env.ws).Scan(&errText)
+	if !strings.HasPrefix(errText, needsConfirmation) {
+		t.Fatalf("delete without a GitHub id: error %q, want it handed to a person", errText)
+	}
+	if n := env.api.countPath("/repositories/42/issues/comments/0"); n != 0 {
+		t.Fatalf("asked GitHub for comment 0 %d times", n)
+	}
+	if got := env.comments(t, reimported); len(got) != 2 {
+		t.Fatalf("comments = %+v, want the local copy kept", got)
+	}
+}

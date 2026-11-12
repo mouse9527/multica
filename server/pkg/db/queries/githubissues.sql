@@ -117,6 +117,30 @@ ORDER BY created_at, id;
 SELECT * FROM github_repo_sync
 ORDER BY last_polled_at ASC NULLS FIRST, workspace_id, repo_id;
 
+-- name: ListFollowedGithubRepos :many
+-- The pinned repositories the poller follows: those with a tracked issue the
+-- reconcile has not found deleted or transferred away, or with a write from
+-- Multica still to settle (the reconciler runs inside the poll, so an
+-- unanswered create in a repository with nothing tracked yet still gets
+-- settled or handed over). Repositories with neither get no request at all,
+-- so the poll's requests follow the tracked issues, not the registered
+-- repositories. Read-only.
+SELECT s.workspace_id, s.repo_id FROM github_repo_sync s
+WHERE EXISTS (
+        SELECT 1 FROM issue_external x
+        WHERE x.workspace_id = s.workspace_id
+          AND x.provider = 'github'
+          AND x.external_repo_id = s.repo_id
+          AND (x.state_reason IS NULL OR x.state_reason NOT LIKE 'multica:%')
+    )
+   OR EXISTS (
+        SELECT 1 FROM github_write_intent i
+        WHERE i.workspace_id = s.workspace_id
+          AND i.repo_id = s.repo_id
+          AND i.state IN ('pending', 'github_ok', 'unknown')
+          AND (i.error IS NULL OR i.error NOT LIKE 'needs_confirmation:%')
+    );
+
 -- name: FinishGithubRepoPoll :exec
 -- Records the outcome of one poll of a repository: last_error is NULL after a
 -- clean poll. status is left alone, so a paused repository stays paused.
@@ -146,7 +170,9 @@ RETURNING *;
 -- opened from Multica), by number: the issues whose linked pull requests the
 -- poller looks for. has_unmerged_pull is whether a pull request the poller
 -- mirrored (installation_id) and has not seen merged is linked to the issue:
--- its timeline is then read even while the issue is closed. Read-only.
+-- its timeline is then read even while the issue is closed. Issues the
+-- reconcile found deleted or transferred away (state_reason 'multica:...')
+-- have no timeline left to read. Read-only.
 SELECT x.issue_id, x.external_number, x.state, x.external_updated_at,
     EXISTS (
         SELECT 1 FROM issue_pull_request ipr
@@ -160,4 +186,56 @@ FROM issue_external x
 WHERE x.workspace_id = @workspace_id
   AND x.provider = 'github'
   AND x.external_repo_id = @external_repo_id
+  AND (x.state_reason IS NULL OR x.state_reason NOT LIKE 'multica:%')
 ORDER BY x.external_number;
+
+-- name: ListGitHubIssuesToReconcile :many
+-- The tracked issues of one repository due for the daily reconcile: not
+-- synced in the last check_seconds, and not already found deleted or
+-- transferred away. Oldest sync first, so every check moves the next one
+-- forward. external_synced_at is stamped by the database clock (see
+-- UpsertIssueExternal), so the cutoff is too.
+SELECT * FROM issue_external
+WHERE workspace_id = @workspace_id
+  AND provider = 'github'
+  AND external_repo_id = @external_repo_id
+  AND external_synced_at < now() - make_interval(secs => @check_seconds::float8)
+  AND (state_reason IS NULL OR state_reason NOT LIKE 'multica:%')
+ORDER BY external_synced_at, issue_id
+LIMIT @max_rows;
+
+-- name: TouchIssueExternalSynced :exec
+-- Records that the reconcile read the issue from GitHub, also when the
+-- snapshot changed nothing (fork table only).
+UPDATE issue_external SET external_synced_at = now()
+WHERE issue_id = @issue_id AND workspace_id = @workspace_id;
+
+-- name: MarkGitHubIssueGone :execrows
+-- Marks a tracked issue deleted or transferred away on GitHub. state_reason
+-- carries the mark ('multica:deleted', 'multica:transferred'): GitHub's own
+-- reasons never start with 'multica:', and the table is not altered. Only the
+-- row still at repo and number is marked (fork table only).
+UPDATE issue_external SET
+    state_reason       = @state_reason,
+    external_synced_at = now(),
+    updated_at         = now()
+WHERE issue_id = @issue_id
+  AND workspace_id = @workspace_id
+  AND external_repo_id = @external_repo_id
+  AND external_number = @external_number;
+
+-- name: MoveIssueExternal :execrows
+-- Re-attaches a tracked issue to where GitHub transferred it. Only the row
+-- still at the old repo and number moves; the unique index on (workspace,
+-- provider, repo, number) refuses a target another issue already tracks
+-- (fork table only).
+UPDATE issue_external SET
+    external_repo_id   = @to_repo_id,
+    external_repo      = @to_repo,
+    external_number    = @to_number,
+    external_synced_at = now(),
+    updated_at         = now()
+WHERE issue_id = @issue_id
+  AND workspace_id = @workspace_id
+  AND external_repo_id = @from_repo_id
+  AND external_number = @from_number;

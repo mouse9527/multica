@@ -32,11 +32,22 @@ func (s *Service) BeginCommentCreate(ctx context.Context, actor Actor, issue db.
 	if err != nil {
 		return nil, err
 	}
+	if issueGone(ext) {
+		// Deleted or transferred away on GitHub: the comment stays local.
+		return nil, nil
+	}
 	repo, err := s.repoForIssue(ctx, ext)
 	if err != nil {
 		return nil, err
 	}
 	commentID := dbid.NewV7()
+	// Held until Finish or Close: the poller adopts a comment under the same
+	// lock (adoptComment), so it cannot insert the reserved id before the
+	// caller's own insert lands.
+	guard, err := s.lockTarget(ctx, commentLockKey(commentID))
+	if err != nil {
+		return nil, err
+	}
 	intent, resp, err := s.send(ctx, writeRequest{
 		op: opCreateComment, actor: actor, repo: repo, method: http.MethodPost,
 		path:    "/issues/" + strconv.Itoa(int(ext.ExternalNumber)) + "/comments",
@@ -46,14 +57,16 @@ func (s *Service) BeginCommentCreate(ctx context.Context, actor Actor, issue db.
 		},
 	})
 	if err != nil {
+		guard.release()
 		return nil, err
 	}
 	var gh githubComment
 	if err := json.Unmarshal(resp.Body, &gh); err != nil || gh.ID <= 0 {
+		guard.release()
 		s.settleIntent(context.WithoutCancel(ctx), intent, intentUnknown, "malformed create response")
 		return nil, &WriteError{Kind: WriteUnknown, msg: unconfirmedMessage}
 	}
-	w := &Write{svc: s, intent: intent, repo: repo, comment: &gh}
+	w := &Write{svc: s, intent: intent, repo: repo, comment: &gh, guard: guard}
 	s.accept(ctx, &w.intent, gh.ID, 0)
 	return w, nil
 }
@@ -150,6 +163,9 @@ func (s *Service) beginLockedCommentWrite(ctx context.Context, guard *writeGuard
 	}
 	if err != nil {
 		return nil, err
+	}
+	if issueGone(ext) {
+		return nil, nil
 	}
 	repo, err := s.repoForIssue(ctx, ext)
 	if err != nil {

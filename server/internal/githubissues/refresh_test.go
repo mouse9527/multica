@@ -29,6 +29,13 @@ func (f *fakeIssuesAPI) serveIssue(w http.ResponseWriter, r *http.Request) bool 
 	if err != nil {
 		return false
 	}
+	if reply, ok := f.issueReplies[number]; ok && !comments {
+		if reply.location != "" {
+			w.Header().Set("Location", reply.location)
+		}
+		w.WriteHeader(reply.status)
+		return true
+	}
 	issue, found := f.issues[number]
 	if !found {
 		w.WriteHeader(http.StatusNotFound)

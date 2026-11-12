@@ -247,6 +247,10 @@ func (s *Service) CheckGitHubStatus(ctx context.Context, issue db.Issue, project
 	if err != nil {
 		return err
 	}
+	if issueGone(ext) {
+		// No longer on GitHub, so any status goes, as for a local issue.
+		return nil
+	}
 	m, err := loadStatusMapping(ctx, q, s.logger, issue.WorkspaceID, projectID)
 	if err != nil {
 		return err

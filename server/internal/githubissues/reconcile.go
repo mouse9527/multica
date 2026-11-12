@@ -85,7 +85,10 @@ func (s *Service) reconcileIntent(ctx context.Context, repo *Repo, projectID pgt
 		if err != nil || !found {
 			return s.notFound(ctx, intent, err, "the comment was not found on GitHub")
 		}
-		if handled, _, err := s.syncWrittenComment(ctx, repo, intent.IssueID, intent.ExternalNumber.Int32, c); err != nil || !handled {
+		// A comment that is not handled as written from Multica (its issue was
+		// deleted and imported again, so it came in as external) never
+		// settles; requireSettled hands it over instead of looking every cycle.
+		if _, _, err := s.syncWrittenComment(ctx, repo, intent.IssueID, intent.ExternalNumber.Int32, c); err != nil {
 			return err
 		}
 		return s.requireSettled(ctx, intent, "the comment is on GitHub but could not be linked")
@@ -119,6 +122,11 @@ func (s *Service) reconcileIntent(ctx context.Context, repo *Repo, projectID pgt
 		}
 		return s.handOver(ctx, intent, "GitHub does not show the edit")
 	case opDeleteComment:
+		if !intent.GithubID.Valid {
+			// Every delete is sent for a known GitHub comment; without its id
+			// GitHub cannot be asked, and a 404 must not delete the local copy.
+			return s.handOver(ctx, intent, "the delete has no GitHub comment id")
+		}
 		if !accepted {
 			_, status, err := s.fetchJSON(ctx, repo, "/issues/comments/"+strconv.FormatInt(intent.GithubID.Int64, 10))
 			if err != nil {
