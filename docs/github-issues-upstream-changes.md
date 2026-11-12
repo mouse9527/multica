@@ -2,16 +2,15 @@
 
 本文件属于 `mouse9527/multica` fork。上游 `multica-ai/multica` 的许可证（`LICENSE`，Apache 2.0 加附加条件）要求：被修改的文件要带有显著的修改说明。分发 fork 的源码或镜像时，请把本清单和 `LICENSE`、`NOTICE` 一起附上。
 
-- **基线**：上游 `f68c891d3`（fork 开始时的上游 `main`）。下表是 fork `main`（含 M-31）相对这个基线**修改过的上游文件**。fork 新增的文件不在表里，见文末。
-- **「文件内说明」** 一列：「有」表示文件里有 fork 的修改说明（形如 `Modified by the mouse9527/multica fork`、`mouse9527/multica fork` 或 `GitHub-native issues (fork)` 的注释）；「无」表示文件里没有，**以本清单作为它的修改说明**。JSON 文件不能写注释；`Dockerfile` 那一行升级按 M-49 的已定决定没有加说明；其余几处是合并时漏掉的。按 Owner 的要求，本任务**不改任何已合并文件的内容**，只在这里补齐。
-- **重新生成**：`git diff --name-status f68c891d3..origin/main | grep '^M'`；每个文件涉及的任务：`git log --format=%s f68c891d3..origin/main -- <文件>`。同步上游之后，基线改为那次同步的上游提交。fork 改动又碰到上游文件时，在同一个 PR 里更新本表。
+- **基线**：上游 `5b8a15082`（#73 同步进 fork 的上游 `main`；之前是 fork 开始时的 `f68c891d3`）。下表是 fork `main` 相对这个基线**修改过的上游文件**。fork 新增的文件不在表里，见文末。
+- **「文件内说明」** 一列：「有」表示文件里有 fork 的修改说明（形如 `Modified by the mouse9527/multica fork`、`mouse9527/multica fork` 或 `GitHub-native issues (fork)` 的注释）；「无」表示文件里没有，**以本清单作为它的修改说明**。JSON 文件不能写注释；其余几处是合并时漏掉的。按 Owner 的要求，本任务**不改任何已合并文件的内容**，只在这里补齐。
+- **重新生成**：`git diff --name-status 5b8a15082 origin/main | grep '^M'`（两个提交之间用空格、不用 `..`：同步后基线已并入 `main`，要比较两棵树，不是取提交区间）；每个文件涉及的任务：`git log --format=%s f68c891d3..origin/main -- <文件>`。同步上游之后，基线改为那次同步的上游提交。fork 改动又碰到上游文件时，在同一个 PR 里更新本表。
 
 ## 修改过的上游文件
 
 | 文件 | 任务 | 改动 | 文件内说明 |
 |---|---|---|---|
 | `.github/workflows/release.yml` | M-58 | `verify` 只在 `multica-ai` 运行，整个上游发布在 fork 上不跑（fork 用 `release-fork.yml`） | 有 |
-| `Dockerfile` | M-49 | 构建镜像升级到 `golang:1.27.4-alpine`（一行）。上游 `6ccbdd178` 已是同一行，下次同步后不再是修改 | 无 |
 | `packages/core/api/client.ts` | M-28 | `getProjectGitHubSettings`（404 返回 `null`） | 有 |
 | `packages/core/api/schemas.ts` | #70、M-65 | `IssueSchema.provider`、`IssueSchema.github`（格式不对时丢弃该字段） | 有 |
 | `packages/core/api/schemas.test.ts` | #70、M-65 | 上面这两个字段的测试 | 有 |
@@ -42,7 +41,7 @@
 | `server/internal/daemon/auto_update.go` | M-58 | 版本判断接受 `-mouse.N`（两行） | 有 |
 | `server/internal/daemon/daemon.go` | M-58 | `runUpdate` 前的 Homebrew 检查 | 有 |
 | `server/internal/handler/activity.go` | M-29 | 时间线接口载入 issue 后触发按需刷新 | 有 |
-| `server/internal/handler/comment.go` | M-23、M-27、M-29 | 外部评论只读；评论新建、编辑、删除的双写；评论列表触发按需刷新 | 有 |
+| `server/internal/handler/comment.go` | M-27、M-29 | 评论新建、编辑、删除的双写（外部评论只读检查在编辑、删除的双写钩子里）；评论列表触发按需刷新 | 有 |
 | `server/internal/handler/daemon.go` | M-22 | 认领任务时的 issue 标识 | 有 |
 | `server/internal/handler/github.go` | M-30 | PR 镜像入参归一化（`prMirrorInput`）、关联 GitHub issue、返回写入错误 | 有 |
 | `server/internal/handler/handler.go` | M-22、M-23、M-26、M-27、M-29、M-30 | `Handler` 的 fork 钩子字段；`owner/repo#N` 解析 | 有 |
@@ -84,7 +83,7 @@ M-65 起 github issue 的标识回到 `PREFIX-N`（M-64 的决定）。上表里
 | `server/internal/handler/webhook_status_resolver_test.go` | M-30 | 无 |
 | `server/internal/handler/workspace_delete_manifest_test.go` | M-20 | 有 |
 
-合计：修改过的上游文件 78 个（含 16 个翻译文件与 13 个测试文件），其中 22 个文件内没有修改说明，以本清单为准。
+合计：修改过的上游文件 77 个（含 16 个翻译文件与 14 个测试文件），其中 21 个文件内没有修改说明，以本清单为准。M-49 的 `Dockerfile` 一行在 #73 同步后与上游相同，不再是修改。
 
 ## fork 新增的文件
 

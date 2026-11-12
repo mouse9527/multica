@@ -287,8 +287,13 @@ func (h *Handler) beginGitHubCommentCreate(w http.ResponseWriter, r *http.Reques
 // beginGitHubCommentChange edits (content set) or deletes (content nil) a
 // comment that Multica posted on GitHub. contentBase and expectedRevision are
 // the edit's preconditions, checked under the comment's lock before anything
-// is sent.
+// is sent. It first refuses comments written on GitHub by outsiders: the check
+// lives here, behind the one hook UpdateComment and DeleteComment already
+// carry, so upstream syncs have no separate line to merge around.
 func (h *Handler) beginGitHubCommentChange(w http.ResponseWriter, r *http.Request, comment db.Comment, content, contentBase *string, expectedRevision *int64) (*githubissues.Write, bool) {
+	if h.rejectExternalCommentWrite(w, r, comment) {
+		return nil, false
+	}
 	if h.GitHubIssues == nil {
 		return nil, true
 	}

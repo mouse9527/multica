@@ -253,7 +253,7 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 
 ### 只读
 
-外部评论在 Multica 里只读：`PUT`、`DELETE /api/comments/{id}` 对「`system` 作者且有 `comment_external` 行」的评论返回 403，owner、admin 也一样。其他评论（成员、智能体、平台通知）不受影响。功能关闭时不做这项检查，与上游一致。
+外部评论在 Multica 里只读：`PUT`、`DELETE /api/comments/{id}` 对「`system` 作者且有 `comment_external` 行」的评论返回 403，owner、admin 也一样。其他评论（成员、智能体、平台通知）不受影响。功能关闭时不做这项检查，与上游一致。检查放在 `UpdateComment`、`DeleteComment` 原有的双写钩子 `beginGitHubCommentChange` 的开头（#73 起），不再单独占上游文件的行；所以它排在上游的作者 / 管理员检查和请求体校验之后：非作者先得到上游的 403，请求体不合法先得到 400，都不会改到外部评论。
 
 ### 对上游文件的钩子（本节）
 
@@ -262,8 +262,8 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 | `server/cmd/server/main.go` | 建 `githubissues.Service` 时传入数据库连接池和事件总线（`RepoClient` 也用这个连接池查白名单、写绑定） |
 | `server/cmd/server/router.go` | 功能开启时把 `Service` 设为 `Handler.ExternalComments` |
 | `server/internal/handler/handler.go` | `Handler.ExternalComments` 字段 |
-| `server/internal/handler/comment.go` | `UpdateComment`、`DeleteComment` 各一行只读检查 |
-| `server/internal/handler/githubissues_hook.go` | 新文件：只读检查 |
+| `server/internal/handler/comment.go` | 无单独的行：只读检查在 M-27 的 `beginGitHubCommentChange` 钩子里 |
+| `server/internal/handler/githubissues_hook.go` | 新文件：只读检查（`beginGitHubCommentChange` 开头调用） |
 | `server/pkg/db/queries/githubissues.sql` | 新查询：按 GitHub 评论 id 加锁、删除外部评论产生的 wakeup 回执、默认同步账号 |
 
 ## 手动同步
@@ -442,6 +442,7 @@ GitHub 上的 issue 只有被明确要求时才进入 Multica（#50）。代码�
 ### 规则
 
 - 仓库必须登记在本工作区某个项目上（白名单，经 `RepoClient`），名字不区分大小写，存的是登记的写法。不在白名单：403 `github_repo_not_registered`，不发请求。
+- 私有项目（上游的项目可见性）：调用者看不到仓库所属的目标项目时，同样答 403 `github_repo_not_registered`；已导入的 issue 后来被移进调用者看不到的项目时，答 404 `github_issue_not_found`。两者都在发任何请求、写任何数据之前判断，新导入、重复导入、补完未完成的导入都一样（#73）。
 - **幂等：** 本地已有这个 issue 的 `issue_external` 时不重复建，返回已有的 issue（200）；返回前重读它的全部评论（按 GitHub 评论 id 去重，不产生重复评论），用来补完上次没读完的导入。并发的两次导入由轮询的 advisory lock 串行，只建一个。
 - 读 `GET /repositories/{id}/issues/{N}`：编号是 PR（带 `pull_request` 键，或 URL 是 `/pull/N`）时 422 `github_pull_request`，不入库；404、410、301（删除或转移）时 404 `github_issue_not_found`。
 - 入库与轮询原来导入他人 issue 的规则相同：创建者是同步账号（`IssueCreator`，见「外部作者」），描述是带前缀的原文，不指派任何人，项目是最早登记该仓库的项目，优先级 `none`。同一事务写 `issue_external`。工作区编号冲突时按上游的做法修复计数器后重试一次。同步账号不可用时 409 `github_sync_account_unavailable`，不入库。
@@ -893,18 +894,18 @@ fork 的改动按「新包、新文件、薄钩子」组织，同步上游时冲
 
 全部被修改的上游文件、各自所属任务和改动见 [fork 对上游文件的修改清单](github-issues-upstream-changes.md)。同步上游后更新它的基线。
 
-fork 相对上游新增约 100 个文件，修改 49 个上游已有文件（不含生成代码、测试与翻译文件是 29 个），集中在 `server/internal/handler/`（`issue.go`、`comment.go`、`handler.go`、`github.go` 等）、`server/cmd/server/{main,router}.go`、`server/internal/service/`、`server/cmd/multica/`、`packages/core/api/client.ts`、`packages/views/modals/create-issue.tsx`。冲突最可能出现在这些文件里上游也在改的地方。
+fork 相对上游新增约 130 个文件，修改 77 个上游已有文件（不含生成代码、测试与翻译文件是 46 个；#73 同步后统计），集中在 `server/internal/handler/`（`issue.go`、`comment.go`、`handler.go`、`github.go` 等）、`server/cmd/server/{main,router}.go`、`server/internal/service/`、`server/cmd/multica/`、`packages/core/api/client.ts`、`packages/views/modals/create-issue.tsx`。冲突最可能出现在这些文件里上游也在改的地方。
 
 ### 演练记录
 
-| 项 | 2026-11-11（M-31） |
-|---|---|
-| fork 基线 | `origin/main` `135250df5`（M-28 合并后，16 个 fork 提交，基于上游 `f68c891d3`） |
-| 上游 | `upstream/main` `6ccbdd178`，比基线新 133 个提交 |
-| 方式 | 测试分支上 `git rebase --onto upstream/main f68c891d3` |
-| 手工冲突 | **2 个文件、3 处**：`server/internal/handler/comment.go` 2 处（上游在 `UpdateComment`、`DeleteComment` 里同一行加了可见性检查 `requireIssueIDVisible`，与 fork 的外部评论只读钩子相邻，两者都保留，上游的在前）；`packages/core/api/client.ts` 1 处（上游在 fork 追加 `getProjectGitHubSettings` 的位置加了项目成员与订阅方法，两边都保留） |
-| 生成文件 | `server/pkg/db/generated/models.go` 冲突 1 次（M-20 提交）；最终状态 `githubissues.sql.go` 无冲突但已过时（上游给 `issue` 加了 `requester_user_id`）。都用 sqlc 重新生成，没有手合 |
-| 耗时 | rebase、解决冲突、重新生成到编译通过约 6 分钟；全量测试约 16 分钟；含重跑与核对约 1 小时 |
-| 结果 | `go build ./...`、`go vet` 通过；`githubissues` 全部通过（单独跑 7 分钟；与全部包并行时超过默认 10 分钟超时，属机器负载）；`handler` 并行跑时 7 个 `TestClaimTask*` 失败，单独跑在演练分支与纯上游 `main` 上都通过；`service` 的 1 个 wakeup 条件测试在负载下超过 5 秒期限，单独跑（3 次）在演练分支与上游上都通过；其余失败（`daemon`、`daemon/execenv`、`daemon/repocache`、`integrations/wecom`）所在包没有 fork 改动，是本机环境（git 身份、并行负载） |
-| 之后的增量 | `main` 后来的 M-49（`Dockerfile` 一行）与 M-31 的全部提交叠到演练分支上：无冲突，sqlc 重新生成无差异，编译通过。上游 `6ccbdd178` 的 `Dockerfile` 已经是同一行，M-49 在同步后变成空改动 |
-| 结论 | **达标**：手工冲突 3 处（判据不超过 5 处），耗时约 1 小时（判据不超过半天），不需要减少钩子 |
+| 项 | 2026-11-11（M-31） | 2026-11-12（#73，正式同步） |
+|---|---|---|
+| fork 基线 | `origin/main` `135250df5`（M-28 合并后，16 个 fork 提交，基于上游 `f68c891d3`） | `origin/main` `743b6980b`（M-59 合并后，22 个 fork 提交，基于上游 `f68c891d3`），先叠一个减少钩子的提交 `7bc7a1ff9`（外部评论只读检查挪进 `beginGitHubCommentChange`，`comment.go` 少两行钩子） |
+| 上游 | `upstream/main` `6ccbdd178`，比基线新 133 个提交 | `upstream/main` `c3a9d8fd1`，比基线新 162 个提交；审查与验收期间上游又前进到 `66e534d8e`、`5b8a15082`（再多 6 个提交，含迁移 `652`–`655`），两次增量合并都无冲突 |
+| 方式 | 测试分支上 `git rebase --onto upstream/main f68c891d3` | 同步分支 `sync/upstream-main-73-r2` 上 `git merge upstream/main`，PR 合入 `main`。第一次合并（PR #76，没有减少钩子的提交）有 6 处冲突，超过判据，按本节规则先减少钩子再重做 |
+| 手工冲突 | **2 个文件、3 处**：`server/internal/handler/comment.go` 2 处（上游在 `UpdateComment`、`DeleteComment` 里同一行加了可见性检查 `requireIssueIDVisible`，与 fork 的外部评论只读钩子相邻，两者都保留，上游的在前）；`packages/core/api/client.ts` 1 处（上游在 fork 追加 `getProjectGitHubSettings` 的位置加了项目成员与订阅方法，两边都保留） | **4 个文件、5 处**（不含生成文件）。合并上游 `20381a083`：`handler.go` 1 处（上游给 `resolveIssueByIdentifier` 加了 `error` 返回值，fork 的 `owner/repo#N` 解析钩子改为返回 `(issue, true, nil)`）；`issue.go` 2 处（`fillStatusCategory` 多了 `hidden` 参数，保留上游签名、放回 `fillIssueKeys`；`GetIssue` 里上游的 `requestHiddenProjects` 与 fork 的 `refreshIssueOnView` 相邻，上游在前）；`client.ts` 1 处，与演练相同。另有合入 fork `main`（M-60）时本清单 `github-issues-upstream-changes.md` 的合计行 1 处（两边都改了文件数）。`comment.go` 的 2 处因钩子已挪走不再冲突；之后的增量合并都无冲突 |
+| 生成文件 | `server/pkg/db/generated/models.go` 冲突 1 次（M-20 提交）；最终状态 `githubissues.sql.go` 无冲突但已过时（上游给 `issue` 加了 `requester_user_id`）。都用 sqlc 重新生成，没有手合 | `models.go` 冲突 1 次，`githubissues.sql.go` 无冲突但已过时（`requester_user_id`），与演练相同；sqlc 重新生成，没有手合 |
+| 耗时 | rebase、解决冲突、重新生成到编译通过约 6 分钟；全量测试约 16 分钟；含重跑与核对约 1 小时 | 第一次合并、解决冲突、重新生成到编译通过约 6 分钟；减少钩子后重做合并（沿用同样的解法）约 1 分钟；迁移验证、全量测试与对照约 30 分钟；合计约 1 小时 |
+| 结果 | `go build ./...`、`go vet` 通过；`githubissues` 全部通过（单独跑 7 分钟；与全部包并行时超过默认 10 分钟超时，属机器负载）；`handler` 并行跑时 7 个 `TestClaimTask*` 失败，单独跑在演练分支与纯上游 `main` 上都通过；`service` 的 1 个 wakeup 条件测试在负载下超过 5 秒期限，单独跑（3 次）在演练分支与上游上都通过；其余失败（`daemon`、`daemon/execenv`、`daemon/repocache`、`integrations/wecom`）所在包没有 fork 改动，是本机环境（git 身份、并行负载） | `go build`、`go vet`、sqlc 重新生成通过；迁移（到 `655`，共 683 个）在临时库上 up / down / up 通过，旧 fork 库升级与全新安装的 schema 完全一致；除 `daemon`、`daemon/processtree`、`daemon/repocache` 外全部 Go 包通过（这 3 个包在同一容器里跑纯上游 `c3a9d8fd1`、`66e534d8e`、`5b8a15082` 失败的是同一批；另有几条按时间判断的 GC 测试只在全量并行时偶发，单独重跑整个包通过，原因是以 root 运行、worktree 挂载、进程计时）；前端 typecheck、lint、knip、`test:scripts`、`@multica/core` 全量与 fork 相关的 views 测试通过（重做合并后前端文件与第一次完全相同） |
+| 之后的增量 | `main` 后来的 M-49（`Dockerfile` 一行）与 M-31 的全部提交叠到演练分支上：无冲突，sqlc 重新生成无差异，编译通过。上游 `6ccbdd178` 的 `Dockerfile` 已经是同一行，M-49 在同步后变成空改动 | 同步带进上游的私有项目后，fork 的 `POST /api/issues/import` 补上可见性检查（见「按需导入」） |
+| 结论 | **达标**：手工冲突 3 处（判据不超过 5 处），耗时约 1 小时（判据不超过半天），不需要减少钩子 | **达标**：手工冲突 5 处（判据不超过 5 处，已到线），耗时约 1 小时（判据不超过半天）。下次同步余量为 0，若再出现钩子相邻冲突，应先像 `7bc7a1ff9` 那样把钩子收进 fork 文件 |

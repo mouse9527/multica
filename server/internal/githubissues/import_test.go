@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/githubissues/issuekey"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -18,13 +19,16 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
+// seeAllProjects is the visibility of a caller who may see every project.
+func seeAllProjects(pgtype.UUID) bool { return true }
+
 func (env *pollEnv) importRef(t *testing.T, ref IssueRef) (string, bool, error) {
 	t.Helper()
 	ws, err := util.ParseUUID(env.ws)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, created, err := env.svc.ImportIssue(context.Background(), ws, ref)
+	id, created, err := env.svc.ImportIssue(context.Background(), ws, ref, seeAllProjects)
 	return util.UUIDToString(id), created, err
 }
 
@@ -355,6 +359,92 @@ func TestImportReadsEveryComment(t *testing.T) {
 	}
 	if n := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws); n != 2 {
 		t.Fatalf("issues = %d, want 2", n)
+	}
+}
+
+// TestImportRespectsPrivateProjects: a caller who may not see a project
+// (upstream's private projects) cannot import into it, re-import or finish
+// an import of its issues, or read an imported issue moved into it. Each
+// refusal comes before anything is sent to GitHub or stored, and looks like
+// an unregistered repository or a missing issue.
+func TestImportRespectsPrivateProjects(t *testing.T) {
+	env := newPollEnv(t)
+	t0 := testNow.Add(-time.Hour)
+	env.api.putIssue(1, "stranger", "Crash on start", "It crashes.", "open", t0, nil)
+	env.api.putIssue(2, "stranger", "Slow start", "", "open", t0, nil)
+	for i := 1; i <= 15; i++ {
+		env.api.putComment(int64(20_000+i), 2, "stranger", "Comment "+strconv.Itoa(i), t0)
+	}
+	env.svc.pollLimits.perPage = 10
+	ws, err := util.ParseUUID(env.ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	importAs := func(canSee func(pgtype.UUID) bool, number int32) (pgtype.UUID, error) {
+		t.Helper()
+		id, _, err := env.svc.ImportIssue(context.Background(), ws, IssueRef{Owner: "acme", Repo: "widgets", Number: number}, canSee)
+		return id, err
+	}
+	hiddenFrom := func(projects ...string) func(pgtype.UUID) bool {
+		return func(p pgtype.UUID) bool {
+			for _, hidden := range projects {
+				if util.UUIDToString(p) == hidden {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	refusedQuietly := func(what string, canSee func(pgtype.UUID) bool, number int32, want error) {
+		t.Helper()
+		sent := len(env.api.seen())
+		issues := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws)
+		comments := env.count(t, `SELECT count(*) FROM comment WHERE workspace_id = $1`, env.ws)
+		if id, err := importAs(canSee, number); !errors.Is(err, want) || id.Valid {
+			t.Fatalf("%s = %s %v, want no issue and %v", what, util.UUIDToString(id), err, want)
+		}
+		if got := env.api.seen()[sent:]; len(got) != 0 {
+			t.Fatalf("%s sent %v", what, got)
+		}
+		if n := env.count(t, `SELECT count(*) FROM issue WHERE workspace_id = $1`, env.ws); n != issues {
+			t.Fatalf("%s: issues %d -> %d", what, issues, n)
+		}
+		if n := env.count(t, `SELECT count(*) FROM comment WHERE workspace_id = $1`, env.ws); n != comments {
+			t.Fatalf("%s: comments %d -> %d", what, comments, n)
+		}
+	}
+	outsider := hiddenFrom(env.project)
+
+	// A new import into the private project.
+	refusedQuietly("outsider's new import", outsider, 1, ErrRepoNotRegistered)
+	// A nil canSee sees no project.
+	refusedQuietly("import without a visibility check", nil, 1, ErrRepoNotRegistered)
+
+	// A member imports both; the second stops partway through its comments.
+	if _, err := importAs(seeAllProjects, 1); err != nil {
+		t.Fatalf("member import: %v", err)
+	}
+	env.api.mu.Lock()
+	env.api.commentsFault.page, env.api.commentsFault.status = 2, http.StatusBadGateway
+	env.api.mu.Unlock()
+	if _, err := importAs(seeAllProjects, 2); !errors.Is(err, ErrImportIncomplete) {
+		t.Fatalf("interrupted member import: %v", err)
+	}
+	env.api.mu.Lock()
+	env.api.commentsFault.page = 0
+	env.api.mu.Unlock()
+
+	// The outsider can neither re-import the issue nor finish the import.
+	refusedQuietly("outsider's re-import", outsider, 1, ErrRepoNotRegistered)
+	refusedQuietly("outsider finishing an import", outsider, 2, ErrRepoNotRegistered)
+
+	// The issue is moved into another private project: a caller who sees
+	// the repository's project but not that one finds no issue.
+	other := env.f.Project(t, "Private")
+	env.f.Exec(t, `UPDATE issue SET project_id = $1 WHERE id = $2`, other, env.issue(t, 1).id)
+	refusedQuietly("re-import of an issue moved out of sight", hiddenFrom(other), 1, ErrGitHubIssueNotFound)
+	if _, err := importAs(seeAllProjects, 1); err != nil {
+		t.Fatalf("member re-import after the move: %v", err)
 	}
 }
 

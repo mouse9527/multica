@@ -212,7 +212,7 @@ func (d *Daemon) gcWorkspace(ctx context.Context, wsDir string, stats *gcStats) 
 			continue
 		}
 		taskDir := filepath.Join(wsDir, entry.Name())
-		if d.isActiveEnvRoot(taskDir) {
+		if d.isActiveEnvRoot(taskDir) || d.environments.servesFrom(taskDir) {
 			stats.skipped++
 			continue
 		}
@@ -422,8 +422,8 @@ func (d *Daemon) taskDirGCDecision(ctx context.Context, taskDir string) (gcActio
 	// still-running task can reuse the prior workdir of an already-done issue
 	// whose updated_at is older than the TTL (a task re-claim doesn't advance
 	// updated_at), so the regular TTL check alone wouldn't notice the resumed
-	// activity.
-	if d.isActiveEnvRoot(taskDir) {
+	// activity. A directory a running environment serves from is in use too.
+	if d.isActiveEnvRoot(taskDir) || d.environments.servesFrom(taskDir) {
 		return gcActionSkip, nil
 	}
 
@@ -1666,14 +1666,6 @@ func (d *Daemon) pruneWorktreeLocked(ctx context.Context, barePath string) {
 	}
 }
 
-func runGitGCCommand(barePath string, args ...string) (string, error) {
-	return runGitGCCommandContext(context.Background(), barePath, args...)
-}
-
-func runGitCommand(barePath string, timeout time.Duration, args ...string) (string, error) {
-	return runGitCommandContext(context.Background(), barePath, timeout, args...)
-}
-
 func runGitGCCommandContext(ctx context.Context, barePath string, args ...string) (string, error) {
 	return runGitCommandContext(ctx, barePath, gitCmdTimeout, args...)
 }
@@ -1754,10 +1746,6 @@ func (d *Daemon) cleanupNewRepoMaintenanceLocks(barePath string, before repoMain
 	}
 }
 
-func agentWorktreeBranches(barePath string) (map[string]struct{}, error) {
-	return agentWorktreeBranchesContext(context.Background(), barePath)
-}
-
 func agentWorktreeBranchesContext(ctx context.Context, barePath string) (map[string]struct{}, error) {
 	out, err := runGitGCCommandContext(ctx, barePath, "worktree", "list", "--porcelain")
 	if err != nil {
@@ -1778,14 +1766,10 @@ func agentWorktreeBranchesContext(ctx context.Context, barePath string) (map[str
 	return branches, nil
 }
 
-func listAgentBranches(barePath string) ([]string, error) {
-	return listAgentBranchesContext(context.Background(), barePath)
-}
-
 func listAgentBranchesContext(ctx context.Context, barePath string) ([]string, error) {
 	// Trailing slash narrows the pattern to the `agent/` namespace only. Without
 	// it, `for-each-ref` would also return a branch literally named `agent`,
-	// which `agentWorktreeBranches` ignores — that branch would then be deleted.
+	// which `agentWorktreeBranchesContext` ignores — that branch would then be deleted.
 	out, err := runGitGCCommandContext(ctx, barePath, "for-each-ref", "--format=%(refname:short)", "refs/heads/agent/")
 	if err != nil {
 		return nil, err

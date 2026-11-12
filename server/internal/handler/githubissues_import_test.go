@@ -5,6 +5,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -185,4 +186,28 @@ func TestImportGitHubIssue(t *testing.T) {
 	if n := dbfx.Count(t, `SELECT count(*) FROM issue_external WHERE issue_id = $1`, id); n != 1 {
 		t.Fatalf("issue of the incomplete import not stored")
 	}
+
+	// Once the project is private, a workspace member outside it gets the
+	// answer for an unregistered repository on a new import, a re-import and
+	// an attempt to finish the incomplete one; nothing is sent or stored.
+	dbfx.Exec(t, `UPDATE project SET visibility = 'private' WHERE id = $1`, projectID)
+	outsider := createPlainMember(t, fmt.Sprintf("import-outsider-%d@multica.test", time.Now().UnixNano()))
+	sent = fake.sent()
+	for _, ref := range []string{"acme/widgets#5", "acme/widgets#1", "acme/widgets#3"} {
+		var body map[string]any
+		testutil.Call(t, h.ImportGitHubIssue, asUser(newRequest(http.MethodPost, "/api/issues/import", map[string]any{"ref": ref}), outsider)).
+			Want(http.StatusForbidden).JSON(&body)
+		if body["code"] != "github_repo_not_registered" || body["issue_id"] != nil || body["title"] != nil {
+			t.Errorf("outsider import %s: body = %v", ref, body)
+		}
+	}
+	if fake.sent() != sent {
+		t.Fatalf("outsider imports sent %d requests", fake.sent()-sent)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM issue_external WHERE workspace_id = $1 AND external_repo_id = $2`,
+		testWorkspaceID, importTestRepoID); n != 2 {
+		t.Fatalf("issue_external rows = %d after outsider imports, want 2", n)
+	}
+	// The owner still sees the private project and re-imports normally.
+	importRef("acme/widgets#1").Want(http.StatusOK)
 }

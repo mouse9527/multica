@@ -50,8 +50,12 @@ func (h *Handler) ImportGitHubIssue(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireUserID(w, r); !ok {
 		return
 	}
+	hidden, ok := h.requestHiddenProjects(w, r, uuidToString(wsUUID))
+	if !ok {
+		return
+	}
 
-	issueID, created, err := h.GitHubIssues.ImportIssue(r.Context(), wsUUID, ref)
+	issueID, created, err := h.GitHubIssues.ImportIssue(r.Context(), wsUUID, ref, hidden.CanSeeProject)
 	if errors.Is(err, githubissues.ErrImportIncomplete) {
 		writeImportIncomplete(w, r, err, issueID)
 		return

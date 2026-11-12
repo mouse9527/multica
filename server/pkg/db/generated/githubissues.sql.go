@@ -783,7 +783,7 @@ UPDATE issue SET
 WHERE id = $3
   AND workspace_id = $4
   AND (title IS DISTINCT FROM $1 OR description IS DISTINCT FROM $2)
-RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, requester_user_id
 `
 
 type UpdateGitHubIssueContentParams struct {
@@ -835,6 +835,7 @@ func (q *Queries) UpdateGitHubIssueContent(ctx context.Context, arg UpdateGitHub
 		&i.LastActivityAt,
 		&i.TriageState,
 		&i.DuplicateOfIssueID,
+		&i.RequesterUserID,
 	)
 	return i, err
 }

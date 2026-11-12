@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/githubissues"
@@ -212,7 +213,7 @@ func TestPolledPullRequestReachesIssueCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.ImportIssue(ctx, wsID, githubissues.IssueRef{Owner: "acme", Repo: "widgets", Number: 1}); err != nil {
+	if _, _, err := svc.ImportIssue(ctx, wsID, githubissues.IssueRef{Owner: "acme", Repo: "widgets", Number: 1}, func(pgtype.UUID) bool { return true }); err != nil {
 		t.Fatalf("import #1: %v", err)
 	}
 	poll()

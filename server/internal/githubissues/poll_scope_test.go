@@ -114,7 +114,7 @@ func TestPollFollowsOnlyRepositoriesWithTrackedIssues(t *testing.T) {
 		t.Fatalf("registered repositories = %d, want 20", n)
 	}
 	env.importIssue(t, 1)
-	if _, _, err := env.svc.ImportIssue(ctx, ws, IssueRef{Owner: "acme", Repo: "gadgets", Number: 5}); err != nil {
+	if _, _, err := env.svc.ImportIssue(ctx, ws, IssueRef{Owner: "acme", Repo: "gadgets", Number: 5}, seeAllProjects); err != nil {
 		t.Fatalf("import gadgets#5: %v", err)
 	}
 
@@ -139,7 +139,7 @@ func TestPollFollowsOnlyRepositoriesWithTrackedIssues(t *testing.T) {
 
 	// Importing an issue of a third repository follows it from the next
 	// cycle; the others stay quiet.
-	if _, _, err := env.svc.ImportIssue(ctx, ws, IssueRef{Owner: "acme", Repo: "third", Number: 9}); err != nil {
+	if _, _, err := env.svc.ImportIssue(ctx, ws, IssueRef{Owner: "acme", Repo: "third", Number: 9}, seeAllProjects); err != nil {
 		t.Fatalf("import third#9: %v", err)
 	}
 	got = cycle(3)
