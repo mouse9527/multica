@@ -187,7 +187,16 @@ type pollEnv struct {
 	events []events.Event
 }
 
+// newPollEnv builds the poll environment with the poll and the on-view
+// refresh switched on, as before they became switches.
 func newPollEnv(t *testing.T) *pollEnv {
+	t.Helper()
+	return newPollEnvWith(t, map[string]string{EnvPollEnabled: "true", EnvRefreshOnView: "true"})
+}
+
+// newPollEnvWith builds the poll environment with extra environment
+// variables on top of the feature's own.
+func newPollEnvWith(t *testing.T, extraEnv map[string]string) *pollEnv {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -219,7 +228,11 @@ func newPollEnv(t *testing.T) *pollEnv {
 			env.mu.Unlock()
 		})
 	}
-	cfg := LoadConfig(envOf(map[string]string{EnvEnabled: "true", EnvToken: fakeToken, EnvTokenExpiresAt: "never"}))
+	vars := map[string]string{EnvEnabled: "true", EnvToken: fakeToken, EnvTokenExpiresAt: "never"}
+	for k, v := range extraEnv {
+		vars[k] = v
+	}
+	cfg := LoadConfig(envOf(vars))
 	env.svc = New(cfg, Options{
 		DB: pool, Bus: bus, APIBase: env.api.server.URL,
 		Now: func() time.Time { return *env.now }, Logger: slog.New(slog.DiscardHandler),

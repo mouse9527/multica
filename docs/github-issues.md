@@ -6,7 +6,7 @@
 
 - **GitHub 是唯一写入方。** Multica 里对 github issue 的标题、正文、状态、评论的写入先写 GitHub，GitHub 接受后才落库（双写）；结果未知的写入不自动重试，过了宽限期找不到就交给人确认。见「双写、意图记录与署名」。
 - **按需导入：fork 不主动导入 GitHub 上的 issue 和 PR。** 只有被明确要求导入的 issue（目前入口只有 API `POST /api/issues/import` 和 CLI `multica issue import`，界面上的导入输入框还没做），以及从 Multica 新建的 issue，才进入 Multica；PR 只镜像关闭这些已跟踪 issue 的。见「按需导入」「PR 轮询与关联」。
-- **读 = 轮询 + 按需刷新 + 每日对账，只处理已导入的 issue。** 每 60 秒按游标读变化、只保留已跟踪的，打开 issue 时后台刷新一次，每天逐个核对一次是否已删除或转移。不用 webhook，不读整个仓库的历史。见「轮询」「按需刷新」「每日对账」。
+- **读 = 默认手动同步，只处理已导入的 issue。** Owner 决定（#24「已定决定」2026-11-12）：GitHub 到本地的同步默认手动，要最新内容时用 `multica issue sync` 或 `POST /api/issues/{id}/github-sync` 主动同步一个 issue 或一个项目，带额度守卫。定时轮询（每 60 秒按游标读变化，含每日对账）和打开 issue 时的后台刷新是两个开关，默认都关闭。不用 webhook，不读整个仓库的历史。见「手动同步」「轮询」「按需刷新」「每日对账」。
 - **只经 `RepoClient` 访问 GitHub。** 仓库白名单 = 项目上登记的 `github_repo` 资源；令牌只在 `transport.go`、`config.go` 两个文件里出现，有语法树扫描测试守着。见「访问仓库」。
 - **local issue 不变，开关关闭时与上游一致。** 没有 `issue_external` 行的 issue 是 local issue；开关关闭时不注册路由、不发请求、不跑调度任务，标识按上游渲染。
 - **只新增表、薄钩子。** 5 张 fork 表（迁移 9000–9003），不改上游表结构；新逻辑放在新包和 fork 自己的文件里，对上游文件的改动列在各节的「对上游文件的钩子」里，汇总见 [fork 对上游文件的修改清单](github-issues-upstream-changes.md)（分发时附上）。见「迁移号段规则」「上游同步」。
@@ -19,6 +19,24 @@
 | `MULTICA_GITHUB_TOKEN` | classic PAT（`repo` 范围） | 未设置时功能整体关闭，不报错 |
 | `MULTICA_GITHUB_TOKEN_EXPIRES_AT` | `YYYY-MM-DD` 或 `never` | 令牌在 GitHub 上登记的到期日；缺失或格式不对时功能关闭 |
 | `MULTICA_GITHUB_SYNC_ACCOUNT` | 可选：`member:<user-uuid>` 或 `agent:<agent-uuid>` | 导入的 GitHub issue 记在谁名下，见「外部作者」。不设时用各工作区最早的 owner；格式不对时功能关闭 |
+| `MULTICA_GITHUB_POLL_ENABLED` | `true` 才开启，**默认关闭** | 定时轮询（含每日对账与 PR 轮询）。关闭时不注册轮询任务，见「轮询」 |
+| `MULTICA_GITHUB_REFRESH_ON_VIEW` | `true` 才开启，**默认关闭** | 打开 issue 时的后台刷新。关闭时读取不发 GitHub 请求，见「按需刷新」 |
+| `MULTICA_GITHUB_SYNC_MIN_REMAINING` | 非负整数，默认 `1000` | 手动同步的额度守卫：GitHub 报告的本小时剩余请求数低于它时拒绝同步，见「手动同步」；格式不对时功能关闭 |
+
+部署示例（服务端环境变量；令牌由 Owner 放进 Secret，不写进任何文件）：
+
+```bash
+MULTICA_GITHUB_ISSUES_ENABLED=true
+MULTICA_GITHUB_TOKEN=<classic PAT，repo 范围>
+MULTICA_GITHUB_TOKEN_EXPIRES_AT=2027-03-01
+# 默认手动同步：下面两个不设即关闭，GitHub 只在 multica issue sync 时读取
+# MULTICA_GITHUB_POLL_ENABLED=true
+# MULTICA_GITHUB_REFRESH_ON_VIEW=true
+# 手动同步的额度守卫，默认 1000
+# MULTICA_GITHUB_SYNC_MIN_REMAINING=1000
+```
+
+**升级注意：** 之前部署的实例轮询与按需刷新一直是开着的（没有开关）。升级到带开关的版本后，不设这两个变量就会**自动关闭**，这是期望的行为；要保留旧行为就显式设为 `true`。
 
 - 三个条件同时满足才开启。不满足时服务照常启动，只打一行 `github issues disabled (<原因>)`。原因只写变量名，不回显变量值。
 - 关闭时服务行为与上游一致：`githubissues.New` 返回 nil，不发任何 GitHub 请求，不注册路由，不注册调度任务。对上游文件的钩子见下面「对上游文件的钩子」。
@@ -232,7 +250,95 @@ issue 描述的前缀是 `由 @octocat 在 GitHub 创建（外部、不可信：
 | `server/internal/handler/githubissues_hook.go` | 新文件：只读检查 |
 | `server/pkg/db/queries/githubissues.sql` | 新查询：按 GitHub 评论 id 加锁、删除外部评论产生的 wakeup 回执、默认同步账号 |
 
+## 手动同步
+
+默认的读取方式（#63）：要最新内容时主动同步，GitHub 不会自己进来。代码在 `sync.go`、`quota.go`，写库沿用轮询的 `syncIssue`、`syncComment`、`reconcileIssue` 与 PR 时间线扫描，所有请求经 `RepoClient`。
+
+**为什么：** 定时轮询每 60 秒、每个被跟踪的仓库 2 个列表请求、每个开着的已跟踪 issue 1 个时间线请求，请求量随已跟踪 issue 数线性增长（`120 × 仓库数 + 60 × 开着的已跟踪 issue 数` 每小时，见 M-54 的调研 #60），实测每小时约 4000 个；令牌与智能体的 `gh` 共用同一个用户每小时 5000 个的额度，多次逼近上限。
+
+### 用法
+
+```bash
+multica issue sync owner/repo#12              # 同步一个；也接受 MUL-123 这种 key 或 UUID
+multica issue sync --project <项目 id>         # 同步项目里全部已跟踪的 GitHub issue，串行
+multica issue sync --project <项目 id> --open-only   # 只同步 GitHub 上开着的
+```
+
+都支持 `--output json`（默认）和 `--output table`。
+
+**什么时候同步：**
+
+- 开始处理一个 GitHub 托管的任务前（读 issue、评论之前），看别人在 GitHub 上新写的评论、改的标题与状态；
+- 要做决定、发结论、改状态前，确认没有漏掉 GitHub 上的新进展；
+- 等别人在 GitHub 上回复时，隔一段时间同步一次，而不是反复打开 issue（打开不会再触发刷新）；
+- 需要整体对齐一个项目时用 `--project`，平时只同步手上的那个 issue。
+
+从 Multica 写入（评论、改标题、改状态）不需要同步：双写先写 GitHub 再落库，本地已经是最新的。
+
+### 接口
+
+- `POST /api/issues/{id}/github-sync`，`{id}` 是 UUID、`MUL-123` 这类 key 或 `owner/repo#N`（URL 编码）。工作区成员可用。功能关闭时不注册这个路由，响应与 `/api/issues/{id}/` 下其他不存在的路径相同。
+- **同步执行**，在请求里读完再返回：issue 本身（标题、正文、状态、标签，状态按「状态映射」落到工作流）、**全部**评论（每页 100 条，按 GitHub 评论 id 去重）、这个 issue 还没落定的双写意图（与轮询里的协调器同一套规则，见「自愈与认领」）、时间线里关联的 PR（与「PR 轮询与关联」同一规则：只镜像关闭已跟踪 issue 的）。
+- 成功 200：
+
+  ```json
+  {"issue_id": "…", "identifier": "owner/repo#12", "issue_updated": true,
+   "new_comments": 1, "comments_updated": 0, "pulls_updated": 0,
+   "requests_used": 3, "rate_limit": {"limit": 5000, "remaining": 4210, "reset_at": "…"}}
+  ```
+
+  `gone` 为 `deleted` 或 `transferred` 时，GitHub 上已经没有这个 issue（之后不再同步，不再发请求）。`rate_limit` 只有 GitHub 在本小时窗口里报告过额度时才有。
+- 不受按需刷新的「15 秒闸门」限制，但受额度守卫约束。幂等：连续同步、或从 Multica 写入后再同步，都不产生重复评论或重复 issue（测试见 `sync_test.go`）。
+- `GET /api/projects/{id}/github-issues[?open_only=true]`：列出项目里已跟踪的 GitHub issue（按仓库、编号排序，不含对账标记为已删除、已转出的），不发 GitHub 请求，供批量同步用。
+
+| 情况 | 状态码 | `code` |
+|---|---|---|
+| 额度低于守卫 | 429，带 `Retry-After` | `github_quota_low`（另有 `remaining`、`threshold`、`reset_at`、`retry_after_seconds`） |
+| GitHub 限流，或限流暂停中 | 503，带 `Retry-After` | `github_rate_limited` |
+| 本地 issue | 422 | `github_issue_local` |
+| 仓库已不在白名单 | 403 | `github_repo_not_registered` |
+| 仓库登记了两个名字 / 名字现在指向别的仓库 | 409 | `github_repo_ambiguous` / `github_repo_changed` |
+| 令牌不可用 | 503 | `github_token_unusable` |
+| 评论超过 1000 页没读完 | 502 | `github_sync_incomplete` |
+| 其他 GitHub 错误 | 502 | `github_sync_failed` |
+
+出错或中途被守卫拦下时，响应也带已完成的进度：`issue_id`、`issue_updated`、`new_comments`、`comments_updated`、`pulls_updated`、`requests_used`。已经落库的部分保留，再同步一次接着读。
+
+### 删除与转移
+
+- 404、410：先确认仓库本身还能读（再发 1 个 `GET /repositories/{id}`），能读才把 issue 标记为已删除；仓库也读不到（例如令牌失去了权限）时只报错，不标记。
+- 301：按「每日对账」的规则跟随转移，转到登记过的仓库就重新挂上并接着同步评论，否则标记为已转出。
+
+### 额度守卫
+
+- 每个 GitHub 响应的 `X-RateLimit-Remaining`、`X-RateLimit-Reset` 都记下来（进程内存，按副本各自记）。额度属于令牌的主人，与智能体的 `gh` 等共用，所以看 GitHub 报告的值，不自己计数。
+- 手动同步发请求前检查：剩余低于 `MULTICA_GITHUB_SYNC_MIN_REMAINING`（默认 1000）且还没到重置时间时拒绝，返回 `github_quota_low` 与到重置的等待时间，**一个请求都不发**。重置时间过了就放行。限流暂停（GitHub 给的等待）期间同样拒绝（`github_rate_limited`）。
+- 一次同步里的**每个读请求**发出前都按最近一个响应报告的额度再判断一次（不只在开始时）：开始时额度够、但第一个响应报告已低于守卫（例如同账号的其他调用用掉了）时，同步在下一个读请求前停下，不再读评论页、时间线和 PR。已落库的部分保留，响应照样是 429 `github_quota_low`，并带上已完成的进度（见下）。
+- 批量同步（`--project`）逐个调用单个同步，遇到 `github_quota_low`、`github_rate_limited`、`github_token_unusable` 立即停下，输出已完成的进度：`total`、`synced`、`changed`、`failed`、`not_attempted`、`requests_used`、`stopped`（含 `retry_after_seconds` 和停在哪个 issue），命令以非零退出。单个 issue 自己的错误记为 `failed`，不影响后面的。
+- 写操作（双写）**不受**守卫限制：写入等额度会让 GitHub 与 Multica 不一致。额度低于守卫时发写请求会记一条告警日志 `github quota low; write sent anyway`。
+
+### 请求量估算
+
+| 操作 | 请求数 |
+|---|---|
+| 同步一个 issue | 1（issue）+ 每 100 条评论 1 + 每 100 条时间线事件 1 + 每个有变化的关联 PR 1。没有 PR 镜像时不读时间线。常见约 3 个 |
+| 有待落定写入时 | 每个结果未知的新建再加最多 3 页列表请求，改动加 1 个 |
+| GitHub 上已删除 | 再加 1 个确认仓库的请求；之后 0 |
+| 批量同步 N 个 | 约 3 × N；N = 50 时约 150 个，额度 5000 的 3% |
+| 开关默认值下空闲 | 0（只剩每天 1 次的令牌校验 `GET /user`） |
+
+### 对上游文件的钩子（本节）
+
+| 文件 | 改动 |
+|---|---|
+| `server/cmd/server/router.go` | 功能开启时注册 `POST /api/issues/{id}/github-sync` 与 `GET /api/projects/{id}/github-issues` |
+| `server/internal/handler/githubissues_sync.go` | 新文件：接口与错误码 |
+| `server/cmd/multica/cmd_issue_sync.go` | 新文件：`multica issue sync`，在自己的 `init` 里挂到 `issue` 命令下 |
+| `server/pkg/db/queries/githubissues.sql` | 新查询 `ListProjectGitHubIssues`（只读 `issue_external`、`issue`） |
+
 ## 轮询
+
+**默认关闭。** 只有 `MULTICA_GITHUB_POLL_ENABLED=true` 时 `StartPolling` 才注册轮询任务；关闭时只打一行 `github issues poll off`，不注册任务，一个周期内没有任何 GitHub 请求，每日对账与 PR 轮询（都在轮询周期里）也不跑，由手动同步代替。打开时行为与下文一致（含 #57 的「只轮询被跟踪的仓库」）。
 
 把**已跟踪的** GitHub issue 与其评论的变化拉进 Multica。代码在 `poll.go`、`poll_issues.go`、`poll_comments.go`，所有请求经 `RepoClient`。
 
@@ -340,11 +446,13 @@ GitHub 上的 issue 只有被明确要求时才进入 Multica（#50）。代码�
 
 ## 按需刷新
 
+**默认关闭。** 只有 `MULTICA_GITHUB_REFRESH_ON_VIEW=true` 时打开 issue 才触发刷新；关闭时读取不发 GitHub 请求，要最新内容用「手动同步」。打开时行为与下文一致。
+
 打开 github issue 的详情、评论列表或时间线时，后台拉取这个 issue 和它的评论，不等结果就返回已存的数据；拉到的变化经轮询同样的 `issue:updated`、`comment:created` / `comment:updated` 事件推给客户端。代码在 `refresh.go`，写库沿用轮询的 `syncIssue` 与 `syncComment`，所有请求经 `RepoClient`。
 
 - **节流：** 每个 issue 15 秒内最多刷新一次；一次刷新还没结束时，同一 issue 的再次打开不发请求（进程内存表加在途标记，相当于 singleflight）。表只保留最近 15 秒内打开过的 issue。多副本时各副本各自节流。
 - **请求：** `GET /repositories/{id}/issues/{N}`，再 `GET /repositories/{id}/issues/{N}/comments?per_page=100&page=…`，最多 10 页，超出的留给轮询。一次刷新最长 30 秒。
-- **不发请求的情况：** 功能关闭；令牌不是 `ok`；轮询因限流暂停中；本地 issue（没有 `issue_external`，查库后直接结束）；仓库已不在白名单或名字现在指向另一个仓库 id。
+- **不发请求的情况：** 功能关闭；`MULTICA_GITHUB_REFRESH_ON_VIEW` 不是 `true`；令牌不是 `ok`；轮询因限流暂停中；本地 issue（没有 `issue_external`，查库后直接结束）；仓库已不在白名单或名字现在指向另一个仓库 id。
 - **失败：** 只记一行警告，issue 保持已存的数据；限流时按 GitHub 给的等待时长暂停轮询与按需刷新（共用同一个暂停）。删除（404/410）、转移（301）的 issue 也只记日志，留给「每日对账」处理；对账标记过的 issue 打开时不再发请求。
 - **乱序：** 与轮询相同，旧快照不回滚，评论按 `(workspace, 评论 id)` 去重，与轮询同时写同一 issue 由 advisory lock 串行。
 

@@ -2198,6 +2198,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/attachments", h.ListAttachments)
 					r.Get("/children", h.ListChildIssues)
 					r.Get("/duplicates", h.ListIssueDuplicates)
+					// Modified by the mouse9527/multica fork: sync a GitHub issue now.
+					if opts.GitHubIssues != nil {
+						r.Post("/github-sync", h.SyncGitHubIssue)
+					}
 					r.Get("/labels", h.ListLabelsForIssue)
 					r.Post("/labels", h.AttachLabel)
 					r.Delete("/labels/{labelId}", h.DetachLabel)
@@ -2296,6 +2300,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					if opts.GitHubIssues != nil {
 						r.Get("/github-settings", h.GetProjectGitHubSettings)
 						r.Put("/github-settings", h.SetProjectGitHubSettings)
+						r.Get("/github-issues", h.ListProjectGitHubIssues)
 					}
 				})
 			})

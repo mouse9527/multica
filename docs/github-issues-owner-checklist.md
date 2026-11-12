@@ -11,6 +11,7 @@
   - `MULTICA_GITHUB_ISSUES_ENABLED=true`
   - `MULTICA_GITHUB_TOKEN=<classic PAT，repo 范围>`
   - `MULTICA_GITHUB_TOKEN_EXPIRES_AT=<YYYY-MM-DD 或 never>`
+  - 可选：`MULTICA_GITHUB_POLL_ENABLED=true`、`MULTICA_GITHUB_REFRESH_ON_VIEW=true`（默认都关闭，GitHub 只在手动同步时读取；B 节里依赖轮询或打开即刷新的步骤，关闭时改用 `multica issue sync`）
 - **命令行变量**（只在自己的终端里，不要贴进任何评论或日志）：
 
   ```bash
@@ -212,6 +213,15 @@ WHERE issue_id = '<issue 的 UUID>';
    - 期望：日志有一行 `github issues disabled (...)`；`token-status`、`/api/issues/import` 返回 404；导入过的 issue 标识显示为 `PREFIX-N`；新建对话框没有仓库下拉；没有发往 GitHub 的请求。
 2. 重新打开开关并重启：标识恢复成 `OWNER/REPO-A#1`，轮询接着之前的游标继续。
 
+### B9 默认手动同步（#63）
+
+开关取默认值（不设 `MULTICA_GITHUB_POLL_ENABLED`、`MULTICA_GITHUB_REFRESH_ON_VIEW`）重启。
+
+1. 日志有一行 `github issues poll off`。记下 `gh_api https://api.github.com/rate_limit | sed -n '/^{/,$p' | jq .resources.core.remaining`，什么都不做等 5 分钟（期间也打开几次已导入的 issue 页），再看一次。期望：两次只差你自己的 `rate_limit` 查询之外的消耗（服务端不发请求；`rate_limit` 接口本身不计入额度）。
+2. 用另一个 GitHub 账号在已导入的 `#1` 下评论，再把 `#1` 关闭。Multica 里不会自己出现。执行 `multica issue sync OWNER/REPO-A#1`。期望：返回 `new_comments: 1`、`issue_updated: true`、`requests_used` 约 2–3，`rate_limit.remaining` 与 `gh_api .../rate_limit` 报的接近；issue 页出现这条评论、状态跟着变。再执行一次：`new_comments: 0`，没有重复评论。
+3. `multica issue sync --project <项目 id> --output table`。期望：逐个列出项目里的 GitHub issue，最后一行汇总同步了几个、有变化几个、用了多少请求。
+4. 额度守卫：用 `MULTICA_GITHUB_SYNC_MIN_REMAINING=5001` 重启（高于任何剩余额度），再同步一次。期望：命令失败，错误是 429 `github_quota_low`，带 `retry_after_seconds`；`--project` 时输出 `stopped` 与 `not_attempted`，不发同步请求。测完去掉这个变量。
+
 ## 记录表
 
 | 项 | 结果 | 与期望一致 | 备注 |
@@ -226,3 +236,4 @@ WHERE issue_id = '<issue 的 UUID>';
 | A8 标记原样保留 / 能否搜到 | | | |
 | A9 `pulls` 的 `since`、CI 读取、跨仓库时间线 | | | |
 | B1–B8 | | | |
+| B9 手动同步与额度守卫 | | | |

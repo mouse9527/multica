@@ -23,7 +23,7 @@
 | `server/cmd/multica/cmd_issue.go` | M-22、M-28 | `--fields` 加 `provider`；`issue create` 的 `--repo`、`--provider` 与 422 改写 | 有 |
 | `server/cmd/server/activity_listeners.go` | M-22 | 活动记录里的 issue 标识 | 有 |
 | `server/cmd/server/main.go` | M-19、M-22、M-23、M-24 | 读配置建 `githubissues.Service`、令牌校验与到期提醒、标识开关、启动轮询 | 有 |
-| `server/cmd/server/router.go` | M-18、M-19、M-23、M-26、M-27、M-28、M-29、M-30、M-46 | 功能开启时注册路由并把 `Service` 接到 handler 的各个钩子字段 | 有 |
+| `server/cmd/server/router.go` | M-18、M-19、M-23、M-26、M-27、M-28、M-29、M-30、M-46、M-56 | 功能开启时注册路由并把 `Service` 接到 handler 的各个钩子字段 | 有 |
 | `server/internal/cli/update.go` | M-58 | Release 仓库可配置、默认 fork；替换的可执行文件路径经变量解析（测试用） | 有 |
 | `server/internal/daemon/auto_update.go` | M-58 | 版本判断接受 `-mouse.N`（两行） | 有 |
 | `server/internal/daemon/daemon.go` | M-58 | `runUpdate` 前的 Homebrew 检查 | 有 |
