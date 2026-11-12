@@ -58,6 +58,16 @@ func issueKeyTestNumber(t *testing.T, issueID string) int {
 	return n
 }
 
+// wantGitHubField checks the github field a GitHub-backed issue carries beside
+// its workspace identifier.
+func wantGitHubField(t *testing.T, got *IssueGitHubResponse, repo string, number int32) {
+	t.Helper()
+	want := "https://github.com/" + repo + "/issues/" + strconv.Itoa(int(number))
+	if got == nil || got.Repo != repo || got.Number != number || got.URL != want {
+		t.Fatalf("github field = %+v, want %s#%d at %s", got, repo, number, want)
+	}
+}
+
 func getIssueForKeyTest(t *testing.T, h *Handler, ref string) IssueResponse {
 	t.Helper()
 	var resp IssueResponse
@@ -72,8 +82,8 @@ func TestIssueKey_LocalIssueUnchanged(t *testing.T) {
 	want := issueKeyTestPrefix + "-" + strconv.Itoa(issueKeyTestNumber(t, issueID))
 
 	got := getIssueForKeyTest(t, testHandler, issueID)
-	if got.Identifier != want || got.Provider != "local" {
-		t.Fatalf("local issue: identifier=%q provider=%q, want %q local", got.Identifier, got.Provider, want)
+	if got.Identifier != want || got.Provider != "local" || got.GitHub != nil {
+		t.Fatalf("local issue: identifier=%q provider=%q github=%+v, want %q local and no github", got.Identifier, got.Provider, got.GitHub, want)
 	}
 	// The local key still resolves.
 	if byKey := getIssueForKeyTest(t, testHandler, want); byKey.ID != issueID {
@@ -89,15 +99,16 @@ func TestIssueKey_GitHubIssueDetailAndResolve(t *testing.T) {
 	localKey := issueKeyTestPrefix + "-" + strconv.Itoa(issueKeyTestNumber(t, issueID))
 
 	got := getIssueForKeyTest(t, testHandler, issueID)
-	if got.Identifier != "Octo-Org/hello.world#7" || got.Provider != "github" {
-		t.Fatalf("github issue: identifier=%q provider=%q, want Octo-Org/hello.world#7 github", got.Identifier, got.Provider)
+	if got.Identifier != localKey || got.Provider != "github" {
+		t.Fatalf("github issue: identifier=%q provider=%q, want %s github", got.Identifier, got.Provider, localKey)
 	}
+	wantGitHubField(t, got.GitHub, "Octo-Org/hello.world", 7)
 
 	for _, ref := range []string{
 		"Octo-Org/hello.world#7",
 		"octo-org/HELLO.world#7", // GitHub names are case-insensitive
 		url.PathEscape("Octo-Org/hello.world#7"),
-		localKey, // the workspace key keeps working
+		localKey, // the identifier itself
 	} {
 		if byKey := getIssueForKeyTest(t, testHandler, ref); byKey.ID != issueID {
 			t.Fatalf("GET %q resolved to %s, want %s", ref, byKey.ID, issueID)
@@ -214,16 +225,18 @@ func TestIssueKey_ListReadsExternalsOncePerPage(t *testing.T) {
 	for _, issue := range got {
 		byID[issue.ID] = issue
 	}
-	want := map[string][2]string{
-		local: {issueKeyTestPrefix + "-" + strconv.Itoa(issueKeyTestNumber(t, local)), "local"},
-		gh1:   {"octo/list#11", "github"},
-		gh2:   {"octo/list#12", "github"},
-	}
-	for id, w := range want {
-		if byID[id].Identifier != w[0] || byID[id].Provider != w[1] {
-			t.Errorf("issue %s: identifier=%q provider=%q, want %q %q", id, byID[id].Identifier, byID[id].Provider, w[0], w[1])
+	want := map[string]string{local: "local", gh1: "github", gh2: "github"}
+	for id, provider := range want {
+		key := issueKeyTestPrefix + "-" + strconv.Itoa(issueKeyTestNumber(t, id))
+		if byID[id].Identifier != key || byID[id].Provider != provider {
+			t.Errorf("issue %s: identifier=%q provider=%q, want %q %q", id, byID[id].Identifier, byID[id].Provider, key, provider)
 		}
 	}
+	if byID[local].GitHub != nil {
+		t.Errorf("local issue carries github field %+v", byID[local].GitHub)
+	}
+	wantGitHubField(t, byID[gh1].GitHub, "octo/list", 11)
+	wantGitHubField(t, byID[gh2].GitHub, "octo/list", 12)
 }
 
 func TestIssueKey_ChildrenAndDuplicateOf(t *testing.T) {
@@ -238,16 +251,19 @@ func TestIssueKey_ChildrenAndDuplicateOf(t *testing.T) {
 	}
 	testutil.Call(t, testHandler.ListChildIssues, withURLParam(newRequest(http.MethodGet, "/api/issues/"+parent+"/children", nil), "id", parent)).
 		Want(http.StatusOK).JSON(&children)
-	if len(children.Issues) != 1 || children.Issues[0].Identifier != "octo/kids#5" || children.Issues[0].Provider != "github" {
+	childKey := issueKeyTestPrefix + "-" + strconv.Itoa(issueKeyTestNumber(t, child))
+	if len(children.Issues) != 1 || children.Issues[0].Identifier != childKey || children.Issues[0].Provider != "github" {
 		t.Fatalf("children: %+v", children.Issues)
 	}
+	wantGitHubField(t, children.Issues[0].GitHub, "octo/kids", 5)
 
 	original := dbfx.Issue(t, "original")
 	linkGitHubIssue(t, original, "octo/dup", 9)
 	duplicate := dbfx.Issue(t, "duplicate", testutil.Cols{"status": "cancelled", "duplicate_of_issue_id": original})
+	originalKey := issueKeyTestPrefix + "-" + strconv.Itoa(issueKeyTestNumber(t, original))
 	got := getIssueForKeyTest(t, testHandler, duplicate)
-	if got.Provider != "local" || got.DuplicateOf == nil || got.DuplicateOf.Identifier != "octo/dup#9" {
-		t.Fatalf("duplicate: provider=%q duplicate_of=%+v, want local with octo/dup#9", got.Provider, got.DuplicateOf)
+	if got.Provider != "local" || got.DuplicateOf == nil || got.DuplicateOf.Identifier != originalKey {
+		t.Fatalf("duplicate: provider=%q duplicate_of=%+v, want local with %s", got.Provider, got.DuplicateOf, originalKey)
 	}
 }
 
@@ -261,16 +277,21 @@ func TestIssueKey_IssueToMapResolved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load issue: %v", err)
 	}
+	localKey := issueKeyTestPrefix + "-" + strconv.Itoa(issueKeyTestNumber(t, issueID))
 	m := service.IssueToMapResolved(context.Background(), testHandler.Queries, issue, issueKeyTestPrefix)
-	if m["identifier"] != "octo/events#21" || m["provider"] != "github" {
-		t.Fatalf("IssueToMapResolved: identifier=%v provider=%v", m["identifier"], m["provider"])
+	if m["identifier"] != localKey || m["provider"] != "github" {
+		t.Fatalf("IssueToMapResolved: identifier=%v provider=%v, want %s github", m["identifier"], m["provider"], localKey)
 	}
-	if key := testHandler.issueKey(context.Background(), issue); key != "octo/events#21" {
-		t.Fatalf("issueKey: %q", key)
+	gh, _ := m["github"].(map[string]any)
+	if gh["repo"] != "octo/events" || gh["number"] != int32(21) || gh["url"] != "https://github.com/octo/events/issues/21" {
+		t.Fatalf("IssueToMapResolved github = %v", m["github"])
+	}
+	if key := testHandler.issueKey(context.Background(), issue); key != localKey {
+		t.Fatalf("issueKey: %q, want %s", key, localKey)
 	}
 	// The workflow brief tells the agent which key to pass back to the CLI.
-	if in := testHandler.workflowBriefInput(context.Background(), issue, issueworkflow.Definition{}, db.Project{}); in.IssueIdentifier != "octo/events#21" {
-		t.Fatalf("workflow brief identifier: %q", in.IssueIdentifier)
+	if in := testHandler.workflowBriefInput(context.Background(), issue, issueworkflow.Definition{}, db.Project{}); in.IssueIdentifier != localKey {
+		t.Fatalf("workflow brief identifier: %q, want %s", in.IssueIdentifier, localKey)
 	}
 }
 
@@ -288,7 +309,7 @@ func TestIssueKey_DeleteRemovesExternalRow(t *testing.T) {
 // With the feature switch off, rows written while it was on are ignored:
 // every surface renders the issue as local, no issue_external row is read,
 // and the GitHub key does not resolve. The rows stay, so turning the switch
-// back on restores the GitHub identifier.
+// back on restores the GitHub fields.
 func TestIssueKey_SwitchOffRendersExistingGitHubIssuesAsLocal(t *testing.T) {
 	setWorkspaceIssuePrefixForTest(t, issueKeyTestPrefix)
 	setIssueKeysEnabledForTest(t, false)
@@ -302,8 +323,8 @@ func TestIssueKey_SwitchOffRendersExistingGitHubIssuesAsLocal(t *testing.T) {
 	h.Queries = db.New(counter)
 
 	got := getIssueForKeyTest(t, &h, issueID)
-	if got.Identifier != localKey || got.Provider != "local" {
-		t.Fatalf("detail with switch off: identifier=%q provider=%q, want %q local", got.Identifier, got.Provider, localKey)
+	if got.Identifier != localKey || got.Provider != "local" || got.GitHub != nil {
+		t.Fatalf("detail with switch off: identifier=%q provider=%q github=%+v, want %q local", got.Identifier, got.Provider, got.GitHub, localKey)
 	}
 	if byKey := getIssueForKeyTest(t, &h, localKey); byKey.ID != issueID {
 		t.Fatalf("GET %s resolved to %s, want %s", localKey, byKey.ID, issueID)
@@ -326,7 +347,7 @@ func TestIssueKey_SwitchOffRendersExistingGitHubIssuesAsLocal(t *testing.T) {
 		t.Fatalf("load issue: %v", err)
 	}
 	m := service.IssueToMapResolved(context.Background(), h.Queries, issue, issueKeyTestPrefix)
-	if m["identifier"] != localKey || m["provider"] != "local" {
+	if _, ok := m["github"]; m["identifier"] != localKey || m["provider"] != "local" || ok {
 		t.Fatalf("event with switch off: identifier=%v provider=%v", m["identifier"], m["provider"])
 	}
 	if in := h.workflowBriefInput(context.Background(), issue, issueworkflow.Definition{}, db.Project{}); in.IssueIdentifier != localKey {
@@ -340,7 +361,9 @@ func TestIssueKey_SwitchOffRendersExistingGitHubIssuesAsLocal(t *testing.T) {
 		t.Fatalf("issue_external rows: %d, want the row kept", n)
 	}
 	setIssueKeysEnabledForTest(t, true)
-	if got := getIssueForKeyTest(t, &h, issueID); got.Identifier != "octo/off#4" || got.Provider != "github" {
+	got = getIssueForKeyTest(t, &h, issueID)
+	if got.Identifier != localKey || got.Provider != "github" {
 		t.Fatalf("after switching back on: identifier=%q provider=%q", got.Identifier, got.Provider)
 	}
+	wantGitHubField(t, got.GitHub, "octo/off", 4)
 }

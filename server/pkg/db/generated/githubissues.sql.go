@@ -412,7 +412,7 @@ func (q *Queries) ListGitHubTokenExpiryRecipients(ctx context.Context) ([]ListGi
 }
 
 const listProjectGitHubIssues = `-- name: ListProjectGitHubIssues :many
-SELECT x.issue_id, x.external_repo, x.external_number, x.state
+SELECT x.issue_id, i.number, x.external_repo, x.external_number, x.state
 FROM issue_external x
 JOIN issue i ON i.id = x.issue_id AND i.workspace_id = x.workspace_id
 WHERE x.workspace_id = $1
@@ -431,6 +431,7 @@ type ListProjectGitHubIssuesParams struct {
 
 type ListProjectGitHubIssuesRow struct {
 	IssueID        pgtype.UUID `json:"issue_id"`
+	Number         int32       `json:"number"`
 	ExternalRepo   string      `json:"external_repo"`
 	ExternalNumber int32       `json:"external_number"`
 	State          string      `json:"state"`
@@ -451,6 +452,7 @@ func (q *Queries) ListProjectGitHubIssues(ctx context.Context, arg ListProjectGi
 		var i ListProjectGitHubIssuesRow
 		if err := rows.Scan(
 			&i.IssueID,
+			&i.Number,
 			&i.ExternalRepo,
 			&i.ExternalNumber,
 			&i.State,

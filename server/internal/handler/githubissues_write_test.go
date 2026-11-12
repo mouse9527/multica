@@ -288,7 +288,8 @@ func TestGitHubIssueWritesGoThroughGitHub(t *testing.T) {
 	if requests, _ := fake.take(); len(requests) != 1 || requests[0] != "POST /repositories/4242/issues" {
 		t.Fatalf("create requests = %v", requests)
 	}
-	if issue["provider"] != "github" || !strings.HasPrefix(issue["identifier"].(string), "acme/widgets#") {
+	gh, _ := issue["github"].(map[string]any)
+	if issue["provider"] != "github" || strings.Contains(issue["identifier"].(string), "#") || gh["repo"] != "acme/widgets" {
 		t.Fatalf("created issue = %v", issue)
 	}
 	t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issue["id"]) })

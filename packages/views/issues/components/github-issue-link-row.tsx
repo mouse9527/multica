@@ -12,7 +12,7 @@ import { PropRow } from "../../common/prop-row";
 import { useT } from "../../i18n";
 
 /** Renders nothing for a local issue. */
-export function GitHubIssueLinkRow({ issue }: { issue: Pick<Issue, "identifier" | "provider"> }) {
+export function GitHubIssueLinkRow({ issue }: { issue: Pick<Issue, "provider" | "github"> }) {
   const { t } = useT("issues");
   const link = githubIssueLink(issue);
   if (!link) return null;

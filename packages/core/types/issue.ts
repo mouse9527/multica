@@ -249,7 +249,10 @@ export interface Issue {
   /** Present only on issue detail responses for issues created from a comment. */
   source_context?: IssueSourceContext;
   /** GitHub-native issues (mouse9527/multica fork): "github" when the issue is
-   *  backed by a GitHub issue and `identifier` is "owner/repo#N", else
-   *  "local". Servers without the feature omit it. */
+   *  backed by a GitHub issue, else "local". Servers without the feature omit
+   *  it. `identifier` is the workspace key either way. */
   provider?: "local" | "github" | (string & {});
+  /** GitHub-native issues (mouse9527/multica fork): the GitHub issue behind a
+   *  "github" issue; absent for a local one. */
+  github?: { repo: string; number: number; url: string } | null;
 }

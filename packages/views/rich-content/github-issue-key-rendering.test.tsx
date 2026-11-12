@@ -3,7 +3,9 @@
 //
 // The real preprocessing, RichLink dispatch and identifier lookup run; only the
 // API client and the chip are stubbed, so a chip here means the key went all
-// the way to a lookup that hit.
+// the way to a lookup that hit. The stub shows the label the chip falls back
+// to while loading; once loaded the real chip shows the issue's identifier,
+// which for a GitHub-backed issue is its workspace key (issue-chip-github.test).
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -68,8 +70,18 @@ import { RichContent } from "./rich-content";
 const TRACKED_ID = "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed";
 const LOCAL_ID = "8f14e45f-ceea-4d0e-a1a2-9b1c0d3e4f5a";
 
+// The server identifies a GitHub-backed issue by its workspace key and still
+// resolves its GitHub key.
+const TRACKED = {
+  id: TRACKED_ID,
+  identifier: "BIPO-12",
+  provider: "github",
+  github: { repo: "mouse9527/multica", number: 21, url: "https://github.com/mouse9527/multica/issues/21" },
+} as Issue;
+
 const ISSUES: Record<string, Issue> = {
-  "mouse9527/multica#21": { id: TRACKED_ID, identifier: "mouse9527/multica#21" } as Issue,
+  "mouse9527/multica#21": TRACKED,
+  "BIPO-12": TRACKED,
   "BIPO-46": { id: LOCAL_ID, identifier: "BIPO-46" } as Issue,
 };
 
@@ -99,6 +111,15 @@ describe("GitHub issue keys in readonly content", () => {
     expect(chip.textContent).toBe("mouse9527/multica#21");
     expect(chip.getAttribute("href")).toBe(`/acme/issues/${TRACKED_ID}`);
     expect(getIssue).toHaveBeenCalledWith("mouse9527/multica#21");
+  });
+
+  it("renders the workspace key of a GitHub-backed issue as a chip", async () => {
+    const { findByTestId } = renderContent("Blocked by BIPO-12.");
+
+    const chip = await findByTestId("issue-chip");
+    expect(chip.textContent).toBe("BIPO-12");
+    expect(chip.getAttribute("href")).toBe(`/acme/issues/${TRACKED_ID}`);
+    expect(getIssue).toHaveBeenCalledWith("BIPO-12");
   });
 
   it("leaves an untracked owner/repo#N as the plain text the author wrote", async () => {

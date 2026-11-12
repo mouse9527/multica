@@ -45,6 +45,9 @@ func TestGitHubRoundTrip(t *testing.T) {
 	if repo, number, ok := ParseGitHub(key); !ok || repo != "octo/hello" || number != 7 {
 		t.Fatalf("ParseGitHub(GitHub()) = %q, %d, %v", repo, number, ok)
 	}
+	if url := URL(db.IssueExternal{ExternalRepo: "octo/hello", ExternalNumber: 7}); url != "https://github.com/octo/hello/issues/7" {
+		t.Fatalf("URL() = %q", url)
+	}
 }
 
 type fakeQuerier struct {
@@ -92,17 +95,17 @@ func TestLoadAndKey(t *testing.T) {
 	if q.calls != 1 {
 		t.Fatalf("Load: %d queries, want 1", q.calls)
 	}
-	if got := externals.Key(local, "MUL-1"); got != "MUL-1" || externals.Provider(local) != ProviderLocal {
-		t.Fatalf("local: %q %q", got, externals.Provider(local))
+	if _, ok := externals[local]; ok || externals.Provider(local) != ProviderLocal {
+		t.Fatalf("local: %v %q", externals[local], externals.Provider(local))
 	}
-	if got := externals.Key(gh, "MUL-2"); got != "octo/hello#9" || externals.Provider(gh) != ProviderGitHub {
-		t.Fatalf("github: %q %q", got, externals.Provider(gh))
+	if ext := externals[gh]; ext.ExternalRepo != "octo/hello" || ext.ExternalNumber != 9 || externals.Provider(gh) != ProviderGitHub {
+		t.Fatalf("github: %+v %q", ext, externals.Provider(gh))
 	}
-	if got := LoadOne(context.Background(), q, ws, gh).Key(gh, "MUL-2"); got != "octo/hello#9" {
-		t.Fatalf("LoadOne github: %q", got)
+	if one := LoadOne(context.Background(), q, ws, gh); one[gh].ExternalNumber != 9 || one.Provider(gh) != ProviderGitHub {
+		t.Fatalf("LoadOne github: %+v", one)
 	}
-	if got := LoadOne(context.Background(), q, ws, local).Key(local, "MUL-1"); got != "MUL-1" {
-		t.Fatalf("LoadOne local: %q", got)
+	if one := LoadOne(context.Background(), q, ws, local); len(one) != 0 || one.Provider(local) != ProviderLocal {
+		t.Fatalf("LoadOne local: %+v", one)
 	}
 }
 
@@ -110,10 +113,10 @@ func TestLoadFailureRendersLocal(t *testing.T) {
 	enableForTest(t)
 	q := &fakeQuerier{err: errors.New("boom")}
 	externals := Load(context.Background(), q, uuid(1), []pgtype.UUID{uuid(2)})
-	if got := externals.Key(uuid(2), "MUL-2"); got != "MUL-2" {
-		t.Fatalf("Key after failed load = %q, want local", got)
+	if got := externals.Provider(uuid(2)); got != ProviderLocal {
+		t.Fatalf("Provider after failed load = %q, want local", got)
 	}
-	if got := LoadOne(context.Background(), q, uuid(1), uuid(2)).Key(uuid(2), "MUL-2"); got != "MUL-2" {
+	if got := LoadOne(context.Background(), q, uuid(1), uuid(2)).Provider(uuid(2)); got != ProviderLocal {
 		t.Fatalf("LoadOne after failure = %q, want local", got)
 	}
 }
@@ -122,7 +125,7 @@ func TestSwitchOffSkipsReads(t *testing.T) {
 	SetEnabled(false)
 	gh := uuid(3)
 	q := &fakeQuerier{rows: []db.IssueExternal{{IssueID: gh, Provider: ProviderGitHub, ExternalRepo: "octo/hello", ExternalNumber: 9}}}
-	if got := Load(context.Background(), q, uuid(1), []pgtype.UUID{gh}).Key(gh, "MUL-3"); got != "MUL-3" {
+	if got := Load(context.Background(), q, uuid(1), []pgtype.UUID{gh}).Provider(gh); got != ProviderLocal {
 		t.Fatalf("Load with switch off: %q, want local", got)
 	}
 	if got := LoadOne(context.Background(), q, uuid(1), gh).Provider(gh); got != ProviderLocal {

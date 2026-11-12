@@ -1175,11 +1175,17 @@ describe("IssueDetail (shared)", () => {
 
   // GitHub-native issues (mouse9527/multica fork)
   it("links a GitHub issue to GitHub in the sidebar and a local issue not at all", async () => {
-    mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, provider: "github", identifier: "acme/widgets#42" });
+    mockApiObj.getIssue.mockResolvedValue({
+      ...mockIssue,
+      provider: "github",
+      github: { repo: "acme/widgets", number: 42, url: "https://github.com/acme/widgets/issues/42" },
+    });
     const { unmount } = renderIssueDetail();
     const link = await screen.findByRole("link", { name: "acme/widgets#42" });
     expect(link).toHaveAttribute("href", "https://github.com/acme/widgets/issues/42");
     expect(link).toHaveAttribute("target", "_blank");
+    // The issue itself is still named by its workspace key.
+    expect(screen.getByText("TES-1 Implement authentication")).toBeInTheDocument();
     unmount();
 
     mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, provider: "local" });
