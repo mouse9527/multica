@@ -4,6 +4,7 @@ package migrations
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -91,5 +92,25 @@ func TestRouterEventKeyIsUniquePerAgent(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("%d rows, want one per agent", n)
+	}
+}
+
+// TestRouterTablesStayInvisibleToSqlc pins why 9004 wraps its DDL in a DO
+// block: sqlc reads the migrations directory as its schema, and a CREATE
+// TABLE it can see adds Router structs to the shared
+// pkg/db/generated/models.go. The Router package uses hand-written SQL only.
+func TestRouterTablesStayInvisibleToSqlc(t *testing.T) {
+	src := readMigrationFile(t, "9004_router_tables.up.sql")
+	begin := strings.Index(src, "DO $router$")
+	end := strings.LastIndex(src, "$router$;")
+	if begin < 0 || end < begin {
+		t.Fatal("9004 no longer runs its DDL inside the DO $router$ block")
+	}
+	outside := src[:begin] + src[end:]
+	if strings.Contains(strings.ToUpper(outside), "CREATE TABLE") {
+		t.Fatal("9004 has a CREATE TABLE outside the DO block; sqlc would generate models for it")
+	}
+	if got := strings.Count(src[begin:end], "CREATE TABLE IF NOT EXISTS router_"); got != len(routerTables) {
+		t.Fatalf("DO block creates %d Router tables, want %d", got, len(routerTables))
 	}
 }

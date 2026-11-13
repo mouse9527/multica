@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -27,6 +26,12 @@ const (
 	// slow capture slows the write that triggered it; past this budget the
 	// capture is dropped and reconcile picks the change up instead.
 	DefaultCaptureTimeout = 500 * time.Millisecond
+
+	// Reload backoff after a failed subscription reload: 1s, doubling, at
+	// most 30s, so a database outage costs one bounded query per interval
+	// instead of one per published event.
+	reloadBackoffBase = time.Second
+	reloadBackoffMax  = 30 * time.Second
 )
 
 // Capturer is the events.Bus listener that writes router_event rows.
@@ -36,10 +41,15 @@ type Capturer struct {
 	Timeout time.Duration
 	Logger  *slog.Logger
 
-	mu       sync.Mutex
-	loadedAt time.Time
-	gen      int64
-	byWS     map[string][]scopeSub
+	// snap is the cached subscription set. Publishers read it without
+	// locking; at most one publisher at a time reloads it (reloading), and
+	// every other publisher keeps using the old snapshot meanwhile.
+	snap      atomic.Pointer[subscriptionSnapshot]
+	reloading atomic.Bool
+	// reloadFailures and retryAt are touched only by the publisher holding
+	// reloading, whose CompareAndSwap orders them between holders.
+	reloadFailures int
+	retryAt        time.Time
 
 	// Failures counts captures that errored or timed out. Each one is a
 	// change reconcile is expected to add later as a capture_miss.
@@ -56,6 +66,19 @@ func (c *Capturer) Subscribe(bus *events.Bus) {
 	bus.Subscribe(protocol.EventIssueUpdated, c.Handle)
 	bus.Subscribe(protocol.EventCommentCreated, c.Handle)
 	bus.Subscribe(protocol.EventTaskFailed, c.Handle)
+}
+
+type subscriptionSnapshot struct {
+	byWS     map[string][]scopeSub
+	gen      int64
+	loadedAt time.Time
+}
+
+func (s *subscriptionSnapshot) forWorkspace(workspaceID string) []scopeSub {
+	if s == nil {
+		return nil
+	}
+	return s.byWS[workspaceID]
 }
 
 // trigger is what an event tells the listener: which issue, and the comment or
@@ -75,7 +98,11 @@ func (c *Capturer) Handle(e events.Event) {
 	if e.WorkspaceID == "" {
 		return
 	}
-	subs := c.subscriptions(e.WorkspaceID)
+	// One budget covers the cache reload and the capture, so the publisher
+	// never waits longer than Timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
+	defer cancel()
+	subs := c.subscriptions(ctx, e.WorkspaceID)
 	if len(subs) == 0 {
 		return
 	}
@@ -83,8 +110,6 @@ func (c *Capturer) Handle(e events.Event) {
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
-	defer cancel()
 	if err := c.capture(ctx, e.WorkspaceID, subs, t); err != nil {
 		n := c.Failures.Add(1)
 		c.Logger.Warn("router: capture failed; reconcile will add the event",
@@ -93,26 +118,38 @@ func (c *Capturer) Handle(e events.Event) {
 	}
 }
 
-// subscriptions returns the workspace's enabled subscriptions from the cache,
-// reloading every subscription in one query when the cache is stale or a
-// subscription changed in this process.
-func (c *Capturer) subscriptions(workspaceID string) []scopeSub {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// subscriptions returns the workspace's enabled subscriptions from the
+// cache. When the cache is stale, or a subscription changed in this process,
+// the first publisher to notice reloads every subscription in one query; any
+// publisher arriving during that reload uses the old snapshot (nothing, before
+// the first load) instead of waiting. A failed reload keeps the old snapshot
+// and is not retried until its backoff passes.
+func (c *Capturer) subscriptions(ctx context.Context, workspaceID string) []scopeSub {
+	snap := c.snap.Load()
 	gen := subscriptionGeneration.Load()
-	if c.byWS != nil && gen == c.gen && time.Since(c.loadedAt) < c.TTL {
-		return c.byWS[workspaceID]
+	if snap != nil && snap.gen == gen && time.Since(snap.loadedAt) < c.TTL {
+		return snap.forWorkspace(workspaceID)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
-	defer cancel()
+	if !c.reloading.CompareAndSwap(false, true) {
+		return snap.forWorkspace(workspaceID)
+	}
+	defer c.reloading.Store(false)
+	if time.Now().Before(c.retryAt) {
+		return snap.forWorkspace(workspaceID)
+	}
 	byWS, err := c.loadSubscriptions(ctx)
 	if err != nil {
-		// Keep serving the previous copy and try again on the next event.
-		c.Logger.Warn("router: reload subscriptions failed", "error", err)
-		return c.byWS[workspaceID]
+		c.reloadFailures++
+		backoff := reloadBackoffBase << min(c.reloadFailures-1, 5)
+		c.retryAt = time.Now().Add(min(backoff, reloadBackoffMax))
+		c.Logger.Warn("router: reload subscriptions failed; using the previous copy",
+			"retry_in", min(backoff, reloadBackoffMax), "error", err)
+		return snap.forWorkspace(workspaceID)
 	}
-	c.byWS, c.gen, c.loadedAt = byWS, gen, time.Now()
-	return c.byWS[workspaceID]
+	c.reloadFailures, c.retryAt = 0, time.Time{}
+	next := &subscriptionSnapshot{byWS: byWS, gen: gen, loadedAt: time.Now()}
+	c.snap.Store(next)
+	return next.forWorkspace(workspaceID)
 }
 
 func (c *Capturer) loadSubscriptions(ctx context.Context) (map[string][]scopeSub, error) {
