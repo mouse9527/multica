@@ -35,6 +35,10 @@ const (
 	// makes those endpoints answer 404, so clients stop syncing and search
 	// through the server again without a client release.
 	LocalSearchIndex = "local_search_index"
+	// RouterV1 gates the fork's Router capture (mouse9527/multica fork, M-85):
+	// router subscriptions and their API, the events.Bus listener and the
+	// reconcile job. Off by default; off means upstream behavior.
+	RouterV1 = "router_v1"
 	// agentBuilderCompat is no longer a release flag. Keep publishing the key
 	// as enabled so installed desktop clients that still gate the AI creation
 	// entry on this config decision receive the permanently enabled behavior.
@@ -79,6 +83,11 @@ func TriageV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 
 func LocalSearchIndexEnabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, LocalSearchIndex, true)
+}
+
+// RouterV1Enabled is added by the mouse9527/multica fork (M-85).
+func RouterV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
+	return flags.IsEnabled(ctx, RouterV1, false)
 }
 
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {

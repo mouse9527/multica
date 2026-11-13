@@ -1,0 +1,478 @@
+// Modified for the mouse9527/multica fork: Router MVP, slice S1 (M-85).
+
+package agentrouter
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/pkg/protocol"
+)
+
+const (
+	// DefaultCacheTTL is how long the listener trusts its copy of the enabled
+	// subscriptions before reloading them.
+	DefaultCacheTTL = 30 * time.Second
+	// DefaultCaptureTimeout bounds the listener's database work per event.
+	// The listener runs on the publisher's goroutine, usually a request, so a
+	// slow capture slows the write that triggered it; past this budget the
+	// capture is dropped and reconcile picks the change up instead.
+	DefaultCaptureTimeout = 500 * time.Millisecond
+)
+
+// Capturer is the events.Bus listener that writes router_event rows.
+type Capturer struct {
+	Store   *Store
+	TTL     time.Duration
+	Timeout time.Duration
+	Logger  *slog.Logger
+
+	mu       sync.Mutex
+	loadedAt time.Time
+	gen      int64
+	byWS     map[string][]scopeSub
+
+	// Failures counts captures that errored or timed out. Each one is a
+	// change reconcile is expected to add later as a capture_miss.
+	Failures atomic.Int64
+}
+
+func NewCapturer(store *Store) *Capturer {
+	return &Capturer{Store: store, TTL: DefaultCacheTTL, Timeout: DefaultCaptureTimeout, Logger: slog.Default()}
+}
+
+// Subscribe registers the listener for the event types S1 captures.
+func (c *Capturer) Subscribe(bus *events.Bus) {
+	bus.Subscribe(protocol.EventIssueCreated, c.Handle)
+	bus.Subscribe(protocol.EventIssueUpdated, c.Handle)
+	bus.Subscribe(protocol.EventCommentCreated, c.Handle)
+	bus.Subscribe(protocol.EventTaskFailed, c.Handle)
+}
+
+// trigger is what an event tells the listener: which issue, and the comment or
+// task behind it when there is one. Everything else is read from the database.
+type trigger struct {
+	eventType string
+	issueID   string
+	commentID string
+	taskID    string
+	actorType string
+	actorID   string
+}
+
+// Handle captures one event. It never panics into the publisher and never
+// returns an error: a failure is logged and counted, and reconcile repairs it.
+func (c *Capturer) Handle(e events.Event) {
+	if e.WorkspaceID == "" {
+		return
+	}
+	subs := c.subscriptions(e.WorkspaceID)
+	if len(subs) == 0 {
+		return
+	}
+	t, ok := parseTrigger(e)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
+	defer cancel()
+	if err := c.capture(ctx, e.WorkspaceID, subs, t); err != nil {
+		n := c.Failures.Add(1)
+		c.Logger.Warn("router: capture failed; reconcile will add the event",
+			"event_type", e.Type, "workspace_id", e.WorkspaceID, "issue_id", t.issueID,
+			"failures_total", n, "error", err)
+	}
+}
+
+// subscriptions returns the workspace's enabled subscriptions from the cache,
+// reloading every subscription in one query when the cache is stale or a
+// subscription changed in this process.
+func (c *Capturer) subscriptions(workspaceID string) []scopeSub {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	gen := subscriptionGeneration.Load()
+	if c.byWS != nil && gen == c.gen && time.Since(c.loadedAt) < c.TTL {
+		return c.byWS[workspaceID]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
+	defer cancel()
+	byWS, err := c.loadSubscriptions(ctx)
+	if err != nil {
+		// Keep serving the previous copy and try again on the next event.
+		c.Logger.Warn("router: reload subscriptions failed", "error", err)
+		return c.byWS[workspaceID]
+	}
+	c.byWS, c.gen, c.loadedAt = byWS, gen, time.Now()
+	return c.byWS[workspaceID]
+}
+
+func (c *Capturer) loadSubscriptions(ctx context.Context) (map[string][]scopeSub, error) {
+	rows, err := c.Store.DB.Query(ctx, `
+		SELECT id::text, workspace_id::text, agent_id::text, scope_type, scope_id::text, event_types, created_at
+		FROM router_subscription
+		WHERE enabled`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]scopeSub{}
+	for rows.Next() {
+		var s scopeSub
+		var ws string
+		if err := rows.Scan(&s.ID, &ws, &s.AgentID, &s.ScopeType, &s.ScopeID, &s.EventTypes, &s.CreatedAt); err != nil {
+			return nil, err
+		}
+		out[ws] = append(out[ws], s)
+	}
+	return out, rows.Err()
+}
+
+// parseTrigger pulls ids out of the event payload. Payloads arrive as typed
+// handler responses or as maps depending on the publisher, so they are read
+// through their JSON form, which both share.
+func parseTrigger(e events.Event) (trigger, bool) {
+	raw, err := json.Marshal(e.Payload)
+	if err != nil {
+		return trigger{}, false
+	}
+	t := trigger{eventType: e.Type}
+	if _, err := uuid.Parse(e.ActorID); err == nil && e.ActorType != "" {
+		t.actorType, t.actorID = e.ActorType, e.ActorID
+	}
+	switch e.Type {
+	case protocol.EventIssueCreated, protocol.EventIssueUpdated:
+		var p struct {
+			Issue struct {
+				ID string `json:"id"`
+			} `json:"issue"`
+		}
+		if json.Unmarshal(raw, &p) != nil {
+			return trigger{}, false
+		}
+		t.issueID = p.Issue.ID
+	case protocol.EventCommentCreated:
+		var p struct {
+			Comment struct {
+				ID string `json:"id"`
+			} `json:"comment"`
+		}
+		if json.Unmarshal(raw, &p) != nil || p.Comment.ID == "" {
+			return trigger{}, false
+		}
+		t.commentID = p.Comment.ID
+	case protocol.EventTaskFailed:
+		var p struct {
+			TaskID       string `json:"task_id"`
+			IssueID      string `json:"issue_id"`
+			RetryPending bool   `json:"retry_pending"`
+		}
+		// A failure with a retry queued is not the end of the run.
+		if json.Unmarshal(raw, &p) != nil || p.TaskID == "" || p.RetryPending {
+			return trigger{}, false
+		}
+		t.taskID, t.issueID = p.TaskID, p.IssueID
+	default:
+		return trigger{}, false
+	}
+	if t.issueID == "" && t.commentID == "" {
+		return trigger{}, false
+	}
+	return t, true
+}
+
+// issueRow is the issue state capture compares and records.
+type issueRow struct {
+	ID           string
+	ProjectID    *string
+	Status       string
+	AssigneeType *string
+	AssigneeID   *string
+	CreatorType  string
+	CreatorID    string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+func loadIssue(ctx context.Context, q Querier, workspaceID, issueID string) (issueRow, error) {
+	var r issueRow
+	err := q.QueryRow(ctx, `
+		SELECT id::text, project_id::text, status, assignee_type, assignee_id::text,
+		       creator_type, creator_id::text, created_at, updated_at
+		FROM issue WHERE id = $1::uuid AND workspace_id = $2::uuid`, issueID, workspaceID,
+	).Scan(&r.ID, &r.ProjectID, &r.Status, &r.AssigneeType, &r.AssigneeID,
+		&r.CreatorType, &r.CreatorID, &r.CreatedAt, &r.UpdatedAt)
+	return r, err
+}
+
+// ancestorChain returns the issue and its parents, nearest first.
+func ancestorChain(ctx context.Context, q Querier, issueID string) ([]string, error) {
+	rows, err := q.Query(ctx, `
+		WITH RECURSIVE up AS (
+		    SELECT id, parent_issue_id, 0 AS depth FROM issue WHERE id = $1::uuid
+		    UNION ALL
+		    SELECT p.id, p.parent_issue_id, u.depth + 1
+		    FROM up u JOIN issue p ON p.id = u.parent_issue_id
+		    WHERE u.depth < 32
+		)
+		SELECT id::text FROM up ORDER BY depth`, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var chain []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		chain = append(chain, id)
+	}
+	return chain, rows.Err()
+}
+
+// pendingEvent is a router_event row before insertion.
+type pendingEvent struct {
+	Key        string
+	Kind       string
+	IssueID    string
+	ActorType  *string
+	ActorID    *string
+	Payload    map[string]any
+	OccurredAt time.Time
+}
+
+func (c *Capturer) capture(ctx context.Context, workspaceID string, subs []scopeSub, t trigger) error {
+	q := c.Store.DB
+	var comment struct {
+		IssueID    string
+		AuthorType string
+		AuthorID   string
+		ParentID   *string
+		CreatedAt  time.Time
+	}
+	if t.commentID != "" {
+		err := q.QueryRow(ctx, `
+			SELECT issue_id::text, author_type, author_id::text, parent_id::text, created_at
+			FROM comment WHERE id = $1::uuid AND workspace_id = $2::uuid`, t.commentID, workspaceID,
+		).Scan(&comment.IssueID, &comment.AuthorType, &comment.AuthorID, &comment.ParentID, &comment.CreatedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		t.issueID = comment.IssueID
+	}
+	var task struct {
+		AgentID       string
+		FailureReason *string
+		CompletedAt   *time.Time
+	}
+	if t.taskID != "" {
+		err := q.QueryRow(ctx, `
+			SELECT agent_id::text, failure_reason, completed_at
+			FROM agent_task_queue WHERE id = $1::uuid`, t.taskID,
+		).Scan(&task.AgentID, &task.FailureReason, &task.CompletedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	issue, err := loadIssue(ctx, q, workspaceID, t.issueID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	chain, err := ancestorChain(ctx, q, issue.ID)
+	if err != nil {
+		return err
+	}
+	project := ""
+	if issue.ProjectID != nil {
+		project = *issue.ProjectID
+	}
+	matched := pickNarrowest(subs, chain, project)
+	if len(matched) == 0 {
+		return nil
+	}
+
+	tx, err := c.Store.Tx.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	for _, sub := range matched {
+		var evs []pendingEvent
+		switch {
+		case t.commentID != "":
+			at, aid := comment.AuthorType, comment.AuthorID
+			payload := map[string]any{"comment_id": t.commentID}
+			if comment.ParentID != nil {
+				payload["parent_id"] = *comment.ParentID
+			}
+			evs = append(evs, pendingEvent{
+				Key: commentKey(t.commentID), Kind: KindCommentCreated, IssueID: issue.ID,
+				ActorType: &at, ActorID: &aid, Payload: payload, OccurredAt: comment.CreatedAt,
+			})
+		case t.taskID != "":
+			at, aid := "agent", task.AgentID
+			payload := map[string]any{"task_id": t.taskID}
+			if task.FailureReason != nil {
+				payload["failure_reason"] = *task.FailureReason
+			}
+			occurred := time.Now()
+			if task.CompletedAt != nil {
+				occurred = *task.CompletedAt
+			}
+			evs = append(evs, pendingEvent{
+				Key: taskFailedKey(t.taskID), Kind: KindTaskFailed, IssueID: issue.ID,
+				ActorType: &at, ActorID: &aid, Payload: payload, OccurredAt: occurred,
+			})
+		}
+
+		var actorType, actorID *string
+		if t.actorType != "" && t.actorID != "" {
+			actorType, actorID = &t.actorType, &t.actorID
+		}
+		issueTriggered := t.eventType == protocol.EventIssueCreated || t.eventType == protocol.EventIssueUpdated
+		if t.eventType == protocol.EventIssueCreated {
+			ct, cid := issue.CreatorType, issue.CreatorID
+			evs = append(evs, pendingEvent{
+				Key: issueCreatedKey(issue.ID), Kind: KindIssueCreated, IssueID: issue.ID,
+				ActorType: &ct, ActorID: &cid, Payload: map[string]any{}, OccurredAt: issue.CreatedAt,
+			})
+		}
+		levelEvents, err := recordLevel(ctx, tx, workspaceID, sub, issue, issueTriggered, actorType, actorID)
+		if err != nil {
+			return err
+		}
+		evs = append(evs, levelEvents...)
+		if _, err := insertEvents(ctx, tx, workspaceID, sub, evs, SourceBus); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// recordLevel compares the issue's status and assignee with what the
+// subscription last saw and returns the changes. With update set it also
+// moves the seen row to the current state; otherwise (a comment or task
+// event, which says nothing about the issue's fields) it only creates a
+// missing baseline, so an unpublished status change stays visible to
+// reconcile.
+func recordLevel(ctx context.Context, tx pgx.Tx, workspaceID string, sub scopeSub, issue issueRow, update bool, actorType, actorID *string) ([]pendingEvent, error) {
+	var seenStatus string
+	var seenAssigneeType, seenAssigneeID *string
+	err := tx.QueryRow(ctx, `
+		SELECT status, assignee_type, assignee_id::text
+		FROM router_issue_seen
+		WHERE subscription_id = $1::uuid AND issue_id = $2::uuid
+		FOR UPDATE`, sub.ID, issue.ID,
+	).Scan(&seenStatus, &seenAssigneeType, &seenAssigneeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO router_issue_seen (subscription_id, issue_id, workspace_id, status, assignee_type, assignee_id)
+			VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::uuid)
+			ON CONFLICT (subscription_id, issue_id) DO NOTHING`,
+			sub.ID, issue.ID, workspaceID, issue.Status, issue.AssigneeType, issue.AssigneeID)
+		return nil, err
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !update {
+		return nil, nil
+	}
+	changes := levelChanges(issue, seenStatus, seenAssigneeType, seenAssigneeID, actorType, actorID)
+	if len(changes) == 0 {
+		return nil, nil
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE router_issue_seen
+		SET status = $3, assignee_type = $4, assignee_id = $5::uuid, seen_at = now()
+		WHERE subscription_id = $1::uuid AND issue_id = $2::uuid`,
+		sub.ID, issue.ID, issue.Status, issue.AssigneeType, issue.AssigneeID)
+	return changes, err
+}
+
+func levelChanges(issue issueRow, seenStatus string, seenAssigneeType, seenAssigneeID *string, actorType, actorID *string) []pendingEvent {
+	var out []pendingEvent
+	if seenStatus != issue.Status {
+		out = append(out, pendingEvent{
+			Key: levelChangeKey(issue.ID, KindStatusChanged, issue.UpdatedAt), Kind: KindStatusChanged,
+			IssueID: issue.ID, ActorType: actorType, ActorID: actorID, OccurredAt: issue.UpdatedAt,
+			Payload: map[string]any{"from": seenStatus, "to": issue.Status},
+		})
+	}
+	if !sameRef(seenAssigneeType, issue.AssigneeType) || !sameRef(seenAssigneeID, issue.AssigneeID) {
+		out = append(out, pendingEvent{
+			Key: levelChangeKey(issue.ID, KindAssigneeChanged, issue.UpdatedAt), Kind: KindAssigneeChanged,
+			IssueID: issue.ID, ActorType: actorType, ActorID: actorID, OccurredAt: issue.UpdatedAt,
+			Payload: map[string]any{
+				"from": assigneeRef(seenAssigneeType, seenAssigneeID),
+				"to":   assigneeRef(issue.AssigneeType, issue.AssigneeID),
+			},
+		})
+	}
+	return out
+}
+
+func sameRef(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func assigneeRef(typ, id *string) any {
+	if typ == nil || id == nil {
+		return nil
+	}
+	return map[string]string{"type": *typ, "id": *id}
+}
+
+// insertEvents writes the subscription's events, skipping kinds it does not
+// want and keys the agent already has. It returns how many rows landed.
+func insertEvents(ctx context.Context, tx pgx.Tx, workspaceID string, sub scopeSub, evs []pendingEvent, source string) (int, error) {
+	inserted := 0
+	for _, ev := range evs {
+		if !sub.wants(ev.Kind) {
+			continue
+		}
+		payload, err := json.Marshal(ev.Payload)
+		if err != nil {
+			return inserted, err
+		}
+		if ev.Payload == nil {
+			payload = []byte("{}")
+		}
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO router_event (
+			    workspace_id, subscription_id, agent_id, event_key, kind, issue_id,
+			    actor_type, actor_id, source, is_self, payload, occurred_at
+			) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::uuid, $7, $8::uuid, $9, $10, $11, $12)
+			ON CONFLICT (agent_id, event_key) DO NOTHING`,
+			workspaceID, sub.ID, sub.AgentID, ev.Key, ev.Kind, ev.IssueID,
+			ev.ActorType, ev.ActorID, source, isSelf(ev.ActorType, ev.ActorID, sub.AgentID), payload, ev.OccurredAt)
+		if err != nil {
+			return inserted, err
+		}
+		inserted += int(tag.RowsAffected())
+	}
+	return inserted, nil
+}
