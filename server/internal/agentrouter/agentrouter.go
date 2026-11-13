@@ -94,22 +94,25 @@ func NormalizeEventTypes(in []string) ([]string, error) {
 
 // Subscription is one agent watching one scope.
 type Subscription struct {
-	ID              string     `json:"id"`
-	WorkspaceID     string     `json:"workspace_id"`
-	AgentID         string     `json:"agent_id"`
-	OwnerUserID     *string    `json:"owner_user_id"`
-	ScopeType       string     `json:"scope_type"`
-	ScopeID         string     `json:"scope_id"`
-	AnchorIssueID   *string    `json:"anchor_issue_id"`
-	EventTypes      []string   `json:"event_types"`
-	Enabled         bool       `json:"enabled"`
-	PausedReason    *string    `json:"paused_reason"`
-	ActiveSince     time.Time  `json:"active_since"`
-	ReconcileCursor *time.Time `json:"reconcile_cursor"`
-	CreatedByType   string     `json:"created_by_type"`
-	CreatedByID     string     `json:"created_by_id"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID            string    `json:"id"`
+	WorkspaceID   string    `json:"workspace_id"`
+	AgentID       string    `json:"agent_id"`
+	OwnerUserID   *string   `json:"owner_user_id"`
+	ScopeType     string    `json:"scope_type"`
+	ScopeID       string    `json:"scope_id"`
+	AnchorIssueID *string   `json:"anchor_issue_id"`
+	EventTypes    []string  `json:"event_types"`
+	Enabled       bool      `json:"enabled"`
+	PausedReason  *string   `json:"paused_reason"`
+	ActiveSince   time.Time `json:"active_since"`
+	// ReconciledThrough is the upper bound of the last reconcile pass that
+	// completed for this subscription's workspace. CaptureMiss says nothing
+	// about changes after it.
+	ReconciledThrough *time.Time `json:"reconciled_through"`
+	CreatedByType     string     `json:"created_by_type"`
+	CreatedByID       string     `json:"created_by_id"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 	// EventCount and CaptureMiss are computed on read. CaptureMiss is the
 	// number of this subscription's events that reconcile had to add because
 	// the listener did not record them.

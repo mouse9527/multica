@@ -129,6 +129,7 @@ func TestParseTrigger(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := parseTrigger(tc.e)
+			got.issueState = nil
 			if ok != tc.ok || got != tc.want {
 				t.Fatalf("parseTrigger = %+v, %v; want %+v, %v", got, ok, tc.want, tc.ok)
 			}

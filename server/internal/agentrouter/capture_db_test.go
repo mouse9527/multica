@@ -126,9 +126,24 @@ func (e *env) failedTask(agent, issueID string, over ...testutil.Cols) string {
 
 // Publish shapes, as the server's publishers send them.
 
+// publishIssue sends an issue event carrying the issue as it is now, the way
+// the handlers do (timestamps in whole seconds).
 func (e *env) publishIssue(eventType, issueID, actorType, actorID string) {
+	e.t.Helper()
 	e.capt.Handle(events.Event{Type: eventType, WorkspaceID: e.ws, ActorType: actorType, ActorID: actorID,
-		Payload: map[string]any{"issue": map[string]any{"id": issueID}}})
+		Payload: map[string]any{"issue": e.issuePayload(issueID)}})
+}
+
+func (e *env) issuePayload(issueID string) map[string]any {
+	e.t.Helper()
+	cur, err := loadIssue(e.ctx, pool, e.ws, issueID)
+	if err != nil {
+		e.t.Fatalf("load issue: %v", err)
+	}
+	return map[string]any{
+		"id": issueID, "status": cur.Status, "assignee_type": cur.AssigneeType,
+		"assignee_id": cur.AssigneeID, "updated_at": cur.UpdatedAt.Format(time.RFC3339),
+	}
 }
 
 func (e *env) publishComment(commentID string) {

@@ -90,6 +90,30 @@ type trigger struct {
 	taskID    string
 	actorType string
 	actorID   string
+	// issueState is the issue as the publisher saw it, for issue events.
+	issueState *payloadIssue
+}
+
+// payloadIssue is the issue state an issue event carries.
+type payloadIssue struct {
+	Status       string  `json:"status"`
+	AssigneeType *string `json:"assignee_type"`
+	AssigneeID   *string `json:"assignee_id"`
+	UpdatedAt    string  `json:"updated_at"`
+}
+
+// describes reports whether the event's issue state is the state now in the
+// database, i.e. whether the change found under the seen lock is the one this
+// event announced. Payload timestamps carry whole seconds only, so a second
+// write within the same second with the same fields is indistinguishable;
+// it would be credited to this event's actor.
+func (p *payloadIssue) describes(cur issueRow) bool {
+	if p == nil || p.Status != cur.Status ||
+		!sameRef(p.AssigneeType, cur.AssigneeType) || !sameRef(p.AssigneeID, cur.AssigneeID) {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339Nano, p.UpdatedAt)
+	return err == nil && at.Unix() == cur.UpdatedAt.Unix()
 }
 
 // Handle captures one event. It never panics into the publisher and never
@@ -190,12 +214,15 @@ func parseTrigger(e events.Event) (trigger, bool) {
 		var p struct {
 			Issue struct {
 				ID string `json:"id"`
+				payloadIssue
 			} `json:"issue"`
 		}
 		if json.Unmarshal(raw, &p) != nil {
 			return trigger{}, false
 		}
 		t.issueID = p.Issue.ID
+		state := p.Issue.payloadIssue
+		t.issueState = &state
 	case protocol.EventCommentCreated:
 		var p struct {
 			Comment struct {
@@ -382,10 +409,6 @@ func (c *Capturer) capture(ctx context.Context, workspaceID string, subs []scope
 			})
 		}
 
-		var actorType, actorID *string
-		if t.actorType != "" && t.actorID != "" {
-			actorType, actorID = &t.actorType, &t.actorID
-		}
 		issueTriggered := t.eventType == protocol.EventIssueCreated || t.eventType == protocol.EventIssueUpdated
 		if t.eventType == protocol.EventIssueCreated {
 			ct, cid := issue.CreatorType, issue.CreatorID
@@ -394,7 +417,10 @@ func (c *Capturer) capture(ctx context.Context, workspaceID string, subs []scope
 				ActorType: &ct, ActorID: &cid, Payload: map[string]any{}, OccurredAt: issue.CreatedAt,
 			})
 		}
-		levelEvents, err := recordLevel(ctx, tx, workspaceID, sub, issue, issueTriggered, actorType, actorID)
+		levelEvents, err := recordLevel(ctx, tx, workspaceID, sub, issue.ID, levelInput{
+			update:    issueTriggered,
+			attribute: t.attribute,
+		})
 		if err != nil {
 			return err
 		}
@@ -406,34 +432,86 @@ func (c *Capturer) capture(ctx context.Context, workspaceID string, subs []scope
 	return tx.Commit(ctx)
 }
 
+// attribute credits a level change to the event's actor only when the event
+// describes the state the change was found in; otherwise the actor is
+// unknown.
+func (t trigger) attribute(cur issueRow) (*string, *string) {
+	if t.actorType == "" || t.actorID == "" || !t.issueState.describes(cur) {
+		return nil, nil
+	}
+	actorType, actorID := t.actorType, t.actorID
+	return &actorType, &actorID
+}
+
+type levelInput struct {
+	// update moves the seen row to the current state. Without it (a comment
+	// or task event, which says nothing about the issue's fields) only a
+	// missing baseline is created, so an unpublished status change stays
+	// visible to reconcile.
+	update bool
+	// attribute names who made a change found under the lock; nil means
+	// unknown.
+	attribute func(issueRow) (*string, *string)
+	// before, when set, leaves alone an issue updated at or after it.
+	before time.Time
+}
+
+// testHookBeforeSeenLock lets a test pause a capture between its earlier reads
+// and the seen lock. Nil outside tests.
+var testHookBeforeSeenLock func(subscriptionID, issueID string)
+
 // recordLevel compares the issue's status and assignee with what the
-// subscription last saw and returns the changes. With update set it also
-// moves the seen row to the current state; otherwise (a comment or task
-// event, which says nothing about the issue's fields) it only creates a
-// missing baseline, so an unpublished status change stays visible to
-// reconcile.
-func recordLevel(ctx context.Context, tx pgx.Tx, workspaceID string, sub scopeSub, issue issueRow, update bool, actorType, actorID *string) ([]pendingEvent, error) {
+// subscription last saw and returns the changes.
+//
+// The issue is read only after the seen row is locked, in the same
+// transaction. Every capture and reconcile of a (subscription, issue) pair
+// takes that lock first, so they compare in lock order against the newest
+// committed state; a reader holding an older snapshot can never write the
+// seen row back to it.
+func recordLevel(ctx context.Context, tx pgx.Tx, workspaceID string, sub scopeSub, issueID string, in levelInput) ([]pendingEvent, error) {
+	if testHookBeforeSeenLock != nil {
+		testHookBeforeSeenLock(sub.ID, issueID)
+	}
+	// A missing row is created from the current issue state as a baseline,
+	// never an event. Inserting it first means the row always exists to be
+	// locked below.
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO router_issue_seen (subscription_id, issue_id, workspace_id, status, assignee_type, assignee_id)
+		SELECT $1::uuid, i.id, i.workspace_id, i.status, i.assignee_type, i.assignee_id
+		FROM issue i WHERE i.id = $2::uuid AND i.workspace_id = $3::uuid
+		ON CONFLICT (subscription_id, issue_id) DO NOTHING`, sub.ID, issueID, workspaceID)
+	if err != nil || tag.RowsAffected() > 0 || !in.update {
+		return nil, err
+	}
+
 	var seenStatus string
 	var seenAssigneeType, seenAssigneeID *string
-	err := tx.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		SELECT status, assignee_type, assignee_id::text
 		FROM router_issue_seen
 		WHERE subscription_id = $1::uuid AND issue_id = $2::uuid
-		FOR UPDATE`, sub.ID, issue.ID,
+		FOR UPDATE`, sub.ID, issueID,
 	).Scan(&seenStatus, &seenAssigneeType, &seenAssigneeID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		_, err = tx.Exec(ctx, `
-			INSERT INTO router_issue_seen (subscription_id, issue_id, workspace_id, status, assignee_type, assignee_id)
-			VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::uuid)
-			ON CONFLICT (subscription_id, issue_id) DO NOTHING`,
-			sub.ID, issue.ID, workspaceID, issue.Status, issue.AssigneeType, issue.AssigneeID)
-		return nil, err
+		// The issue is gone, or its baseline was dropped concurrently.
+		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if !update {
+	issue, err := loadIssue(ctx, tx, workspaceID, issueID)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !in.before.IsZero() && !issue.UpdatedAt.Before(in.before) {
+		return nil, nil
+	}
+	var actorType, actorID *string
+	if in.attribute != nil {
+		actorType, actorID = in.attribute(issue)
 	}
 	changes := levelChanges(issue, seenStatus, seenAssigneeType, seenAssigneeID, actorType, actorID)
 	if len(changes) == 0 {
@@ -443,7 +521,7 @@ func recordLevel(ctx context.Context, tx pgx.Tx, workspaceID string, sub scopeSu
 		UPDATE router_issue_seen
 		SET status = $3, assignee_type = $4, assignee_id = $5::uuid, seen_at = now()
 		WHERE subscription_id = $1::uuid AND issue_id = $2::uuid`,
-		sub.ID, issue.ID, issue.Status, issue.AssigneeType, issue.AssigneeID)
+		sub.ID, issueID, issue.Status, issue.AssigneeType, issue.AssigneeID)
 	return changes, err
 }
 
@@ -485,6 +563,12 @@ func assigneeRef(typ, id *string) any {
 
 // insertEvents writes the subscription's events, skipping kinds it does not
 // want and keys the agent already has. It returns how many rows landed.
+//
+// A row is written only while its subscription is still enabled: a capture
+// working from a cache snapshot taken before a pause or delete then writes
+// nothing. A pause or delete that commits during this transaction can still
+// leave a row behind; it stays listed under the subscription id until the
+// workspace is deleted.
 func insertEvents(ctx context.Context, tx pgx.Tx, workspaceID string, sub scopeSub, evs []pendingEvent, source string) (int, error) {
 	inserted := 0
 	for _, ev := range evs {
@@ -502,7 +586,9 @@ func insertEvents(ctx context.Context, tx pgx.Tx, workspaceID string, sub scopeS
 			INSERT INTO router_event (
 			    workspace_id, subscription_id, agent_id, event_key, kind, issue_id,
 			    actor_type, actor_id, source, is_self, payload, occurred_at
-			) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::uuid, $7, $8::uuid, $9, $10, $11, $12)
+			)
+			SELECT $1::uuid, $2::uuid, $3::uuid, $4, $5, $6::uuid, $7, $8::uuid, $9, $10, $11, $12
+			WHERE EXISTS (SELECT 1 FROM router_subscription WHERE id = $2::uuid AND enabled)
 			ON CONFLICT (agent_id, event_key) DO NOTHING`,
 			workspaceID, sub.ID, sub.AgentID, ev.Key, ev.Kind, ev.IssueID,
 			ev.ActorType, ev.ActorID, source, isSelf(ev.ActorType, ev.ActorID, sub.AgentID), payload, ev.OccurredAt)

@@ -4,11 +4,13 @@ package migrations
 
 import (
 	"context"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
 
-var routerTables = []string{"router_subscription", "router_event", "router_issue_seen"}
+var routerTables = []string{"router_subscription", "router_event", "router_issue_seen", "router_reconcile_cursor"}
 
 var routerIndexes = []string{
 	"idx_router_subscription_scope",
@@ -95,22 +97,46 @@ func TestRouterEventKeyIsUniquePerAgent(t *testing.T) {
 	}
 }
 
-// TestRouterTablesStayInvisibleToSqlc pins why 9004 wraps its DDL in a DO
-// block: sqlc reads the migrations directory as its schema, and a CREATE
-// TABLE it can see adds Router structs to the shared
-// pkg/db/generated/models.go. The Router package uses hand-written SQL only.
+// TestRouterTablesStayInvisibleToSqlc pins why the Router migrations run
+// their table DDL inside DO blocks: sqlc reads the migrations directory as its
+// schema. A CREATE TABLE it can see adds Router structs to the shared
+// pkg/db/generated/models.go, and an ALTER TABLE on a table it cannot see
+// fails generation. The Router package uses hand-written SQL only, so every
+// Router migration, including later slices', keeps both inside DO blocks.
+// Index files may stay plain: CREATE INDEX CONCURRENTLY cannot run in a DO
+// block, and sqlc ignores index statements.
 func TestRouterTablesStayInvisibleToSqlc(t *testing.T) {
-	src := readMigrationFile(t, "9004_router_tables.up.sql")
-	begin := strings.Index(src, "DO $router$")
-	end := strings.LastIndex(src, "$router$;")
-	if begin < 0 || end < begin {
-		t.Fatal("9004 no longer runs its DDL inside the DO $router$ block")
+	files, err := filepath.Glob(filepath.Join(realMigrationsDir(t), "*_router_*.up.sql"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no Router migrations found: %v", err)
 	}
-	outside := src[:begin] + src[end:]
-	if strings.Contains(strings.ToUpper(outside), "CREATE TABLE") {
-		t.Fatal("9004 has a CREATE TABLE outside the DO block; sqlc would generate models for it")
+	doBlock := regexp.MustCompile(`(?s)DO \$[a-z_]+\$.*?END\s*\$[a-z_]+\$;`)
+	created := 0
+	for _, file := range files {
+		src := readMigrationFile(t, filepath.Base(file))
+		for _, block := range doBlock.FindAllString(src, -1) {
+			created += strings.Count(block, "CREATE TABLE IF NOT EXISTS router_")
+		}
+		outside := strings.ToUpper(stripSQLComments(doBlock.ReplaceAllString(src, "")))
+		for _, ddl := range []string{"CREATE TABLE", "ALTER TABLE"} {
+			if strings.Contains(outside, ddl) {
+				t.Errorf("%s has %s outside a DO block; sqlc would see it", filepath.Base(file), ddl)
+			}
+		}
 	}
-	if got := strings.Count(src[begin:end], "CREATE TABLE IF NOT EXISTS router_"); got != len(routerTables) {
-		t.Fatalf("DO block creates %d Router tables, want %d", got, len(routerTables))
+	if created != len(routerTables) {
+		t.Fatalf("DO blocks create %d Router tables, want %d", created, len(routerTables))
 	}
+}
+
+func stripSQLComments(src string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(src, "\n") {
+		if i := strings.Index(line, "--"); i >= 0 {
+			line = line[:i]
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }

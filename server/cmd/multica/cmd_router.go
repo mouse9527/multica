@@ -211,7 +211,9 @@ func runRouterList(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-var routerSubscriptionHeaders = []string{"ID", "AGENT", "SCOPE", "ENABLED", "EVENTS", "CAPTURE MISS", "CREATED"}
+// RECONCILED THROUGH bounds what CAPTURE MISS covers: changes after it have
+// not been checked by a completed reconcile pass yet.
+var routerSubscriptionHeaders = []string{"ID", "AGENT", "SCOPE", "ENABLED", "EVENTS", "CAPTURE MISS", "RECONCILED THROUGH", "CREATED"}
 
 func routerSubscriptionRows(subs []map[string]any, fullID bool) [][]string {
 	rows := make([][]string, 0, len(subs))
@@ -224,6 +226,10 @@ func routerSubscriptionRows(subs []map[string]any, fullID bool) [][]string {
 		if len(created) >= 10 {
 			created = created[:10]
 		}
+		reconciled := strVal(s, "reconciled_through")
+		if reconciled == "" {
+			reconciled = "never"
+		}
 		rows = append(rows, []string{
 			displayID(strVal(s, "id"), fullID),
 			displayID(strVal(s, "agent_id"), fullID),
@@ -231,6 +237,7 @@ func routerSubscriptionRows(subs []map[string]any, fullID bool) [][]string {
 			enabled,
 			routerCount(s, "event_count"),
 			routerCount(s, "capture_miss"),
+			reconciled,
 			created,
 		})
 	}

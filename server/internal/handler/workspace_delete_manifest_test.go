@@ -175,9 +175,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"comment_external":        workspaceDelete,
 	// Modified for the mouse9527/multica fork: Router tables (M-85), deleted
 	// by agentrouter.DeleteWorkspaceData.
-	"router_subscription": workspaceDelete,
-	"router_event":        workspaceDelete,
-	"router_issue_seen":   workspaceDelete,
+	"router_subscription":     workspaceDelete,
+	"router_event":            workspaceDelete,
+	"router_issue_seen":       workspaceDelete,
+	"router_reconcile_cursor": workspaceDelete,
 }
 
 func TestWorkspaceDeletionManifestCoversPublicSchema(t *testing.T) {

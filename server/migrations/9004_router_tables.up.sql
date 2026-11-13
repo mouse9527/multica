@@ -1,6 +1,6 @@
 -- Modified for the mouse9527/multica fork: Router MVP, slice S1 (M-85).
 --
--- Three new tables capture issue events for agents that subscribe to an issue
+-- Four new tables capture issue events for agents that subscribe to an issue
 -- tree or a project. No existing table is altered. Every table carries
 -- workspace_id so workspace teardown needs no join.
 --
@@ -23,8 +23,9 @@ BEGIN
     -- defaults and never reads them, so S2 needs no ALTER.
     --
     -- active_since is when capture last started (creation or resume): nothing
-    -- older is captured, by the listener or by reconcile. reconcile_cursor is the
-    -- upper bound of the last reconcile pass.
+    -- older is captured, by the listener or by reconcile. reconciled_through
+    -- is the upper bound of the last reconcile pass that completed for the
+    -- workspace: capture_miss is only evidence of coverage up to it.
     EXECUTE $ddl$
     CREATE TABLE IF NOT EXISTS router_subscription (
         id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -43,7 +44,7 @@ BEGIN
         state             TEXT NOT NULL DEFAULT '',
         state_revision    BIGINT NOT NULL DEFAULT 0,
         active_since      TIMESTAMPTZ NOT NULL DEFAULT now(),
-        reconcile_cursor  TIMESTAMPTZ,
+        reconciled_through TIMESTAMPTZ,
         created_by_type   TEXT NOT NULL CHECK (created_by_type IN ('member', 'agent')),
         created_by_id     UUID NOT NULL,
         created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -90,6 +91,22 @@ BEGIN
         assignee_id     UUID,
         seen_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (subscription_id, issue_id)
+    )
+    $ddl$;
+
+    -- How far reconcile has read each edge kind in a workspace, as a keyset
+    -- (event time, source row, subscription) over every enabled
+    -- subscription's rows. It moves after every batch, so a pass cut short
+    -- keeps its progress. item_id NULL means every row before ts was read.
+    EXECUTE $ddl$
+    CREATE TABLE IF NOT EXISTS router_reconcile_cursor (
+        workspace_id    UUID NOT NULL,
+        kind            TEXT NOT NULL CHECK (kind IN ('issue_created', 'comment_created', 'task_failed')),
+        ts              TIMESTAMPTZ NOT NULL,
+        item_id         UUID,
+        subscription_id UUID,
+        updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (workspace_id, kind)
     )
     $ddl$;
 END

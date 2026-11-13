@@ -19,7 +19,7 @@
 | `server/cmd/server/main.go` | M-85 | 调用 `agentrouter.Register`：`router_v1` 打开时注册 Router 监听器和对账任务，关闭时什么都不注册 | 有 |
 | `server/cmd/server/router.go` | M-85 | 挂载 `/api/router`（开关关闭时返回 404） | 有 |
 | `server/internal/featureflags/keys.go` | M-85 | 新开关 `router_v1` 与 `RouterV1Enabled` | 有 |
-| `server/internal/handler/workspace.go` | M-20、M-85 | 删除工作区时清理迁移 9000 建的 5 张表（功能撤回后表仍在，见 [github-issues.md](github-issues.md)），以及 Router 的 3 张表（迁移 9004） | 有 |
+| `server/internal/handler/workspace.go` | M-20、M-85 | 删除工作区时清理迁移 9000 建的 5 张表（功能撤回后表仍在，见 [github-issues.md](github-issues.md)），以及 Router 的 4 张表（迁移 9004） | 有 |
 | `server/pkg/db/generated/models.go` | M-20 | sqlc 按迁移 9000 的表生成的模型（生成文件，不手改） | 无（生成） |
 
 ### 只改测试的上游文件
@@ -27,7 +27,7 @@
 | 文件 | 任务 | 改动 | 文件内说明 |
 |---|---|---|---|
 | `server/internal/cli/update_source_test.go` | M-58 | 适配可配置的 Release 仓库 | 有 |
-| `server/internal/handler/workspace_delete_manifest_test.go` | M-20、M-85 | 登记迁移 9000 的 5 张表和迁移 9004 的 3 张表 | 有 |
+| `server/internal/handler/workspace_delete_manifest_test.go` | M-20、M-85 | 登记迁移 9000 的 5 张表和迁移 9004 的 4 张表 | 有 |
 | `server/internal/handler/autopilot_subscriber_test.go` | M-24 | 删触发器的 DDL 改走 `testutil.ExecDDL` | 有 |
 | `server/internal/handler/daemon_runtime_access_test.go` | M-24 | 同上 | 有 |
 | `server/internal/handler/task_supplement_test.go` | M-24 | 同上 | 有 |

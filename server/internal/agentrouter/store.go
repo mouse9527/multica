@@ -86,7 +86,7 @@ members AS (
 const subscriptionColumns = `
     s.id::text, s.workspace_id::text, s.agent_id::text, s.owner_user_id::text,
     s.scope_type, s.scope_id::text, s.anchor_issue_id::text, s.event_types,
-    s.enabled, s.paused_reason, s.active_since, s.reconcile_cursor,
+    s.enabled, s.paused_reason, s.active_since, s.reconciled_through,
     s.created_by_type, s.created_by_id::text, s.created_at, s.updated_at,
     (SELECT count(*) FROM router_event e WHERE e.subscription_id = s.id),
     (SELECT count(*) FROM router_event e WHERE e.subscription_id = s.id AND e.source = 'reconcile')`
@@ -95,7 +95,7 @@ func scanSubscription(row pgx.Row) (Subscription, error) {
 	var s Subscription
 	err := row.Scan(&s.ID, &s.WorkspaceID, &s.AgentID, &s.OwnerUserID,
 		&s.ScopeType, &s.ScopeID, &s.AnchorIssueID, &s.EventTypes,
-		&s.Enabled, &s.PausedReason, &s.ActiveSince, &s.ReconcileCursor,
+		&s.Enabled, &s.PausedReason, &s.ActiveSince, &s.ReconciledThrough,
 		&s.CreatedByType, &s.CreatedByID, &s.CreatedAt, &s.UpdatedAt,
 		&s.EventCount, &s.CaptureMiss)
 	return s, err
@@ -194,7 +194,7 @@ func (s *Store) Pause(ctx context.Context, workspaceID, id string) (Subscription
 	return s.setEnabled(ctx, workspaceID, id, `
 		UPDATE router_subscription
 		SET enabled = false, paused_reason = 'manual', updated_at = now()
-		WHERE workspace_id = $1::uuid AND id = $2::uuid`)
+		WHERE workspace_id = $1::uuid AND id = $2::uuid AND enabled`)
 }
 
 // Resume restarts capture from now.
@@ -202,7 +202,7 @@ func (s *Store) Resume(ctx context.Context, workspaceID, id string) (Subscriptio
 	return s.setEnabled(ctx, workspaceID, id, `
 		UPDATE router_subscription
 		SET enabled = true, paused_reason = NULL, active_since = now(),
-		    reconcile_cursor = NULL, updated_at = now()
+		    reconciled_through = NULL, updated_at = now()
 		WHERE workspace_id = $1::uuid AND id = $2::uuid AND NOT enabled`)
 }
 
@@ -394,7 +394,7 @@ func (s *Store) Scope(ctx context.Context, workspaceID, id string, includeClosed
 // DeleteWorkspaceData removes every Router row of a workspace. It runs inside
 // the workspace delete transaction; the tables have no foreign keys.
 func DeleteWorkspaceData(ctx context.Context, q Querier, workspaceID any) error {
-	for _, table := range []string{"router_event", "router_issue_seen", "router_subscription"} {
+	for _, table := range []string{"router_event", "router_issue_seen", "router_reconcile_cursor", "router_subscription"} {
 		if _, err := q.Exec(ctx, `DELETE FROM `+table+` WHERE workspace_id = $1`, workspaceID); err != nil {
 			return fmt.Errorf("delete %s: %w", table, err)
 		}
