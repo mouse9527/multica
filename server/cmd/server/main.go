@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/multica-ai/multica/server/internal/agentrouter"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
@@ -864,6 +865,9 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.PluginHookScheduleDispatchJob(queries, h.PluginService)); err != nil {
 		slog.Warn("scheduler: failed to register plugin_hook_schedule_dispatch job", "error", err)
 	}
+	// Modified for the mouse9527/multica fork: Router capture (M-85). Inert
+	// unless router_v1 is on.
+	agentrouter.Register(context.Background(), flags, bus, pool, schedulerMgr)
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)
 	}()
