@@ -116,7 +116,8 @@ func printRouterSubscriptions(cmd *cobra.Command, subs []map[string]any) error {
 
 // routerChatBoard creates the board issue a chat-bound project subscription
 // uses as its anchor: dispatch records and the private-project fence key on
-// the anchor, so it lives in that project. Same title as the web settings.
+// the anchor, so it lives in that project. The title follows the zh-Hans
+// web settings; the web uses the viewer's language, the CLI has none.
 func routerChatBoard(ctx context.Context, client *cli.APIClient, projectID string, chat routerChat) (string, error) {
 	name := strings.TrimSpace(chat.Title)
 	if name == "" {

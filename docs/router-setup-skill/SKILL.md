@@ -54,7 +54,7 @@ Router = 一个 chat 会话 + 绑定到它的订阅。你就是这个 chat 的�
 - 失败：把服务端的原因用一句话转述给 Owner，再给出下一步。常见原因：
   - 「only in a run started by that chat's creator」：这轮不是 Owner 在这个 chat 里发起的。请 Owner 在这个 chat 里直接说一遍。
   - 「needs the router_chat feature」：Router chat 功能没开，需要 Owner 或运维打开 `router_chat`。
-  - 「subscription already exists」(409)：你已经订阅过这个范围（可能绑在别的 chat 上）。用 `multica router list` 找到它，问 Owner 是改绑过来还是保留。
+  - 「already subscribes to this scope」(409)：你已经订阅过这个范围。用 `multica router list --output json` 找到它：没有 `anchor_chat_session_id` 的（之前解除时保留的），复述后用 `multica router update <订阅ID> --anchor-chat current` 接回、再 `multica router resume <订阅ID>`；绑在别的 chat 上的，告诉 Owner 它在哪个 Router 里，问是去那边移除还是保留。
   - 「the chat is archived」：先在页面上恢复这个对话。
   - 403「can manage the agent」：Owner 不是你的所有者也不是管理员，这个 Router 得由你的所有者来设。
 - 不要为了绕过失败去改别的订阅、换别的 chat 或用别人的权限重试。
