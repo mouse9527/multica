@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router v6 slice 1 (M-96).
 
 package agentrouter
 
@@ -96,6 +96,7 @@ const subscriptionColumns = `
     s.state_revision, octet_length(s.state), s.active_since, s.reconciled_through,
     s.created_by_type, s.created_by_id::text, created.via_agent_id::text, created.via_task_id::text,
     s.created_at, s.updated_at,
+    (SELECT ca.chat_session_id::text FROM router_chat_anchor ca WHERE ca.subscription_id = s.id),
     (SELECT count(*) FROM router_event e WHERE e.subscription_id = s.id),
     (SELECT count(*) FROM router_event e WHERE e.subscription_id = s.id AND e.source = 'reconcile')`
 
@@ -116,7 +117,7 @@ func scanSubscription(row pgx.Row) (Subscription, error) {
 		&s.Enabled, &s.PausedReason, &s.DebounceSeconds, &s.MaxWaitSeconds, &s.MaxRunsPerHour,
 		&s.StateRevision, &s.StateBytes, &s.ActiveSince, &s.ReconciledThrough,
 		&s.CreatedByType, &s.CreatedByID, &s.ViaAgentID, &s.ViaTaskID,
-		&s.CreatedAt, &s.UpdatedAt,
+		&s.CreatedAt, &s.UpdatedAt, &s.AnchorChatSessionID,
 		&s.EventCount, &s.CaptureMiss)
 	return s, err
 }
@@ -326,8 +327,8 @@ func (s *Store) setEnabled(ctx context.Context, workspaceID, id string, c Change
 	return s.Get(ctx, workspaceID, id)
 }
 
-// Delete removes a subscription with its events, seen rows and dispatch
-// records. Its audit records stay.
+// Delete removes a subscription with its events, seen rows, dispatch records
+// and chat binding. Its audit records stay.
 func (s *Store) Delete(ctx context.Context, workspaceID, id string, c Change) error {
 	tx, err := s.Tx.Begin(ctx)
 	if err != nil {
@@ -348,6 +349,9 @@ func (s *Store) Delete(ctx context.Context, workspaceID, id string, c Change) er
 		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM router_dispatch WHERE subscription_id = $1::uuid`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM router_chat_anchor WHERE subscription_id = $1::uuid`, id); err != nil {
 		return err
 	}
 	c.Action = ChangeDelete
@@ -502,7 +506,7 @@ func (s *Store) Scope(ctx context.Context, workspaceID, id string, includeClosed
 func DeleteWorkspaceData(ctx context.Context, q Querier, workspaceID any) error {
 	for _, table := range []string{
 		"router_event", "router_issue_seen", "router_reconcile_cursor", "router_subscription",
-		"router_dispatch", "router_subscription_change", "owner_notice",
+		"router_dispatch", "router_subscription_change", "owner_notice", "router_chat_anchor",
 	} {
 		if _, err := q.Exec(ctx, `DELETE FROM `+table+` WHERE workspace_id = $1`, workspaceID); err != nil {
 			return fmt.Errorf("delete %s: %w", table, err)
@@ -528,8 +532,11 @@ func ParseScopeType(t string) (string, error) {
 type UpdateParams struct {
 	EventTypes    []string
 	AnchorIssueID *string
-	Batching      Batching
-	Change        Change
+	// AnchorChatSessionID binds the subscription to a chat session; an empty
+	// string removes the binding. See setChatAnchor for what it must satisfy.
+	AnchorChatSessionID *string
+	Batching            Batching
+	Change              Change
 }
 
 // Update applies p. Event types change what capture writes from now on;
@@ -586,6 +593,12 @@ func (s *Store) Update(ctx context.Context, workspaceID, id string, p UpdatePara
 	}
 	if tag.RowsAffected() == 0 {
 		return Subscription{}, ErrNotFound
+	}
+	if p.AnchorChatSessionID != nil {
+		if err := setChatAnchor(ctx, tx, cur, anchor, *p.AnchorChatSessionID); err != nil {
+			return Subscription{}, err
+		}
+		detail["anchor_chat_session_id"] = *p.AnchorChatSessionID
 	}
 	c := p.Change
 	c.Action, c.Detail = ChangeUpdate, detail

@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router v6 slice 1 (M-96).
 
 package agentrouter
 
@@ -46,7 +46,8 @@ type JobRegistrar interface {
 
 // Register wires the Router into the server when router_v1 is on: the Bus
 // listener and the reconcile job, and with router_dispatch also on, the
-// dispatch job. With router_v1 off it registers nothing, so the server
+// dispatch job, which sends chat-bound subscriptions' batches to their chats
+// only with router_chat on as well. With router_v1 off it registers nothing, so the server
 // behaves exactly as upstream. It returns whether it registered capture.
 func Register(ctx context.Context, flags *featureflag.Service, bus *events.Bus, db Database, jobs JobRegistrar, tasks *service.TaskService) bool {
 	if !featureflags.RouterV1Enabled(ctx, flags) {
@@ -66,10 +67,12 @@ func Register(ctx context.Context, flags *featureflag.Service, bus *events.Bus, 
 	slog.Info("router: capture enabled", "reconcile_interval", interval)
 	if featureflags.RouterDispatchEnabled(ctx, flags) && tasks != nil {
 		notices := NewNotifier(store, InboxAdapter{Queries: tasks.Queries, Bus: bus})
-		if err := jobs.Register(DispatchJob(NewDispatcher(store, TaskRuns{Tasks: tasks}, notices))); err != nil {
+		d := NewDispatcher(store, TaskRuns{Tasks: tasks}, notices)
+		d.Chat = featureflags.RouterChatEnabled(ctx, flags)
+		if err := jobs.Register(DispatchJob(d)); err != nil {
 			slog.Error("router: register dispatch job", "error", err)
 		} else {
-			slog.Info("router: dispatch enabled", "interval", DispatchInterval)
+			slog.Info("router: dispatch enabled", "interval", DispatchInterval, "chat", d.Chat)
 		}
 	}
 	return true
