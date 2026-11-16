@@ -321,7 +321,6 @@ function ReleaseRouterDialog({
                 value={value}
                 checked={mode === value}
                 onChange={() => setMode(value)}
-               
               />
               {value === "delete" ? t(($) => $.release.delete) : t(($) => $.release.keep)}
             </label>
