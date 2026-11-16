@@ -19,7 +19,7 @@
 | `server/internal/daemon/daemon.go` | M-58 | `runUpdate` 前的 Homebrew 检查 | 有 |
 | `server/cmd/server/main.go` | M-85、M-86 | 调用 `agentrouter.Register`（M-86 起多传 `taskSvc`）：`router_v1` 打开时注册 Router 监听器和对账任务，`router_dispatch` 也打开时再注册派发任务；关闭时什么都不注册 | 有 |
 | `server/cmd/server/router.go` | M-85 | 挂载 `/api/router`（开关关闭时返回 404） | 有 |
-| `server/internal/featureflags/keys.go` | M-85、M-89、M-86、M-96 | 新开关 `router_v1` 与 `RouterV1Enabled`；`handoff_reply_wake` 与 `HandoffReplyWakeEnabled`；`router_dispatch` 与 `RouterDispatchEnabled`；`router_chat` 与 `RouterChatEnabled` | 有 |
+| `server/internal/featureflags/keys.go` | M-85、M-89、M-86、M-96、M-105 | 新开关 `router_v1` 与 `RouterV1Enabled`；`handoff_reply_wake` 与 `HandoffReplyWakeEnabled`；`router_dispatch` 与 `RouterDispatchEnabled`；`router_chat` 与 `RouterChatEnabled`；`EvaluateFrontendPublicFlags` 把 `router_chat` 的组合结果发给前端（一行） | 有 |
 | `server/internal/handler/comment.go` | M-89 | `computeCommentAgentTriggers` 改名为 `computeUpstreamCommentAgentTriggers`（一行），由 fork 的同名包装函数调用，见 `handoff_reply_wake.go` | 有 |
 | `server/internal/handler/workspace.go` | M-20、M-85 | 删除工作区时清理迁移 9000 建的 5 张表（功能撤回后表仍在，见 [github-issues.md](github-issues.md)），以及 Router 的表（迁移 9004、9008，由 `agentrouter.DeleteWorkspaceData` 删除；M-86 新增的 3 张表不再改这个文件） | 有 |
 | `server/pkg/db/generated/models.go` | M-20 | sqlc 按迁移 9000 的表生成的模型（生成文件，不手改） | 无（生成） |
@@ -30,6 +30,12 @@
 | `packages/core/api/schemas.ts` | M-96 | 两处 `message_kind` 枚举加 `router_batch` | 有 |
 | `packages/core/types/chat.ts` | M-96 | `ChatMessageKind` 加 `router_batch` | 有 |
 | `packages/views/chat/components/chat-message-list.tsx` | M-96 | 引入 `router-batch.tsx`：批次消息折叠显示，批次轮次的 `no_response` 不显示（一个 import、一个过滤、一个分支） | 有 |
+| `packages/core/api/client.ts` | M-105 | 新增公开方法 `forkRequest`：fork 模块（`packages/core/router`）借用共享的请求路径，不再往这个文件加方法 | 有 |
+| `packages/core/package.json` | M-105 | 导出 `./router` | 无（JSON） |
+| `packages/views/chat/components/chat-session-header.tsx` | M-105 | ⋯ 菜单挂 Router 设置：一个 import、一个钩子调用、菜单项和对话框各一处 | 有 |
+| `packages/views/settings/components/settings-page.tsx` | M-105 | 「个人」组末尾挂「Router」页：一个 import、一个钩子调用、一处展开 | 有 |
+| `packages/views/i18n/resources-types.ts` | M-105 | 登记 `router` 命名空间的类型 | 有 |
+| `packages/views/locales/{en,zh-Hans,zh-Hant,ja,ko,ru,fr,es}.ts`（8 个） | M-105 | 登记 `router` 命名空间（一个 import、一个条目） | 有 |
 
 ### 只改测试的上游文件
 
@@ -46,7 +52,7 @@
 | `server/internal/service/autopilot_quota_test.go` | M-24 | 同上 | 有 |
 | `server/internal/service/delegated_failure_recovery_settled_test.go` | M-24 | 同上 | 有 |
 
-合计：修改过的上游文件 29 个（含 10 个测试文件），其中 1 个（生成的 `models.go`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。
+合计：修改过的上游文件 42 个（含 10 个测试文件），其中 2 个（生成的 `models.go`、`packages/core/package.json`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。M-105 新增的 13 个前端上游触点和 `keys.go` 的一行也集中在同一个提交里。
 
 ## fork 新增的文件
 
@@ -61,6 +67,7 @@
 - Router 捕获（M-85，见 [router.md](router.md)）：`server/internal/agentrouter/`；`server/internal/handler/agent_router.go` 及测试；`server/cmd/multica/cmd_router.go` 及测试；`server/cmd/server/agent_router_integration_test.go`；`server/migrations/9004_*`–`9007_*`；`server/cmd/migrate/router_migrations.go`；`server/internal/migrations/router_tables_migration_test.go`；`docs/router.md`。
 - Router 派发与出口（M-86，见 [router.md](router.md)）：`server/internal/agentrouter/` 下的 `dispatch.go`、`notice.go`、`run.go` 及测试；`server/internal/service/router_run.go`（上游包里的新文件，只导出 `EnqueueRouterRun`）；`server/internal/handler/agent_router_dispatch.go` 及测试；`server/cmd/multica/cmd_router_dispatch.go`；`server/cmd/server/agent_router_dispatch_integration_test.go`；`server/migrations/9008_*`–`9013_*`。
 - Router chat 载体（M-96，v6 切片 1，开关 `router_chat`，默认关闭，见 [router.md](router.md)）：`server/internal/agentrouter/chat.go` 及测试；`server/internal/service/router_chat_run.go`（上游包里的新文件，只导出 `EnqueueRouterChatRun`、`RouterChatPriority`、`ErrRouterChatUnavailable`）；`server/internal/handler/agent_router_chat_test.go`；`server/migrations/9014_*`；`packages/views/chat/components/router-batch.tsx` 及测试。
+- Router 页面设置（M-105，开关 `router_chat`，见 [router.md](router.md)「页面设置」）：`packages/core/router/`；`packages/views/router/`；`packages/views/locales/*/router.json`；`server/internal/featureflags/router_fork_test.go`。
 - 回复叫醒修正（M-89，开关 `handoff_reply_wake`，默认关闭）：`server/internal/handler/handoff_reply_wake.go` 及测试；`server/internal/issuestatus/handoff_fork.go`；`server/cmd/server/handoff_reply_wake_parity_test.go`。开关打开时，issue 处于「交还给人」的状态（`issueStatusIsHandoff` 为真，例如自定义的 started 状态、`in_review`、`blocked`、`done`）时，成员的任何评论（含讨论串里的回复，不含 note）在上游路由之外再叫醒处理人；智能体的评论不走这条路。
 - daemon LaunchAgent 的 ProcessType（M-101）：`server/cmd/multica/cmd_daemon_autostart_process_type.go` 及测试。
 - `docs/github-issues*.md`。
