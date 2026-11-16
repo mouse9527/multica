@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and Router v6 slice 1 (M-96).
 
 package main
 
@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -20,7 +21,7 @@ import (
 
 var routerUpdateCmd = &cobra.Command{
 	Use:   "update <subscription-id>",
-	Short: "Change a subscription's anchor issue, event types or batching",
+	Short: "Change a subscription's anchor issue or chat, event types or batching",
 	Args:  exactArgs(1),
 	RunE:  runRouterUpdate,
 }
@@ -90,6 +91,7 @@ func init() {
 		c.Flags().Int("max-runs-per-hour", 0, "Runs per hour before dispatch pauses and the owner is notified (default 6)")
 	}
 	routerUpdateCmd.Flags().StringSlice("events", nil, "Event types to capture from now on")
+	routerUpdateCmd.Flags().String("anchor-chat", "", "Chat session (UUID) that receives the batches instead of anchor runs; \"none\" goes back to anchor runs (needs router_chat)")
 	routerUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	routerStateGetCmd.Flags().String("output", "json", "Output format: text (state only) or json")
@@ -159,8 +161,15 @@ func runRouterUpdate(cmd *cobra.Command, args []string) error {
 		events, _ := cmd.Flags().GetStringSlice("events")
 		body["event_types"] = events
 	}
+	if cmd.Flags().Changed("anchor-chat") {
+		chat, _ := cmd.Flags().GetString("anchor-chat")
+		if strings.TrimSpace(chat) == "" {
+			return fmt.Errorf("--anchor-chat needs a chat session id, or none")
+		}
+		body["anchor_chat_session_id"] = strings.TrimSpace(chat)
+	}
 	if len(body) == 0 {
-		return fmt.Errorf("nothing to change: pass --anchor, --events, --debounce, --max-wait or --max-runs-per-hour")
+		return fmt.Errorf("nothing to change: pass --anchor, --anchor-chat, --events, --debounce, --max-wait or --max-runs-per-hour")
 	}
 	var sub map[string]any
 	if err := client.PatchJSON(ctx, routerSubscriptionPath(id), body, &sub); err != nil {
