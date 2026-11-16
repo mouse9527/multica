@@ -1,12 +1,15 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S1 (M-85).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
 
 // Package agentrouter captures issue events for agents that subscribe to an
-// issue tree or a project (the "Router" of the fork's Super-agent design).
+// issue tree or a project (the "Router" of the fork's Super-agent design), and
+// runs the subscribed agent on them.
 //
-// Slice S1 only captures: a subscription, a durable event queue, an in-process
+// Slice S1 captures: a subscription, a durable event queue, an in-process
 // events.Bus listener and a periodic reconcile that adds whatever the listener
-// missed. Nothing here dispatches a run; batching, anchor runs, subscription
-// state and owner notices are slice S2.
+// missed. Slice S2 dispatches: it batches a subscription's pending events,
+// starts one anchor run per batch (one run at a time per agent), keeps a small
+// state document per subscription, and gives the agent one outlet to reach a
+// member, the owner notice, delivered by channel adapters (inbox only).
 //
 // Capture never uses database triggers. The listener runs synchronously on
 // the publisher's goroutine, so it does one bounded lookup and one short
@@ -16,8 +19,9 @@
 // cache that has not caught up) is added by reconcile and counted as
 // capture_miss.
 //
-// Everything is behind the router_v1 feature flag. With the flag off the API
-// answers 404 and neither the listener nor the reconcile job is registered.
+// Capture is behind the router_v1 feature flag: with it off the API answers 404
+// and neither the listener nor the reconcile job is registered. Dispatch, state
+// and notices are additionally behind router_dispatch.
 package agentrouter
 
 import (
@@ -40,7 +44,20 @@ const (
 	SourceBus       = "bus"
 	SourceReconcile = "reconcile"
 
-	PausedManual = "manual"
+	PausedManual           = "manual"
+	PausedRate             = "rate"
+	PausedAgentUnavailable = "agent_unavailable"
+
+	// Batching defaults and bounds, in seconds (debounce, max wait) and runs.
+	DefaultDebounceSeconds = 60
+	DefaultMaxWaitSeconds  = 600
+	DefaultMaxRunsPerHour  = 6
+	MinDebounceSeconds     = 10
+	MaxBatchWaitSeconds    = 86400
+	MaxRunsPerHourLimit    = 60
+
+	// MaxStateBytes caps a subscription's state document.
+	MaxStateBytes = 8 * 1024
 
 	// MaxScopeDepth bounds how far an issue tree is followed, in both
 	// directions: the listener walks up at most this many parents and
@@ -94,25 +111,38 @@ func NormalizeEventTypes(in []string) ([]string, error) {
 
 // Subscription is one agent watching one scope.
 type Subscription struct {
-	ID            string    `json:"id"`
-	WorkspaceID   string    `json:"workspace_id"`
-	AgentID       string    `json:"agent_id"`
-	OwnerUserID   *string   `json:"owner_user_id"`
-	ScopeType     string    `json:"scope_type"`
-	ScopeID       string    `json:"scope_id"`
-	AnchorIssueID *string   `json:"anchor_issue_id"`
-	EventTypes    []string  `json:"event_types"`
-	Enabled       bool      `json:"enabled"`
-	PausedReason  *string   `json:"paused_reason"`
-	ActiveSince   time.Time `json:"active_since"`
+	ID            string   `json:"id"`
+	WorkspaceID   string   `json:"workspace_id"`
+	AgentID       string   `json:"agent_id"`
+	OwnerUserID   *string  `json:"owner_user_id"`
+	ScopeType     string   `json:"scope_type"`
+	ScopeID       string   `json:"scope_id"`
+	AnchorIssueID *string  `json:"anchor_issue_id"`
+	EventTypes    []string `json:"event_types"`
+	Enabled       bool     `json:"enabled"`
+	// PausedReason with Enabled false is a manual pause: capture stopped.
+	// With Enabled true it is "rate" or "agent_unavailable": dispatch stopped
+	// but capture goes on, so a resume dispatches what arrived meanwhile.
+	PausedReason    *string   `json:"paused_reason"`
+	DebounceSeconds int       `json:"debounce_seconds"`
+	MaxWaitSeconds  int       `json:"max_wait_seconds"`
+	MaxRunsPerHour  int       `json:"max_runs_per_hour"`
+	StateRevision   int64     `json:"state_revision"`
+	StateBytes      int       `json:"state_bytes"`
+	ActiveSince     time.Time `json:"active_since"`
 	// ReconciledThrough is the upper bound of the last reconcile pass that
 	// completed for this subscription's workspace. CaptureMiss says nothing
 	// about changes after it.
 	ReconciledThrough *time.Time `json:"reconciled_through"`
 	CreatedByType     string     `json:"created_by_type"`
 	CreatedByID       string     `json:"created_by_id"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	// ViaAgentID and ViaTaskID are set when an agent created the
+	// subscription for another agent on the authority of CreatedByID, the
+	// member who started that agent's run.
+	ViaAgentID *string   `json:"via_agent_id"`
+	ViaTaskID  *string   `json:"via_task_id"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 	// EventCount and CaptureMiss are computed on read. CaptureMiss is the
 	// number of this subscription's events that reconcile had to add because
 	// the listener did not record them.
@@ -150,6 +180,46 @@ type ScopeIssue struct {
 	AssigneeID   *string   `json:"assignee_id"`
 	ParentID     *string   `json:"parent_issue_id"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// Batching is a subscription's dispatch parameters. A zero field means "keep"
+// on update and "default" on create.
+type Batching struct {
+	DebounceSeconds int
+	MaxWaitSeconds  int
+	MaxRunsPerHour  int
+}
+
+// Validate checks the non-zero fields against their bounds, and max wait
+// against debounce when both are known.
+func (b Batching) Validate() error {
+	if b.DebounceSeconds != 0 && (b.DebounceSeconds < MinDebounceSeconds || b.DebounceSeconds > MaxBatchWaitSeconds) {
+		return fmt.Errorf("debounce_seconds must be between %d and %d", MinDebounceSeconds, MaxBatchWaitSeconds)
+	}
+	if b.MaxWaitSeconds != 0 && (b.MaxWaitSeconds < MinDebounceSeconds || b.MaxWaitSeconds > MaxBatchWaitSeconds) {
+		return fmt.Errorf("max_wait_seconds must be between %d and %d", MinDebounceSeconds, MaxBatchWaitSeconds)
+	}
+	if b.DebounceSeconds != 0 && b.MaxWaitSeconds != 0 && b.MaxWaitSeconds < b.DebounceSeconds {
+		return fmt.Errorf("max_wait_seconds must not be shorter than debounce_seconds")
+	}
+	if b.MaxRunsPerHour != 0 && (b.MaxRunsPerHour < 1 || b.MaxRunsPerHour > MaxRunsPerHourLimit) {
+		return fmt.Errorf("max_runs_per_hour must be between 1 and %d", MaxRunsPerHourLimit)
+	}
+	return nil
+}
+
+// withDefaults fills zero fields with the defaults.
+func (b Batching) withDefaults() Batching {
+	if b.DebounceSeconds == 0 {
+		b.DebounceSeconds = DefaultDebounceSeconds
+	}
+	if b.MaxWaitSeconds == 0 {
+		b.MaxWaitSeconds = max(DefaultMaxWaitSeconds, b.DebounceSeconds)
+	}
+	if b.MaxRunsPerHour == 0 {
+		b.MaxRunsPerHour = DefaultMaxRunsPerHour
+	}
+	return b
 }
 
 func issueCreatedKey(issueID string) string { return "issue:" + issueID + ":created" }

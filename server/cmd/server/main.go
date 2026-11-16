@@ -865,9 +865,9 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.PluginHookScheduleDispatchJob(queries, h.PluginService)); err != nil {
 		slog.Warn("scheduler: failed to register plugin_hook_schedule_dispatch job", "error", err)
 	}
-	// Modified for the mouse9527/multica fork: Router capture (M-85). Inert
-	// unless router_v1 is on.
-	agentrouter.Register(context.Background(), flags, bus, pool, schedulerMgr)
+	// Modified for the mouse9527/multica fork: Router capture (M-85) and
+	// dispatch (M-86). Inert unless router_v1 (and router_dispatch) is on.
+	agentrouter.Register(context.Background(), flags, bus, pool, schedulerMgr, taskSvc)
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)
 	}()

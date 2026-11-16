@@ -1,11 +1,12 @@
-# Router：事件捕获（S1）
+# Router：事件捕获（S1）与派发、出口（S2）
 
-本文件属于 `mouse9527/multica` fork（M-85，设计见 M-45 v5）。Router 让一个智能体订阅一个范围（一棵 issue 树或一个项目），把范围内的事件写进持久的事件队列。**S1 只做捕获**：不派发任何运行，不合批，不写 `state`，不发 `owner_notice`，这些是 S2。
+本文件属于 `mouse9527/multica` fork（S1 是 M-85，S2 是 M-86，设计见 M-45 v5）。Router 让一个智能体订阅一个范围（一棵 issue 树或一个项目），把范围内的事件写进持久的事件队列（S1）；再把攒下的事件合成一批，在锚点 issue 上给这个智能体起一次运行，并给它一个通知 Owner 的出口（S2，见后文「派发（S2）」）。
 
 ## 开关
 
 - `router_v1`，默认关闭。用 `FF_ROUTER_V1=true` 打开（或 `MULTICA_FEATURE_FLAGS_FILE` 里的规则）。
 - 关闭时：`/api/router/*` 返回 404，`events.Bus` 监听器和对账任务都不注册，行为与上游一致。开关在启动时读一次，改了要重启服务。
+- `router_dispatch`（S2），默认关闭，`FF_ROUTER_DISPATCH=true` 打开，**只在 `router_v1` 也打开时生效**。关闭时不注册派发任务，`/api/router/subscriptions/{id}/state` 和 `/api/router/notices` 返回 404，行为与 S1 一致。订阅的修改（`PATCH`）、审计记录和运行列表只要 `router_v1`。
 - `MULTICA_ROUTER_RECONCILE_INTERVAL`：对账周期（Go duration，如 `5m`），默认 5 分钟，最小 30 秒。
 
 ## 数据（迁移 9004–9007，只新增表）
@@ -19,7 +20,15 @@
 
 `router_subscription.reconciled_through` 是该工作区最近一次**完整跑完**的对账的上界。
 
-回滚：按 9007→9004 的顺序执行 down，四张表连同数据一起删除；上游表不受影响。
+S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用的列 9004 已经建好，不需要改表）：
+
+| 表 | 用途 |
+|---|---|
+| `router_dispatch` | 每次锚点运行一行：哪个订阅、哪个任务、带了几个事件；运行（连同系统重试）结束后记 `outcome` |
+| `router_subscription_change` | 订阅的审计记录：谁改的（`actor`）、凭谁的权限（`authorized_by_user_id`）、经哪个智能体的哪次运行代办（`via_agent_id`、`via_task_id`）；订阅删掉后保留 |
+| `owner_notice` | 「通知 Owner」：收件人、标题、正文、关联 issue、紧急程度、`dedupe_key`（同一发送者、同一收件人内唯一）、各渠道投递结果 `channel_states` |
+
+回滚：按 9013→9004 的顺序执行 down（只回滚 S2 就到 9008 为止），表连同数据一起删除；上游表不受影响。
 
 9004 的建表语句放在 `DO` 块里用 `EXECUTE` 执行：sqlc 把迁移目录当 schema 读，直接写的 `CREATE TABLE` 会让 `make sqlc` 往共享的 `pkg/db/generated/models.go` 加 Router 的结构体，而对 sqlc 看不见的表写 `ALTER TABLE` 会让生成直接失败。Router 只用手写 SQL，不需要这些结构体。**以后的 Router 迁移（包括 S2）也要把建表、改表放进 `DO` 块**；`CREATE INDEX CONCURRENTLY` 不能放进 `DO` 块，sqlc 也不读索引语句，照常单独成文件。`TestRouterTablesStayInvisibleToSqlc` 检查所有 `*_router_*.up.sql`。
 
@@ -65,7 +74,12 @@
 
 - 新建订阅时，把范围内每个 issue 的当前状态记为基线，所以已有的状态不会被当成漏掉的变化。
 - 暂停：停止捕获，清掉这条订阅的基线；已经暂停的订阅再暂停不改原来的原因。恢复：从恢复那一刻重新捕获并重建基线，暂停期间的变化不补、也不算 `capture_miss`。
-- 权限：智能体只能订阅自己；成员要能管理该智能体（智能体所有者或工作区管理员）。暂停、恢复、删除：订阅的智能体本身、创建它的成员、工作区所有者或管理员。读取对工作区成员开放，私有项目里的 issue 按现有的可见性规则过滤。
+- 权限（S2 起）：
+  - **成员**：能管理该智能体（智能体所有者或工作区所有者、管理员）就能给它建订阅；修改、暂停、恢复、删除：创建它的成员、被订阅智能体的所有者、工作区所有者或管理员。
+  - **智能体订阅自己**：照旧允许，不需要成员授权。
+  - **智能体代建、代改**（给别的智能体）：只看这次运行的发起人（任务的 `originator_user_id`），不看提示词。运行必须还没结束，发起人必须是工作区成员，并且按上面成员的规则有权操作目标智能体或订阅。没有人类发起人的运行（autopilot 的规则所有者、owner_fallback 归责）没有这个权限。代建的订阅记为该成员创建（`created_by_type=member`、`owner_user_id` 也是该成员），代办的智能体和运行记在 `via_agent_id`、`via_task_id`。
+  - 每次创建、修改、暂停、恢复、删除和自动暂停都写一条 `router_subscription_change`，`multica router changes <id>` 可查。
+  - 读取对工作区成员开放，私有项目里的 issue 按现有的可见性规则过滤。
 
 ## API 与 CLI
 
@@ -78,6 +92,15 @@
 | `multica router delete <id>` | `DELETE /api/router/subscriptions/{id}` |
 | `multica router events [--subscription] [--since 2h\|RFC3339] [--state pending\|consumed] [--source bus\|reconcile]` | `GET /api/router/events` |
 | `multica router scope <id> [--all]` | `GET /api/router/subscriptions/{id}/scope` |
+| `multica router update <id> [--anchor] [--events] [--debounce] [--max-wait] [--max-runs-per-hour]` | `PATCH /api/router/subscriptions/{id}` |
+| `multica router changes <id>` | `GET /api/router/subscriptions/{id}/changes` |
+| `multica router runs [--subscription]` | `GET /api/router/dispatches` |
+| `multica router state get <id>` | `GET /api/router/subscriptions/{id}/state` |
+| `multica router state set <id> --expect-revision N (--state \| --state-file \| --state-stdin \| --clear)` | `PUT /api/router/subscriptions/{id}/state` |
+| `multica notify owner --title … [--body…] [--ref <issue>]… [--urgency normal\|high] [--dedupe-key] [--subscription]` | `POST /api/router/notices` |
+| `multica notify list [--subscription]` | `GET /api/router/notices` |
+
+`subscribe` 也接受 `--anchor`、`--debounce`、`--max-wait`、`--max-runs-per-hour`。
 
 订阅 ID 可以用前缀。智能体在运行里调用 `subscribe` 时可以省略 `--agent`，默认订阅自己。
 
@@ -90,3 +113,58 @@
 **只有对账确实跑完了，`capture_miss` 才能当覆盖证据**：先看 `reconciled_through` 是否接近现在（落后不超过一两个对账周期）。它停在过去或是 `never`，说明对账没跑完，这时 `capture_miss` 为 0 不说明任何问题；去看 `router: reconcile did not finish` 日志和 `sys_cron_executions` 里 `router_reconcile` 的失败记录。
 
 `reconciled_through` 正常前进、`capture_miss` 持续为 0，说明 Bus 覆盖了这几类写入路径，可以考虑放宽对账周期；持续非 0，按 `kind` 找没有发布 Bus 事件的写入路径。
+
+## 派发（S2）
+
+### 合批
+
+- 派发任务每 15 秒跑一次（DB 调度器，全局一个租约；并发跑也安全）。
+- 订阅下**别人造成的**（非 `self`）未消费事件满足任一条件就派发：最后一个事件之后 `debounce_seconds`（默认 60，最小 10）内没有新事件；或最早的那个已经等了 `max_wait_seconds`（默认 600）。
+- 一批最多 200 个事件，按捕获顺序；自己的事件（`self`）不会触发派发，但会跟着下一批一起被标为已消费，不写进提示词。
+- 没有锚点的订阅只捕获、不派发：`issue_tree` 默认锚点是树根；`project` 订阅要用 `--anchor` 指定（S1 建的项目订阅没有锚点，所以打开 `router_dispatch` 后也不会派发，直到设置锚点）。
+
+### 锚点运行
+
+- 走与「提及一个智能体」相同的入队路径（`service.EnqueueRouterRun`），所以归责、私有项目、triage 守卫和 `(issue, agent)` 唯一索引都照旧；没有成员是这次运行的发起人。daemon 不用改：批次写进任务的 `handoff_note`，渲染进提示词。
+- 提示词里有：本批事件（时间、issue、类型、变化、谁做的）、范围内未关闭的 issue（最多 40 条，按最近更新）、订阅的 `state` 和 revision，以及继续查询、写 state、通知 Owner 的命令。
+- **按智能体串行**：派发先拿该智能体的事务级 advisory 锁（拿不到就跳过这一轮），并且只要它有任何一条订阅的运行还没结束（`router_dispatch.settled_at` 为空）就不派发。不依赖 `max_concurrent_tasks`。
+- 这个智能体在锚点 issue 上已有排队的运行，或锚点 issue 在 triage 中：本轮不派发，下一轮再试。
+
+### 运行结束
+
+- 每轮先结算：沿 `retry_of_task_id` 跟踪系统重试，整条链都结束才结算。有一次 `completed` 就记 `completed`；否则记 `failed`，把这批事件的 `consumed_task_id` 清空，**重新排队**，下一批再带上（至少一次投递；Router 的动作要能重复执行，这是对提示词的要求）。运行行被删掉的也按失败处理。
+
+### 暂停（不静默）
+
+以下情况把订阅的 `paused_reason` 设为 `rate` 或 `agent_unavailable`，**捕获继续**，只停派发，并给 Owner 发一条紧急通知（每个订阅、原因、小时只发一条）：
+
+- 最近一小时的派发次数达到 `max_runs_per_hour`（默认 6，最大 60）→ `rate`；
+- 智能体被归档、没有 runtime，锚点 issue 被删，或入队被拒（私有项目无权限、工作区归责 fail-closed）→ `agent_unavailable`。
+
+`multica router resume <id>` 清掉原因，暂停期间攒下的事件作为一批派发。手动 `pause` 仍是 S1 的含义（停止捕获）。通知的收件人是订阅的 `owner_user_id`，没有时是智能体所有者。
+
+### state
+
+`router_subscription.state`，文本，最多 8KB（超出返回 413），带 `state_revision`。写入必须带上读到的 revision，不一致返回 409，由调用方重读、合并再写。只有被订阅的智能体本身和工作区所有者、管理员能写；工作区成员能读。各 issue 正文的「已定决定」仍是唯一事实，`state` 只是 Router 自己的索引。
+
+## 出口：owner_notice
+
+- `multica notify owner` 写一行 `owner_notice`，再交给各渠道适配器；Router 只调用这一个原语，不知道渠道。
+- 收件人：带 `--subscription` 时是该订阅的 `owner_user_id`（没有时是智能体所有者），智能体只能用自己的订阅；不带时，智能体通知自己的所有者，成员通知自己。
+- `--dedupe-key` 只在同一发送者（成员、智能体或系统）发给同一收件人的通知之间去重：重复发送返回第一条（HTTP 200，`created=false`），不会再投递。别人用同一个键发的通知互不影响，也读不到。智能体每小时最多发 30 条（429）。
+- **适配器**（`agentrouter.Adapter`）：MVP 只有收件箱。投递前先把该渠道记为 `unknown` 再发送，发完写 `sent`、`failed` 或 `skipped`；**`unknown` 不自动重试**（发送不幂等）。派发在事务里写的暂停通知，提交后立即投递；进程在这之间退出的，下一轮派发补投。
+- **收件箱适配器**：写一条 `type=router_notice` 的收件箱条目，`severity` 为 `action_required`（`--urgency high`）或 `info`，issue 是第一个 `--ref`；走现有的收件箱资格检查（私有项目不可见的成员会得到 `skipped`）。这个类型不在通知分组里，不会被静音或专注模式过滤。前端把它当未知类型：列表和详情显示标题和正文，详情头部没有类型名称（本切片不改前端）。chat、IM 适配器只留接口。
+
+## 已知局限（S2）
+
+- 入队成功但随后的提交失败（极少见）时，这批事件仍是未消费，之后会再派发一次：至少一次，不是恰好一次。
+- 已消费的事件不清理（设计里的 14 天清理没做，免得改变 `capture_miss` 的计数口径）；事件多了再加。
+- 锚点 issue 被删、入队被拒都归到 `agent_unavailable`（9004 的 CHECK 只允许 `rate`、`manual`、`agent_unavailable`，S2 不改表）；通知正文写了具体原因。
+
+## 部署清单（S2）
+
+1. 备份数据库，在真实数据副本上演练迁移 9008–9013（up、down、再 up）。
+2. **把本机 daemon 给智能体用的 CLI 更新到 fork 最新 `main`**：现在的版本没有 `router`、`notify` 子命令，智能体在运行里调用 `multica router state …`、`multica notify owner` 会失败。
+3. 部署后先保持 `router_dispatch` 关闭，确认迁移和 S1 捕获正常；再打开 `FF_ROUTER_DISPATCH=true`（需要重启）。
+4. 打开前用 `multica router list` 检查现有订阅：`issue_tree` 订阅默认有锚点，打开后就会开始派发；只想继续观察的，先 `router update` 调大参数或暂停。
+5. 打开后用 `multica router runs`、`multica notify list` 和 `sys_cron_executions`（`job_name='router_dispatch'`）观察。

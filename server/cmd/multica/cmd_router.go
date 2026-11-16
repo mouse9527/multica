@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S1 (M-85).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
 
 package main
 
@@ -169,6 +169,9 @@ func runRouterSubscribe(cmd *cobra.Command, _ []string) error {
 	if events, _ := cmd.Flags().GetStringSlice("events"); len(events) > 0 {
 		body["event_types"] = events
 	}
+	if err := routerBatchingBody(ctx, cmd, client, body); err != nil {
+		return err
+	}
 
 	var sub map[string]any
 	if err := client.PostJSON(ctx, "/api/router/subscriptions", body, &sub); err != nil {
@@ -221,6 +224,9 @@ func routerSubscriptionRows(subs []map[string]any, fullID bool) [][]string {
 		enabled := "yes"
 		if b, _ := s["enabled"].(bool); !b {
 			enabled = "paused"
+		} else if reason := strVal(s, "paused_reason"); reason != "" {
+			// Capture goes on; only dispatch stopped.
+			enabled = "dispatch paused (" + reason + ")"
 		}
 		created := strVal(s, "created_at")
 		if len(created) >= 10 {

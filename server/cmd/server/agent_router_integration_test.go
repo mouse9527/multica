@@ -46,7 +46,7 @@ func TestRouterCapturesRealWrites(t *testing.T) {
 	go hub.Run()
 	router, _ := NewRouterWithOptions(testPool, hub, bus, analytics.NoopClient{}, nil, RouterOptions{FeatureFlags: flags})
 	jobs := &routerJobs{}
-	if !agentrouter.Register(ctx, flags, bus, testPool, jobs) || len(jobs.specs) != 1 {
+	if !agentrouter.Register(ctx, flags, bus, testPool, jobs, nil) || len(jobs.specs) != 1 {
 		t.Fatalf("router not registered: jobs=%d", len(jobs.specs))
 	}
 	srv := httptest.NewServer(router)

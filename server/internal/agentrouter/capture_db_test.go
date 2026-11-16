@@ -373,7 +373,7 @@ func TestPauseAndResume(t *testing.T) {
 	e := newEnv(t)
 	root := e.issue("root")
 	sub := e.subscribe(e.agentA, ScopeIssueTree, root)
-	if _, err := e.store.Pause(e.ctx, e.ws, sub.ID); err != nil {
+	if _, err := e.store.Pause(e.ctx, e.ws, sub.ID, Change{ActorType: "member", ActorID: e.user}); err != nil {
 		t.Fatal(err)
 	}
 	e.publishComment(e.comment(root))
@@ -382,7 +382,7 @@ func TestPauseAndResume(t *testing.T) {
 	if n := len(e.events(sub.ID)); n != 0 {
 		t.Fatalf("paused subscription captured %d events", n)
 	}
-	if _, err := e.store.Resume(e.ctx, e.ws, sub.ID); err != nil {
+	if _, err := e.store.Resume(e.ctx, e.ws, sub.ID, Change{ActorType: "member", ActorID: e.user}); err != nil {
 		t.Fatal(err)
 	}
 	if res := e.reconcile(); res.Total() != 0 {
@@ -425,12 +425,12 @@ func TestRegisterFollowsTheFlag(t *testing.T) {
 
 	bus := events.New()
 	jobs := &recordingRegistrar{}
-	if Register(context.Background(), nil, bus, nil, jobs) {
+	if Register(context.Background(), nil, bus, nil, jobs, nil) {
 		t.Fatal("registered with the flag unset")
 	}
 	off := featureflag.NewStaticProvider()
 	off.Set(featureflags.RouterV1, featureflag.Rule{Default: false})
-	if Register(context.Background(), featureflag.NewService(off), bus, nil, jobs) {
+	if Register(context.Background(), featureflag.NewService(off), bus, nil, jobs, nil) {
 		t.Fatal("registered with the flag off")
 	}
 	for _, et := range watched {
@@ -444,7 +444,7 @@ func TestRegisterFollowsTheFlag(t *testing.T) {
 
 	on := featureflag.NewStaticProvider()
 	on.Set(featureflags.RouterV1, featureflag.Rule{Default: true})
-	if !Register(context.Background(), featureflag.NewService(on), bus, nil, jobs) {
+	if !Register(context.Background(), featureflag.NewService(on), bus, nil, jobs, nil) {
 		t.Fatal("not registered with the flag on")
 	}
 	for _, et := range watched {

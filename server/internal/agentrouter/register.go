@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S1 (M-85).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
 
 package agentrouter
 
@@ -13,12 +13,20 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/scheduler"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
 // JobNameReconcile is the scheduler's audit key for reconcile. Stable across
 // releases.
 const JobNameReconcile = "router_reconcile"
+
+// JobNameDispatch is the scheduler's audit key for dispatch.
+const JobNameDispatch = "router_dispatch"
+
+// DispatchInterval is how often dispatch looks for due batches. With the
+// default 60 s debounce a batch starts 60-75 s after its last event.
+const DispatchInterval = 15 * time.Second
 
 // ReconcileIntervalEnv overrides DefaultReconcileInterval with a Go duration.
 const ReconcileIntervalEnv = "MULTICA_ROUTER_RECONCILE_INTERVAL"
@@ -37,9 +45,10 @@ type JobRegistrar interface {
 }
 
 // Register wires the Router into the server when router_v1 is on: the Bus
-// listener and the reconcile job. With the flag off it registers nothing, so
-// the server behaves exactly as upstream. It returns whether it registered.
-func Register(ctx context.Context, flags *featureflag.Service, bus *events.Bus, db Database, jobs JobRegistrar) bool {
+// listener and the reconcile job, and with router_dispatch also on, the
+// dispatch job. With router_v1 off it registers nothing, so the server
+// behaves exactly as upstream. It returns whether it registered capture.
+func Register(ctx context.Context, flags *featureflag.Service, bus *events.Bus, db Database, jobs JobRegistrar, tasks *service.TaskService) bool {
 	if !featureflags.RouterV1Enabled(ctx, flags) {
 		return false
 	}
@@ -55,7 +64,42 @@ func Register(ctx context.Context, flags *featureflag.Service, bus *events.Bus, 
 		slog.Error("router: register reconcile job", "error", err)
 	}
 	slog.Info("router: capture enabled", "reconcile_interval", interval)
+	if featureflags.RouterDispatchEnabled(ctx, flags) && tasks != nil {
+		notices := NewNotifier(store, InboxAdapter{Queries: tasks.Queries, Bus: bus})
+		if err := jobs.Register(DispatchJob(NewDispatcher(store, TaskRuns{Tasks: tasks}, notices))); err != nil {
+			slog.Error("router: register dispatch job", "error", err)
+		} else {
+			slog.Info("router: dispatch enabled", "interval", DispatchInterval)
+		}
+	}
 	return true
+}
+
+// DispatchJob runs dispatch on the DB-backed scheduler. Overlapping runs are
+// safe: every dispatch takes the agent's lock, and settling is conditional.
+func DispatchJob(d *Dispatcher) scheduler.JobSpec {
+	return scheduler.JobSpec{
+		Name:              JobNameDispatch,
+		Cadence:           DispatchInterval,
+		CatchUpMode:       scheduler.CatchUpLatestOnly,
+		CatchUpWindow:     time.Hour,
+		RunTimeout:        time.Minute,
+		StaleTimeout:      2 * time.Minute,
+		HeartbeatInterval: 10 * time.Second,
+		AllowStaleReentry: true,
+		MaxAttempts:       1,
+		Scopes:            scheduler.StaticScopes(scheduler.ScopeGlobal),
+		Handler: func(ctx context.Context, _ scheduler.HandlerInput) (scheduler.HandlerResult, error) {
+			res, err := d.Tick(ctx)
+			return scheduler.HandlerResult{
+				RowsAffected: int64(res.Dispatched),
+				Result: map[string]any{
+					"dispatched": res.Dispatched, "settled": res.Settled, "released": res.Released,
+					"paused": res.Paused, "waiting": res.Waiting, "notices": res.Notices,
+				},
+			}, err
+		},
+	}
 }
 
 // ReconcileIntervalFromEnv parses the reconcile interval override. Empty

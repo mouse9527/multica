@@ -1,0 +1,769 @@
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86).
+
+package agentrouter
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// RunEnqueuer starts an anchor run. The server's implementation is
+// TaskRuns, which goes through the task service; tests substitute their own.
+type RunEnqueuer interface {
+	EnqueueRouterRun(ctx context.Context, issueID, agentID, note string) (taskID string, err error)
+}
+
+var (
+	// ErrRunBusy: the run cannot start now (the agent already has a run
+	// waiting on the anchor issue, or the issue is in triage). The batch
+	// waits for the next tick.
+	ErrRunBusy = errors.New("router: the anchor run cannot start yet")
+	// ErrRunRefused: the run will not start until someone changes something
+	// (project access, attribution policy). Dispatch pauses and tells the
+	// owner.
+	ErrRunRefused = errors.New("router: the anchor run was refused")
+)
+
+const (
+	// maxBatchEvents bounds how many pending events one run takes. The rest
+	// go to the next batch.
+	maxBatchEvents = 200
+	// maxDueSubscriptions bounds how many subscriptions one tick dispatches.
+	maxDueSubscriptions = 100
+)
+
+// Dispatcher turns a subscription's pending events into anchor runs.
+//
+// Each tick it first settles finished runs (a run that failed or was
+// cancelled, with every system retry of it, hands its batch back), then
+// delivers notices nobody delivered yet, then dispatches every subscription
+// whose batch is due: no new event for debounce_seconds, or the oldest
+// pending event waited max_wait_seconds. Only events from others count: an
+// event the subscribed agent caused (is_self) never starts a run, but rides
+// along with the next batch.
+//
+// One run at a time per agent: a dispatch takes a transaction-scoped
+// advisory lock on the agent and gives up when another dispatch holds it or
+// the agent has an open run from any of its subscriptions.
+type Dispatcher struct {
+	Store   *Store
+	Runs    RunEnqueuer
+	Notices *Notifier
+	Logger  *slog.Logger
+}
+
+func NewDispatcher(store *Store, runs RunEnqueuer, notices *Notifier) *Dispatcher {
+	return &Dispatcher{Store: store, Runs: runs, Notices: notices, Logger: slog.Default()}
+}
+
+// DispatchResult counts what a tick did.
+type DispatchResult struct {
+	Settled    int `json:"settled"`
+	Released   int `json:"released"`
+	Dispatched int `json:"dispatched"`
+	Paused     int `json:"paused"`
+	Waiting    int `json:"waiting"`
+	Notices    int `json:"notices"`
+}
+
+// Tick runs one dispatch pass over every workspace.
+func (d *Dispatcher) Tick(ctx context.Context) (DispatchResult, error) {
+	return d.TickWorkspace(ctx, "")
+}
+
+// TickWorkspace runs one dispatch pass over one workspace, or every
+// workspace when workspaceID is empty.
+func (d *Dispatcher) TickWorkspace(ctx context.Context, workspaceID string) (DispatchResult, error) {
+	var res DispatchResult
+	settled, released, err := d.settle(ctx, workspaceID)
+	res.Settled, res.Released = settled, released
+	if err != nil {
+		return res, fmt.Errorf("settle runs: %w", err)
+	}
+	if d.Notices != nil {
+		n, err := d.Notices.DeliverPending(ctx, workspaceID)
+		res.Notices = n
+		if err != nil {
+			d.Logger.Warn("router: deliver pending notices failed", "error", err)
+		}
+	}
+	due, err := d.dueSubscriptions(ctx, workspaceID)
+	if err != nil {
+		return res, fmt.Errorf("find due subscriptions: %w", err)
+	}
+	var errs []error
+	for _, sub := range due {
+		outcome, notice, err := d.dispatchOne(ctx, sub)
+		if err != nil {
+			d.Logger.Warn("router: dispatch failed; the batch stays queued",
+				"subscription_id", sub.ID, "agent_id", sub.AgentID, "error", err)
+			errs = append(errs, err)
+			continue
+		}
+		if notice != "" && d.Notices != nil {
+			d.Notices.Deliver(ctx, notice)
+		}
+		switch outcome {
+		case outcomeDispatched:
+			res.Dispatched++
+		case outcomePaused:
+			res.Paused++
+		default:
+			res.Waiting++
+		}
+	}
+	return res, errors.Join(errs...)
+}
+
+// settle closes open dispatch rows whose run, followed through its system
+// retries (retry_of_task_id), has finished. A chain that never completed
+// hands its events back: they become pending again and join the next batch.
+// A run that no longer exists counts as failed.
+func (d *Dispatcher) settle(ctx context.Context, workspaceID string) (settled, released int, err error) {
+	rows, err := d.Store.DB.Query(ctx, `
+		WITH RECURSIVE chain AS (
+		    SELECT dp.id AS dispatch_id, t.id AS task_id, COALESCE(t.status, 'cancelled') AS status
+		    FROM router_dispatch dp
+		    LEFT JOIN agent_task_queue t ON t.id = dp.task_id
+		    WHERE dp.settled_at IS NULL AND ($1 = '' OR dp.workspace_id = NULLIF($1, '')::uuid)
+		    UNION ALL
+		    SELECT c.dispatch_id, t.id, t.status
+		    FROM chain c
+		    JOIN agent_task_queue t ON t.parent_task_id = c.task_id AND t.retry_of_task_id = c.task_id
+		)
+		SELECT dispatch_id::text, bool_or(status = 'completed')
+		FROM chain
+		GROUP BY dispatch_id
+		HAVING NOT bool_or(status NOT IN ('completed', 'failed', 'cancelled'))`, workspaceID)
+	if err != nil {
+		return 0, 0, err
+	}
+	type done struct {
+		id        string
+		completed bool
+	}
+	finished, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (done, error) {
+		var x done
+		err := r.Scan(&x.id, &x.completed)
+		return x, err
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, f := range finished {
+		n, ok, err := d.settleOne(ctx, f.id, f.completed)
+		if err != nil {
+			return settled, released, err
+		}
+		if ok {
+			settled++
+			released += n
+		}
+	}
+	return settled, released, nil
+}
+
+func (d *Dispatcher) settleOne(ctx context.Context, dispatchID string, completed bool) (int, bool, error) {
+	tx, err := d.Store.Tx.Begin(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	outcome := "completed"
+	if !completed {
+		outcome = "failed"
+	}
+	var taskID string
+	err = tx.QueryRow(ctx, `
+		UPDATE router_dispatch SET outcome = $2, settled_at = now()
+		WHERE id = $1::uuid AND settled_at IS NULL
+		RETURNING task_id::text`, dispatchID, outcome).Scan(&taskID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Another tick settled it.
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	released := 0
+	if !completed {
+		tag, err := tx.Exec(ctx, `UPDATE router_event SET consumed_task_id = NULL WHERE consumed_task_id = $1::uuid`, taskID)
+		if err != nil {
+			return 0, false, err
+		}
+		released = int(tag.RowsAffected())
+	}
+	return released, true, tx.Commit(ctx)
+}
+
+// dueSub is a subscription whose batch is due.
+type dueSub struct {
+	ID          string
+	WorkspaceID string
+	AgentID     string
+}
+
+func (d *Dispatcher) dueSubscriptions(ctx context.Context, workspaceID string) ([]dueSub, error) {
+	rows, err := d.Store.DB.Query(ctx, `
+		SELECT s.id::text, s.workspace_id::text, s.agent_id::text
+		FROM router_subscription s
+		JOIN LATERAL (
+		    SELECT min(e.created_at) AS first_at, max(e.created_at) AS last_at
+		    FROM router_event e
+		    WHERE e.subscription_id = s.id AND e.consumed_task_id IS NULL AND NOT e.is_self
+		) p ON p.first_at IS NOT NULL
+		WHERE s.enabled AND s.paused_reason IS NULL AND s.anchor_issue_id IS NOT NULL
+		  AND ($2 = '' OR s.workspace_id = NULLIF($2, '')::uuid)
+		  AND (p.last_at <= now() - make_interval(secs => s.debounce_seconds)
+		       OR p.first_at <= now() - make_interval(secs => s.max_wait_seconds))
+		ORDER BY p.first_at
+		LIMIT $1`, maxDueSubscriptions, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (dueSub, error) {
+		var s dueSub
+		err := r.Scan(&s.ID, &s.WorkspaceID, &s.AgentID)
+		return s, err
+	})
+}
+
+type dispatchOutcome int
+
+const (
+	outcomeWaiting dispatchOutcome = iota
+	outcomeDispatched
+	outcomePaused
+)
+
+// dispatchSub is the subscription as dispatch reads it under the lock.
+type dispatchSub struct {
+	ID             string
+	WorkspaceID    string
+	AgentID        string
+	OwnerUserID    *string
+	ScopeType      string
+	ScopeID        string
+	AnchorIssueID  *string
+	MaxRunsPerHour int
+	Enabled        bool
+	PausedReason   *string
+	State          string
+	StateRevision  int64
+}
+
+// dispatchOne dispatches one due subscription. It returns the outcome and,
+// when it paused the subscription, the id of the notice to deliver after the
+// commit.
+func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutcome, string, error) {
+	tx, err := d.Store.Tx.Begin(ctx)
+	if err != nil {
+		return outcomeWaiting, "", err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	var locked bool
+	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended('router:' || $1, 0))`, due.AgentID).Scan(&locked); err != nil {
+		return outcomeWaiting, "", err
+	}
+	if !locked {
+		return outcomeWaiting, "", nil
+	}
+	var sub dispatchSub
+	err = tx.QueryRow(ctx, `
+		SELECT id::text, workspace_id::text, agent_id::text, owner_user_id::text, scope_type, scope_id::text,
+		       anchor_issue_id::text, max_runs_per_hour, enabled, paused_reason, state, state_revision
+		FROM router_subscription WHERE id = $1::uuid FOR UPDATE`, due.ID,
+	).Scan(&sub.ID, &sub.WorkspaceID, &sub.AgentID, &sub.OwnerUserID, &sub.ScopeType, &sub.ScopeID,
+		&sub.AnchorIssueID, &sub.MaxRunsPerHour, &sub.Enabled, &sub.PausedReason, &sub.State, &sub.StateRevision)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return outcomeWaiting, "", nil
+	}
+	if err != nil {
+		return outcomeWaiting, "", err
+	}
+	if !sub.Enabled || sub.PausedReason != nil || sub.AnchorIssueID == nil {
+		return outcomeWaiting, "", nil
+	}
+
+	var open bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM router_dispatch WHERE agent_id = $1::uuid AND settled_at IS NULL)`,
+		sub.AgentID).Scan(&open); err != nil {
+		return outcomeWaiting, "", err
+	}
+	if open {
+		return outcomeWaiting, "", nil
+	}
+
+	var agentName, agentOwner string
+	var archived, hasRuntime bool
+	err = tx.QueryRow(ctx, `
+		SELECT name, COALESCE(owner_id::text, ''), archived_at IS NOT NULL, runtime_id IS NOT NULL
+		FROM agent WHERE id = $1::uuid AND workspace_id = $2::uuid`, sub.AgentID, sub.WorkspaceID,
+	).Scan(&agentName, &agentOwner, &archived, &hasRuntime)
+	if errors.Is(err, pgx.ErrNoRows) {
+		archived = true
+	} else if err != nil {
+		return outcomeWaiting, "", err
+	}
+	pause := func(reason, why string) (dispatchOutcome, string, error) {
+		id, err := d.pauseDispatch(ctx, tx, sub, agentName, agentOwner, reason, why)
+		if err != nil {
+			return outcomeWaiting, "", err
+		}
+		return outcomePaused, id, tx.Commit(ctx)
+	}
+	switch {
+	case archived:
+		return pause(PausedAgentUnavailable, "the agent is archived or gone")
+	case !hasRuntime:
+		return pause(PausedAgentUnavailable, "the agent has no runtime")
+	}
+
+	var anchorKey, anchorTitle string
+	err = tx.QueryRow(ctx, `
+		SELECT w.issue_prefix || '-' || i.number, i.title
+		FROM issue i JOIN workspace w ON w.id = i.workspace_id
+		WHERE i.id = $1::uuid AND i.workspace_id = $2::uuid`, *sub.AnchorIssueID, sub.WorkspaceID,
+	).Scan(&anchorKey, &anchorTitle)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return pause(PausedAgentUnavailable, "the anchor issue no longer exists; set a new one with `multica router update --anchor`")
+	}
+	if err != nil {
+		return outcomeWaiting, "", err
+	}
+
+	var recent int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM router_dispatch
+		WHERE subscription_id = $1::uuid AND created_at > now() - interval '1 hour'`, sub.ID).Scan(&recent); err != nil {
+		return outcomeWaiting, "", err
+	}
+	if recent >= sub.MaxRunsPerHour {
+		return pause(PausedRate, fmt.Sprintf("it started %d runs in the last hour, the limit is %d", recent, sub.MaxRunsPerHour))
+	}
+
+	batch, err := loadBatch(ctx, tx, sub.ID)
+	if err != nil {
+		return outcomeWaiting, "", err
+	}
+	if !batch.hasOthers() {
+		return outcomeWaiting, "", tx.Commit(ctx)
+	}
+	inflight, total, err := loadInFlight(ctx, tx, sub.WorkspaceID, sub.ID)
+	if err != nil {
+		return outcomeWaiting, "", err
+	}
+	note := buildNote(noteInput{
+		sub: sub, anchorKey: anchorKey, scopeLabel: scopeLabel(ctx, tx, sub),
+		batch: batch, inflight: inflight, inflightTotal: total, now: time.Now(),
+	})
+
+	taskID, err := d.Runs.EnqueueRouterRun(ctx, *sub.AnchorIssueID, sub.AgentID, note)
+	switch {
+	case errors.Is(err, ErrRunBusy):
+		return outcomeWaiting, "", tx.Commit(ctx)
+	case errors.Is(err, ErrRunRefused):
+		return pause(PausedAgentUnavailable, err.Error())
+	case err != nil:
+		return outcomeWaiting, "", err
+	}
+	// The run exists from here on. If this commit fails, the batch stays
+	// pending and a later batch carries the same events again: delivery is
+	// at least once.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO router_dispatch (workspace_id, subscription_id, agent_id, anchor_issue_id, task_id, event_count)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6)`,
+		sub.WorkspaceID, sub.ID, sub.AgentID, *sub.AnchorIssueID, taskID, len(batch.events)); err != nil {
+		return outcomeWaiting, "", err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE router_event SET consumed_task_id = $2::uuid
+		WHERE id = ANY($1::uuid[]) AND consumed_task_id IS NULL`, batch.ids(), taskID); err != nil {
+		return outcomeWaiting, "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return outcomeWaiting, "", err
+	}
+	d.Logger.Info("router: anchor run queued", "subscription_id", sub.ID, "agent_id", sub.AgentID,
+		"task_id", taskID, "events", len(batch.events))
+	return outcomeDispatched, "", nil
+}
+
+// pauseDispatch stops dispatch for a subscription (capture goes on), records
+// it, and writes the notice for its owner in the same transaction. The notice
+// is delivered after the commit; DeliverPending covers a process that stops
+// in between. The dedupe key allows one notice per subscription, reason and
+// hour.
+func (d *Dispatcher) pauseDispatch(ctx context.Context, tx pgx.Tx, sub dispatchSub, agentName, agentOwner, reason, why string) (string, error) {
+	if _, err := tx.Exec(ctx, `
+		UPDATE router_subscription SET paused_reason = $2, updated_at = now()
+		WHERE id = $1::uuid AND enabled AND paused_reason IS NULL`, sub.ID, reason); err != nil {
+		return "", err
+	}
+	if err := recordChange(ctx, tx, sub.WorkspaceID, sub.ID, Change{
+		Action: ChangeAutoPause, ActorType: "system",
+		Detail: map[string]any{"reason": reason, "why": why},
+	}); err != nil {
+		return "", err
+	}
+	recipient := agentOwner
+	if sub.OwnerUserID != nil {
+		recipient = *sub.OwnerUserID
+	}
+	d.Logger.Warn("router: dispatch paused", "subscription_id", sub.ID, "agent_id", sub.AgentID,
+		"reason", reason, "why", why)
+	if recipient == "" {
+		return "", nil
+	}
+	var refs []string
+	if sub.AnchorIssueID != nil {
+		refs = []string{*sub.AnchorIssueID}
+	}
+	n, _, err := insertNotice(ctx, tx, NoticeInput{
+		WorkspaceID:     sub.WorkspaceID,
+		RecipientUserID: recipient,
+		Title:           fmt.Sprintf("Router paused for %s", agentName),
+		Body: fmt.Sprintf("Router subscription %s stopped starting runs for %s: %s. "+
+			"Events are still captured. Resume with `multica router resume %s`.", sub.ID, agentName, why, sub.ID),
+		Refs:                 refs,
+		Urgency:              UrgencyHigh,
+		DedupeKey:            fmt.Sprintf("router_paused:%s:%s:%s", sub.ID, reason, time.Now().UTC().Format("2006010215")),
+		SenderType:           "system",
+		SourceSubscriptionID: sub.ID,
+	})
+	if err != nil {
+		return "", err
+	}
+	return n.ID, nil
+}
+
+// batchEvent is one pending event as the note shows it.
+type batchEvent struct {
+	ID         string
+	Kind       string
+	IssueKey   string
+	IssueTitle string
+	ActorType  *string
+	ActorName  string
+	Self       bool
+	Payload    map[string]any
+	OccurredAt time.Time
+}
+
+// batch is what one run takes: up to maxBatchEvents events others caused,
+// and the agent's own pending events, which are consumed with the batch but
+// never shown.
+type batch struct {
+	events  []batchEvent
+	selfIDs []string
+}
+
+func (b batch) hasOthers() bool { return len(b.events) > 0 }
+
+func (b batch) ids() []string {
+	out := make([]string, 0, len(b.events)+len(b.selfIDs))
+	for _, e := range b.events {
+		out = append(out, e.ID)
+	}
+	return append(out, b.selfIDs...)
+}
+
+// loadBatch reads the subscription's pending events. The limit applies to
+// events others caused only, so any number of the agent's own events ahead
+// of them cannot hold a batch back.
+func loadBatch(ctx context.Context, q Querier, subscriptionID string) (batch, error) {
+	rows, err := q.Query(ctx, `
+		SELECT e.id::text, e.kind, COALESCE(w.issue_prefix || '-' || i.number, ''), COALESCE(i.title, ''),
+		       e.actor_type, COALESCE(a.name, u.name, ''), e.is_self, e.payload, e.occurred_at
+		FROM router_event e
+		LEFT JOIN issue i ON i.id = e.issue_id
+		LEFT JOIN workspace w ON w.id = i.workspace_id
+		LEFT JOIN agent a ON e.actor_type = 'agent' AND a.id = e.actor_id
+		LEFT JOIN "user" u ON e.actor_type = 'member' AND u.id = e.actor_id
+		WHERE e.subscription_id = $1::uuid AND e.consumed_task_id IS NULL AND NOT e.is_self
+		ORDER BY e.created_at, e.id
+		LIMIT $2`, subscriptionID, maxBatchEvents)
+	if err != nil {
+		return batch{}, err
+	}
+	evs, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (batchEvent, error) {
+		var e batchEvent
+		err := r.Scan(&e.ID, &e.Kind, &e.IssueKey, &e.IssueTitle, &e.ActorType, &e.ActorName, &e.Self, &e.Payload, &e.OccurredAt)
+		return e, err
+	})
+	if err != nil || len(evs) == 0 {
+		return batch{events: evs}, err
+	}
+	// A batch cut at the limit takes own events only up to its last event;
+	// the rest go with the next batch.
+	last := ""
+	if len(evs) == maxBatchEvents {
+		last = evs[len(evs)-1].ID
+	}
+	rows, err = q.Query(ctx, `
+		SELECT e.id::text FROM router_event e
+		WHERE e.subscription_id = $1::uuid AND e.consumed_task_id IS NULL AND e.is_self
+		  AND ($2 = '' OR (e.created_at, e.id) <= (
+		      SELECT l.created_at, l.id FROM router_event l WHERE l.id = NULLIF($2, '')::uuid))`, subscriptionID, last)
+	if err != nil {
+		return batch{}, err
+	}
+	self, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	return batch{events: evs, selfIDs: self}, err
+}
+
+// inFlightIssue is one open issue in scope as the note shows it.
+type inFlightIssue struct {
+	Key          string
+	Title        string
+	Status       string
+	AssigneeType *string
+	AssigneeName string
+	UpdatedAt    time.Time
+}
+
+const maxInFlight = 40
+
+// loadInFlight lists the subscription's open issues, most recently updated
+// first, and how many there are in all.
+func loadInFlight(ctx context.Context, q Querier, workspaceID, subscriptionID string) ([]inFlightIssue, int, error) {
+	rows, err := q.Query(ctx, `
+		WITH RECURSIVE `+membersCTE+`
+		SELECT w.issue_prefix || '-' || i.number, i.title, i.status, i.assignee_type,
+		       COALESCE(a.name, u.name, ''), i.updated_at, count(*) OVER ()
+		FROM members m
+		JOIN issue i ON i.id = m.issue_id
+		JOIN workspace w ON w.id = i.workspace_id
+		LEFT JOIN agent a ON i.assignee_type = 'agent' AND a.id = i.assignee_id
+		LEFT JOIN "user" u ON i.assignee_type = 'member' AND u.id = i.assignee_id
+		WHERE m.sub_id = $2::uuid AND i.status NOT IN ('done', 'cancelled')
+		ORDER BY i.updated_at DESC, i.id
+		LIMIT $3`, workspaceID, subscriptionID, maxInFlight)
+	if err != nil {
+		return nil, 0, err
+	}
+	total := 0
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (inFlightIssue, error) {
+		var x inFlightIssue
+		err := r.Scan(&x.Key, &x.Title, &x.Status, &x.AssigneeType, &x.AssigneeName, &x.UpdatedAt, &total)
+		return x, err
+	})
+	return out, total, err
+}
+
+// scopeLabel names the scope for the note: the root issue key or the
+// project title.
+func scopeLabel(ctx context.Context, q Querier, sub dispatchSub) string {
+	var label string
+	var err error
+	switch sub.ScopeType {
+	case ScopeIssueTree:
+		err = q.QueryRow(ctx, `
+			SELECT w.issue_prefix || '-' || i.number FROM issue i JOIN workspace w ON w.id = i.workspace_id
+			WHERE i.id = $1::uuid`, sub.ScopeID).Scan(&label)
+		label = "issue tree " + label
+	default:
+		err = q.QueryRow(ctx, `SELECT title FROM project WHERE id = $1::uuid`, sub.ScopeID).Scan(&label)
+		label = "project " + label
+	}
+	if err != nil {
+		return sub.ScopeType + " " + sub.ScopeID
+	}
+	return label
+}
+
+type noteInput struct {
+	sub           dispatchSub
+	anchorKey     string
+	scopeLabel    string
+	batch         batch
+	inflight      []inFlightIssue
+	inflightTotal int
+	now           time.Time
+}
+
+const (
+	maxNoteEventsBytes   = 6 * 1024
+	maxNoteInFlightBytes = 6 * 1024
+	maxNoteTitle         = 80
+)
+
+// buildNote renders the run's context: the batch, the open issues in scope
+// and the subscription's state, with the CLI commands that reach further.
+// The daemon puts it in the run's prompt as the handoff note.
+func buildNote(in noteInput) string {
+	var b strings.Builder
+	id := in.sub.ID
+	others := 0
+	for _, e := range in.batch.events {
+		if !e.Self {
+			others++
+		}
+	}
+	fmt.Fprintf(&b, "Router batch for subscription %s (%s, anchor %s): %d new event(s).\n", id, in.scopeLabel, in.anchorKey, others)
+	b.WriteString("You are the Router for this scope. Read the events, check current state where it matters, and act. " +
+		"Your own actions are left out and never start a run. " +
+		"When a person has to decide or act, tell them with `multica notify owner --subscription " + id + " --title ... --body ...`; do not rely on issue comments alone.\n\n")
+
+	b.WriteString("Events, oldest first:\n")
+	shown, size := 0, 0
+	for _, e := range in.batch.events {
+		if e.Self {
+			continue
+		}
+		line := "- " + eventLine(e) + "\n"
+		if size+len(line) > maxNoteEventsBytes {
+			break
+		}
+		b.WriteString(line)
+		size += len(line)
+		shown++
+	}
+	if shown < others {
+		fmt.Fprintf(&b, "- ... %d more: `multica router events --subscription %s --state pending --output json`\n", others-shown, id)
+	}
+
+	fmt.Fprintf(&b, "\nOpen issues in scope (%d of %d, most recently updated first):\n", len(in.inflight), in.inflightTotal)
+	size = 0
+	listed := 0
+	for _, x := range in.inflight {
+		assignee := "unassigned"
+		if x.AssigneeType != nil {
+			assignee = *x.AssigneeType + " " + x.AssigneeName
+		}
+		line := fmt.Sprintf("- %s [%s] %s, updated %s ago: %s\n", x.Key, x.Status, assignee,
+			roundAge(in.now.Sub(x.UpdatedAt)), truncate(x.Title, maxNoteTitle))
+		if size+len(line) > maxNoteInFlightBytes {
+			break
+		}
+		b.WriteString(line)
+		size += len(line)
+		listed++
+	}
+	if listed < in.inflightTotal {
+		fmt.Fprintf(&b, "- ... the rest: `multica router scope %s`\n", id)
+	}
+
+	fmt.Fprintf(&b, "\nState (revision %d). Keep what you need next time here: "+
+		"`multica router state set %s --expect-revision %d --state-file <path>` (at most %d bytes; on a revision conflict read it again with `multica router state get %s` and merge).\n",
+		in.sub.StateRevision, id, in.sub.StateRevision, MaxStateBytes, id)
+	if strings.TrimSpace(in.sub.State) == "" {
+		b.WriteString("(empty)\n")
+	} else {
+		b.WriteString(in.sub.State)
+		if !strings.HasSuffix(in.sub.State, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+func eventLine(e batchEvent) string {
+	var b strings.Builder
+	b.WriteString(e.OccurredAt.UTC().Format(time.RFC3339))
+	b.WriteString(" ")
+	b.WriteString(e.IssueKey)
+	b.WriteString(" ")
+	b.WriteString(e.Kind)
+	switch e.Kind {
+	case KindStatusChanged:
+		fmt.Fprintf(&b, " %v -> %v", e.Payload["from"], e.Payload["to"])
+	case KindAssigneeChanged:
+		fmt.Fprintf(&b, " -> %s", assigneeText(e.Payload["to"]))
+	case KindCommentCreated:
+		if id, ok := e.Payload["comment_id"].(string); ok {
+			fmt.Fprintf(&b, " comment %s", id)
+		}
+	case KindTaskFailed:
+		if reason, ok := e.Payload["failure_reason"].(string); ok && reason != "" {
+			fmt.Fprintf(&b, " (%s)", reason)
+		}
+	}
+	if e.ActorType != nil {
+		fmt.Fprintf(&b, " by %s", *e.ActorType)
+		if e.ActorName != "" {
+			fmt.Fprintf(&b, " %s", e.ActorName)
+		}
+	}
+	if e.IssueTitle != "" {
+		fmt.Fprintf(&b, ": %s", truncate(e.IssueTitle, maxNoteTitle))
+	}
+	return b.String()
+}
+
+func assigneeText(v any) string {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return "unassigned"
+	}
+	return fmt.Sprintf("%v %v", m["type"], m["id"])
+}
+
+func truncate(s string, n int) string {
+	r := []rune(strings.TrimSpace(strings.ReplaceAll(s, "\n", " ")))
+	if len(r) <= n {
+		return string(r)
+	}
+	return string(r[:n-1]) + "…"
+}
+
+func roundAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "<1m"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
+// DispatchRecord is one anchor run as read back.
+type DispatchRecord struct {
+	ID             string     `json:"id"`
+	SubscriptionID string     `json:"subscription_id"`
+	AgentID        string     `json:"agent_id"`
+	AnchorIssueID  string     `json:"anchor_issue_id"`
+	TaskID         string     `json:"task_id"`
+	TaskStatus     *string    `json:"task_status"`
+	EventCount     int        `json:"event_count"`
+	Outcome        *string    `json:"outcome"`
+	SettledAt      *time.Time `json:"settled_at"`
+	CreatedAt      time.Time  `json:"created_at"`
+}
+
+// ListDispatches returns a workspace's anchor runs, newest first, optionally
+// for one subscription.
+func (s *Store) ListDispatches(ctx context.Context, workspaceID, subscriptionID string, limit int) ([]DispatchRecord, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.DB.Query(ctx, `
+		SELECT dp.id::text, dp.subscription_id::text, dp.agent_id::text, dp.anchor_issue_id::text,
+		       dp.task_id::text, t.status, dp.event_count, dp.outcome, dp.settled_at, dp.created_at
+		FROM router_dispatch dp
+		LEFT JOIN agent_task_queue t ON t.id = dp.task_id
+		WHERE dp.workspace_id = $1::uuid
+		  AND ($2 = '' OR dp.subscription_id = NULLIF($2, '')::uuid)
+		ORDER BY dp.created_at DESC, dp.id DESC
+		LIMIT $3`, workspaceID, subscriptionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (DispatchRecord, error) {
+		var d DispatchRecord
+		err := r.Scan(&d.ID, &d.SubscriptionID, &d.AgentID, &d.AnchorIssueID, &d.TaskID, &d.TaskStatus,
+			&d.EventCount, &d.Outcome, &d.SettledAt, &d.CreatedAt)
+		return d, err
+	})
+}

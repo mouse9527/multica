@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S1 (M-85).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
 //
 // HTTP surface of internal/agentrouter. It lives in package handler only to
 // reuse the request helpers (actor, workspace, issue and agent loaders,
@@ -36,6 +36,7 @@ func (h *Handler) MountAgentRouter(r chi.Router) {
 	r.Delete("/subscriptions/{id}", h.DeleteRouterSubscription)
 	r.Get("/subscriptions/{id}/scope", h.GetRouterSubscriptionScope)
 	r.Get("/events", h.ListRouterEvents)
+	h.mountRouterDispatch(r)
 }
 
 func (h *Handler) requireRouterV1(next http.Handler) http.Handler {
@@ -56,8 +57,12 @@ func (h *Handler) routerFail(w http.ResponseWriter, r *http.Request, err error) 
 	switch {
 	case errors.Is(err, agentrouter.ErrNotFound):
 		writeError(w, http.StatusNotFound, "subscription not found")
-	case errors.Is(err, agentrouter.ErrDuplicate):
+	case errors.Is(err, agentrouter.ErrDuplicate), errors.Is(err, agentrouter.ErrStateConflict):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, agentrouter.ErrStateTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, err.Error())
+	case errors.Is(err, agentrouter.ErrInvalid), errors.Is(err, agentrouter.ErrNoticeInvalid):
+		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		if writeQueryCancellation(w, r, err) {
 			return
@@ -74,6 +79,13 @@ type CreateRouterSubscriptionRequest struct {
 	// ScopeID is an issue id or identifier (issue_tree) or a project id.
 	ScopeID    string   `json:"scope_id"`
 	EventTypes []string `json:"event_types"`
+	// AnchorIssueID is the issue anchor runs go to (id or identifier). It
+	// defaults to the root of an issue_tree scope; a project scope without
+	// one captures but never dispatches.
+	AnchorIssueID   string `json:"anchor_issue_id"`
+	DebounceSeconds int    `json:"debounce_seconds"`
+	MaxWaitSeconds  int    `json:"max_wait_seconds"`
+	MaxRunsPerHour  int    `json:"max_runs_per_hour"`
 }
 
 func (h *Handler) CreateRouterSubscription(w http.ResponseWriter, r *http.Request) {
@@ -112,16 +124,37 @@ func (h *Handler) CreateRouterSubscription(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	// An agent may subscribe only itself; a member must be able to manage
-	// the agent (its owner or a workspace admin), because later slices run
-	// the agent on what it captures.
+	batching := agentrouter.Batching{
+		DebounceSeconds: req.DebounceSeconds, MaxWaitSeconds: req.MaxWaitSeconds, MaxRunsPerHour: req.MaxRunsPerHour,
+	}
+	if err := batching.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// A member must be able to manage the agent (its owner or a workspace
+	// admin), because dispatch runs the agent on what it captures. An agent
+	// may subscribe itself; it may subscribe another agent only on the
+	// authority of the member who started its current run, who must be able
+	// to manage that agent. The subscription is then that member's, and the
+	// acting agent is recorded as via.
+	createdByType, createdByID, ownerUserID := actorType, actorID, userID
+	change := agentrouter.Change{ActorType: actorType, ActorID: actorID}
 	if actorType == "agent" {
+		auth := h.routerAgentAuthority(r, workspaceID)
+		change.AuthorizedBy = auth.userID
 		if uuidToString(agent.ID) != actorID {
-			writeError(w, http.StatusForbidden, "an agent can only subscribe itself")
+			if !auth.canManageAgent(agent) {
+				writeError(w, http.StatusForbidden, "an agent can subscribe another agent only in a run started by a member who can manage that agent (its owner or a workspace admin)")
+				return
+			}
+			createdByType, createdByID, ownerUserID = "member", auth.userID, auth.userID
+			change.ViaAgentID, change.ViaTaskID = actorID, auth.taskID
+		}
+	} else {
+		if !h.canManageAgent(w, r, agent) {
 			return
 		}
-	} else if !h.canManageAgent(w, r, agent) {
-		return
+		change.AuthorizedBy = actorID
 	}
 
 	var scopeID, anchorID string
@@ -139,17 +172,26 @@ func (h *Handler) CreateRouterSubscription(w http.ResponseWriter, r *http.Reques
 		}
 		scopeID = strings.TrimSpace(req.ScopeID)
 	}
+	if ref := strings.TrimSpace(req.AnchorIssueID); ref != "" {
+		anchor, ok := h.loadIssueForUser(w, r, ref)
+		if !ok {
+			return
+		}
+		anchorID = uuidToString(anchor.ID)
+	}
 
 	sub, err := h.routerStore().Create(r.Context(), agentrouter.CreateParams{
 		WorkspaceID:   workspaceID,
 		AgentID:       uuidToString(agent.ID),
-		OwnerUserID:   userID,
+		OwnerUserID:   ownerUserID,
 		ScopeType:     scopeType,
 		ScopeID:       scopeID,
 		AnchorIssueID: anchorID,
 		EventTypes:    eventTypes,
-		CreatedByType: actorType,
-		CreatedByID:   actorID,
+		Batching:      batching,
+		CreatedByType: createdByType,
+		CreatedByID:   createdByID,
+		Change:        change,
 	})
 	if err != nil {
 		h.routerFail(w, r, err)
@@ -218,28 +260,39 @@ func (h *Handler) loadRouterSubscription(w http.ResponseWriter, r *http.Request)
 }
 
 // canChangeRouterSubscription allows the subscribed agent itself, the member
-// who created the subscription, and workspace owners and admins.
-func (h *Handler) canChangeRouterSubscription(w http.ResponseWriter, r *http.Request, sub agentrouter.Subscription) bool {
+// who created the subscription, the owner of the subscribed agent, and
+// workspace owners and admins. Another agent may change it on the authority
+// of the member who started its current run, under the same rule. It returns
+// the audit record of the change (without its action).
+func (h *Handler) canChangeRouterSubscription(w http.ResponseWriter, r *http.Request, sub agentrouter.Subscription) (agentrouter.Change, bool) {
 	actorType, actorID := h.resolveActor(r, requestUserID(r), sub.WorkspaceID)
+	change := agentrouter.Change{ActorType: actorType, ActorID: actorID}
 	if actorType == "agent" {
+		auth := h.routerAgentAuthority(r, sub.WorkspaceID)
+		change.AuthorizedBy = auth.userID
 		if actorID == sub.AgentID {
-			return true
+			return change, true
 		}
-		writeError(w, http.StatusForbidden, "an agent can only change its own subscriptions")
-		return false
+		if !auth.canChangeSubscription(sub) && !h.userOwnsAgent(r, sub.AgentID, auth.userID) {
+			writeError(w, http.StatusForbidden, "an agent can change another agent's subscription only in a run started by a member who may change it")
+			return change, false
+		}
+		change.ViaAgentID, change.ViaTaskID = actorID, auth.taskID
+		return change, true
 	}
+	change.AuthorizedBy = actorID
 	if sub.CreatedByType == "member" && sub.CreatedByID == actorID {
-		return true
+		return change, true
 	}
 	member, ok := h.workspaceMember(w, r, sub.WorkspaceID)
 	if !ok {
-		return false
+		return change, false
 	}
-	if !roleAllowed(member.Role, "owner", "admin") {
-		writeError(w, http.StatusForbidden, "only the subscription's creator, its agent, or a workspace admin can change it")
-		return false
+	if roleAllowed(member.Role, "owner", "admin") || h.userOwnsAgent(r, sub.AgentID, actorID) {
+		return change, true
 	}
-	return true
+	writeError(w, http.StatusForbidden, "only the subscription's creator, its agent, the agent's owner, or a workspace admin can change it")
+	return change, false
 }
 
 func (h *Handler) GetRouterSubscription(w http.ResponseWriter, r *http.Request) {
@@ -252,10 +305,14 @@ func (h *Handler) GetRouterSubscription(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) PauseRouterSubscription(w http.ResponseWriter, r *http.Request) {
 	sub, ok := h.loadRouterSubscription(w, r)
-	if !ok || !h.canChangeRouterSubscription(w, r, sub) {
+	if !ok {
 		return
 	}
-	out, err := h.routerStore().Pause(r.Context(), sub.WorkspaceID, sub.ID)
+	change, ok := h.canChangeRouterSubscription(w, r, sub)
+	if !ok {
+		return
+	}
+	out, err := h.routerStore().Pause(r.Context(), sub.WorkspaceID, sub.ID, change)
 	if err != nil {
 		h.routerFail(w, r, err)
 		return
@@ -265,10 +322,14 @@ func (h *Handler) PauseRouterSubscription(w http.ResponseWriter, r *http.Request
 
 func (h *Handler) ResumeRouterSubscription(w http.ResponseWriter, r *http.Request) {
 	sub, ok := h.loadRouterSubscription(w, r)
-	if !ok || !h.canChangeRouterSubscription(w, r, sub) {
+	if !ok {
 		return
 	}
-	out, err := h.routerStore().Resume(r.Context(), sub.WorkspaceID, sub.ID)
+	change, ok := h.canChangeRouterSubscription(w, r, sub)
+	if !ok {
+		return
+	}
+	out, err := h.routerStore().Resume(r.Context(), sub.WorkspaceID, sub.ID, change)
 	if err != nil {
 		h.routerFail(w, r, err)
 		return
@@ -278,10 +339,14 @@ func (h *Handler) ResumeRouterSubscription(w http.ResponseWriter, r *http.Reques
 
 func (h *Handler) DeleteRouterSubscription(w http.ResponseWriter, r *http.Request) {
 	sub, ok := h.loadRouterSubscription(w, r)
-	if !ok || !h.canChangeRouterSubscription(w, r, sub) {
+	if !ok {
 		return
 	}
-	if err := h.routerStore().Delete(r.Context(), sub.WorkspaceID, sub.ID); err != nil {
+	change, ok := h.canChangeRouterSubscription(w, r, sub)
+	if !ok {
+		return
+	}
+	if err := h.routerStore().Delete(r.Context(), sub.WorkspaceID, sub.ID, change); err != nil {
 		h.routerFail(w, r, err)
 		return
 	}
