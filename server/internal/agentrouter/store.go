@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S1 (M-85).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
 
 package agentrouter
 
@@ -32,6 +32,12 @@ type TxStarter interface {
 var (
 	ErrNotFound  = errors.New("subscription not found")
 	ErrDuplicate = errors.New("this agent already subscribes to this scope")
+	// ErrStateConflict: the state changed since the revision the writer read.
+	ErrStateConflict = errors.New("state revision does not match; read the state again and retry")
+	// ErrStateTooLarge: the state exceeds MaxStateBytes.
+	ErrStateTooLarge = fmt.Errorf("state exceeds %d bytes", MaxStateBytes)
+	// ErrInvalid wraps a request that fails validation against stored values.
+	ErrInvalid = errors.New("invalid subscription change")
 )
 
 // subscriptionGeneration is bumped on every subscription write so the
@@ -86,17 +92,31 @@ members AS (
 const subscriptionColumns = `
     s.id::text, s.workspace_id::text, s.agent_id::text, s.owner_user_id::text,
     s.scope_type, s.scope_id::text, s.anchor_issue_id::text, s.event_types,
-    s.enabled, s.paused_reason, s.active_since, s.reconciled_through,
-    s.created_by_type, s.created_by_id::text, s.created_at, s.updated_at,
+    s.enabled, s.paused_reason, s.debounce_seconds, s.max_wait_seconds, s.max_runs_per_hour,
+    s.state_revision, octet_length(s.state), s.active_since, s.reconciled_through,
+    s.created_by_type, s.created_by_id::text, created.via_agent_id::text, created.via_task_id::text,
+    s.created_at, s.updated_at,
     (SELECT count(*) FROM router_event e WHERE e.subscription_id = s.id),
     (SELECT count(*) FROM router_event e WHERE e.subscription_id = s.id AND e.source = 'reconcile')`
+
+// subscriptionFrom joins each subscription with its create record, which
+// carries the delegation (via) of an agent-created subscription.
+const subscriptionFrom = `
+    router_subscription s
+    LEFT JOIN LATERAL (
+        SELECT c.via_agent_id, c.via_task_id FROM router_subscription_change c
+        WHERE c.subscription_id = s.id AND c.action = 'create'
+        ORDER BY c.created_at LIMIT 1
+    ) created ON true`
 
 func scanSubscription(row pgx.Row) (Subscription, error) {
 	var s Subscription
 	err := row.Scan(&s.ID, &s.WorkspaceID, &s.AgentID, &s.OwnerUserID,
 		&s.ScopeType, &s.ScopeID, &s.AnchorIssueID, &s.EventTypes,
-		&s.Enabled, &s.PausedReason, &s.ActiveSince, &s.ReconciledThrough,
-		&s.CreatedByType, &s.CreatedByID, &s.CreatedAt, &s.UpdatedAt,
+		&s.Enabled, &s.PausedReason, &s.DebounceSeconds, &s.MaxWaitSeconds, &s.MaxRunsPerHour,
+		&s.StateRevision, &s.StateBytes, &s.ActiveSince, &s.ReconciledThrough,
+		&s.CreatedByType, &s.CreatedByID, &s.ViaAgentID, &s.ViaTaskID,
+		&s.CreatedAt, &s.UpdatedAt,
 		&s.EventCount, &s.CaptureMiss)
 	return s, err
 }
@@ -110,8 +130,55 @@ type CreateParams struct {
 	ScopeID       string
 	AnchorIssueID string
 	EventTypes    []string
+	Batching      Batching
 	CreatedByType string
 	CreatedByID   string
+	// Change records who created it and on whose authority; its Action is
+	// set to "create".
+	Change Change
+}
+
+// Change is one audit record of a subscription change.
+type Change struct {
+	Action    string
+	ActorType string
+	ActorID   string
+	// AuthorizedBy is the member whose rights allowed the change.
+	AuthorizedBy string
+	// ViaAgentID and ViaTaskID name the agent run that acted for another
+	// agent on AuthorizedBy's authority.
+	ViaAgentID string
+	ViaTaskID  string
+	Detail     map[string]any
+}
+
+const (
+	ChangeCreate    = "create"
+	ChangeUpdate    = "update"
+	ChangePause     = "pause"
+	ChangeResume    = "resume"
+	ChangeDelete    = "delete"
+	ChangeAutoPause = "auto_pause"
+)
+
+// recordChange appends one audit row.
+func recordChange(ctx context.Context, q Querier, workspaceID, subscriptionID string, c Change) error {
+	detail, err := json.Marshal(c.Detail)
+	if err != nil || c.Detail == nil {
+		detail = []byte("{}")
+	}
+	_, err = q.Exec(ctx, `
+		INSERT INTO router_subscription_change (
+		    workspace_id, subscription_id, action, actor_type, actor_id,
+		    authorized_by_user_id, via_agent_id, via_task_id, detail
+		) VALUES ($1::uuid, $2::uuid, $3, $4, NULLIF($5, '')::uuid,
+		          NULLIF($6, '')::uuid, NULLIF($7, '')::uuid, NULLIF($8, '')::uuid, $9)`,
+		workspaceID, subscriptionID, c.Action, c.ActorType, c.ActorID,
+		c.AuthorizedBy, c.ViaAgentID, c.ViaTaskID, detail)
+	if err != nil {
+		return fmt.Errorf("record subscription change: %w", err)
+	}
+	return nil
 }
 
 // Create inserts a subscription and records the current state of every issue
@@ -124,16 +191,26 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (Subscription, error
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
+	if p.AnchorIssueID == "" && p.ScopeType == ScopeIssueTree {
+		// Anchor runs go to the tree's root unless told otherwise.
+		p.AnchorIssueID = p.ScopeID
+	}
+	b := p.Batching.withDefaults()
+	if err := b.Validate(); err != nil {
+		return Subscription{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
 	var id string
 	err = tx.QueryRow(ctx, `
 		INSERT INTO router_subscription (
 		    workspace_id, agent_id, owner_user_id, scope_type, scope_id,
-		    anchor_issue_id, event_types, created_by_type, created_by_id
+		    anchor_issue_id, event_types, created_by_type, created_by_id,
+		    debounce_seconds, max_wait_seconds, max_runs_per_hour
 		) VALUES ($1::uuid, $2::uuid, NULLIF($3, '')::uuid, $4, $5::uuid,
-		          NULLIF($6, '')::uuid, $7, $8, $9::uuid)
+		          NULLIF($6, '')::uuid, $7, $8, $9::uuid, $10, $11, $12)
 		RETURNING id::text`,
 		p.WorkspaceID, p.AgentID, p.OwnerUserID, p.ScopeType, p.ScopeID,
 		p.AnchorIssueID, p.EventTypes, p.CreatedByType, p.CreatedByID,
+		b.DebounceSeconds, b.MaxWaitSeconds, b.MaxRunsPerHour,
 	).Scan(&id)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -141,6 +218,14 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (Subscription, error
 			return Subscription{}, ErrDuplicate
 		}
 		return Subscription{}, fmt.Errorf("insert subscription: %w", err)
+	}
+	change := p.Change
+	change.Action = ChangeCreate
+	if change.ActorType == "" {
+		change.ActorType, change.ActorID = p.CreatedByType, p.CreatedByID
+	}
+	if err := recordChange(ctx, tx, p.WorkspaceID, id, change); err != nil {
+		return Subscription{}, err
 	}
 	if err := syncSeen(ctx, tx, p.WorkspaceID); err != nil {
 		return Subscription{}, err
@@ -156,7 +241,7 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (Subscription, error
 func (s *Store) Get(ctx context.Context, workspaceID, id string) (Subscription, error) {
 	sub, err := scanSubscription(s.DB.QueryRow(ctx, `
 		SELECT `+subscriptionColumns+`
-		FROM router_subscription s
+		FROM `+subscriptionFrom+`
 		WHERE s.workspace_id = $1::uuid AND s.id = $2::uuid`, workspaceID, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Subscription{}, ErrNotFound
@@ -168,7 +253,7 @@ func (s *Store) Get(ctx context.Context, workspaceID, id string) (Subscription, 
 func (s *Store) List(ctx context.Context, workspaceID, agentID string) ([]Subscription, error) {
 	rows, err := s.DB.Query(ctx, `
 		SELECT `+subscriptionColumns+`
-		FROM router_subscription s
+		FROM `+subscriptionFrom+`
 		WHERE s.workspace_id = $1::uuid
 		  AND ($2 = '' OR s.agent_id = NULLIF($2, '')::uuid)
 		ORDER BY s.created_at, s.id`, workspaceID, agentID)
@@ -190,23 +275,30 @@ func (s *Store) List(ctx context.Context, workspaceID, agentID string) ([]Subscr
 // Pause stops capture for a subscription. Its seen rows go, so a resume
 // starts from a fresh baseline and nothing that happened while paused counts
 // as a miss.
-func (s *Store) Pause(ctx context.Context, workspaceID, id string) (Subscription, error) {
-	return s.setEnabled(ctx, workspaceID, id, `
+func (s *Store) Pause(ctx context.Context, workspaceID, id string, c Change) (Subscription, error) {
+	c.Action = ChangePause
+	return s.setEnabled(ctx, workspaceID, id, c, `
 		UPDATE router_subscription
 		SET enabled = false, paused_reason = 'manual', updated_at = now()
 		WHERE workspace_id = $1::uuid AND id = $2::uuid AND enabled`)
 }
 
-// Resume restarts capture from now.
-func (s *Store) Resume(ctx context.Context, workspaceID, id string) (Subscription, error) {
-	return s.setEnabled(ctx, workspaceID, id, `
+// Resume restarts capture from now. A subscription whose dispatch was paused
+// automatically (rate, agent_unavailable) kept capturing; resuming it only
+// lets dispatch go on, with the events that arrived meanwhile.
+func (s *Store) Resume(ctx context.Context, workspaceID, id string, c Change) (Subscription, error) {
+	c.Action = ChangeResume
+	return s.setEnabled(ctx, workspaceID, id, c, `
 		UPDATE router_subscription
-		SET enabled = true, paused_reason = NULL, active_since = now(),
-		    reconciled_through = NULL, updated_at = now()
-		WHERE workspace_id = $1::uuid AND id = $2::uuid AND NOT enabled`)
+		SET enabled = true, paused_reason = NULL,
+		    active_since = CASE WHEN enabled THEN active_since ELSE now() END,
+		    reconciled_through = CASE WHEN enabled THEN reconciled_through END,
+		    updated_at = now()
+		WHERE workspace_id = $1::uuid AND id = $2::uuid
+		  AND (NOT enabled OR paused_reason IS NOT NULL)`)
 }
 
-func (s *Store) setEnabled(ctx context.Context, workspaceID, id, update string) (Subscription, error) {
+func (s *Store) setEnabled(ctx context.Context, workspaceID, id string, c Change, update string) (Subscription, error) {
 	if _, err := s.Get(ctx, workspaceID, id); err != nil {
 		return Subscription{}, err
 	}
@@ -215,8 +307,14 @@ func (s *Store) setEnabled(ctx context.Context, workspaceID, id, update string) 
 		return Subscription{}, err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, update, workspaceID, id); err != nil {
+	tag, err := tx.Exec(ctx, update, workspaceID, id)
+	if err != nil {
 		return Subscription{}, err
+	}
+	if tag.RowsAffected() > 0 {
+		if err := recordChange(ctx, tx, workspaceID, id, c); err != nil {
+			return Subscription{}, err
+		}
 	}
 	if err := syncSeen(ctx, tx, workspaceID); err != nil {
 		return Subscription{}, err
@@ -228,8 +326,9 @@ func (s *Store) setEnabled(ctx context.Context, workspaceID, id, update string) 
 	return s.Get(ctx, workspaceID, id)
 }
 
-// Delete removes a subscription with its events and seen rows.
-func (s *Store) Delete(ctx context.Context, workspaceID, id string) error {
+// Delete removes a subscription with its events, seen rows and dispatch
+// records. Its audit records stay.
+func (s *Store) Delete(ctx context.Context, workspaceID, id string, c Change) error {
 	tx, err := s.Tx.Begin(ctx)
 	if err != nil {
 		return err
@@ -246,6 +345,13 @@ func (s *Store) Delete(ctx context.Context, workspaceID, id string) error {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM router_issue_seen WHERE subscription_id = $1::uuid`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM router_dispatch WHERE subscription_id = $1::uuid`, id); err != nil {
+		return err
+	}
+	c.Action = ChangeDelete
+	if err := recordChange(ctx, tx, workspaceID, id, c); err != nil {
 		return err
 	}
 	if err := syncSeen(ctx, tx, workspaceID); err != nil {
@@ -394,7 +500,10 @@ func (s *Store) Scope(ctx context.Context, workspaceID, id string, includeClosed
 // DeleteWorkspaceData removes every Router row of a workspace. It runs inside
 // the workspace delete transaction; the tables have no foreign keys.
 func DeleteWorkspaceData(ctx context.Context, q Querier, workspaceID any) error {
-	for _, table := range []string{"router_event", "router_issue_seen", "router_reconcile_cursor", "router_subscription"} {
+	for _, table := range []string{
+		"router_event", "router_issue_seen", "router_reconcile_cursor", "router_subscription",
+		"router_dispatch", "router_subscription_change", "owner_notice",
+	} {
 		if _, err := q.Exec(ctx, `DELETE FROM `+table+` WHERE workspace_id = $1`, workspaceID); err != nil {
 			return fmt.Errorf("delete %s: %w", table, err)
 		}
@@ -412,4 +521,165 @@ func ParseScopeType(t string) (string, error) {
 		return "", fmt.Errorf("scope_type must be %s or %s", ScopeIssueTree, ScopeProject)
 	}
 	return t, nil
+}
+
+// UpdateParams changes a subscription's dispatch settings. A nil or zero
+// field keeps its value.
+type UpdateParams struct {
+	EventTypes    []string
+	AnchorIssueID *string
+	Batching      Batching
+	Change        Change
+}
+
+// Update applies p. Event types change what capture writes from now on;
+// nothing already captured is removed.
+func (s *Store) Update(ctx context.Context, workspaceID, id string, p UpdateParams) (Subscription, error) {
+	cur, err := s.Get(ctx, workspaceID, id)
+	if err != nil {
+		return Subscription{}, err
+	}
+	b := Batching{DebounceSeconds: cur.DebounceSeconds, MaxWaitSeconds: cur.MaxWaitSeconds, MaxRunsPerHour: cur.MaxRunsPerHour}
+	detail := map[string]any{}
+	if p.Batching.DebounceSeconds != 0 {
+		b.DebounceSeconds = p.Batching.DebounceSeconds
+		detail["debounce_seconds"] = b.DebounceSeconds
+	}
+	if p.Batching.MaxWaitSeconds != 0 {
+		b.MaxWaitSeconds = p.Batching.MaxWaitSeconds
+		detail["max_wait_seconds"] = b.MaxWaitSeconds
+	}
+	if p.Batching.MaxRunsPerHour != 0 {
+		b.MaxRunsPerHour = p.Batching.MaxRunsPerHour
+		detail["max_runs_per_hour"] = b.MaxRunsPerHour
+	}
+	if err := b.Validate(); err != nil {
+		return Subscription{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	eventTypes := cur.EventTypes
+	if p.EventTypes != nil {
+		eventTypes = p.EventTypes
+		detail["event_types"] = eventTypes
+	}
+	anchor := ""
+	if cur.AnchorIssueID != nil {
+		anchor = *cur.AnchorIssueID
+	}
+	if p.AnchorIssueID != nil {
+		anchor = *p.AnchorIssueID
+		detail["anchor_issue_id"] = anchor
+	}
+	tx, err := s.Tx.Begin(ctx)
+	if err != nil {
+		return Subscription{}, err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	tag, err := tx.Exec(ctx, `
+		UPDATE router_subscription
+		SET event_types = $3, anchor_issue_id = NULLIF($4, '')::uuid,
+		    debounce_seconds = $5, max_wait_seconds = $6, max_runs_per_hour = $7,
+		    updated_at = now()
+		WHERE workspace_id = $1::uuid AND id = $2::uuid`,
+		workspaceID, id, eventTypes, anchor, b.DebounceSeconds, b.MaxWaitSeconds, b.MaxRunsPerHour)
+	if err != nil {
+		return Subscription{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return Subscription{}, ErrNotFound
+	}
+	c := p.Change
+	c.Action, c.Detail = ChangeUpdate, detail
+	if err := recordChange(ctx, tx, workspaceID, id, c); err != nil {
+		return Subscription{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Subscription{}, err
+	}
+	subscriptionGeneration.Add(1)
+	return s.Get(ctx, workspaceID, id)
+}
+
+// State is a subscription's state document and its revision.
+type State struct {
+	SubscriptionID string    `json:"subscription_id"`
+	State          string    `json:"state"`
+	Revision       int64     `json:"revision"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// GetState returns a subscription's state.
+func (s *Store) GetState(ctx context.Context, workspaceID, id string) (State, error) {
+	st := State{SubscriptionID: id}
+	err := s.DB.QueryRow(ctx, `
+		SELECT state, state_revision, updated_at FROM router_subscription
+		WHERE workspace_id = $1::uuid AND id = $2::uuid`, workspaceID, id,
+	).Scan(&st.State, &st.Revision, &st.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return State{}, ErrNotFound
+	}
+	return st, err
+}
+
+// SetState replaces the state when expectRevision is the current revision,
+// and bumps the revision. A stale revision returns ErrStateConflict; the
+// writer reads again and merges.
+func (s *Store) SetState(ctx context.Context, workspaceID, id, state string, expectRevision int64) (State, error) {
+	if len(state) > MaxStateBytes {
+		return State{}, ErrStateTooLarge
+	}
+	st := State{SubscriptionID: id, State: state}
+	err := s.DB.QueryRow(ctx, `
+		UPDATE router_subscription
+		SET state = $3, state_revision = state_revision + 1, updated_at = now()
+		WHERE workspace_id = $1::uuid AND id = $2::uuid AND state_revision = $4
+		RETURNING state_revision, updated_at`, workspaceID, id, state, expectRevision,
+	).Scan(&st.Revision, &st.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if _, err := s.GetState(ctx, workspaceID, id); err != nil {
+			return State{}, err
+		}
+		return State{}, ErrStateConflict
+	}
+	return st, err
+}
+
+// ChangeRecord is one audit row as read back.
+type ChangeRecord struct {
+	ID                 string         `json:"id"`
+	SubscriptionID     string         `json:"subscription_id"`
+	Action             string         `json:"action"`
+	ActorType          string         `json:"actor_type"`
+	ActorID            *string        `json:"actor_id"`
+	AuthorizedByUserID *string        `json:"authorized_by_user_id"`
+	ViaAgentID         *string        `json:"via_agent_id"`
+	ViaTaskID          *string        `json:"via_task_id"`
+	Detail             map[string]any `json:"detail"`
+	CreatedAt          time.Time      `json:"created_at"`
+}
+
+// ListChanges returns a subscription's audit trail, oldest first. It also
+// works for a deleted subscription.
+func (s *Store) ListChanges(ctx context.Context, workspaceID, id string) ([]ChangeRecord, error) {
+	rows, err := s.DB.Query(ctx, `
+		SELECT id::text, subscription_id::text, action, actor_type, actor_id::text,
+		       authorized_by_user_id::text, via_agent_id::text, via_task_id::text, detail, created_at
+		FROM router_subscription_change
+		WHERE workspace_id = $1::uuid AND subscription_id = $2::uuid
+		ORDER BY created_at, id`, workspaceID, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ChangeRecord{}
+	for rows.Next() {
+		var c ChangeRecord
+		var detail []byte
+		if err := rows.Scan(&c.ID, &c.SubscriptionID, &c.Action, &c.ActorType, &c.ActorID,
+			&c.AuthorizedByUserID, &c.ViaAgentID, &c.ViaTaskID, &detail, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(detail, &c.Detail)
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }

@@ -39,6 +39,10 @@ const (
 	// router subscriptions and their API, the events.Bus listener and the
 	// reconcile job. Off by default; off means upstream behavior.
 	RouterV1 = "router_v1"
+	// RouterDispatch gates the fork's Router dispatch and outlet (M-86):
+	// anchor runs for captured events, subscription state, and notify
+	// owner. It only takes effect with RouterV1 on. Off by default.
+	RouterDispatch = "router_dispatch"
 	// HandoffReplyWake makes a member comment on an issue in a handoff status
 	// also wake the issue's agent assignee, thread replies included
 	// (mouse9527/multica fork, M-89). Off by default; off means upstream
@@ -98,6 +102,12 @@ func RouterV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 // HandoffReplyWakeEnabled is added by the mouse9527/multica fork (M-89).
 func HandoffReplyWakeEnabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, HandoffReplyWake, false)
+}
+
+// RouterDispatchEnabled is added by the mouse9527/multica fork (M-86). It
+// requires RouterV1: dispatch consumes what capture writes.
+func RouterDispatchEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return RouterV1Enabled(ctx, flags) && flags.IsEnabled(ctx, RouterDispatch, false)
 }
 
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {
