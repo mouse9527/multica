@@ -80,7 +80,8 @@
     "description": "Este chat dejará de recibir la actividad de las tareas.",
     "delete": "Eliminar sus suscripciones",
     "keep": "Conservar sus suscripciones, en pausa",
-    "confirm": "Quitar"
+    "confirm": "Quitar",
+    "keep_hint": "Para volver a usarlas, convierte un chat en Router con los mismos ámbitos: se recuperan y se reanudan."
   },
   "board": {
     "title": "Tablero del Router · {{chat}}",
@@ -93,7 +94,9 @@
     "paused": "Router en pausa",
     "resumed": "Router reanudado",
     "released": "Router quitado",
-    "failed": "No se pudo actualizar el Router: {{error}}"
+    "failed": "No se pudo actualizar el Router: {{error}}",
+    "scope_taken": "{{scope}} ya pertenece al Router de otro chat. Quita primero ese Router o quita allí este ámbito.",
+    "deleted": "Suscripción eliminada"
   },
   "list": {
     "tab": "Routers",
@@ -102,6 +105,11 @@
     "scopes": "Ámbitos",
     "status": "Estado",
     "last_run": "Última ejecución",
-    "untitled": "Chat sin título"
+    "untitled": "Chat sin título",
+    "unbound_title": "Suscripciones fuera de un Router",
+    "unbound_hint": "Se conservaron al quitar un Router. Convertir un chat en Router con el mismo ámbito la recupera.",
+    "delete": "Eliminar",
+    "delete_title": "¿Eliminar esta suscripción?",
+    "delete_description": "También se eliminan sus eventos capturados."
   }
 }

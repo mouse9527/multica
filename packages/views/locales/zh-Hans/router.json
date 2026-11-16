@@ -80,7 +80,8 @@
     "description": "这个对话将不再收到任务动态。",
     "delete": "删除它的订阅",
     "keep": "保留订阅，并暂停",
-    "confirm": "解除"
+    "confirm": "解除",
+    "keep_hint": "以后把一个对话设为 Router 并选同样的范围，就会接回这些订阅并恢复。"
   },
   "board": {
     "title": "Router 看板 · {{chat}}",
@@ -93,7 +94,9 @@
     "paused": "Router 已暂停",
     "resumed": "Router 已恢复",
     "released": "Router 已解除",
-    "failed": "Router 更新失败：{{error}}"
+    "failed": "Router 更新失败：{{error}}",
+    "scope_taken": "{{scope}} 已在另一个对话的 Router 里。先解除那个 Router，或在那里移除这个范围。",
+    "deleted": "订阅已删除"
   },
   "list": {
     "tab": "Router",
@@ -102,6 +105,11 @@
     "scopes": "范围",
     "status": "状态",
     "last_run": "最近一次运行",
-    "untitled": "未命名对话"
+    "untitled": "未命名对话",
+    "unbound_title": "不在 Router 里的订阅",
+    "unbound_hint": "解除 Router 时保留下来的订阅。把一个对话设为 Router 并选同样的范围，就会接回它。",
+    "delete": "删除",
+    "delete_title": "删除这条订阅？",
+    "delete_description": "它已捕获的事件也会一起删除。"
   }
 }

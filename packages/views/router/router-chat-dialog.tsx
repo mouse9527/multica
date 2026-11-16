@@ -10,13 +10,13 @@ import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useWorkspaceId } from "@multica/core/hooks";
 import {
-  latestDispatch,
   reconciledThrough,
   routerChangesOptions,
-  routerDispatchesOptions,
   routerStatus,
   routerSubscriptionsOfChat,
   routerSubscriptionsOptions,
+  RouterScopeTakenError,
+  useLastRouterDispatch,
   useAddRouterScopes,
   useReleaseRouter,
   useRemoveRouterScope,
@@ -91,11 +91,17 @@ export function RouterChatDialog({
         ) : isRouter ? (
           // Keyed by the subscription set so the form restarts from the
           // server's values when scopes come or go.
-          <RouterSettingsBody key={bound.map((s) => s.id).join()} session={session} subs={bound} onDone={() => onOpenChange(false)} />
+          <RouterSettingsBody
+            key={bound.map((s) => s.id).join()}
+            session={session}
+            subs={bound}
+            allSubs={subs ?? []}
+            onDone={() => onOpenChange(false)}
+          />
         ) : session.status === "archived" ? (
           <p className="p-5 text-body text-muted-foreground">{t(($) => $.dialog.archived)}</p>
         ) : (
-          <RouterSetupBody session={session} onDone={() => onOpenChange(false)} />
+          <RouterSetupBody session={session} allSubs={subs ?? []} onDone={() => onOpenChange(false)} />
         )}
       </DialogContent>
     </Dialog>
@@ -114,13 +120,37 @@ function useReportAdded() {
   const { t } = useT("router");
   return (result: AddRouterScopesResult, labels: Map<string, string>) => {
     for (const f of result.failed) {
-      toast.error(t(($) => $.toast.scope_failed, { scope: labels.get(f.scope.scope_id) ?? f.scope.scope_id, error: errorText(f.error) }));
+      const scope = labels.get(f.scope.scope_id) ?? f.scope.scope_id;
+      toast.error(
+        f.error instanceof RouterScopeTakenError
+          ? t(($) => $.toast.scope_taken, { scope })
+          : t(($) => $.toast.scope_failed, { scope, error: errorText(f.error) }),
+      );
     }
     return result.created.length > 0;
   };
 }
 
-function RouterSetupBody({ session, onDone }: { session: ChatSession; onDone: () => void }) {
+/**
+ * Scopes this chat cannot add: its own, and those the agent already covers
+ * in another chat's Router (an agent subscribes to a scope once). Unbound
+ * subscriptions of the agent stay pickable; adding one takes it over.
+ */
+function takenScopes(allSubs: RouterSubscription[], session: ChatSession): string[] {
+  return allSubs
+    .filter((s) => s.agent_id === session.agent_id && s.anchor_chat_session_id)
+    .map((s) => s.scope_id);
+}
+
+function RouterSetupBody({
+  session,
+  allSubs,
+  onDone,
+}: {
+  session: ChatSession;
+  allSubs: RouterSubscription[];
+  onDone: () => void;
+}) {
   const { t } = useT("router");
   const board = useBoard(session);
   const report = useReportAdded();
@@ -136,6 +166,7 @@ function RouterSetupBody({ session, onDone }: { session: ChatSession; onDone: ()
       scopes: scopes.map(({ scope_type, scope_id }) => ({ scope_type, scope_id })),
       settings,
       board,
+      existing: allSubs,
     });
     const created = new Set(result.created.map((s) => s.scope_id));
     // Keep what failed in the form so it can be retried.
@@ -151,7 +182,7 @@ function RouterSetupBody({ session, onDone }: { session: ChatSession; onDone: ()
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
         <section className="space-y-2">
           <h3 className="text-body font-medium">{t(($) => $.scopes.title)}</h3>
-          <RouterScopePicker pending={scopes} onChange={setScopes} taken={[]} disabled={busy} />
+          <RouterScopePicker pending={scopes} onChange={setScopes} taken={takenScopes(allSubs, session)} disabled={busy} />
           {scopes.some((s) => s.scope_type === "project") && (
             <p className="text-caption text-muted-foreground">{t(($) => $.scopes.board_hint)}</p>
           )}
@@ -173,10 +204,12 @@ function RouterSetupBody({ session, onDone }: { session: ChatSession; onDone: ()
 function RouterSettingsBody({
   session,
   subs,
+  allSubs,
   onDone,
 }: {
   session: ChatSession;
   subs: RouterSubscription[];
+  allSubs: RouterSubscription[];
   onDone: () => void;
 }) {
   const { t } = useT("router");
@@ -206,6 +239,7 @@ function RouterSettingsBody({
           scopes: pending.map(({ scope_type, scope_id }) => ({ scope_type, scope_id })),
           settings,
           board,
+          existing: allSubs,
         });
         const created = new Set(result.created.map((s) => s.scope_id));
         setPending((prev) => prev.filter((s) => !created.has(s.scope_id)));
@@ -267,7 +301,7 @@ function RouterSettingsBody({
               </li>
             ))}
           </ul>
-          <RouterScopePicker pending={pending} onChange={setPending} taken={subs.map((s) => s.scope_id)} disabled={busy} />
+          <RouterScopePicker pending={pending} onChange={setPending} taken={takenScopes(allSubs, session)} disabled={busy} />
           {pending.some((s) => s.scope_type === "project") && (
             <p className="text-caption text-muted-foreground">{t(($) => $.scopes.board_hint)}</p>
           )}
@@ -326,6 +360,7 @@ function ReleaseRouterDialog({
             </label>
           ))}
         </div>
+        {mode === "keep_paused" && <p className="text-caption text-muted-foreground">{t(($) => $.release.keep_hint)}</p>}
         <AlertDialogFooter>
           <AlertDialogCancel>{t(($) => $.actions.cancel)}</AlertDialogCancel>
           <AlertDialogAction
@@ -345,8 +380,7 @@ export function RouterHealth({ subs }: { subs: RouterSubscription[] }) {
   const { t } = useT("router");
   const wsId = useWorkspaceId();
   const timeAgo = useTimeAgo();
-  const { data: dispatches = [] } = useQuery(routerDispatchesOptions(wsId));
-  const last = latestDispatch(dispatches, subs);
+  const last = useLastRouterDispatch(wsId, subs);
   const through = reconciledThrough(subs);
   const misses = subs.reduce((n, s) => n + s.capture_miss, 0);
   const outcome = !last

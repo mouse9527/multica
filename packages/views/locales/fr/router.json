@@ -80,7 +80,8 @@
     "description": "Cette discussion ne recevra plus l’activité des tâches.",
     "delete": "Supprimer ses abonnements",
     "keep": "Garder ses abonnements, en pause",
-    "confirm": "Retirer"
+    "confirm": "Retirer",
+    "keep_hint": "Pour les réutiliser, définissez une discussion comme Router avec les mêmes périmètres : ils seront repris et relancés."
   },
   "board": {
     "title": "Tableau Router · {{chat}}",
@@ -93,7 +94,9 @@
     "paused": "Router mis en pause",
     "resumed": "Router repris",
     "released": "Router retiré",
-    "failed": "Impossible de mettre à jour le Router : {{error}}"
+    "failed": "Impossible de mettre à jour le Router : {{error}}",
+    "scope_taken": "{{scope}} appartient déjà au Router d’une autre discussion. Retirez d’abord ce Router ou retirez-y ce périmètre.",
+    "deleted": "Abonnement supprimé"
   },
   "list": {
     "tab": "Routers",
@@ -102,6 +105,11 @@
     "scopes": "Périmètres",
     "status": "État",
     "last_run": "Dernière exécution",
-    "untitled": "Discussion sans titre"
+    "untitled": "Discussion sans titre",
+    "unbound_title": "Abonnements hors Router",
+    "unbound_hint": "Conservés lors du retrait d’un Router. Définir une discussion comme Router avec le même périmètre le reprend.",
+    "delete": "Supprimer",
+    "delete_title": "Supprimer cet abonnement ?",
+    "delete_description": "Ses événements capturés sont aussi supprimés."
   }
 }

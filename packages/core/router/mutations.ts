@@ -25,6 +25,13 @@ export interface AddRouterScopesInput {
    * project fence checks the anchor's project, so each project gets its own.
    */
   board: { title: string; description: string };
+  /**
+   * The workspace's subscriptions as last read. An agent can subscribe to a
+   * scope only once, so a scope it already has is taken over instead of
+   * created: an unbound one (kept when a Router was released) is bound to
+   * this chat and resumed; one bound to another chat is refused.
+   */
+  existing: RouterSubscription[];
 }
 
 export interface AddRouterScopesResult {
@@ -33,16 +40,58 @@ export interface AddRouterScopesResult {
   failed: { scope: RouterScopeInput; error: unknown }[];
 }
 
+/** A scope the agent already covers in another chat's Router. */
+export class RouterScopeTakenError extends Error {
+  constructor(readonly chatSessionId: string) {
+    super(`this scope already belongs to the Router of chat ${chatSessionId}`);
+    this.name = "RouterScopeTakenError";
+  }
+}
+
+/** The agent's subscription to this scope, if it has one. */
+export function findScopeSubscription(
+  subs: RouterSubscription[],
+  agentId: string,
+  scope: RouterScopeInput,
+): RouterSubscription | undefined {
+  return subs.find((s) => s.agent_id === agentId && s.scope_type === scope.scope_type && s.scope_id === scope.scope_id);
+}
+
 /**
- * Creates one subscription per scope, each bound to the chat in the same
- * request. A scope that fails does not stop the others; its board issue, if
- * one was made for it, is deleted again.
+ * Binds a kept subscription to the chat with the form's settings, then
+ * resumes it. Bound while still paused, it never runs unbound in between.
+ */
+async function takeOverScope(
+  wsId: string,
+  sub: RouterSubscription,
+  input: AddRouterScopesInput,
+): Promise<RouterSubscription> {
+  let out = await updateRouterSubscription(wsId, sub.id, {
+    ...input.settings,
+    anchor_chat_session_id: input.chatSessionId,
+  });
+  if (isSubscriptionPaused(out)) out = await setRouterSubscriptionPaused(wsId, sub.id, false);
+  return out;
+}
+
+/**
+ * Adds each scope to the chat's Router: a new subscription bound to the chat
+ * in the same request, or the agent's existing unbound one taken over. A
+ * scope that fails does not stop the others; a board issue made for it is
+ * deleted again.
  */
 export async function addRouterScopes(wsId: string, input: AddRouterScopesInput): Promise<AddRouterScopesResult> {
   const result: AddRouterScopesResult = { created: [], boards: [], failed: [] };
   for (const scope of input.scopes) {
     let board: Issue | null = null;
     try {
+      const existing = findScopeSubscription(input.existing, input.agentId, scope);
+      if (existing) {
+        const bound = existing.anchor_chat_session_id;
+        if (bound && bound !== input.chatSessionId) throw new RouterScopeTakenError(bound);
+        result.created.push(await takeOverScope(wsId, existing, input));
+        continue;
+      }
       if (scope.scope_type === "project") {
         board = await api.createIssue({
           title: input.board.title,

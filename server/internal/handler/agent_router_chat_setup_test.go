@@ -113,3 +113,41 @@ func TestRouterAgentBindsChatForItsCreator(t *testing.T) {
 		Want(http.StatusOK)
 	routerCall(t, newRequest("GET", "/api/router/subscriptions?chat_session_id=not-a-uuid", nil)).Want(http.StatusBadRequest)
 }
+
+// TestRouterKeptSubscriptionRebinds is the page's "release, keep" then "set
+// up again with the same scope" path: the kept subscription still holds the
+// agent's scope, so a new one is refused (409) and the page takes the kept
+// one over instead: bind it to the new chat while paused, then resume.
+func TestRouterKeptSubscriptionRebinds(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	f := newRouterFixture(t)
+	cleanupRouterS2(t, f)
+	withRouterChatFlags(t, true)
+	first, second := dbfx.ChatSession(t, f.agentA), dbfx.ChatSession(t, f.agentA)
+	create := map[string]any{"agent_id": f.agentA, "scope_type": "issue_tree", "scope_id": f.root, "anchor_chat_session_id": first}
+
+	var sub map[string]any
+	routerCall(t, newRequest("POST", "/api/router/subscriptions", create)).Want(http.StatusCreated).JSON(&sub)
+	id := sub["id"].(string)
+	cleanupRouterChat(t, id)
+
+	// Release, keeping it: pause, then unbind.
+	routerCall(t, newRequest("POST", "/api/router/subscriptions/"+id+"/pause", nil)).Want(http.StatusOK)
+	routerCall(t, newRequest("PATCH", "/api/router/subscriptions/"+id, map[string]any{"anchor_chat_session_id": "none"})).Want(http.StatusOK)
+
+	create["anchor_chat_session_id"] = second
+	routerCall(t, newRequest("POST", "/api/router/subscriptions", create)).Want(http.StatusConflict)
+
+	routerCall(t, newRequest("PATCH", "/api/router/subscriptions/"+id, map[string]any{
+		"anchor_chat_session_id": second, "event_types": []string{"comment_created"},
+	})).Want(http.StatusOK).JSON(&sub)
+	if sub["anchor_chat_session_id"] != second || sub["enabled"] != false {
+		t.Fatalf("after rebinding = %v, want bound to the new chat and still paused", sub)
+	}
+	routerCall(t, newRequest("POST", "/api/router/subscriptions/"+id+"/resume", nil)).Want(http.StatusOK).JSON(&sub)
+	if sub["enabled"] != true || sub["paused_reason"] != nil {
+		t.Fatalf("after resume = %v", sub)
+	}
+}

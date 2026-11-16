@@ -41,9 +41,13 @@ vi.mock("../navigation", () => ({
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 // The issue search is covered by the picker's own tests; here it picks a fixed root.
 vi.mock("../modals/issue-picker-modal", () => ({
-  IssuePickerModal: ({ open, onSelect }: { open: boolean; onSelect: (issue: unknown) => void }) =>
+  IssuePickerModal: ({ open, onSelect, excludeIds }: { open: boolean; onSelect: (issue: unknown) => void; excludeIds: string[] }) =>
     open ? (
-      <button type="button" onClick={() => onSelect({ id: "issue-root", identifier: "M-1", title: "Root" })}>
+      <button
+        type="button"
+        data-exclude={excludeIds.join(",")}
+        onClick={() => onSelect({ id: "issue-root", identifier: "M-1", title: "Root" })}
+      >
         pick root
       </button>
     ) : null,
@@ -54,7 +58,7 @@ vi.mock("@multica/core/api", async (original) => ({
     forkRequest: vi.fn(),
     listProjects: vi.fn(async () => ({ projects: [{ id: "proj-1", title: "Platform" }], total: 1 })),
     getIssue: vi.fn(async (id: string) => ({ id, identifier: id === "issue-root" ? "M-1" : "M-9", title: "Root" })),
-    listAgents: vi.fn(async () => [{ id: "agent-1", name: "Mika" }]),
+    listAgents: vi.fn(async () => [{ id: "agent-1", name: "Mika", owner_id: "user-1" }]),
     listChatSessions: vi.fn(async () => state.sessions),
     createIssue: vi.fn(),
     deleteIssue: vi.fn(),
@@ -109,6 +113,11 @@ function routeForkRequest() {
     if (method === "GET" && path.startsWith("/api/router/dispatches")) return { dispatches: state.dispatches };
     if (method === "GET" && path.endsWith("/changes")) return { changes: state.changes };
     if (method === "DELETE") return undefined;
+    if (method === "PATCH") {
+      // The server returns the subscription as stored: still paused until resumed.
+      const id = path.split("/").pop();
+      return (state.subscriptions as { id: string }[]).find((s) => s.id === id) ?? sub();
+    }
     return sub();
   });
 }
@@ -202,6 +211,38 @@ describe("Router in the chat menu", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
+  it("picks up a subscription kept when its Router was released instead of creating it again", async () => {
+    // Released with "keep": unbound and paused, still holding (agent, scope).
+    state.subscriptions = [sub({ anchor_chat_session_id: null, enabled: false, paused_reason: "manual" })];
+    show(<Harness chat={session} />);
+    openMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: en.menu.setup }));
+    const dialog = await screen.findByRole("dialog", { name: en.dialog.title_setup });
+    fireEvent.click(within(dialog).getByRole("button", { name: en.scopes.add_issue_tree }));
+    expect(screen.getByRole("button", { name: "pick root" })).toHaveAttribute("data-exclude", "");
+    fireEvent.click(screen.getByRole("button", { name: "pick root" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: en.actions.create }));
+
+    await waitFor(() => expect(calls("POST").map((c) => c.path)).toEqual(["/api/router/subscriptions/sub-1/resume"]));
+    expect(calls("PATCH")).toEqual([
+      {
+        path: "/api/router/subscriptions/sub-1",
+        body: expect.objectContaining({ anchor_chat_session_id: "chat-1", event_types: expect.any(Array) }),
+      },
+    ]);
+    expect(api.createIssue).not.toHaveBeenCalled();
+  });
+
+  it("does not offer a scope the agent already covers in another chat's Router", async () => {
+    state.subscriptions = [sub({ anchor_chat_session_id: "chat-other" })];
+    show(<Harness chat={session} />);
+    openMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: en.menu.setup }));
+    const dialog = await screen.findByRole("dialog", { name: en.dialog.title_setup });
+    fireEvent.click(within(dialog).getByRole("button", { name: en.scopes.add_issue_tree }));
+    expect(screen.getByRole("button", { name: "pick root" })).toHaveAttribute("data-exclude", "issue-root");
+  });
+
   it("rejects batching outside the server's limits", async () => {
     show(<Harness chat={session} />);
     openMenu();
@@ -278,6 +319,21 @@ describe("Routers settings tab", () => {
     expect(await within(link).findByText("Mika")).toBeInTheDocument();
     expect(within(link).getByText(en.status.paused)).toBeInTheDocument();
     expect(within(link).getByText(en.status.reason.manual)).toBeInTheDocument();
+  });
+
+  it("lists the member's subscriptions not in a Router and deletes one after confirmation", async () => {
+    state.subscriptions = [
+      sub({ id: "kept", anchor_chat_session_id: null, enabled: false, paused_reason: "manual" }),
+      sub({ id: "someone-elses", anchor_chat_session_id: null, owner_user_id: "user-2" }),
+    ];
+    show(<RoutersTab />);
+    const section = await screen.findByTestId("router-unbound");
+    expect(within(section).getAllByRole("listitem")).toHaveLength(1);
+    fireEvent.click(within(section).getByRole("button", { name: en.list.delete }));
+    const confirm = await screen.findByRole("alertdialog", { name: en.list.delete_title });
+    expect(calls("DELETE")).toEqual([]);
+    fireEvent.click(within(confirm).getByRole("button", { name: en.list.delete }));
+    await waitFor(() => expect(calls("DELETE").map((c) => c.path)).toEqual(["/api/router/subscriptions/kept"]));
   });
 
   it("explains how to make a Router when there is none", async () => {

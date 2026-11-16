@@ -5,6 +5,8 @@ import { ApiClient, setApiInstance } from "../api";
 import {
   addRouterScopes,
   groupRouters,
+  RouterScopeTakenError,
+  unboundSubscriptions,
   latestDispatch,
   listRouterDispatches,
   listRouterSubscriptions,
@@ -106,6 +108,12 @@ describe("router reads", () => {
     await expect(listRouterSubscriptions("ws")).resolves.toEqual([]);
   });
 
+  it("reads one subscription's newest dispatch", async () => {
+    serve(() => Response.json({ dispatches: [] }));
+    await listRouterDispatches("ws", { subscriptionId: "s1", limit: 1 });
+    expect(new URL(vi.mocked(fetch).mock.calls[0]?.[0] as string).search).toBe("?limit=1&subscription_id=s1");
+  });
+
   it("reads a malformed dispatch list as empty", async () => {
     serve(() => Response.json({ dispatches: [{ id: 1 }] }));
     await expect(listRouterDispatches("ws")).resolves.toEqual([]);
@@ -170,6 +178,7 @@ describe("addRouterScopes", () => {
       ],
       settings: SETTINGS,
       board: { title: "Router board", description: "d" },
+      existing: [],
     });
     expect(result.failed).toEqual([]);
     expect(result.created).toHaveLength(2);
@@ -198,11 +207,60 @@ describe("addRouterScopes", () => {
       scopes: [{ scope_type: "project", scope_id: "proj" }],
       settings: SETTINGS,
       board: { title: "b", description: "d" },
+      existing: [],
     });
     expect(result.created).toEqual([]);
     expect(result.boards).toEqual([]);
     expect(result.failed).toHaveLength(1);
     expect(calls.some((c) => c.method === "DELETE" && c.url.endsWith("/api/issues/board-1"))).toBe(true);
+  });
+});
+
+describe("re-adding a scope the agent already has", () => {
+  const input = (existing: RouterSubscription[]) => ({
+    chatSessionId: "chat-2",
+    agentId: "a1",
+    scopes: [{ scope_type: "project" as const, scope_id: "proj" }],
+    settings: SETTINGS,
+    board: { title: "b", description: "d" },
+    existing,
+  });
+
+  it("takes over a subscription kept when a Router was released: binds it, then resumes it", async () => {
+    serve((url) => (url.includes("/subscriptions/") ? Response.json({ id: "kept", agent_id: "a1", scope_type: "project", scope_id: "proj", enabled: false, paused_reason: "manual" }) : new Response(null, { status: 500 })));
+    const kept = sub({ id: "kept", scope_type: "project", scope_id: "proj", anchor_issue_id: "board-old", anchor_chat_session_id: null, enabled: false, paused_reason: "manual" });
+    const result = await addRouterScopes("ws", input([kept, sub({ id: "other-agent", agent_id: "a2", scope_type: "project", scope_id: "proj" })]));
+    expect(result.failed).toEqual([]);
+    expect(result.boards).toEqual([]);
+    expect(calls.map((c) => `${c.method} ${new URL(c.url).pathname}`)).toEqual([
+      "PATCH /api/router/subscriptions/kept",
+      "POST /api/router/subscriptions/kept/resume",
+    ]);
+    expect(calls[0]?.body).toEqual({ ...SETTINGS, anchor_chat_session_id: "chat-2" });
+  });
+
+  it("refuses a scope the agent covers in another chat's Router, writing nothing", async () => {
+    serve(() => new Response(null, { status: 500 }));
+    const result = await addRouterScopes("ws", input([sub({ scope_type: "project", scope_id: "proj", anchor_chat_session_id: "chat-1" })]));
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]?.error).toBeInstanceOf(RouterScopeTakenError);
+    expect(calls).toEqual([]);
+  });
+
+  it("lists the member's unbound subscriptions, ownerless ones by their agent's owner", () => {
+    const owners = new Map([["a1", "u1"], ["a2", "u2"]]);
+    const found = unboundSubscriptions(
+      [
+        sub({ id: "mine", anchor_chat_session_id: null }),
+        sub({ id: "bound" }),
+        sub({ id: "theirs", anchor_chat_session_id: null, owner_user_id: "u2" }),
+        sub({ id: "agent-of-mine", anchor_chat_session_id: null, owner_user_id: null }),
+        sub({ id: "agent-of-theirs", agent_id: "a2", anchor_chat_session_id: null, owner_user_id: null }),
+      ],
+      "u1",
+      owners,
+    );
+    expect(found.map((s) => s.id)).toEqual(["mine", "agent-of-mine"]);
   });
 });
 

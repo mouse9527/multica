@@ -21,6 +21,21 @@ export function groupRouters(subs: RouterSubscription[], ownChatIds: ReadonlySet
   return [...byChat.values()];
 }
 
+/**
+ * The member's subscriptions not bound to any chat, such as those kept when
+ * a Router was released. A subscription without an owner answers to its
+ * agent's owner (`agentOwners`: agent id → owner user id), as on the server.
+ */
+export function unboundSubscriptions(
+  subs: RouterSubscription[],
+  userId: string,
+  agentOwners: ReadonlyMap<string, string | null>,
+): RouterSubscription[] {
+  return subs.filter(
+    (s) => !s.anchor_chat_session_id && (s.owner_user_id ?? agentOwners.get(s.agent_id) ?? null) === userId,
+  );
+}
+
 /** The subscriptions bound to one chat. */
 export function routerSubscriptionsOfChat(subs: RouterSubscription[], chatSessionId: string): RouterSubscription[] {
   return subs.filter((s) => s.anchor_chat_session_id === chatSessionId);

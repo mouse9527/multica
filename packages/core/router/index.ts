@@ -17,16 +17,20 @@ export {
   reconciledThrough,
   routerStatus,
   routerSubscriptionsOfChat,
+  unboundSubscriptions,
 } from "./group";
 export {
   ROUTER_POLL_MS,
   routerChangesOptions,
-  routerDispatchesOptions,
   routerKeys,
+  routerLastDispatchOptions,
   routerSubscriptionsOptions,
+  useLastRouterDispatch,
 } from "./queries";
 export {
   addRouterScopes,
+  findScopeSubscription,
+  RouterScopeTakenError,
   releaseRouter,
   setRouterPaused,
   updateRouterSettings,

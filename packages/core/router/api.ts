@@ -36,8 +36,13 @@ export async function listRouterSubscriptions(wsId: string): Promise<RouterSubsc
   }).subscriptions;
 }
 
-export async function listRouterDispatches(wsId: string, limit = 200): Promise<RouterDispatch[]> {
-  const raw = await api.forkRequest(`/api/router/dispatches?limit=${limit}`, scoped(wsId));
+export async function listRouterDispatches(
+  wsId: string,
+  { subscriptionId, limit = 200 }: { subscriptionId?: string; limit?: number } = {},
+): Promise<RouterDispatch[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (subscriptionId) params.set("subscription_id", subscriptionId);
+  const raw = await api.forkRequest(`/api/router/dispatches?${params}`, scoped(wsId));
   return parseWithFallback(raw, RouterDispatchListSchema, { dispatches: [] as RouterDispatch[] }, {
     endpoint: "GET /api/router/dispatches",
   }).dispatches;

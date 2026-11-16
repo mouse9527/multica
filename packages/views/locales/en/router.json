@@ -80,7 +80,8 @@
     "description": "The chat stops receiving issue activity.",
     "delete": "Delete its subscriptions",
     "keep": "Keep its subscriptions, paused",
-    "confirm": "Release"
+    "confirm": "Release",
+    "keep_hint": "To use them again, set a chat up as a Router with the same scopes; they are picked up and resumed."
   },
   "board": {
     "title": "Router board · {{chat}}",
@@ -93,7 +94,9 @@
     "paused": "Router paused",
     "resumed": "Router resumed",
     "released": "Router released",
-    "failed": "Couldn't update the Router: {{error}}"
+    "failed": "Couldn't update the Router: {{error}}",
+    "scope_taken": "{{scope}} already belongs to another chat's Router. Release that Router or remove the scope there first.",
+    "deleted": "Subscription deleted"
   },
   "list": {
     "tab": "Routers",
@@ -102,6 +105,11 @@
     "scopes": "Scopes",
     "status": "Status",
     "last_run": "Last run",
-    "untitled": "Untitled chat"
+    "untitled": "Untitled chat",
+    "unbound_title": "Subscriptions not in a Router",
+    "unbound_hint": "Kept when a Router was released. Setting a chat up as a Router with the same scope picks one up again.",
+    "delete": "Delete",
+    "delete_title": "Delete this subscription?",
+    "delete_description": "Its captured events are deleted too."
   }
 }
