@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S1 (M-85).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
 
 package migrations
 
@@ -10,12 +10,20 @@ import (
 	"testing"
 )
 
-var routerTables = []string{"router_subscription", "router_event", "router_issue_seen", "router_reconcile_cursor"}
+var routerTables = []string{
+	"router_subscription", "router_event", "router_issue_seen", "router_reconcile_cursor",
+	"router_dispatch", "router_subscription_change", "owner_notice",
+}
 
 var routerIndexes = []string{
 	"idx_router_subscription_scope",
 	"idx_router_event_key",
 	"idx_router_event_subscription",
+	"idx_router_dispatch_open",
+	"idx_router_dispatch_subscription",
+	"idx_router_event_consumed",
+	"idx_router_subscription_change",
+	"idx_owner_notice_dedupe",
 }
 
 var routerUpMigrations = []string{
@@ -23,9 +31,21 @@ var routerUpMigrations = []string{
 	"9005_router_subscription_scope_idx.up.sql",
 	"9006_router_event_key_idx.up.sql",
 	"9007_router_event_subscription_idx.up.sql",
+	"9008_router_dispatch_tables.up.sql",
+	"9009_router_dispatch_open_idx.up.sql",
+	"9010_router_dispatch_subscription_idx.up.sql",
+	"9011_router_event_consumed_idx.up.sql",
+	"9012_router_subscription_change_idx.up.sql",
+	"9013_router_owner_notice_dedupe_idx.up.sql",
 }
 
 var routerDownMigrations = []string{
+	"9013_router_owner_notice_dedupe_idx.down.sql",
+	"9012_router_subscription_change_idx.down.sql",
+	"9011_router_event_consumed_idx.down.sql",
+	"9010_router_dispatch_subscription_idx.down.sql",
+	"9009_router_dispatch_open_idx.down.sql",
+	"9008_router_dispatch_tables.down.sql",
 	"9007_router_event_subscription_idx.down.sql",
 	"9006_router_event_key_idx.down.sql",
 	"9005_router_subscription_scope_idx.down.sql",
@@ -115,7 +135,7 @@ func TestRouterTablesStayInvisibleToSqlc(t *testing.T) {
 	for _, file := range files {
 		src := readMigrationFile(t, filepath.Base(file))
 		for _, block := range doBlock.FindAllString(src, -1) {
-			created += strings.Count(block, "CREATE TABLE IF NOT EXISTS router_")
+			created += strings.Count(block, "CREATE TABLE IF NOT EXISTS ")
 		}
 		outside := strings.ToUpper(stripSQLComments(doBlock.ReplaceAllString(src, "")))
 		for _, ddl := range []string{"CREATE TABLE", "ALTER TABLE"} {
