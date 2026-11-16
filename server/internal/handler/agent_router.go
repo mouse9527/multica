@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router page settings (M-105).
 //
 // HTTP surface of internal/agentrouter. It lives in package handler only to
 // reuse the request helpers (actor, workspace, issue and agent loaders,
@@ -86,6 +86,9 @@ type CreateRouterSubscriptionRequest struct {
 	DebounceSeconds int    `json:"debounce_seconds"`
 	MaxWaitSeconds  int    `json:"max_wait_seconds"`
 	MaxRunsPerHour  int    `json:"max_runs_per_hour"`
+	// AnchorChatSessionID binds the new subscription to a chat session in
+	// the same transaction (M-105). Needs router_chat.
+	AnchorChatSessionID string `json:"anchor_chat_session_id"`
 }
 
 func (h *Handler) CreateRouterSubscription(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +133,18 @@ func (h *Handler) CreateRouterSubscription(w http.ResponseWriter, r *http.Reques
 	if err := batching.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	chatID := ""
+	if ref := strings.TrimSpace(req.AnchorChatSessionID); ref != "" {
+		if !featureflags.RouterChatEnabled(r.Context(), h.FeatureFlags) {
+			writeError(w, http.StatusBadRequest, "anchor_chat_session_id needs the router_chat feature")
+			return
+		}
+		id, ok := parseUUIDOrBadRequest(w, ref, "anchor_chat_session_id")
+		if !ok {
+			return
+		}
+		chatID = uuidToString(id)
 	}
 	// A member must be able to manage the agent (its owner or a workspace
 	// admin), because dispatch runs the agent on what it captures. An agent
@@ -181,17 +196,18 @@ func (h *Handler) CreateRouterSubscription(w http.ResponseWriter, r *http.Reques
 	}
 
 	sub, err := h.routerStore().Create(r.Context(), agentrouter.CreateParams{
-		WorkspaceID:   workspaceID,
-		AgentID:       uuidToString(agent.ID),
-		OwnerUserID:   ownerUserID,
-		ScopeType:     scopeType,
-		ScopeID:       scopeID,
-		AnchorIssueID: anchorID,
-		EventTypes:    eventTypes,
-		Batching:      batching,
-		CreatedByType: createdByType,
-		CreatedByID:   createdByID,
-		Change:        change,
+		WorkspaceID:         workspaceID,
+		AgentID:             uuidToString(agent.ID),
+		OwnerUserID:         ownerUserID,
+		ScopeType:           scopeType,
+		ScopeID:             scopeID,
+		AnchorIssueID:       anchorID,
+		EventTypes:          eventTypes,
+		Batching:            batching,
+		CreatedByType:       createdByType,
+		CreatedByID:         createdByID,
+		Change:              change,
+		AnchorChatSessionID: chatID,
 	})
 	if err != nil {
 		h.routerFail(w, r, err)
