@@ -39,6 +39,11 @@ const (
 	// router subscriptions and their API, the events.Bus listener and the
 	// reconcile job. Off by default; off means upstream behavior.
 	RouterV1 = "router_v1"
+	// HandoffReplyWake makes a member comment on an issue in a handoff status
+	// also wake the issue's agent assignee, thread replies included
+	// (mouse9527/multica fork, M-89). Off by default; off means upstream
+	// behavior.
+	HandoffReplyWake = "handoff_reply_wake"
 	// agentBuilderCompat is no longer a release flag. Keep publishing the key
 	// as enabled so installed desktop clients that still gate the AI creation
 	// entry on this config decision receive the permanently enabled behavior.
@@ -88,6 +93,11 @@ func LocalSearchIndexEnabled(ctx context.Context, flags *featureflag.Service) bo
 // RouterV1Enabled is added by the mouse9527/multica fork (M-85).
 func RouterV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, RouterV1, false)
+}
+
+// HandoffReplyWakeEnabled is added by the mouse9527/multica fork (M-89).
+func HandoffReplyWakeEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return flags.IsEnabled(ctx, HandoffReplyWake, false)
 }
 
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {

@@ -2670,7 +2670,7 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 // @squad mention (MUL-4525 §2). Targets come only from the explicit-mention path
 // — the implicit routing fallbacks (assignee, thread parent, conversation) were
 // never named by the user, so a no-route there is not a silent no-op.
-func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issue, content string, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) ([]commentAgentTrigger, []commentMentionTarget) {
+func (h *Handler) computeUpstreamCommentAgentTriggers(ctx context.Context, issue db.Issue, content string, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) ([]commentAgentTrigger, []commentMentionTarget) { // mouse9527/multica fork (M-89): renamed; computeCommentAgentTriggers wraps it in handoff_reply_wake.go
 	// A persisted comment determines its thread; previews use the parent.
 	// A new top-level preview has no thread yet and cannot merge with a queue.
 	opts.ThreadCommentID = opts.ExcludeTriggerCommentID
