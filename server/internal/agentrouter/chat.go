@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router v6, slice 1 (M-96).
+// Modified for the mouse9527/multica fork: Router v6, slice 1 (M-96), and Router parallelism (M-104).
 
 package agentrouter
 
@@ -14,9 +14,11 @@ import (
 // that chat: with router_chat on, dispatch writes each batch into the chat as
 // a router_batch message and queues the chat turn that reads it, instead of
 // an anchor run. The Router then talks to the owner in the same conversation
-// the owner talks to it in. Batching, the per-agent lock, the hourly limit,
-// pauses and state are the same as for anchor runs; the dispatch row still
-// names the anchor issue, and its task is the chat turn.
+// the owner talks to it in. Batching, the hourly limit, pauses and state are
+// the same as for anchor runs; the dispatch row still names the anchor issue,
+// and its task is the chat turn. The chat is the Router's unit of order: one
+// batch turn at a time per chat, from whichever subscriptions are bound to it,
+// while other chats of the same agent run in parallel (see Dispatcher).
 
 // ErrChatUnavailable: the bound chat cannot take a batch until someone
 // changes something (archived, deleted, now another agent's). Dispatch pauses

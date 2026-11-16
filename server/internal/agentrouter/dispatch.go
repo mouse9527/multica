@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and Router v6 slice 1 (M-96).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slice 1 (M-96), and Router parallelism (M-104).
 
 package agentrouter
 
@@ -51,9 +51,15 @@ const (
 // event the subscribed agent caused (is_self) never starts a run, but rides
 // along with the next batch.
 //
-// One run at a time per agent: a dispatch takes a transaction-scoped
-// advisory lock on the agent and gives up when another dispatch holds it or
-// the agent has an open run from any of its subscriptions.
+// One run at a time per Router, not per agent: an agent can serve several
+// Routers (subscriptions), and different Routers run in parallel up to the
+// agent's max_concurrent_tasks and its runtime's cap, which the claim
+// enforces; runs over the limit wait in the queue with their batch. A Router
+// is its chat session when the subscription is bound to one (every
+// subscription bound to that chat shares its conversation), and the
+// subscription otherwise. A dispatch takes transaction-scoped advisory locks
+// on the subscription and, when bound, on the chat, and gives up when another
+// dispatch holds one or the Router has an open run (see openRun).
 type Dispatcher struct {
 	Store   *Store
 	Runs    RunEnqueuer
@@ -281,12 +287,8 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	var locked bool
-	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended('router:' || $1, 0))`, due.AgentID).Scan(&locked); err != nil {
+	if locked, err := tryLock(ctx, tx, "router:sub:", due.ID); err != nil || !locked {
 		return outcomeWaiting, "", err
-	}
-	if !locked {
-		return outcomeWaiting, "", nil
 	}
 	sub, err := lockSubscription(ctx, tx, due.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -298,15 +300,21 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 	if !sub.Enabled || sub.PausedReason != nil || sub.AnchorIssueID == nil {
 		return outcomeWaiting, "", nil
 	}
-
-	var open bool
-	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM router_dispatch WHERE agent_id = $1::uuid AND settled_at IS NULL)`,
-		sub.AgentID).Scan(&open); err != nil {
-		return outcomeWaiting, "", err
+	// The binding is read under the subscription's row lock, which an update
+	// of the binding also takes, so it cannot change before the commit.
+	chatID := ""
+	if d.Chat {
+		if chatID, err = chatAnchorOf(ctx, tx, sub.ID); err != nil {
+			return outcomeWaiting, "", err
+		}
 	}
-	if open {
-		return outcomeWaiting, "", nil
+	if chatID != "" {
+		if locked, err := tryLock(ctx, tx, "router:chat:", chatID); err != nil || !locked {
+			return outcomeWaiting, "", err
+		}
+	}
+	if open, err := openRun(ctx, tx, sub, chatID); err != nil || open {
+		return outcomeWaiting, "", err
 	}
 
 	var agentName, agentOwner string
@@ -368,17 +376,14 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 	if err != nil {
 		return outcomeWaiting, "", err
 	}
-	chatID := ""
-	if d.Chat {
-		if chatID, err = chatAnchorOf(ctx, tx, sub.ID); err != nil {
-			return outcomeWaiting, "", err
-		}
-	}
 	note := buildNote(noteInput{
 		sub: sub, anchorKey: anchorKey, scopeLabel: scopeLabel(ctx, tx, sub),
 		batch: batch, inflight: inflight, inflightTotal: total, now: time.Now(), chat: chatID != "",
 	})
 
+	if testHookBeforeEnqueue != nil {
+		testHookBeforeEnqueue(sub.ID)
+	}
 	var taskID string
 	if chatID != "" {
 		taskID, err = d.Runs.EnqueueRouterChatRun(ctx, chatID, sub.AgentID, *sub.AnchorIssueID, note)
@@ -415,6 +420,35 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 	d.Logger.Info("router: run queued", "subscription_id", sub.ID, "agent_id", sub.AgentID,
 		"task_id", taskID, "chat_session_id", chatID, "events", len(batch.events))
 	return outcomeDispatched, "", nil
+}
+
+// testHookBeforeEnqueue, when set by a test, runs with the dispatch's locks
+// held, just before the run is queued.
+var testHookBeforeEnqueue func(subscriptionID string)
+
+// tryLock takes a transaction-scoped advisory lock on prefix+id without
+// waiting, and reports whether it got it.
+func tryLock(ctx context.Context, tx pgx.Tx, prefix, id string) (bool, error) {
+	var locked bool
+	err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended($1 || $2, 0))`, prefix, id).Scan(&locked)
+	return locked, err
+}
+
+// openRun reports whether the Router already has a run that has not been
+// settled: one of the subscription's own (an anchor run started before it
+// was bound to a chat counts too), or, when it is bound to chatID, a batch
+// turn in that chat from any subscription. The agent's runs for other
+// Routers do not count.
+func openRun(ctx context.Context, tx pgx.Tx, sub dispatchSub, chatID string) (bool, error) {
+	var open bool
+	err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+		    SELECT 1 FROM router_dispatch dp
+		    LEFT JOIN agent_task_queue t ON t.id = dp.task_id
+		    WHERE dp.agent_id = $1::uuid AND dp.settled_at IS NULL
+		      AND (dp.subscription_id = $2::uuid OR ($3 <> '' AND t.chat_session_id = NULLIF($3, '')::uuid)))`,
+		sub.AgentID, sub.ID, chatID).Scan(&open)
+	return open, err
 }
 
 // lockSubscription reads a subscription for dispatch and locks its row.
