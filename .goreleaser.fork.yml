@@ -38,6 +38,14 @@ builds:
     goarch:
       - amd64
       - arm64
+    # Signs darwin binaries with the CI certificate before they are archived
+    # and checksummed; a missing key or a signature that does not match the
+    # pinned identity stops the release before anything is published. Other
+    # systems pass through. See docs/fork-release.md, "macOS 签名".
+    hooks:
+      post:
+        - cmd: bash scripts/fork-macos-sign.sh sign "{{ .Os }}" "{{ .Path }}"
+          output: true
 
 archives:
   # The name `multica update` looks for first (cli.releaseAssetCandidates).
