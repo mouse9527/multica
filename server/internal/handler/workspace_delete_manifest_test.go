@@ -187,6 +187,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// Modified for the mouse9527/multica fork: Router chat anchor (M-96),
 	// deleted by agentrouter.DeleteWorkspaceData.
 	"router_chat_anchor": workspaceDelete,
+	// Modified for the mouse9527/multica fork: Router hold (M-97), deleted
+	// by agentrouter.DeleteWorkspaceData.
+	"router_hold": workspaceDelete,
 }
 
 func TestWorkspaceDeletionManifestCoversPublicSchema(t *testing.T) {
