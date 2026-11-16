@@ -1,6 +1,6 @@
 # Router：事件捕获（S1）、派发与出口（S2）、chat 载体（v6 切片 1）
 
-本文件属于 `mouse9527/multica` fork（S1 是 M-85，S2 是 M-86，设计见 M-45 v5）。Router 让一个智能体订阅一个范围（一棵 issue 树或一个项目），把范围内的事件写进持久的事件队列（S1）；再把攒下的事件合成一批，在锚点 issue 上给这个智能体起一次运行，并给它一个通知 Owner 的出口（S2，见后文「派发（S2）」）。v6 切片 1（M-96）让订阅可以绑定一个 chat 会话：批次写进这个会话，Router 在会话里回话（见后文「chat 载体（v6 切片 1）」）。
+本文件属于 `mouse9527/multica` fork（S1 是 M-85，S2 是 M-86，设计见 M-45 v5）。Router 让一个智能体订阅一个范围（一棵 issue 树或一个项目），把范围内的事件写进持久的事件队列（S1）；再把攒下的事件合成一批，在锚点 issue 上给这个智能体起一次运行，并给它一个通知 Owner 的出口（S2，见后文「派发（S2）」）。v6 切片 1（M-96）让订阅可以绑定一个 chat 会话：批次写进这个会话，Router 在会话里回话（见后文「chat 载体（v6 切片 1）」）。M-105 让 Owner 在页面上自己设置 Router（见后文「页面设置（M-105）」）。
 
 ## 开关
 
@@ -95,13 +95,15 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 | `multica router scope <id> [--all]` | `GET /api/router/subscriptions/{id}/scope` |
 | `multica router update <id> [--anchor] [--events] [--debounce] [--max-wait] [--max-runs-per-hour]` | `PATCH /api/router/subscriptions/{id}` |
 | `multica router changes <id>` | `GET /api/router/subscriptions/{id}/changes` |
+| `multica router release --chat <current\|会话> [--keep]` | 多次 `DELETE`，或 `pause` 后 `PATCH anchor_chat_session_id=none` |
+| （`--anchor-chat current`、`--chat current` 的解析） | `GET /api/router/chats/current` |
 | `multica router runs [--subscription]` | `GET /api/router/dispatches` |
 | `multica router state get <id>` | `GET /api/router/subscriptions/{id}/state` |
 | `multica router state set <id> --expect-revision N (--state \| --state-file \| --state-stdin \| --clear)` | `PUT /api/router/subscriptions/{id}/state` |
 | `multica notify owner --title … [--body…] [--ref <issue>]… [--urgency normal\|high] [--dedupe-key] [--subscription]` | `POST /api/router/notices` |
 | `multica notify list [--subscription]` | `GET /api/router/notices` |
 
-`subscribe` 也接受 `--anchor`、`--debounce`、`--max-wait`、`--max-runs-per-hour`。
+`subscribe` 也接受 `--anchor`、`--debounce`、`--max-wait`、`--max-runs-per-hour`。`POST /api/router/subscriptions` 还接受 `anchor_chat_session_id`，建订阅时直接绑定 chat（M-105，需要 `router_chat`）。
 
 订阅 ID 可以用前缀。智能体在运行里调用 `subscribe` 时可以省略 `--agent`，默认订阅自己。
 
@@ -215,6 +217,53 @@ Owner 2026-11-16 定：Router 是实例（像 issue），智能体只是执行�
 
 这类暂停沿用 `agent_unavailable`（9004 的 CHECK 只允许 `rate`、`manual`、`agent_unavailable`，本切片不改表），所以 `multica router list` 和按原因统计的告警分不出「智能体不可用」「项目权限拒绝」和「chat 不可用」。具体原因看 `router changes` 里 `auto_pause` 记录的 `detail.why`，或收件箱通知的正文。
 
+## 页面设置（M-105）
+
+Owner 不用 CLI，在页面上（或在 chat 里对智能体下指令，见下文「在 chat 里用指令设置」）把自己的一个 chat 设为 Router、选范围、暂停和恢复、解除，并在设置页看到自己的全部 Router。**Router 是一个 chat 会话加上绑定到它的订阅**，智能体就是这个 chat 的智能体；服务端只认订阅，前端按 `anchor_chat_session_id` 把订阅归成 Router。
+
+### 入口与开关
+
+- 只在 `router_chat` 真正生效（`router_v1`、`router_dispatch`、`router_chat` 都打开）时显示。服务端把这个组合结果作为前端开关 `router_chat` 发到 `/api/config`；关闭时页面上没有任何 Router 入口，chat 头部和设置页与上游一致。
+- chat 头部 ⋯ 菜单：「设为 Router」（还不是 Router）或「Router 设置」（已是 Router）。只出现在自己创建的 chat 上；归档的 chat 不能新设为 Router，但已有的 Router 仍能暂停、解除。
+- 设置页「个人」组下的「Router」：列出自己的全部 Router（chat 名、智能体、范围、状态、最近一次运行），点一行进入对应的 chat。下面一节列出自己的、没有绑定任何 chat 的订阅（「自己的」= `owner_user_id` 是自己，没有 owner 的按智能体所有者算），可以二次确认后删除。「自己的」= 绑定的 chat 在自己的 chat 列表里（服务端要求 chat 创建者就是订阅的 Owner，所以这就是向自己汇报的那些 Router）。
+
+### 设为 Router
+
+- 范围可以加多个：项目（`project`），或一棵任务树（选根任务，`issue_tree`）。项目列表和任务搜索沿用现有接口，看不到的私有项目不会出现。
+- 事件类型默认全选；合批参数（静默期、最长等待、每小时运行上限）默认 60 / 600 / 6，前端按服务端同样的范围校验。
+- 每个范围一条订阅，**创建时直接绑定这个 chat**：`POST /api/router/subscriptions` 新增 `anchor_chat_session_id`（需要 `router_chat`），绑定和建订阅在同一个事务里，校验与 `PATCH` 相同（会话在本工作区、未归档、智能体相同、创建者是订阅 Owner）。所以订阅不会有「已建好、还没绑定」而去起锚点运行的窗口；绑定校验失败时什么都不建。
+- **锚点 issue**：任务树用树根。项目范围没有自己的 issue，而派发记录和私有项目围栏都按锚点 issue 走，所以页面会在**该项目里**新建一个看板任务「Router 看板 · <chat 名>」作为锚点，并在 Router 设置里显示「看板 ACME-12」的链接。每个项目各建一个（围栏检查的是锚点所在项目）。订阅创建失败时，刚建的看板任务会被删掉。没有为「不要锚点」改后端：那要改 `router_dispatch` 等表，属于迁移。
+
+### Router 设置
+
+- 状态：运行中，或已暂停并列出原因（手动暂停 / 达到每小时运行上限 / 智能体、对话或项目不可用）；自动暂停（`agent_unavailable`）时再显示服务端审计里记的具体原因（`router changes` 里 `auto_pause` 的 `detail.why`）。每个范围也单独标出暂停原因。
+- 健康：最近一次运行（时间、结果、事件数；按订阅各查最新一条，不受工作区里其他 Router 运行多少影响）、对账推进到（各订阅 `reconciled_through` 里最早的那个）、漏捕获（`capture_miss` 合计）。
+- 修改事件类型、合批参数时写到这个 Router 的每一条订阅；可以继续加范围，或移除某个范围（删除那条订阅；最后一个范围要用「解除 Router」）。
+- **同一智能体同一范围只能有一条订阅**（`(agent_id, scope_type, scope_id)` 唯一）。所以加范围时：这个智能体已有一条**未绑定**的同范围订阅（例如解除时选了「保留」），页面直接接回它——先绑到这个 chat 并写入表单的设置，再恢复，不新建、也不再建看板；已经在**别的 chat 的 Router** 里的范围不出现在选择器里，万一撞上（数据过期）就提示先去那边解除或移除。
+- 暂停 / 恢复：暂停是手动暂停（停捕获）；恢复同时清掉自动暂停。
+- 解除 Router（二次确认）：二选一，「删除它的订阅」，或「保留订阅并暂停」（先暂停、再解绑，所以中间不会退回锚点运行）。保留的订阅出现在设置页「Router」的「不在 Router 里的订阅」一节，可以在那里删除；把任一 chat 设为 Router 并选同样的范围，就会按上一条接回。
+- 「经 Router 处理的条目」：给切片 2、3 的暂扣层留的位置，现在只有一句说明。
+- Router 状态没有实时事件，打开的设置对话框和列表每 30 秒刷新一次。
+
+### 在 chat 里用指令设置
+
+Owner 也可以在 chat 里直接跟这个 chat 的智能体说「把这个 chat 设为 Router，订阅 X」「暂停这个 Router」「再加一个范围」。智能体用 CLI 完成，和页面改的是同一份数据。
+
+- **当前 chat**：`GET /api/router/chats/current` 返回调用方这次 chat 运行所在的会话（id、标题、智能体、创建者）。只认智能体自己的、还没结束的、带 `chat_session_id` 的运行；成员请求、issue 上的运行、已结束的运行都返回 400，`router_chat` 关闭时也是 400。CLI 的 `current` 就是用它解析的。
+- **授权沿用 S2 的代建规则**：智能体绑定 chat 时（`POST` 带 `anchor_chat_session_id`，或 `PATCH` 绑到某个 chat），这次运行的成员发起人必须就是这个 chat 的创建者，否则 403；建订阅时发起人还要能管理这个智能体。即使智能体订阅的是自己，也按「为发起人代建」记：`created_by_type=member`、`owner_user_id` 是发起人，智能体和运行记在 `via_agent_id`、`via_task_id`。Router 批次轮次没有发起人，不能新建或改绑 Router；别人发起的运行也不能替 Owner 建 Router。暂停、恢复、删除仍按原来的规则（智能体可以改自己的订阅）。
+- `GET /api/router/subscriptions?chat_session_id=<id>`：只列绑定到这个 chat 的订阅，即一个 Router。
+- CLI：
+  - `multica router subscribe (--issue | --project) --anchor-chat current|<会话>`：建订阅时直接绑定；`--project` 不带 `--anchor` 时自动在该项目里建看板任务「Router 看板 · <chat 名>」作锚点，订阅被拒时删掉它。
+  - `router get|pause|resume|delete|update --chat current|<会话>`：作用于这个 Router 的每一条订阅（`get` 列出它们）。
+  - `router update <订阅> --anchor-chat current`：把订阅绑到当前 chat。
+  - `router release --chat current|<会话> [--keep]`：解除 Router；默认删除订阅，`--keep` 先暂停再解绑。
+- 给智能体的说明：`docs/router-setup-skill/SKILL.md`（`router-setup` skill 草案：口令对应的命令、改动前先复述并等确认、失败时怎么告诉 Owner）。由 Mika 在 Owner 确认后挂到相关智能体上。
+
+### 代码位置
+
+- 前端：`packages/core/router/`（API、zod 校验、查询与变更、分组）；`packages/views/router/`（对话框、范围选择、列表页、两个挂载钩子）；文案在 `packages/views/locales/*/router.json`。
+- 上游触点：`packages/core/api/client.ts` 新增一个公开方法 `forkRequest`（fork 模块借用共享的请求路径），`packages/core/package.json` 导出 `./router`，`chat-session-header.tsx` 与 `settings-page.tsx` 各加一个挂载钩子，8 个语言入口和 `resources-types.ts` 登记 `router` 命名空间，`featureflags/keys.go` 公开 `router_chat`。见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。
+
 ## 已知局限（v6 切片 1）
 
 - 会话创建者离开工作区时，Owner 就是这个人，收件箱不再收他的通知：通知记为 `skipped`，订阅仍然暂停，用 `multica router list` 可以看到。
@@ -226,6 +275,12 @@ Owner 2026-11-16 定：Router 是实例（像 issue），智能体只是执行�
 
 - `self` 仍按智能体判定：同一个智能体的 Router 1 在 Router 2 的范围里做的事，对 Router 2 也算 `self`，不会触发 Router 2 的批次（只跟着下一批被标为已消费）。范围通常不交叉（事件只投最窄订阅，Owner 已认可）；需要交叉时，用不同的智能体。
 - 同一个智能体的两条锚点订阅共用一个锚点 issue 时，受上游「同一 issue 同一智能体」唯一索引和认领串行限制，仍然排队。
+
+## 已知局限（页面设置，M-105）
+
+- 只做了网页端（含手机浏览器的窄屏布局）。原生移动 App（`apps/mobile`）没有 Router 设置入口。
+- 看板任务是普通任务，会出现在项目看板里；解除 Router 或删除范围时不会自动删它。
+- 页面上改设置是逐条订阅提交的，不是一个事务：中途失败时，已提交的那几条保留新值，刷新后能看到实际状态。
 
 ## 已知局限（S2）
 

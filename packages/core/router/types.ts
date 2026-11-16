@@ -1,0 +1,99 @@
+// Added by the mouse9527/multica fork: Router page settings (M-105).
+//
+// A Router is a chat session plus the subscriptions bound to it
+// (`anchor_chat_session_id`); its agent is the chat's agent. The server only
+// knows subscriptions, so the client groups them by chat.
+
+export type RouterScopeType = "issue_tree" | "project";
+
+export const ROUTER_EVENT_TYPES = [
+  "issue_created",
+  "status_changed",
+  "assignee_changed",
+  "comment_created",
+  "task_failed",
+] as const;
+
+export type RouterEventType = (typeof ROUTER_EVENT_TYPES)[number];
+
+/** Server defaults and limits (server/internal/agentrouter/agentrouter.go). */
+export const ROUTER_BATCHING = {
+  defaultDebounceSeconds: 60,
+  defaultMaxWaitSeconds: 600,
+  defaultMaxRunsPerHour: 6,
+  minSeconds: 10,
+  maxSeconds: 86400,
+  maxRunsPerHourLimit: 60,
+} as const;
+
+export interface RouterSubscription {
+  id: string;
+  workspace_id: string;
+  agent_id: string;
+  owner_user_id: string | null;
+  scope_type: string;
+  scope_id: string;
+  anchor_issue_id: string | null;
+  anchor_chat_session_id: string | null;
+  event_types: string[];
+  /** False: paused by hand, capture stopped. */
+  enabled: boolean;
+  /** "manual" with enabled false; "rate" or "agent_unavailable" with enabled
+   *  true (dispatch stopped, capture goes on). */
+  paused_reason: string | null;
+  debounce_seconds: number;
+  max_wait_seconds: number;
+  max_runs_per_hour: number;
+  reconciled_through: string | null;
+  created_by_type: string;
+  created_by_id: string;
+  created_at: string;
+  event_count: number;
+  capture_miss: number;
+}
+
+export interface RouterDispatch {
+  id: string;
+  subscription_id: string;
+  agent_id: string;
+  anchor_issue_id: string;
+  task_id: string;
+  task_status: string | null;
+  event_count: number;
+  outcome: string | null;
+  settled_at: string | null;
+  created_at: string;
+}
+
+export interface RouterSubscriptionChange {
+  id: string;
+  subscription_id: string;
+  action: string;
+  actor_type: string;
+  detail: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface RouterSettingsInput {
+  event_types: string[];
+  debounce_seconds: number;
+  max_wait_seconds: number;
+  max_runs_per_hour: number;
+}
+
+export interface RouterScopeInput {
+  scope_type: RouterScopeType;
+  /** Issue id (issue_tree) or project id. */
+  scope_id: string;
+}
+
+/** One Router: a chat and the subscriptions bound to it. */
+export interface RouterInstance {
+  chat_session_id: string;
+  agent_id: string;
+  subscriptions: RouterSubscription[];
+}
+
+export type RouterStatus =
+  | { kind: "running" }
+  | { kind: "paused"; reasons: string[] };

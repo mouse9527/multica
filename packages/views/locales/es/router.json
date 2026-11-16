@@ -1,0 +1,115 @@
+{
+  "menu": {
+    "setup": "Convertir en Router",
+    "settings": "Ajustes del Router"
+  },
+  "badge": "Router",
+  "dialog": {
+    "title_setup": "Convertir en Router",
+    "title_settings": "Ajustes del Router",
+    "description": "La actividad de las tareas de estos ámbitos llega por lotes a este chat; {{agent}} la atiende y solo te avisa de lo que te necesita.",
+    "archived": "Restaura este chat para convertirlo en Router."
+  },
+  "status": {
+    "running": "Activo",
+    "paused": "En pausa",
+    "reason": {
+      "manual": "Pausado manualmente",
+      "rate": "Se alcanzó el límite de ejecuciones por hora",
+      "agent_unavailable": "Agente, chat o proyecto no disponible"
+    }
+  },
+  "scopes": {
+    "title": "Ámbitos",
+    "project": "Proyecto",
+    "issue_tree": "Árbol de tareas",
+    "add_project": "Añadir proyecto",
+    "add_issue_tree": "Añadir árbol de tareas",
+    "project_placeholder": "Elige un proyecto",
+    "picker_title": "Elige la tarea raíz",
+    "picker_description": "El Router sigue esta tarea y todas sus subtareas.",
+    "empty": "Añade un proyecto o un árbol de tareas.",
+    "board": "Tablero {{identifier}}",
+    "board_hint": "Cada proyecto recibe una tarea tablero que registra las ejecuciones del Router.",
+    "remove": "Quitar ámbito",
+    "unknown": "No disponible"
+  },
+  "events": {
+    "title": "Eventos",
+    "issue_created": "Tarea creada",
+    "status_changed": "Estado cambiado",
+    "assignee_changed": "Responsable cambiado",
+    "comment_created": "Comentario nuevo",
+    "task_failed": "Ejecución fallida"
+  },
+  "batching": {
+    "title": "Agrupación",
+    "debounce": "Periodo de calma (segundos)",
+    "max_wait": "Espera máxima (segundos)",
+    "max_runs": "Ejecuciones por hora",
+    "invalid": "Los segundos van de 10 a 86400, la espera máxima no puede ser menor que el periodo de calma y las ejecuciones por hora van de 1 a 60."
+  },
+  "health": {
+    "title": "Estado",
+    "capture_miss": "Capturas perdidas",
+    "reconciled": "Verificado hasta",
+    "never": "Aún no",
+    "last_run": "Última ejecución",
+    "no_runs": "Aún no hay ejecuciones",
+    "run_events": "Eventos: {{count}}",
+    "outcome": {
+      "running": "En curso",
+      "completed": "Completada",
+      "failed": "Fallida"
+    }
+  },
+  "held": {
+    "title": "Elementos que gestionó el Router",
+    "empty": "Aparecerán aquí cuando el Router filtre la bandeja de entrada."
+  },
+  "actions": {
+    "create": "Convertir en Router",
+    "save": "Guardar",
+    "pause": "Pausar",
+    "resume": "Reanudar",
+    "release": "Quitar Router",
+    "cancel": "Cancelar"
+  },
+  "release": {
+    "title": "¿Quitar este Router?",
+    "description": "Este chat dejará de recibir la actividad de las tareas.",
+    "delete": "Eliminar sus suscripciones",
+    "keep": "Conservar sus suscripciones, en pausa",
+    "confirm": "Quitar",
+    "keep_hint": "Para volver a usarlas, convierte un chat en Router con los mismos ámbitos: se recuperan y se reanudan."
+  },
+  "board": {
+    "title": "Tablero del Router · {{chat}}",
+    "description": "Registra las ejecuciones del Router del chat «{{chat}}». Creado desde los ajustes del Router."
+  },
+  "toast": {
+    "created": "Router configurado",
+    "scope_failed": "No se pudo añadir {{scope}}: {{error}}",
+    "saved": "Ajustes del Router guardados",
+    "paused": "Router en pausa",
+    "resumed": "Router reanudado",
+    "released": "Router quitado",
+    "failed": "No se pudo actualizar el Router: {{error}}",
+    "scope_taken": "{{scope}} ya pertenece al Router de otro chat. Quita primero ese Router o quita allí este ámbito.",
+    "deleted": "Suscripción eliminada"
+  },
+  "list": {
+    "tab": "Routers",
+    "empty": "Aún no hay Routers. Abre el menú de un chat y elige «Convertir en Router».",
+    "agent": "Agente",
+    "scopes": "Ámbitos",
+    "status": "Estado",
+    "last_run": "Última ejecución",
+    "untitled": "Chat sin título",
+    "unbound_title": "Suscripciones fuera de un Router",
+    "unbound_hint": "Se conservaron al quitar un Router. Convertir un chat en Router con el mismo ámbito la recupera.",
+    "delete": "Eliminar",
+    "delete_title": "¿Eliminar esta suscripción?",
+    "delete_description": "También se eliminan sus eventos capturados."
+  }
+}

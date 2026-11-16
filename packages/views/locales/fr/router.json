@@ -1,0 +1,115 @@
+{
+  "menu": {
+    "setup": "Définir comme Router",
+    "settings": "Paramètres du Router"
+  },
+  "badge": "Router",
+  "dialog": {
+    "title_setup": "Définir comme Router",
+    "title_settings": "Paramètres du Router",
+    "description": "L’activité des tâches de ces périmètres arrive par lots dans cette discussion ; {{agent}} la traite et ne vous signale que ce qui vous concerne.",
+    "archived": "Restaurez cette discussion pour en faire un Router."
+  },
+  "status": {
+    "running": "Actif",
+    "paused": "En pause",
+    "reason": {
+      "manual": "Mis en pause manuellement",
+      "rate": "Limite d’exécutions par heure atteinte",
+      "agent_unavailable": "Agent, discussion ou projet indisponible"
+    }
+  },
+  "scopes": {
+    "title": "Périmètres",
+    "project": "Projet",
+    "issue_tree": "Arbre de tâches",
+    "add_project": "Ajouter un projet",
+    "add_issue_tree": "Ajouter un arbre de tâches",
+    "project_placeholder": "Choisir un projet",
+    "picker_title": "Choisir la tâche racine",
+    "picker_description": "Le Router suit cette tâche et toutes ses sous-tâches.",
+    "empty": "Ajoutez un projet ou un arbre de tâches.",
+    "board": "Tableau {{identifier}}",
+    "board_hint": "Chaque projet reçoit une tâche tableau qui enregistre les exécutions du Router.",
+    "remove": "Retirer le périmètre",
+    "unknown": "Indisponible"
+  },
+  "events": {
+    "title": "Événements",
+    "issue_created": "Tâche créée",
+    "status_changed": "Statut modifié",
+    "assignee_changed": "Responsable modifié",
+    "comment_created": "Nouveau commentaire",
+    "task_failed": "Exécution échouée"
+  },
+  "batching": {
+    "title": "Regroupement",
+    "debounce": "Période de calme (secondes)",
+    "max_wait": "Attente maximale (secondes)",
+    "max_runs": "Exécutions par heure",
+    "invalid": "Les secondes vont de 10 à 86400, l’attente maximale n’est pas plus courte que la période de calme, et les exécutions par heure vont de 1 à 60."
+  },
+  "health": {
+    "title": "État",
+    "capture_miss": "Captures manquées",
+    "reconciled": "Vérifié jusqu’au",
+    "never": "Pas encore",
+    "last_run": "Dernière exécution",
+    "no_runs": "Aucune exécution",
+    "run_events": "Événements : {{count}}",
+    "outcome": {
+      "running": "En cours",
+      "completed": "Terminée",
+      "failed": "Échouée"
+    }
+  },
+  "held": {
+    "title": "Éléments traités par le Router",
+    "empty": "Apparaîtront ici lorsque le Router filtrera la boîte de réception."
+  },
+  "actions": {
+    "create": "Définir comme Router",
+    "save": "Enregistrer",
+    "pause": "Mettre en pause",
+    "resume": "Reprendre",
+    "release": "Retirer le Router",
+    "cancel": "Annuler"
+  },
+  "release": {
+    "title": "Retirer ce Router ?",
+    "description": "Cette discussion ne recevra plus l’activité des tâches.",
+    "delete": "Supprimer ses abonnements",
+    "keep": "Garder ses abonnements, en pause",
+    "confirm": "Retirer",
+    "keep_hint": "Pour les réutiliser, définissez une discussion comme Router avec les mêmes périmètres : ils seront repris et relancés."
+  },
+  "board": {
+    "title": "Tableau Router · {{chat}}",
+    "description": "Enregistre les exécutions du Router de la discussion « {{chat}} ». Créé par les paramètres du Router."
+  },
+  "toast": {
+    "created": "Router configuré",
+    "scope_failed": "Impossible d’ajouter {{scope}} : {{error}}",
+    "saved": "Paramètres du Router enregistrés",
+    "paused": "Router mis en pause",
+    "resumed": "Router repris",
+    "released": "Router retiré",
+    "failed": "Impossible de mettre à jour le Router : {{error}}",
+    "scope_taken": "{{scope}} appartient déjà au Router d’une autre discussion. Retirez d’abord ce Router ou retirez-y ce périmètre.",
+    "deleted": "Abonnement supprimé"
+  },
+  "list": {
+    "tab": "Routers",
+    "empty": "Aucun Router. Ouvrez le menu d’une discussion et choisissez « Définir comme Router ».",
+    "agent": "Agent",
+    "scopes": "Périmètres",
+    "status": "État",
+    "last_run": "Dernière exécution",
+    "untitled": "Discussion sans titre",
+    "unbound_title": "Abonnements hors Router",
+    "unbound_hint": "Conservés lors du retrait d’un Router. Définir une discussion comme Router avec le même périmètre le reprend.",
+    "delete": "Supprimer",
+    "delete_title": "Supprimer cet abonnement ?",
+    "delete_description": "Ses événements capturés sont aussi supprimés."
+  }
+}

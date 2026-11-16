@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router page settings (M-105).
 //
 // HTTP surface of internal/agentrouter. It lives in package handler only to
 // reuse the request helpers (actor, workspace, issue and agent loaders,
@@ -36,6 +36,7 @@ func (h *Handler) MountAgentRouter(r chi.Router) {
 	r.Delete("/subscriptions/{id}", h.DeleteRouterSubscription)
 	r.Get("/subscriptions/{id}/scope", h.GetRouterSubscriptionScope)
 	r.Get("/events", h.ListRouterEvents)
+	r.Get("/chats/current", h.GetCurrentRouterChat)
 	h.mountRouterDispatch(r)
 }
 
@@ -86,6 +87,9 @@ type CreateRouterSubscriptionRequest struct {
 	DebounceSeconds int    `json:"debounce_seconds"`
 	MaxWaitSeconds  int    `json:"max_wait_seconds"`
 	MaxRunsPerHour  int    `json:"max_runs_per_hour"`
+	// AnchorChatSessionID binds the new subscription to a chat session in
+	// the same transaction (M-105). Needs router_chat.
+	AnchorChatSessionID string `json:"anchor_chat_session_id"`
 }
 
 func (h *Handler) CreateRouterSubscription(w http.ResponseWriter, r *http.Request) {
@@ -131,20 +135,39 @@ func (h *Handler) CreateRouterSubscription(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	chatID := ""
+	if ref := strings.TrimSpace(req.AnchorChatSessionID); ref != "" {
+		if !featureflags.RouterChatEnabled(r.Context(), h.FeatureFlags) {
+			writeError(w, http.StatusBadRequest, "anchor_chat_session_id needs the router_chat feature")
+			return
+		}
+		id, ok := parseUUIDOrBadRequest(w, ref, "anchor_chat_session_id")
+		if !ok {
+			return
+		}
+		chatID = uuidToString(id)
+	}
 	// A member must be able to manage the agent (its owner or a workspace
 	// admin), because dispatch runs the agent on what it captures. An agent
 	// may subscribe itself; it may subscribe another agent only on the
 	// authority of the member who started its current run, who must be able
 	// to manage that agent. The subscription is then that member's, and the
 	// acting agent is recorded as via.
+	//
+	// Binding a chat counts as acting for that chat's creator even when the
+	// agent subscribes itself (M-105): the run's originator must have started
+	// the chat, and the Router becomes theirs.
 	createdByType, createdByID, ownerUserID := actorType, actorID, userID
 	change := agentrouter.Change{ActorType: actorType, ActorID: actorID}
 	if actorType == "agent" {
 		auth := h.routerAgentAuthority(r, workspaceID)
 		change.AuthorizedBy = auth.userID
-		if uuidToString(agent.ID) != actorID {
+		if chatID != "" && !h.agentMayBindChat(w, r, auth, workspaceID, chatID) {
+			return
+		}
+		if uuidToString(agent.ID) != actorID || chatID != "" {
 			if !auth.canManageAgent(agent) {
-				writeError(w, http.StatusForbidden, "an agent can subscribe another agent only in a run started by a member who can manage that agent (its owner or a workspace admin)")
+				writeError(w, http.StatusForbidden, "an agent can subscribe another agent, or bind a chat, only in a run started by a member who can manage the agent (its owner or a workspace admin)")
 				return
 			}
 			createdByType, createdByID, ownerUserID = "member", auth.userID, auth.userID
@@ -181,17 +204,18 @@ func (h *Handler) CreateRouterSubscription(w http.ResponseWriter, r *http.Reques
 	}
 
 	sub, err := h.routerStore().Create(r.Context(), agentrouter.CreateParams{
-		WorkspaceID:   workspaceID,
-		AgentID:       uuidToString(agent.ID),
-		OwnerUserID:   ownerUserID,
-		ScopeType:     scopeType,
-		ScopeID:       scopeID,
-		AnchorIssueID: anchorID,
-		EventTypes:    eventTypes,
-		Batching:      batching,
-		CreatedByType: createdByType,
-		CreatedByID:   createdByID,
-		Change:        change,
+		WorkspaceID:         workspaceID,
+		AgentID:             uuidToString(agent.ID),
+		OwnerUserID:         ownerUserID,
+		ScopeType:           scopeType,
+		ScopeID:             scopeID,
+		AnchorIssueID:       anchorID,
+		EventTypes:          eventTypes,
+		Batching:            batching,
+		CreatedByType:       createdByType,
+		CreatedByID:         createdByID,
+		Change:              change,
+		AnchorChatSessionID: chatID,
 	})
 	if err != nil {
 		h.routerFail(w, r, err)
@@ -231,10 +255,28 @@ func (h *Handler) ListRouterSubscriptions(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	chatID := strings.TrimSpace(r.URL.Query().Get("chat_session_id"))
+	if chatID != "" {
+		id, ok := parseUUIDOrBadRequest(w, chatID, "chat_session_id")
+		if !ok {
+			return
+		}
+		chatID = uuidToString(id)
+	}
 	subs, err := h.routerStore().List(r.Context(), workspaceID, agentID)
 	if err != nil {
 		h.routerFail(w, r, err)
 		return
+	}
+	if chatID != "" {
+		// One Router: the subscriptions bound to this chat (M-105).
+		bound := subs[:0]
+		for _, s := range subs {
+			if s.AnchorChatSessionID != nil && *s.AnchorChatSessionID == chatID {
+				bound = append(bound, s)
+			}
+		}
+		subs = bound
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"subscriptions": subs})
 }
