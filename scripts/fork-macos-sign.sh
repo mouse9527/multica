@@ -17,6 +17,9 @@
 #       <dist-dir>; fails unless both darwin/amd64 and darwin/arm64 are there.
 #   fork-macos-sign.sh requirement <cert-sha1> <out-file>
 #       Writes the compiled designated requirement (used by the test).
+#   fork-macos-sign.sh expected-requirement
+#       Prints the designated requirement as `codesign -d -r-` shows it, for
+#       checking a downloaded binary on macOS (fork-install-macos.sh).
 #
 # RCODESIGN selects the rcodesign binary (default: rcodesign on PATH);
 # scripts/fork-install-rcodesign.sh installs the pinned version.
@@ -26,7 +29,7 @@ IDENTIFIER="ai.multica.cli"
 # SHA-1 of the CI signing certificate (CN=multica-ci): the hash macOS puts in
 # the designated requirement. A secret holding any other certificate fails
 # the release. MULTICA_MACOS_SIGN_CERT_SHA1 overrides it for tests only.
-PINNED_CERT_SHA1="0000000000000000000000000000000000000000"
+PINNED_CERT_SHA1="706a5367ebdf9a6deebae02d1301fe303e0287e7"
 CERT_SHA1="$(printf '%s' "${MULTICA_MACOS_SIGN_CERT_SHA1:-$PINNED_CERT_SHA1}" | tr 'A-F' 'a-f')"
 RCODESIGN="${RCODESIGN:-rcodesign}"
 
@@ -144,11 +147,16 @@ case "${1:-}" in
     [ $# -eq 2 ] || die "usage: $0 verify-archives <dist-dir>"
     verify_archives "$2"
     ;;
+  expected-requirement)
+    [ $# -eq 1 ] || die "usage: $0 expected-requirement"
+    check_sha1 "$CERT_SHA1"
+    echo "designated => identifier \"$IDENTIFIER\" and certificate leaf = H\"$CERT_SHA1\""
+    ;;
   requirement)
     [ $# -eq 3 ] || die "usage: $0 requirement <cert-sha1> <out-file>"
     write_requirement "$(printf '%s' "$2" | tr 'A-F' 'a-f')" "$3"
     ;;
   *)
-    die "usage: $0 sign <goos> <binary> | verify <binary> | verify-archives <dist-dir> | requirement <cert-sha1> <out-file>"
+    die "usage: $0 sign <goos> <binary> | verify <binary> | verify-archives <dist-dir> | requirement <cert-sha1> <out-file> | expected-requirement"
     ;;
 esac
