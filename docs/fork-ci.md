@@ -5,7 +5,7 @@
 PR 上有两个工作流：
 
 - **`CI`**（`.github/workflows/ci.yml`）：上游的工作流，fork 不改它，同步上游时不会冲突。多数检查按改动路径选择，`backend`、`frontend` 两个汇总检查会核对「该跑的都跑过、跳过的确实不该跑」。
-- **`CI (fork)`**（`.github/workflows/ci-fork.yml`）：fork 补的检查，每个 PR、每次推 `main` 都跑，不按路径跳过；每天定时跑一次，也可以手动触发。
+- **`CI (fork)`**（`.github/workflows/ci-fork.yml`）：fork 补的检查，`migrations-roundtrip`、`backend-db-no-skip`，以及跑 fork 脚本测试和必需检查一致性的 `fork-ci-config`。每个 PR、每次推 `main` 都跑，不按路径跳过；每天定时跑一次，也可以手动触发。
 
 ## 本机验证项和对应的检查
 
@@ -70,12 +70,47 @@ DB_URL_PREFIX=postgres://multica:multica@localhost:5432/ \
 
 ## 必需检查
 
-`main` 目前没有分支保护，所有检查都不是「必需」。建议由 Owner 在本 PR 合并后加一条 ruleset，把下面这些设为必需（都会出现在每个 PR 上，路径跳过的子检查由汇总检查兜底）：
+配置在 `.github/rulesets/main-required-checks.json`（GitHub ruleset 的 REST 请求体），作用于默认分支 `main`：
 
-- `backend`、`frontend`（`CI`）
-- `migrations-roundtrip`、`backend-db-no-skip`（`CI (fork)`）
+- 必需检查：`backend`、`frontend`（`CI`），`migrations-roundtrip`、`backend-db-no-skip`、`fork-ci-config`（`CI (fork)`）。路径跳过的子检查由 `backend`、`frontend` 汇总检查兜底，所以不单独列。
+- 只认 GitHub Actions（`integration_id` 15368）产生的结果，用 API 伪造同名 status 不算。
+- 要求源分支包含最新 `main`（`strict`），和项目的合并规则一致。
+- 没有 bypass：智能体用 Owner 的 `gh` 登录合并，有管理员 bypass 的话门禁对它们不生效。紧急情况下由 Owner 临时停用（见下文「回滚」）。
+- 这个规则也会拦直接推到 `main` 的提交（没有这些检查结果的提交推不上去）；tag 不受影响。
 
-要先合并再加：在 `main` 上还没有 `CI (fork)` 时就设为必需，所有 PR 都会卡住。
+`scripts/fork-required-checks.test.mjs`（`fork-ci-config` 里跑）核对 ruleset 和工作流对得上：每个必需检查恰好对应一个 job，job 没有改名、不是 matrix、没有 `continue-on-error`，只允许 `if: ${{ !cancelled() }}`（跳过的 job 会被当成通过），所在工作流对 `main` 的 `pull_request` 不按路径过滤（否则无关 PR 上永远等不到这个检查）。
+
+### 什么时候启用
+
+GitHub 对 `pull_request` 事件读取的是 PR 合并提交里的工作流。`main` 上还没有 `ci-fork.yml` 时，除本 PR 外，其他 PR 的合并提交里没有它（分支自己带了的除外），`CI (fork)` 的三个检查永远不会出现，这些 PR 会一直卡在「等待检查」。所以按这个顺序：
+
+1. 本 PR 合并（`main` 上有了 `ci-fork.yml`）。
+2. 启用 ruleset（需要 Owner 本人操作或明确授权，见下）。
+3. 还开着的 PR 要再触发一次 CI 才会有新检查：合入最新 `main` 再推（strict 本来也要求这一步）。旧 run 的「重新运行」用的是旧合并提交，不会出现新检查。
+
+### 启用、核对、修改、回滚
+
+需要仓库管理员权限，属于权限变更，**不在合并预授权里**，要 Owner 本人做或明确授权。
+
+```bash
+# 启用（返回的 id 记下来）
+gh api --method POST repos/mouse9527/multica/rulesets \
+  --input .github/rulesets/main-required-checks.json --jq '.id'
+
+# 核对：main 上生效的规则里应有 required_status_checks 和这几个检查名
+gh api repos/mouse9527/multica/rules/branches/main \
+  --jq '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context'
+
+# 修改（改完仓库里的 JSON、合并之后）
+gh api --method PUT repos/mouse9527/multica/rulesets/<id> \
+  --input .github/rulesets/main-required-checks.json
+
+# 回滚：临时停用，或者删除
+gh api --method PUT repos/mouse9527/multica/rulesets/<id> -f enforcement=disabled
+gh api --method DELETE repos/mouse9527/multica/rulesets/<id>
+```
+
+仓库里的 JSON 是唯一来源：改必需检查时先改 JSON（测试会检查），合并后再用 `PUT` 同步到 GitHub。
 
 ## CI 覆盖不到、仍在本机或集群做的事
 

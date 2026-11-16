@@ -2,8 +2,9 @@
 # acceptance used to repeat on a local machine and that upstream's ci.yml does
 # not make: the migration round trip with schema comparison, and proof that
 # the database-backed Go tests ran instead of skipping. Kept out of ci.yml so
-# upstream syncs never conflict with it. Both jobs run on every pull request
-# and push so each HEAD has its own result. See docs/fork-ci.md.
+# upstream syncs never conflict with it. Every job runs on every pull request
+# and push so each HEAD has its own result; .github/rulesets/ makes them
+# required by name. See docs/fork-ci.md.
 name: CI (fork)
 
 on:
@@ -23,6 +24,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The fork's script and configuration tests, including the invariants that
+  # keep .github/rulesets/main-required-checks.json and these workflows in
+  # agreement. ci.yml runs them only when its own path filters select it.
+  fork-ci-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Test fork CI scripts and required-check invariants
+        run: node --test scripts/fork-*.test.mjs
+
   migrations-roundtrip:
     runs-on: ubuntu-latest
     timeout-minutes: 30
