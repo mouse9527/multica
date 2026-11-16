@@ -126,6 +126,9 @@ type autostartSpec struct {
 	Exe     string
 	Args    []string
 	PathEnv string
+	// Modified by the mouse9527/multica fork: the LaunchAgent's ProcessType
+	// (see cmd_daemon_autostart_process_type.go).
+	ProcessType string
 }
 
 // Platform seams. Each build defines the platform* functions; they are
@@ -472,10 +475,15 @@ func autostartSpecFor(profile string) (autostartSpec, error) {
 	if err != nil {
 		return autostartSpec{}, fmt.Errorf("resolve executable path: %w", err)
 	}
+	processType, err := resolveLaunchAgentProcessType()
+	if err != nil {
+		return autostartSpec{}, err
+	}
 	return autostartSpec{
-		Exe:     cli.StableSelfExecutable(exe),
-		Args:    autostartArgs(profile),
-		PathEnv: os.Getenv("PATH"),
+		Exe:         cli.StableSelfExecutable(exe),
+		Args:        autostartArgs(profile),
+		PathEnv:     os.Getenv("PATH"),
+		ProcessType: processType,
 	}, nil
 }
 
@@ -601,15 +609,23 @@ func launchAgentPlistContent(spec autostartSpec, label string) string {
 	// The login session's PATH is the only environment launchd does not
 	// provide; embed the snapshot the registering shell handed us so agent
 	// CLIs outside the system directories stay discoverable.
-	if spec.PathEnv != "" {
+	// Modified by the mouse9527/multica fork: a non-default ProcessType is
+	// recorded here too, so the launchd-started daemon's refresh keeps it.
+	if spec.PathEnv != "" || launchAgentProcessTypeOverridden(spec) {
 		b.WriteString("\t<key>EnvironmentVariables</key>\n\t<dict>\n")
-		writePlistEntry(&b, "PATH", spec.PathEnv)
+		if spec.PathEnv != "" {
+			writePlistEntry(&b, "PATH", spec.PathEnv)
+		}
+		if launchAgentProcessTypeOverridden(spec) {
+			writePlistEntry(&b, launchAgentProcessTypeEnv, launchAgentProcessType(spec))
+		}
 		b.WriteString("\t</dict>\n")
 	}
 	b.WriteString("\t<key>RunAtLoad</key>\n\t<true/>\n")
-	// Background process type: a poll/websocket daemon wants neither App Nap
-	// nor full user-interactive QoS.
-	b.WriteString("\t<key>ProcessType</key>\n\t<string>Background</string>\n")
+	// Modified by the mouse9527/multica fork: Standard by default instead of
+	// Background — the daemon parents every agent workload, and Background
+	// QoS throttles that whole process tree.
+	writePlistEntry(&b, "ProcessType", launchAgentProcessType(spec))
 	b.WriteString("</dict>\n</plist>\n")
 	return b.String()
 }
