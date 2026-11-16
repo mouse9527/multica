@@ -1,0 +1,86 @@
+# Fork-only workflow (not present upstream). Checks the macOS signing of fork
+# releases without the real key: runs the signing script's tests, then a
+# GoReleaser snapshot of .goreleaser.fork.yml signed with a throwaway
+# certificate, and verifies the darwin archives it produced. The real key is
+# only in the `release` environment used by release-fork.yml, which pull
+# requests and branch pushes cannot reach. See docs/fork-release.md.
+name: macOS signing (fork)
+
+on:
+  pull_request:
+    paths:
+      - .goreleaser.fork.yml
+      - .github/workflows/release-fork.yml
+      - .github/workflows/fork-macos-sign.yml
+      - scripts/fork-macos-sign*.sh
+      - scripts/fork-install-rcodesign.sh
+  push:
+    branches: [main]
+    paths:
+      - .goreleaser.fork.yml
+      - .github/workflows/release-fork.yml
+      - .github/workflows/fork-macos-sign.yml
+      - scripts/fork-macos-sign*.sh
+      - scripts/fork-install-rcodesign.sh
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.repository_owner != 'multica-ai'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "~1.27.3"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+
+      - name: Install rcodesign
+        run: |
+          bash scripts/fork-install-rcodesign.sh "$RUNNER_TEMP/rcodesign"
+          echo "RCODESIGN=$RUNNER_TEMP/rcodesign/rcodesign" >> "$GITHUB_ENV"
+
+      - name: Test macOS signing
+        run: bash scripts/fork-macos-sign.test.sh
+
+      # Same PKCS#12 encryption as the real key (rcodesign reads only
+      # PBE-SHA1-3DES); the pinned SHA-1 is overridden for this certificate.
+      - name: Create a throwaway signing certificate
+        run: |
+          dir="$RUNNER_TEMP/macos-sign"
+          mkdir -p "$dir"
+          openssl req -x509 -newkey rsa:2048 -noenc -days 1 -subj "/CN=multica-ci-snapshot" \
+            -addext "extendedKeyUsage=critical,codeSigning" \
+            -addext "keyUsage=critical,digitalSignature" \
+            -addext "basicConstraints=critical,CA:false" \
+            -keyout "$dir/key.pem" -out "$dir/cert.pem" 2>/dev/null
+          openssl rand -hex 16 > "$dir/password"
+          openssl pkcs12 -export -inkey "$dir/key.pem" -in "$dir/cert.pem" \
+            -passout "file:$dir/password" -name multica-ci-snapshot \
+            -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 -out "$dir/key.p12"
+          sha1="$(openssl x509 -in "$dir/cert.pem" -noout -fingerprint -sha1 | cut -d= -f2 | tr -d ':')"
+          {
+            echo "MULTICA_MACOS_SIGN_P12=$dir/key.p12"
+            echo "MULTICA_MACOS_SIGN_P12_PASSWORD_FILE=$dir/password"
+            echo "MULTICA_MACOS_SIGN_CERT_SHA1=$sha1"
+          } >> "$GITHUB_ENV"
+
+      - name: Build a signed snapshot
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean --config .goreleaser.fork.yml
+        env:
+          MAKE_LATEST: "false"
+
+      - name: Verify macOS signatures in the archives
+        run: bash scripts/fork-macos-sign.sh verify-archives dist
