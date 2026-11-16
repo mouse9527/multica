@@ -1139,8 +1139,9 @@ export const ChatMessageSchema = z.object({
   attachments: z.array(AttachmentSchema).optional(),
   failure_reason: z.string().nullable().optional(),
   elapsed_ms: z.number().nullable().optional(),
+  // "router_batch": mouse9527/multica fork (M-96).
   message_kind: z
-    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening"])
+    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening", "router_batch"])
     .catch("message")
     .optional(),
   // Optional additive data degrades independently: a malformed suggestion
@@ -2489,6 +2490,8 @@ const ChatLastMessageSchema = z.object({
     "no_response",
     "onboarding_kickoff",
     "onboarding_opening",
+    // mouse9527/multica fork (M-96).
+    "router_batch",
   ]).optional().catch(undefined),
 }).loose();
 

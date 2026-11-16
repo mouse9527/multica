@@ -43,6 +43,11 @@ const (
 	// anchor runs for captured events, subscription state, and notify
 	// owner. It only takes effect with RouterV1 on. Off by default.
 	RouterDispatch = "router_dispatch"
+	// RouterChat makes dispatch write a chat-bound subscription's batches
+	// into its chat session instead of starting anchor runs (mouse9527/multica
+	// fork, M-96). It only takes effect with RouterDispatch on. Off by
+	// default; off means dispatch as with RouterDispatch alone.
+	RouterChat = "router_chat"
 	// HandoffReplyWake makes a member comment on an issue in a handoff status
 	// also wake the issue's agent assignee, thread replies included
 	// (mouse9527/multica fork, M-89). Off by default; off means upstream
@@ -108,6 +113,12 @@ func HandoffReplyWakeEnabled(ctx context.Context, flags *featureflag.Service) bo
 // requires RouterV1: dispatch consumes what capture writes.
 func RouterDispatchEnabled(ctx context.Context, flags *featureflag.Service) bool {
 	return RouterV1Enabled(ctx, flags) && flags.IsEnabled(ctx, RouterDispatch, false)
+}
+
+// RouterChatEnabled is added by the mouse9527/multica fork (M-96). It requires
+// RouterDispatch: the chat is where dispatch delivers.
+func RouterChatEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return RouterDispatchEnabled(ctx, flags) && flags.IsEnabled(ctx, RouterChat, false)
 }
 
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {

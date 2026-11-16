@@ -305,6 +305,10 @@ const (
 	// the opening self-describes: chat renders the starter cards under this
 	// kind instead of quick-action chips (MUL-5765).
 	ChatMessageKindOnboardingOpening = "onboarding_opening"
+	// ChatMessageKindRouterBatch is a batch of issue events the server wrote
+	// into a Router chat as a user-role input (role 'user', not said by the
+	// session's creator). Modified for the mouse9527/multica fork (M-96).
+	ChatMessageKindRouterBatch = "router_batch"
 )
 
 // ChatDonePayload is broadcast when an agent finishes responding to a chat
