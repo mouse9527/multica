@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and Router v6 slice 1 (M-96).
 
 package agentrouter
 
@@ -22,7 +22,16 @@ type fakeRuns struct {
 	calls []fakeRun
 }
 
-type fakeRun struct{ issue, agent, note, task string }
+type fakeRun struct{ issue, chat, agent, note, task string }
+
+func (f *fakeRuns) EnqueueRouterChatRun(_ context.Context, chatSessionID, agentID, batch string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	task := f.e.fx.Task(f.e.t, agentID, testutil.Cols{"chat_session_id": chatSessionID, "runtime_id": f.e.runtimeOf(agentID)})
+	f.calls = append(f.calls, fakeRun{chat: chatSessionID, agent: agentID, note: batch, task: task})
+	return task, nil
+}
 
 func (f *fakeRuns) EnqueueRouterRun(_ context.Context, issueID, agentID, note string) (string, error) {
 	if f.err != nil {

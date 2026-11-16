@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router v6 slice 1 (M-96).
 
 // Package agentrouter captures issue events for agents that subscribe to an
 // issue tree or a project (the "Router" of the fork's Super-agent design), and
@@ -10,6 +10,8 @@
 // starts one anchor run per batch (one run at a time per agent), keeps a small
 // state document per subscription, and gives the agent one outlet to reach a
 // member, the owner notice, delivered by channel adapters (inbox only).
+// Router v6 slice 1 lets a subscription be bound to a chat session: its
+// batches are then written into that chat and answered there (chat.go).
 //
 // Capture never uses database triggers. The listener runs synchronously on
 // the publisher's goroutine, so it does one bounded lookup and one short
@@ -21,7 +23,8 @@
 //
 // Capture is behind the router_v1 feature flag: with it off the API answers 404
 // and neither the listener nor the reconcile job is registered. Dispatch, state
-// and notices are additionally behind router_dispatch.
+// and notices are additionally behind router_dispatch, and batches into chats
+// behind router_chat.
 package agentrouter
 
 import (
@@ -143,6 +146,10 @@ type Subscription struct {
 	ViaTaskID  *string   `json:"via_task_id"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+	// AnchorChatSessionID is the chat session the subscription is bound to
+	// (M-96). With router_chat on, its batches go there instead of to anchor
+	// runs; with it off the binding is kept but unused.
+	AnchorChatSessionID *string `json:"anchor_chat_session_id"`
 	// EventCount and CaptureMiss are computed on read. CaptureMiss is the
 	// number of this subscription's events that reconcile had to add because
 	// the listener did not record them.

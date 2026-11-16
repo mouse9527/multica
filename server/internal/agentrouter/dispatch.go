@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and Router v6 slice 1 (M-96).
 
 package agentrouter
 
@@ -13,10 +13,13 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// RunEnqueuer starts an anchor run. The server's implementation is
-// TaskRuns, which goes through the task service; tests substitute their own.
+// RunEnqueuer starts a Router run: an anchor run on an issue, or a chat turn
+// that reads the batch written into a chat session (see chat.go). The
+// server's implementation is TaskRuns, which goes through the task service;
+// tests substitute their own.
 type RunEnqueuer interface {
 	EnqueueRouterRun(ctx context.Context, issueID, agentID, note string) (taskID string, err error)
+	EnqueueRouterChatRun(ctx context.Context, chatSessionID, agentID, batch string) (taskID string, err error)
 }
 
 var (
@@ -56,6 +59,9 @@ type Dispatcher struct {
 	Runs    RunEnqueuer
 	Notices *Notifier
 	Logger  *slog.Logger
+	// Chat sends a chat-bound subscription's batches to its chat (the
+	// router_chat feature). Off, every subscription gets anchor runs.
+	Chat bool
 }
 
 func NewDispatcher(store *Store, runs RunEnqueuer, notices *Notifier) *Dispatcher {
@@ -91,6 +97,13 @@ func (d *Dispatcher) TickWorkspace(ctx context.Context, workspaceID string) (Dis
 		res.Notices = n
 		if err != nil {
 			d.Logger.Warn("router: deliver pending notices failed", "error", err)
+		}
+	}
+	if d.Chat {
+		n, err := d.pauseUnusableChats(ctx, workspaceID)
+		res.Paused += n
+		if err != nil {
+			d.Logger.Warn("router: pausing subscriptions with an unusable chat failed", "error", err)
 		}
 	}
 	due, err := d.dueSubscriptions(ctx, workspaceID)
@@ -275,13 +288,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 	if !locked {
 		return outcomeWaiting, "", nil
 	}
-	var sub dispatchSub
-	err = tx.QueryRow(ctx, `
-		SELECT id::text, workspace_id::text, agent_id::text, owner_user_id::text, scope_type, scope_id::text,
-		       anchor_issue_id::text, max_runs_per_hour, enabled, paused_reason, state, state_revision
-		FROM router_subscription WHERE id = $1::uuid FOR UPDATE`, due.ID,
-	).Scan(&sub.ID, &sub.WorkspaceID, &sub.AgentID, &sub.OwnerUserID, &sub.ScopeType, &sub.ScopeID,
-		&sub.AnchorIssueID, &sub.MaxRunsPerHour, &sub.Enabled, &sub.PausedReason, &sub.State, &sub.StateRevision)
+	sub, err := lockSubscription(ctx, tx, due.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return outcomeWaiting, "", nil
 	}
@@ -361,15 +368,28 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 	if err != nil {
 		return outcomeWaiting, "", err
 	}
+	chatID := ""
+	if d.Chat {
+		if chatID, err = chatAnchorOf(ctx, tx, sub.ID); err != nil {
+			return outcomeWaiting, "", err
+		}
+	}
 	note := buildNote(noteInput{
 		sub: sub, anchorKey: anchorKey, scopeLabel: scopeLabel(ctx, tx, sub),
-		batch: batch, inflight: inflight, inflightTotal: total, now: time.Now(),
+		batch: batch, inflight: inflight, inflightTotal: total, now: time.Now(), chat: chatID != "",
 	})
 
-	taskID, err := d.Runs.EnqueueRouterRun(ctx, *sub.AnchorIssueID, sub.AgentID, note)
+	var taskID string
+	if chatID != "" {
+		taskID, err = d.Runs.EnqueueRouterChatRun(ctx, chatID, sub.AgentID, note)
+	} else {
+		taskID, err = d.Runs.EnqueueRouterRun(ctx, *sub.AnchorIssueID, sub.AgentID, note)
+	}
 	switch {
 	case errors.Is(err, ErrRunBusy):
 		return outcomeWaiting, "", tx.Commit(ctx)
+	case errors.Is(err, ErrChatUnavailable):
+		return pause(PausedAgentUnavailable, chatPauseWhy(sub.ID, chatID, "cannot take batches ("+err.Error()+")"))
 	case errors.Is(err, ErrRunRefused):
 		return pause(PausedAgentUnavailable, err.Error())
 	case err != nil:
@@ -392,9 +412,21 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 	if err := tx.Commit(ctx); err != nil {
 		return outcomeWaiting, "", err
 	}
-	d.Logger.Info("router: anchor run queued", "subscription_id", sub.ID, "agent_id", sub.AgentID,
-		"task_id", taskID, "events", len(batch.events))
+	d.Logger.Info("router: run queued", "subscription_id", sub.ID, "agent_id", sub.AgentID,
+		"task_id", taskID, "chat_session_id", chatID, "events", len(batch.events))
 	return outcomeDispatched, "", nil
+}
+
+// lockSubscription reads a subscription for dispatch and locks its row.
+func lockSubscription(ctx context.Context, tx pgx.Tx, id string) (dispatchSub, error) {
+	var sub dispatchSub
+	err := tx.QueryRow(ctx, `
+		SELECT id::text, workspace_id::text, agent_id::text, owner_user_id::text, scope_type, scope_id::text,
+		       anchor_issue_id::text, max_runs_per_hour, enabled, paused_reason, state, state_revision
+		FROM router_subscription WHERE id = $1::uuid FOR UPDATE`, id,
+	).Scan(&sub.ID, &sub.WorkspaceID, &sub.AgentID, &sub.OwnerUserID, &sub.ScopeType, &sub.ScopeID,
+		&sub.AnchorIssueID, &sub.MaxRunsPerHour, &sub.Enabled, &sub.PausedReason, &sub.State, &sub.StateRevision)
+	return sub, err
 }
 
 // pauseDispatch stops dispatch for a subscription (capture goes on), records
@@ -588,6 +620,8 @@ type noteInput struct {
 	inflight      []inFlightIssue
 	inflightTotal int
 	now           time.Time
+	// chat: the note is written into the subscription's chat (M-96).
+	chat bool
 }
 
 const (
@@ -608,10 +642,21 @@ func buildNote(in noteInput) string {
 			others++
 		}
 	}
+	if in.chat {
+		b.WriteString(RouterBatchLabel + "\n")
+	}
 	fmt.Fprintf(&b, "Router batch for subscription %s (%s, anchor %s): %d new event(s).\n", id, in.scopeLabel, in.anchorKey, others)
-	b.WriteString("You are the Router for this scope. Read the events, check current state where it matters, and act. " +
-		"Your own actions are left out and never start a run. " +
-		"When a person has to decide or act, tell them with `multica notify owner --subscription " + id + " --title ... --body ...`; do not rely on issue comments alone.\n\n")
+	if in.chat {
+		b.WriteString("The Router dispatcher wrote this message into your chat with the owner; the owner did not. " +
+			"You are the Router for this scope. Read the events, check current state where it matters, and act. " +
+			"Your own actions are left out and never start a batch. " +
+			"Any text you reply here notifies the owner: reply only when they need to know, decide or act, and say so plainly. " +
+			"When nothing needs them, finish without any text reply; the turn stays silent.\n\n")
+	} else {
+		b.WriteString("You are the Router for this scope. Read the events, check current state where it matters, and act. " +
+			"Your own actions are left out and never start a run. " +
+			"When a person has to decide or act, tell them with `multica notify owner --subscription " + id + " --title ... --body ...`; do not rely on issue comments alone.\n\n")
+	}
 
 	b.WriteString("Events, oldest first:\n")
 	shown, size := 0, 0

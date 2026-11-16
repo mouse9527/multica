@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and Router v6 slice 1 (M-96).
 //
 // HTTP surface of Router dispatch: subscription updates, state, the audit
 // trail, anchor runs and owner notices. Like agent_router.go it only adapts
@@ -113,10 +113,13 @@ func (h *Handler) userOwnsAgent(r *http.Request, agentID, userID string) bool {
 type UpdateRouterSubscriptionRequest struct {
 	EventTypes []string `json:"event_types"`
 	// AnchorIssueID is an issue id or identifier.
-	AnchorIssueID   *string `json:"anchor_issue_id"`
-	DebounceSeconds int     `json:"debounce_seconds"`
-	MaxWaitSeconds  int     `json:"max_wait_seconds"`
-	MaxRunsPerHour  int     `json:"max_runs_per_hour"`
+	AnchorIssueID *string `json:"anchor_issue_id"`
+	// AnchorChatSessionID binds the subscription to a chat session; "" or
+	// "none" removes the binding. Needs router_chat.
+	AnchorChatSessionID *string `json:"anchor_chat_session_id"`
+	DebounceSeconds     int     `json:"debounce_seconds"`
+	MaxWaitSeconds      int     `json:"max_wait_seconds"`
+	MaxRunsPerHour      int     `json:"max_runs_per_hour"`
 }
 
 func (h *Handler) UpdateRouterSubscription(w http.ResponseWriter, r *http.Request) {
@@ -163,6 +166,24 @@ func (h *Handler) UpdateRouterSubscription(w http.ResponseWriter, r *http.Reques
 		}
 		id := uuidToString(issue.ID)
 		p.AnchorIssueID = &id
+	}
+	if req.AnchorChatSessionID != nil {
+		if !featureflags.RouterChatEnabled(r.Context(), h.FeatureFlags) {
+			writeError(w, http.StatusBadRequest, "anchor_chat_session_id needs the router_chat feature")
+			return
+		}
+		chat := strings.TrimSpace(*req.AnchorChatSessionID)
+		if chat == "none" {
+			chat = ""
+		}
+		if chat != "" {
+			id, ok := parseUUIDOrBadRequest(w, chat, "anchor_chat_session_id")
+			if !ok {
+				return
+			}
+			chat = uuidToString(id)
+		}
+		p.AnchorChatSessionID = &chat
 	}
 	out, err := h.routerStore().Update(r.Context(), sub.WorkspaceID, sub.ID, p)
 	if err != nil {

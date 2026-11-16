@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and Router v6 slice 1 (M-96).
 
 package agentrouter
 
@@ -36,6 +36,30 @@ func (r TaskRuns) EnqueueRouterRun(ctx context.Context, issueID, agentID, note s
 	case errors.Is(err, service.ErrDuplicatePendingTask), errors.Is(err, service.ErrIssueInTriage):
 		return "", fmt.Errorf("%w: %v", ErrRunBusy, err)
 	case errors.Is(err, service.ErrProjectAccessDenied), errors.Is(err, service.ErrAttributionFailClosed):
+		return "", fmt.Errorf("%w: %v", ErrRunRefused, err)
+	case err != nil:
+		return "", err
+	}
+	return util.UUIDToString(task.ID), nil
+}
+
+// EnqueueRouterChatRun writes the batch into the chat session and queues the
+// chat turn that reads it (see service.EnqueueRouterChatRun).
+func (r TaskRuns) EnqueueRouterChatRun(ctx context.Context, chatSessionID, agentID, batch string) (string, error) {
+	sessionUUID, err := util.ParseUUID(chatSessionID)
+	if err != nil {
+		return "", err
+	}
+	agentUUID, err := util.ParseUUID(agentID)
+	if err != nil {
+		return "", err
+	}
+	task, err := r.Tasks.EnqueueRouterChatRun(ctx, sessionUUID, agentUUID, batch)
+	switch {
+	case errors.Is(err, service.ErrChatSessionArchived), errors.Is(err, service.ErrRouterChatUnavailable):
+		return "", fmt.Errorf("%w: %v", ErrChatUnavailable, err)
+	case errors.Is(err, service.ErrChatTaskAgentArchived), errors.Is(err, service.ErrChatTaskAgentNoRuntime),
+		errors.Is(err, service.ErrAttributionFailClosed):
 		return "", fmt.Errorf("%w: %v", ErrRunRefused, err)
 	case err != nil:
 		return "", err

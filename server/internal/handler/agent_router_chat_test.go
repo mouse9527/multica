@@ -1,0 +1,238 @@
+// Modified for the mouse9527/multica fork: Router v6, slice 1 (M-96).
+
+package handler
+
+import (
+	"context"
+	"net/http"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/multica-ai/multica/server/internal/agentrouter"
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
+	"github.com/multica-ai/multica/server/pkg/protocol"
+)
+
+func withRouterChatFlags(t *testing.T, chat bool) {
+	t.Helper()
+	provider := featureflag.NewStaticProvider()
+	provider.Set(featureflags.RouterV1, featureflag.Rule{Default: true})
+	provider.Set(featureflags.RouterDispatch, featureflag.Rule{Default: true})
+	provider.Set(featureflags.RouterChat, featureflag.Rule{Default: chat})
+	orig := testHandler.FeatureFlags
+	testHandler.FeatureFlags = featureflag.NewService(provider)
+	t.Cleanup(func() { testHandler.FeatureFlags = orig })
+}
+
+func cleanupRouterChat(t *testing.T, subID string) {
+	t.Cleanup(func() {
+		for _, q := range []string{
+			`DELETE FROM router_chat_anchor WHERE subscription_id = $1`,
+			`DELETE FROM router_dispatch WHERE subscription_id = $1`,
+			`DELETE FROM router_event WHERE subscription_id = $1`,
+			`DELETE FROM router_issue_seen WHERE subscription_id = $1`,
+			`DELETE FROM router_subscription_change WHERE subscription_id = $1`,
+			`DELETE FROM owner_notice WHERE source_subscription_id = $1`,
+			`DELETE FROM router_subscription WHERE id = $1`,
+		} {
+			dbfx.Exec(t, q, subID)
+		}
+	})
+}
+
+func TestRouterAnchorChatAPI(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	f := newRouterFixture(t)
+	cleanupRouterS2(t, f)
+	withRouterChatFlags(t, false)
+	var sub map[string]any
+	routerCall(t, newRequest("POST", "/api/router/subscriptions", map[string]any{
+		"agent_id": f.agentA, "scope_type": "issue_tree", "scope_id": f.root,
+	})).Want(http.StatusCreated).JSON(&sub)
+	id := sub["id"].(string)
+	cleanupRouterChat(t, id)
+	if v, ok := sub["anchor_chat_session_id"]; !ok || v != nil {
+		t.Fatalf("new subscription anchor_chat_session_id = %v (present %v), want null", v, ok)
+	}
+	chat := dbfx.ChatSession(t, f.agentA)
+
+	// router_chat off: the field is refused, nothing is bound.
+	routerCall(t, newRequest("PATCH", "/api/router/subscriptions/"+id, map[string]any{"anchor_chat_session_id": chat})).
+		Want(http.StatusBadRequest)
+
+	withRouterChatFlags(t, true)
+	routerCall(t, newRequest("PATCH", "/api/router/subscriptions/"+id, map[string]any{"anchor_chat_session_id": chat})).
+		Want(http.StatusOK).JSON(&sub)
+	if sub["anchor_chat_session_id"] != chat {
+		t.Fatalf("bound = %v", sub)
+	}
+	for name, ref := range map[string]string{
+		"not a uuid":           "M-1",
+		"archived chat":        dbfx.ChatSession(t, f.agentA, testutil.Cols{"status": "archived"}),
+		"another agent's chat": dbfx.ChatSession(t, f.agentB),
+		"someone else's chat":  dbfx.ChatSession(t, f.agentA, testutil.Cols{"creator_id": f.member}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			routerCall(t, newRequest("PATCH", "/api/router/subscriptions/"+id, map[string]any{"anchor_chat_session_id": ref})).
+				Want(http.StatusBadRequest)
+		})
+	}
+	routerCall(t, newRequest("PATCH", "/api/router/subscriptions/"+id, map[string]any{"anchor_chat_session_id": "none"})).
+		Want(http.StatusOK).JSON(&sub)
+	if sub["anchor_chat_session_id"] != nil {
+		t.Fatalf("after none = %v", sub)
+	}
+}
+
+// TestRouterChatBatchThroughTheRealChat goes through the real task service
+// and daemon claim: a batch lands in the chat as a router_batch input, a
+// queued owner message is claimed before it, the agent receives the batch as
+// its prompt, and a batch turn without text stays silent.
+func TestRouterChatBatchThroughTheRealChat(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(t, ctx, "router chat")
+	root := dbfx.Issue(t, "router chat root")
+	store := agentrouter.NewStore(testPool, testPool)
+	types, _ := agentrouter.NormalizeEventTypes(nil)
+	sub, err := store.Create(ctx, agentrouter.CreateParams{
+		WorkspaceID: testWorkspaceID, AgentID: agentID, OwnerUserID: testUserID,
+		ScopeType: agentrouter.ScopeIssueTree, ScopeID: root, EventTypes: types,
+		CreatedByType: "member", CreatedByID: testUserID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupRouterChat(t, sub.ID)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `DELETE FROM chat_message WHERE chat_session_id = $1`, sessionID)
+		dbfx.Exec(t, `DELETE FROM agent_task_queue WHERE agent_id = $1`, agentID)
+	})
+	if _, err := store.Update(ctx, testWorkspaceID, sub.ID, agentrouter.UpdateParams{
+		AnchorChatSessionID: &sessionID, Change: agentrouter.Change{ActorType: "system"},
+	}); err != nil {
+		t.Fatalf("bind chat: %v", err)
+	}
+	dbfx.Exec(t, `
+		INSERT INTO router_event (workspace_id, subscription_id, agent_id, event_key, kind, issue_id, actor_type, actor_id, source, occurred_at, created_at)
+		VALUES ($1, $2, $3, 'comment:router-chat-test', 'comment_created', $4, 'member', $5, 'bus', now(), now() - interval '1 hour')`,
+		testWorkspaceID, sub.ID, agentID, root, testUserID)
+
+	var mu sync.Mutex
+	var done []protocol.ChatDonePayload
+	var batchEvents []protocol.ChatMessagePayload
+	testHandler.Bus.Subscribe(protocol.EventChatDone, func(e events.Event) {
+		if p, ok := e.Payload.(protocol.ChatDonePayload); ok && p.ChatSessionID == sessionID {
+			mu.Lock()
+			done = append(done, p)
+			mu.Unlock()
+		}
+	})
+	testHandler.Bus.Subscribe(protocol.EventChatMessage, func(e events.Event) {
+		if p, ok := e.Payload.(protocol.ChatMessagePayload); ok && p.ChatSessionID == sessionID && e.ActorType == "system" {
+			mu.Lock()
+			batchEvents = append(batchEvents, p)
+			mu.Unlock()
+		}
+	})
+
+	d := agentrouter.NewDispatcher(store, agentrouter.TaskRuns{Tasks: testHandler.TaskService},
+		agentrouter.NewNotifier(store, agentrouter.InboxAdapter{Queries: db.New(testPool), Bus: testHandler.Bus}))
+	d.Chat = true
+	if _, err := d.TickWorkspace(ctx, testWorkspaceID); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	var batchTask, kind, content, initiator string
+	var priority int
+	var originatorSet bool
+	if err := testPool.QueryRow(ctx, `
+		SELECT t.id::text, t.priority, t.originator_user_id IS NOT NULL, t.initiator_user_id::text, m.message_kind, m.content
+		FROM agent_task_queue t JOIN chat_message m ON m.task_id = t.id
+		WHERE t.chat_session_id = $1 AND t.chat_input_task_id = t.id`, sessionID,
+	).Scan(&batchTask, &priority, &originatorSet, &initiator, &kind, &content); err != nil {
+		t.Fatalf("batch turn: %v", err)
+	}
+	if priority != service.RouterChatPriority || originatorSet || initiator != testUserID || kind != protocol.ChatMessageKindRouterBatch ||
+		!strings.HasPrefix(content, agentrouter.RouterBatchLabel+"\n") || !strings.Contains(content, "comment_created") {
+		t.Fatalf("batch turn: priority %d, originator set %v, initiator %s, kind %s, content:\n%s", priority, originatorSet, initiator, kind, content)
+	}
+	mu.Lock()
+	if len(batchEvents) != 1 || batchEvents[0].MessageID != "" || batchEvents[0].TaskID != batchTask {
+		t.Fatalf("chat:message events = %+v, want one without a message id", batchEvents)
+	}
+	mu.Unlock()
+
+	// The owner speaks after the batch was queued; the owner is claimed first.
+	ownerTask := sendDirectChat(t, ctx, agentID, sessionID, "what is going on?")
+	claimed := claimTaskForRuntimeGuard(t, runtimeID, daemonID)
+	if claimed.ChatMessage != "what is going on?" {
+		t.Fatalf("first claim delivered %q, want the owner's message", claimed.ChatMessage)
+	}
+	markTaskRunning(t, ctx, ownerTask)
+	if _, err := testHandler.TaskService.CompleteTask(ctx, parseUUID(ownerTask), completeResult(t, "RT is fine"), "", "", "", false, "", ""); err != nil {
+		t.Fatalf("complete owner turn: %v", err)
+	}
+
+	// Then the batch, delivered as the prompt.
+	claimed = claimTaskForRuntimeGuard(t, runtimeID, daemonID)
+	if !strings.HasPrefix(claimed.ChatMessage, agentrouter.RouterBatchLabel) {
+		t.Fatalf("second claim delivered %q, want the batch", claimed.ChatMessage)
+	}
+	markTaskRunning(t, ctx, batchTask)
+	if _, err := testHandler.TaskService.CompleteTask(ctx, parseUUID(batchTask), completeResult(t, ""), "", "", "", false, "", ""); err != nil {
+		t.Fatalf("complete batch turn: %v", err)
+	}
+	mu.Lock()
+	var batchDone *protocol.ChatDonePayload
+	for i := range done {
+		if done[i].TaskID == batchTask {
+			batchDone = &done[i]
+		}
+	}
+	if batchDone == nil || batchDone.MessageKind != protocol.ChatMessageKindNoResponse || batchDone.Notification != nil {
+		t.Fatalf("batch chat:done = %+v, want a silent no_response", batchDone)
+	}
+	mu.Unlock()
+
+	// The session list neither previews the batch or its silent turn nor
+	// counts the silent turn as unread: the owner's reply is the latest.
+	rows, err := testHandler.Queries.ListChatSessionsByCreator(ctx, db.ListChatSessionsByCreatorParams{
+		WorkspaceID: parseUUID(testWorkspaceID), CreatorID: parseUUID(testUserID),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range rows {
+		if uuidToString(r.ID) != sessionID {
+			continue
+		}
+		found = true
+		if r.LastMessageContent != "RT is fine" || r.LastMessageKind != protocol.ChatMessageKindMessage || r.UnreadCount != 1 {
+			t.Fatalf("session row: last %q (%s), unread %d; want the owner's reply and 1 unread", r.LastMessageContent, r.LastMessageKind, r.UnreadCount)
+		}
+	}
+	if !found {
+		t.Fatal("session missing from the list")
+	}
+
+	// The batch settles like an anchor run.
+	if _, err := d.TickWorkspace(ctx, testWorkspaceID); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	var outcome string
+	if err := testPool.QueryRow(ctx, `SELECT COALESCE(outcome, '') FROM router_dispatch WHERE task_id = $1`, batchTask).Scan(&outcome); err != nil || outcome != "completed" {
+		t.Fatalf("dispatch outcome = %q (%v), want completed", outcome, err)
+	}
+}
