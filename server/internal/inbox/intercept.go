@@ -18,33 +18,62 @@ import (
 // hold=true keeps the item out of the inbox: CreateIfEligible then reports
 // inserted=false. The fork's Router registers one (internal/agentrouter); with
 // none registered every write goes through unchanged, as upstream.
+//
+// The call runs on its own goroutine with a context that ends at the budget.
+// An interceptor should honor it: one that keeps running past the budget has
+// already lost (the write went ahead) and keeps one of the limited call slots
+// until it returns.
 type Interceptor interface {
 	Intercept(ctx context.Context, params db.CreateInboxItemParams) (hold bool, err error)
 }
 
+// InterceptorSlots bounds the interceptor calls running at once, abandoned
+// ones included. With every slot taken, writes skip the interceptor. Read at
+// SetInterceptor.
+var InterceptorSlots = 64
+
 type registration struct {
 	interceptor Interceptor
 	budget      time.Duration
+	slots       chan struct{}
 }
 
 var registered atomic.Pointer[registration]
 
 // SetInterceptor registers i, or removes the registration when i is nil.
-// budget bounds how long one call may take; past it the write goes ahead.
+// budget bounds how long a write waits for one call; past it the write goes
+// ahead.
 func SetInterceptor(i Interceptor, budget time.Duration) {
 	if i == nil {
 		registered.Store(nil)
 		return
 	}
-	registered.Store(&registration{interceptor: i, budget: budget})
+	registered.Store(&registration{interceptor: i, budget: budget, slots: make(chan struct{}, InterceptorSlots)})
+}
+
+// InterceptStats counts, since the process started, the writes that went
+// ahead without the interceptor's answer: Abandoned waited the whole budget
+// (or the writer's context ended first), Saturated found every call slot
+// taken and did not call it at all.
+type InterceptStats struct {
+	Abandoned int64 `json:"abandoned"`
+	Saturated int64 `json:"saturated"`
+}
+
+var abandoned, saturated atomic.Int64
+
+func CurrentInterceptStats() InterceptStats {
+	return InterceptStats{Abandoned: abandoned.Load(), Saturated: saturated.Load()}
 }
 
 // intercept reports whether the registered interceptor holds the item. It
-// fails open: an error, a panic, or running past the budget all mean "write
-// it", so a broken interceptor can delay an inbox write by at most the budget
-// and never drop one. With an interceptor registered, an item without an id
+// fails open: an error, a panic, no answer within the budget, or no free
+// call slot all mean "write it". The writer waits at most the budget whatever
+// the interceptor does, since the call runs on its own goroutine; a call
+// that ignores its context keeps a slot, so stuck calls cannot pile up past
+// InterceptorSlots. With an interceptor registered, an item without an id
 // gets one here, so the interceptor and the insert agree on it.
-func intercept(ctx context.Context, params *db.CreateInboxItemParams) (hold bool) {
+func intercept(ctx context.Context, params *db.CreateInboxItemParams) bool {
 	reg := registered.Load()
 	if reg == nil {
 		return false
@@ -52,14 +81,39 @@ func intercept(ctx context.Context, params *db.CreateInboxItemParams) (hold bool
 	if !params.ID.Valid {
 		params.ID = dbid.NewV7()
 	}
-	ctx, cancel := context.WithTimeout(ctx, reg.budget)
-	defer cancel()
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("inbox: interceptor panicked; writing the item", "type", params.Type, "panic", r)
-			hold = false
+	select {
+	case reg.slots <- struct{}{}:
+	default:
+		if n := saturated.Add(1); n == 1 || n%100 == 0 {
+			slog.Warn("inbox: every interceptor slot is taken; writing the item", "saturated_total", n)
 		}
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, reg.budget)
+	p := *params
+	answer := make(chan bool, 1)
+	go func() {
+		defer func() { <-reg.slots }()
+		defer cancel()
+		held := false
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("inbox: interceptor panicked; writing the item", "type", p.Type, "panic", r)
+				held = false
+			}
+			answer <- held
+		}()
+		hold, err := reg.interceptor.Intercept(ctx, p)
+		held = err == nil && ctx.Err() == nil && hold
 	}()
-	held, err := reg.interceptor.Intercept(ctx, *params)
-	return err == nil && ctx.Err() == nil && held
+	select {
+	case held := <-answer:
+		return held
+	case <-ctx.Done():
+		if n := abandoned.Add(1); n == 1 || n%100 == 0 {
+			slog.Warn("inbox: interceptor did not answer within its budget; writing the item",
+				"type", p.Type, "budget", reg.budget, "abandoned_total", n)
+		}
+		return false
+	}
 }

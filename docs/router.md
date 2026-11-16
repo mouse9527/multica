@@ -196,7 +196,8 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 ### 钩子
 
 - 上游只改一处：`inbox.CreateIfEligible` 在写入前调用 `intercept`（fork 新文件 `server/internal/inbox/intercept.go`）。注册方式是 `inbox.SetInterceptor(i, budget)`；没有注册时直接写入，与上游一致。
-- **fail-open**：拦截函数返回错误、panic，或超过预算（`DefaultHoldBudget`，250 毫秒），都照常写入。只有干净地返回 `hold=true` 才会不写（切片 3 才会用到；影子模式永远返回 `false`）。
+- **fail-open**：拦截函数返回错误、panic，或超过预算（`DefaultHoldBudget`，250 毫秒），都照常写入。只有在预算内干净地返回 `hold=true` 才会不写（切片 3 才会用到；影子模式永远返回 `false`）。
+- 拦截函数在**独立的 goroutine** 里跑，写入方最多等预算这么久，拦截函数不响应 context（例如卡在不受 context 控制的调用里）也一样；超时后才返回的结果一律作废。同时在跑的调用最多 `inbox.InterceptorSlots`（64）个，超时未返回的调用继续占着名额；名额用完时后续写入直接跳过拦截，不等待。这两种情况分别计入 `hook.abandoned`、`hook.saturated`（见「观测」），日志第一次和之后每 100 次各打一条。
 - 注册了拦截器时，没有 id 的条目在钩子里先生成 id（UUIDv7），拦截器和写入看到的是同一个 id。现有 12 个调用点都已自带 id。
 
 ### 判定（D4）
@@ -224,7 +225,7 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 ### 观测
 
 - `multica router holds [--subscription <id>] [--limit N]`（API：`GET /api/router/holds`，需要 `router_dispatch`）：成员看到发给自己的条目，智能体看到自己订阅的条目。
-- `multica router holds --stats`：回答这个请求的服务进程自启动以来的拦截统计——调用次数、本来会扣的次数、错误、超时、panic、issue 不可见（写入方事务里的新 issue）、订阅重载失败、平均与最大耗时、耗时分桶（≤1ms、≤5ms、≤20ms、≤100ms、>100ms）。统计在内存里，重启清零，多副本时每个进程各算各的；持久的数据是 `router_hold` 的行和其中的 `decide_micros`。
+- `multica router holds --stats`：回答这个请求的服务进程自启动以来的拦截统计——调用次数、本来会扣的次数、错误、超时、panic、issue 不可见（写入方事务里的新 issue）、订阅重载失败、平均与最大耗时、耗时分桶（≤1ms、≤5ms、≤20ms、≤100ms、>100ms），以及钩子层面的 `hook.abandoned`（写入没等到答复就照常写了）和 `hook.saturated`（名额用完、没有调用拦截函数）。统计在内存里，重启清零，多副本时每个进程各算各的；持久的数据是 `router_hold` 的行和其中的 `decide_micros`。
 - 拦截失败时日志打一次，之后每 100 次打一次（`router hold: interceptor failed; the inbox write went ahead`）。
 
 ### 调用点核对（切片 3 前提）

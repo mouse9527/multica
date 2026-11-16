@@ -5,6 +5,7 @@ package inbox
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,6 +90,85 @@ func TestInterceptorFailsOpen(t *testing.T) {
 				t.Fatalf("the write waited %s", took)
 			}
 		})
+	}
+}
+
+// blockedInterceptor ignores its context: it returns only when release is
+// closed, then answers hold=true.
+func blockedInterceptor(release <-chan struct{}, calls *atomic.Int64) interceptorFunc {
+	return func(context.Context, db.CreateInboxItemParams) (bool, error) {
+		calls.Add(1)
+		<-release
+		return true, nil
+	}
+}
+
+func TestInterceptorIgnoringCancellationCostsAtMostTheBudget(t *testing.T) {
+	release := make(chan struct{})
+	var calls atomic.Int64
+	register(t, blockedInterceptor(release, &calls), 30*time.Millisecond)
+	t.Cleanup(func() { close(release) })
+	before := CurrentInterceptStats().Abandoned
+
+	start := time.Now()
+	inserted, wrote := create(t, db.CreateInboxItemParams{Type: "mentioned"})
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("the write waited %s for an interceptor that ignores its context", took)
+	}
+	if !wrote || inserted {
+		// The fake database answers every insert with errWritten.
+		t.Fatalf("wrote=%v inserted=%v, want the write to reach the database", wrote, inserted)
+	}
+	if got := CurrentInterceptStats().Abandoned - before; got != 1 {
+		t.Fatalf("abandoned = %d, want 1", got)
+	}
+}
+
+func TestInterceptorAnsweringLateDoesNotHold(t *testing.T) {
+	register(t, func(context.Context, db.CreateInboxItemParams) (bool, error) {
+		time.Sleep(100 * time.Millisecond) // ignores the context
+		return true, nil
+	}, 20*time.Millisecond)
+	if _, wrote := create(t, db.CreateInboxItemParams{Type: "mentioned"}); !wrote {
+		t.Fatal("a hold answered after the budget kept the item out")
+	}
+}
+
+func TestStuckInterceptorCallsAreBounded(t *testing.T) {
+	orig := InterceptorSlots
+	InterceptorSlots = 2
+	t.Cleanup(func() { InterceptorSlots = orig })
+	release := make(chan struct{})
+	var calls atomic.Int64
+	register(t, blockedInterceptor(release, &calls), 200*time.Millisecond)
+	before := CurrentInterceptStats().Saturated
+
+	// Two stuck calls take both slots; the next writes skip the interceptor
+	// without waiting at all.
+	for range 2 {
+		create(t, db.CreateInboxItemParams{Type: "mentioned"})
+	}
+	for range 3 {
+		start := time.Now()
+		if _, wrote := create(t, db.CreateInboxItemParams{Type: "mentioned"}); !wrote {
+			t.Fatal("a saturated interceptor dropped the write")
+		}
+		if took := time.Since(start); took > 100*time.Millisecond {
+			t.Fatalf("a saturated write waited %s", took)
+		}
+	}
+	if calls.Load() != 2 || CurrentInterceptStats().Saturated-before != 3 {
+		t.Fatalf("calls = %d, saturated = %d; want 2 and 3", calls.Load(), CurrentInterceptStats().Saturated-before)
+	}
+
+	// Once the stuck calls return, their slots are free again.
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() < 3 && time.Now().Before(deadline) {
+		create(t, db.CreateInboxItemParams{Type: "mentioned"})
+	}
+	if calls.Load() < 3 {
+		t.Fatal("the interceptor was never called again after the stuck calls returned")
 	}
 }
 

@@ -222,6 +222,12 @@ func TestShadowHoldFailsOpen(t *testing.T) {
 	if took := time.Since(start); took > 2*time.Second {
 		t.Fatalf("the write waited %s", took)
 	}
+	// The hook stops waiting at the budget; the call itself records its
+	// timeout when it returns, on its own goroutine.
+	deadline := time.Now().Add(2 * time.Second)
+	for h.Stats().Timeouts != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if st := h.Stats(); st.Timeouts != 1 {
 		t.Fatalf("stats after a hang = %+v", st)
 	}

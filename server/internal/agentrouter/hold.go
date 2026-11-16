@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -357,19 +358,23 @@ func (s *holdStats) observe(took time.Duration, err error, timedOut bool) {
 
 // HoldStats is a snapshot of the interceptor's counters in this server
 // process since it started. Errors, timeouts and panics are calls where the
-// interceptor failed and the inbox write went ahead without it.
+// interceptor failed and the inbox write went ahead without it. Hook counts
+// what the inbox hook saw: writes that did not wait for an answer past the
+// budget, and writes that skipped the interceptor because every call slot
+// was taken.
 type HoldStats struct {
-	Since          time.Time        `json:"since"`
-	Calls          int64            `json:"calls"`
-	WouldHold      int64            `json:"would_hold"`
-	Errors         int64            `json:"errors"`
-	Timeouts       int64            `json:"timeouts"`
-	Panics         int64            `json:"panics"`
-	IssueMissing   int64            `json:"issue_missing"`
-	ReloadFailures int64            `json:"reload_failures"`
-	AvgMicros      int64            `json:"avg_micros"`
-	MaxMicros      int64            `json:"max_micros"`
-	Latency        map[string]int64 `json:"latency"`
+	Since          time.Time            `json:"since"`
+	Calls          int64                `json:"calls"`
+	WouldHold      int64                `json:"would_hold"`
+	Errors         int64                `json:"errors"`
+	Timeouts       int64                `json:"timeouts"`
+	Panics         int64                `json:"panics"`
+	IssueMissing   int64                `json:"issue_missing"`
+	ReloadFailures int64                `json:"reload_failures"`
+	AvgMicros      int64                `json:"avg_micros"`
+	MaxMicros      int64                `json:"max_micros"`
+	Latency        map[string]int64     `json:"latency"`
+	Hook           inbox.InterceptStats `json:"hook"`
 }
 
 func (h *HoldShadow) Stats() HoldStats {
@@ -378,6 +383,7 @@ func (h *HoldShadow) Stats() HoldStats {
 		Since: s.since, Calls: s.calls.Load(), WouldHold: s.wouldHold.Load(), Errors: s.errors.Load(),
 		Timeouts: s.timeouts.Load(), Panics: s.panics.Load(), IssueMissing: s.issueMissing.Load(),
 		ReloadFailures: s.reloadFailures.Load(), MaxMicros: s.maxMicros.Load(), Latency: map[string]int64{},
+		Hook: inbox.CurrentInterceptStats(),
 	}
 	if out.Calls > 0 {
 		out.AvgMicros = s.totalMicros.Load() / out.Calls
