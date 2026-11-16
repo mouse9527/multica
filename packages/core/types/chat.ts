@@ -16,12 +16,15 @@ export interface ChatPinnedAgent {
  *   Mika but never rendered as a member message.
  * - "onboarding_opening" — Mika's reply to the kickoff; chat renders the
  *   onboarding starter cards under it instead of quick-action chips.
+ * - "router_batch" — issue events the server wrote into a Router chat; input
+ *   for the agent, not the member's words (mouse9527/multica fork, M-96).
  */
 export type ChatMessageKind =
   | "message"
   | "no_response"
   | "onboarding_kickoff"
-  | "onboarding_opening";
+  | "onboarding_opening"
+  | "router_batch";
 
 /**
  * A concise follow-up offered by an assistant reply. `label` is rendered in

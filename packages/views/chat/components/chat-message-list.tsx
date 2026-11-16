@@ -47,6 +47,8 @@ import { buildTimeline } from "../../common/task-transcript";
 import { readCommandInput, traceToolArgSummary } from "../../common/task-transcript/trace-event-presenter";
 import { OnboardingStarterCards } from "./onboarding-starter-cards";
 import { TaskStatusPill } from "./task-status-pill";
+// Modified for the mouse9527/multica fork (M-96): Router batch messages.
+import { RouterBatchMessage, hideSilentRouterTurns } from "./router-batch";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { FOLLOW_EDGE_THRESHOLD } from "../../common/task-transcript/transcript-follow";
 import { LIVE_END_ROW_ATTR, useStickToBottom } from "./stick-to-bottom";
@@ -286,7 +288,7 @@ export function ChatMessageList({
   // for Mika's first task, not something the member typed, so it never becomes
   // a visible bubble.
   const renderItems: ChatRenderItem[] = useMemo(() => {
-    const items: ChatRenderItem[] = messages
+    const items: ChatRenderItem[] = hideSilentRouterTurns(messages)
       .filter((message) => message.message_kind !== "onboarding_kickoff")
       .map((message) => ({
         key: messageRowKey(message),
@@ -542,6 +544,10 @@ const MessageBubble = memo(function MessageBubble({
   }
 
   const { message } = item;
+
+  if (message.message_kind === "router_batch") {
+    return <RouterBatchMessage message={message} />;
+  }
 
   if (message.role === "user") {
     return (

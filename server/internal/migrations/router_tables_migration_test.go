@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router v6 slice 1 (M-96).
 
 package migrations
 
@@ -12,7 +12,7 @@ import (
 
 var routerTables = []string{
 	"router_subscription", "router_event", "router_issue_seen", "router_reconcile_cursor",
-	"router_dispatch", "router_subscription_change", "owner_notice",
+	"router_dispatch", "router_subscription_change", "owner_notice", "router_chat_anchor",
 }
 
 var routerIndexes = []string{
@@ -37,9 +37,11 @@ var routerUpMigrations = []string{
 	"9011_router_event_consumed_idx.up.sql",
 	"9012_router_subscription_change_idx.up.sql",
 	"9013_router_owner_notice_dedupe_idx.up.sql",
+	"9014_router_chat_anchor.up.sql",
 }
 
 var routerDownMigrations = []string{
+	"9014_router_chat_anchor.down.sql",
 	"9013_router_owner_notice_dedupe_idx.down.sql",
 	"9012_router_subscription_change_idx.down.sql",
 	"9011_router_event_consumed_idx.down.sql",

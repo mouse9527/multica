@@ -1709,7 +1709,12 @@ SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_
             ELSE (SELECT count(*) FROM chat_message m
                     WHERE m.chat_session_id = cs.id
                       AND m.role = 'assistant'
-                      AND m.created_at > cs.last_read_at)
+                      AND m.created_at > cs.last_read_at
+                      -- Modified for the mouse9527/multica fork (M-96), as above.
+                      AND NOT (m.message_kind = 'no_response' AND EXISTS (
+                          SELECT 1 FROM agent_task_queue t
+                          JOIN chat_message b ON b.task_id = COALESCE(t.chat_input_task_id, t.id)
+                          WHERE t.id = m.task_id AND b.message_kind = 'router_batch')))
        END::int AS unread_count,
        COALESCE(lm.content, '') AS last_message_content,
        COALESCE(lm.role, '') AS last_message_role,
@@ -1722,6 +1727,13 @@ LEFT JOIN LATERAL (
     FROM chat_message m
    WHERE m.chat_session_id = cs.id
      AND m.message_kind != 'channel_command'
+     -- Modified for the mouse9527/multica fork (M-96): Router batches and
+     -- their silent turns are not the conversation's latest message.
+     AND m.message_kind != 'router_batch'
+     AND NOT (m.message_kind = 'no_response' AND EXISTS (
+         SELECT 1 FROM agent_task_queue t
+         JOIN chat_message b ON b.task_id = COALESCE(t.chat_input_task_id, t.id)
+         WHERE t.id = m.task_id AND b.message_kind = 'router_batch'))
    ORDER BY m.created_at DESC
    LIMIT 1
 ) lm ON true
@@ -2332,7 +2344,13 @@ SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_
        (SELECT count(*) FROM chat_message m
           WHERE m.chat_session_id = cs.id
             AND m.role = 'assistant'
-            AND m.created_at > cs.last_read_at)::int AS unread_count,
+            AND m.created_at > cs.last_read_at
+            -- Modified for the mouse9527/multica fork (M-96): a silent Router
+            -- batch turn is hidden, so it is not unread either.
+            AND NOT (m.message_kind = 'no_response' AND EXISTS (
+                SELECT 1 FROM agent_task_queue t
+                JOIN chat_message b ON b.task_id = COALESCE(t.chat_input_task_id, t.id)
+                WHERE t.id = m.task_id AND b.message_kind = 'router_batch')))::int AS unread_count,
        COALESCE(lm.content, '') AS last_message_content,
        COALESCE(lm.role, '') AS last_message_role,
        lm.created_at AS last_message_at,
@@ -2344,6 +2362,13 @@ LEFT JOIN LATERAL (
     FROM chat_message m
    WHERE m.chat_session_id = cs.id
      AND m.message_kind != 'channel_command'
+     -- Modified for the mouse9527/multica fork (M-96): Router batches and
+     -- their silent turns are not the conversation's latest message.
+     AND m.message_kind != 'router_batch'
+     AND NOT (m.message_kind = 'no_response' AND EXISTS (
+         SELECT 1 FROM agent_task_queue t
+         JOIN chat_message b ON b.task_id = COALESCE(t.chat_input_task_id, t.id)
+         WHERE t.id = m.task_id AND b.message_kind = 'router_batch'))
    ORDER BY m.created_at DESC
    LIMIT 1
 ) lm ON true
