@@ -16,11 +16,11 @@
 | `server/internal/cli/update.go` | M-58 | Release 仓库可配置、默认 fork；替换的可执行文件路径经变量解析（测试用） | 有 |
 | `server/internal/daemon/auto_update.go` | M-58 | 版本判断接受 `-mouse.N`（两行） | 有 |
 | `server/internal/daemon/daemon.go` | M-58 | `runUpdate` 前的 Homebrew 检查 | 有 |
-| `server/cmd/server/main.go` | M-85 | 调用 `agentrouter.Register`：`router_v1` 打开时注册 Router 监听器和对账任务，关闭时什么都不注册 | 有 |
+| `server/cmd/server/main.go` | M-85、M-86 | 调用 `agentrouter.Register`（M-86 起多传 `taskSvc`）：`router_v1` 打开时注册 Router 监听器和对账任务，`router_dispatch` 也打开时再注册派发任务；关闭时什么都不注册 | 有 |
 | `server/cmd/server/router.go` | M-85 | 挂载 `/api/router`（开关关闭时返回 404） | 有 |
-| `server/internal/featureflags/keys.go` | M-85、M-89 | 新开关 `router_v1` 与 `RouterV1Enabled`；`handoff_reply_wake` 与 `HandoffReplyWakeEnabled` | 有 |
+| `server/internal/featureflags/keys.go` | M-85、M-89、M-86 | 新开关 `router_v1` 与 `RouterV1Enabled`；`handoff_reply_wake` 与 `HandoffReplyWakeEnabled`；`router_dispatch` 与 `RouterDispatchEnabled` | 有 |
 | `server/internal/handler/comment.go` | M-89 | `computeCommentAgentTriggers` 改名为 `computeUpstreamCommentAgentTriggers`（一行），由 fork 的同名包装函数调用，见 `handoff_reply_wake.go` | 有 |
-| `server/internal/handler/workspace.go` | M-20、M-85 | 删除工作区时清理迁移 9000 建的 5 张表（功能撤回后表仍在，见 [github-issues.md](github-issues.md)），以及 Router 的 4 张表（迁移 9004） | 有 |
+| `server/internal/handler/workspace.go` | M-20、M-85 | 删除工作区时清理迁移 9000 建的 5 张表（功能撤回后表仍在，见 [github-issues.md](github-issues.md)），以及 Router 的表（迁移 9004、9008，由 `agentrouter.DeleteWorkspaceData` 删除；M-86 新增的 3 张表不再改这个文件） | 有 |
 | `server/pkg/db/generated/models.go` | M-20 | sqlc 按迁移 9000 的表生成的模型（生成文件，不手改） | 无（生成） |
 
 ### 只改测试的上游文件
@@ -28,7 +28,7 @@
 | 文件 | 任务 | 改动 | 文件内说明 |
 |---|---|---|---|
 | `server/internal/cli/update_source_test.go` | M-58 | 适配可配置的 Release 仓库 | 有 |
-| `server/internal/handler/workspace_delete_manifest_test.go` | M-20、M-85 | 登记迁移 9000 的 5 张表和迁移 9004 的 4 张表 | 有 |
+| `server/internal/handler/workspace_delete_manifest_test.go` | M-20、M-85、M-86 | 登记迁移 9000 的 5 张表、迁移 9004 的 4 张表和迁移 9008 的 3 张表 | 有 |
 | `server/internal/handler/autopilot_subscriber_test.go` | M-24 | 删触发器的 DDL 改走 `testutil.ExecDDL` | 有 |
 | `server/internal/handler/daemon_runtime_access_test.go` | M-24 | 同上 | 有 |
 | `server/internal/handler/task_supplement_test.go` | M-24 | 同上 | 有 |
@@ -50,5 +50,6 @@
 - `.github/workflows/release-fork.yml`、`.goreleaser.fork.yml`、`scripts/fork-release-is-newest*.sh`：fork 的二进制发布与 `latest` 判断（M-58）；`server/internal/cli/update_fork*.go`、`server/internal/daemon/auto_update_fork_test.go`、`server/cmd/multica/cmd_update_fork_test.go`：从 fork Release 更新（M-58）。
 - `docs/fork-release.md`：发布与 runner 更新说明（M-58）。
 - Router 捕获（M-85，见 [router.md](router.md)）：`server/internal/agentrouter/`；`server/internal/handler/agent_router.go` 及测试；`server/cmd/multica/cmd_router.go` 及测试；`server/cmd/server/agent_router_integration_test.go`；`server/migrations/9004_*`–`9007_*`；`server/cmd/migrate/router_migrations.go`；`server/internal/migrations/router_tables_migration_test.go`；`docs/router.md`。
+- Router 派发与出口（M-86，见 [router.md](router.md)）：`server/internal/agentrouter/` 下的 `dispatch.go`、`notice.go`、`run.go` 及测试；`server/internal/service/router_run.go`（上游包里的新文件，只导出 `EnqueueRouterRun`）；`server/internal/handler/agent_router_dispatch.go` 及测试；`server/cmd/multica/cmd_router_dispatch.go`；`server/cmd/server/agent_router_dispatch_integration_test.go`；`server/migrations/9008_*`–`9013_*`。
 - 回复叫醒修正（M-89，开关 `handoff_reply_wake`，默认关闭）：`server/internal/handler/handoff_reply_wake.go` 及测试；`server/internal/issuestatus/handoff_fork.go`；`server/cmd/server/handoff_reply_wake_parity_test.go`。开关打开时，issue 处于「交还给人」的状态（`issueStatusIsHandoff` 为真，例如自定义的 started 状态、`in_review`、`blocked`、`done`）时，成员的任何评论（含讨论串里的回复，不含 note）在上游路由之外再叫醒处理人；智能体的评论不走这条路。
 - `docs/github-issues*.md`。
