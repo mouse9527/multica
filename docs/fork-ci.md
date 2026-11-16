@@ -37,8 +37,7 @@ PR 上有两个工作流：
 
 - **base** 是 PR 合并提交的第一个父提交（即当前 `main`）；推 `main` 时是上一个提交。
 - **升级路径**：库 A 用 base 的迁移 `up`，再用 head 的迁移 `up`；库 B 用 head 从头 `up`。A 和 B 的结构必须一致（`upgrade-matches-fresh`）。上游同步带来的新迁移也由这一项覆盖。
-- **往返**：只对 fork 的迁移做（编号 ≥ 9000；上游有故意不可回滚的迁移，例如 494）。PR 新增的 fork 迁移在库 B 上 `down`，结构必须等于「head 去掉这些迁移后从头 `up`」的库（`down-matches-without`）；再 `up`，结构必须回到库 B（`reup-matches-fresh`）。新增的 fork 迁移没有 down 文件也算失败。
-- 定时和手动触发时，往返覆盖**全部** fork 迁移，不只是新增的。
+- **往返**：只对 fork 的迁移做（编号 ≥ 9000；上游有故意不可回滚的迁移，例如 494），而且每次都覆盖**全部** fork 迁移，不只是 PR 新增的（空库上只要几秒，后来的改动也可能弄坏旧的 down 文件）。fork 迁移在库 B 上全部 `down`，结构必须等于「head 去掉这些迁移后从头 `up`」的库（`down-matches-without`）；再 `up`，结构必须回到库 B（`reup-matches-fresh`）。fork 迁移没有 down 文件也算失败。
 - 失败时，结构 dump 和 diff 作为构件 `migrations-roundtrip` 上传，保留 7 天。日志开头列出新增迁移、被改动的已有迁移、参与往返的迁移。
 
 本机复现（需要 Go 和一个可写的 Postgres）：

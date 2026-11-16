@@ -5,16 +5,17 @@
 # Proves, with the real migration runner and `pg_dump --schema-only`, that
 #   1. upgrade: a database migrated by the base tree, then by the head tree,
 #      has exactly the schema of a fresh head database;
-#   2. round trip: rolling back the selected fork migrations leaves exactly the
+#   2. round trip: rolling back every fork migration leaves exactly the
 #      schema of a head database that never applied them, and applying them
 #      again restores the fresh head schema.
 #
 # Fork migrations are the versions numbered FORK_MIGRATION_FLOOR and above.
 # Upstream ships forward-only migrations whose down files raise on purpose, so
-# new upstream versions are covered by the upgrade comparison only.
+# new upstream versions are covered by the upgrade comparison only. All fork
+# migrations take part in the round trip, not only new ones: on an empty
+# database it costs seconds, and a later change can break an older down file.
 #
 # usage: fork-migrations-roundtrip.sh --base <repo> --head <repo> --out <dir>
-#                                     [--roundtrip new|all-fork]
 #
 # Environment:
 #   DB_URL_PREFIX  connection URL without the database name
@@ -29,25 +30,17 @@ set -euo pipefail
 FORK_MIGRATION_FLOOR=9000
 
 usage() {
-  echo "usage: $0 --base <repo> --head <repo> --out <dir> [--roundtrip new|all-fork]" >&2
+  echo "usage: $0 --base <repo> --head <repo> --out <dir>" >&2
 }
 
 base_repo=
 head_repo=
 out_dir=
-roundtrip=new
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --base) base_repo=${2:-}; shift 2 ;;
     --head) head_repo=${2:-}; shift 2 ;;
     --out) out_dir=${2:-}; shift 2 ;;
-    --roundtrip)
-      case "${2:-}" in
-        new|all-fork) roundtrip=$2 ;;
-        *) usage; exit 2 ;;
-      esac
-      shift 2
-      ;;
     *) usage; exit 2 ;;
   esac
 done
@@ -133,21 +126,16 @@ while IFS= read -r version; do
   done
 done < <(LC_ALL=C comm -12 "$work_dir/base-versions" "$work_dir/head-versions")
 
-if [ "$roundtrip" = all-fork ]; then
-  candidates="$work_dir/head-versions"
-else
-  candidates="$out_dir/new-versions.txt"
-fi
 : >"$out_dir/roundtrip-versions.txt"
 while IFS= read -r version; do
   if is_fork_version "$version"; then
     echo "$version" >>"$out_dir/roundtrip-versions.txt"
   fi
-done <"$candidates"
+done <"$work_dir/head-versions"
 
 echo "new migrations:       $(paste -sd' ' "$out_dir/new-versions.txt")"
 echo "changed migrations:   $(paste -sd' ' "$out_dir/changed-migrations.txt")"
-echo "round-trip ($roundtrip): $(paste -sd' ' "$out_dir/roundtrip-versions.txt")"
+echo "round trip:           $(paste -sd' ' "$out_dir/roundtrip-versions.txt")"
 
 echo "::group::Fresh head database"
 create_db rt_fresh
@@ -196,7 +184,7 @@ if [ -s "$out_dir/roundtrip-versions.txt" ]; then
   compare down-matches-without without down
   compare reup-matches-fresh fresh reup
 else
-  echo "SKIP  round trip: no fork migrations selected"
+  echo "SKIP  round trip: no fork migrations"
 fi
 
 if [ "$failures" -gt 0 ]; then

@@ -71,16 +71,13 @@ jobs:
 
       # pg_dump must match the server's major version, so it runs inside the
       # service container rather than from the runner's client packages.
-      # Scheduled and manual runs round-trip every fork migration; pull
-      # requests and pushes round-trip the fork migrations they add.
       - name: Compare schemas across upgrade and round trip
         env:
           PG_CLIENT: docker exec -i ${{ job.services.postgres.id }}
-          ROUNDTRIP: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'all-fork' || 'new' }}
         run: |
           bash scripts/fork-migrations-roundtrip.sh \
             --base "$RUNNER_TEMP/base" --head "$GITHUB_WORKSPACE" \
-            --out "$RUNNER_TEMP/roundtrip" --roundtrip "$ROUNDTRIP"
+            --out "$RUNNER_TEMP/roundtrip"
 
       - name: Upload schema dumps
         if: ${{ failure() }}
