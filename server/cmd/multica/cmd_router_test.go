@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S1 (M-85).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
 
 package main
 
@@ -28,10 +28,20 @@ func TestParseRouterSince(t *testing.T) {
 }
 
 func TestRouterCommandsAreRegistered(t *testing.T) {
-	for _, name := range []string{"subscribe", "list", "get", "pause", "resume", "delete", "events", "scope"} {
-		cmd, _, err := rootCmd.Find([]string{"router", name})
-		if err != nil || cmd.Name() != name {
-			t.Errorf("multica router %s: %v", name, err)
+	for _, path := range [][]string{
+		{"router", "subscribe"}, {"router", "list"}, {"router", "get"}, {"router", "pause"},
+		{"router", "resume"}, {"router", "delete"}, {"router", "events"}, {"router", "scope"},
+		{"router", "update"}, {"router", "state", "get"}, {"router", "state", "set"},
+		{"router", "runs"}, {"router", "changes"}, {"notify", "owner"}, {"notify", "list"},
+	} {
+		cmd, _, err := rootCmd.Find(path)
+		if err != nil || cmd.Name() != path[len(path)-1] {
+			t.Errorf("multica %v: %v", path, err)
+		}
+	}
+	for _, flag := range []string{"anchor", "debounce", "max-wait", "max-runs-per-hour"} {
+		if routerSubscribeCmd.Flags().Lookup(flag) == nil || routerUpdateCmd.Flags().Lookup(flag) == nil {
+			t.Errorf("--%s missing on subscribe or update", flag)
 		}
 	}
 }
