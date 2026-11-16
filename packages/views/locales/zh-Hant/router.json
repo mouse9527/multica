@@ -1,0 +1,107 @@
+{
+  "menu": {
+    "setup": "設為 Router",
+    "settings": "Router 設定"
+  },
+  "badge": "Router",
+  "dialog": {
+    "title_setup": "設為 Router",
+    "title_settings": "Router 設定",
+    "description": "這些範圍內任務的動態會合批送進這個對話，由 {{agent}} 處理，只在需要你時告訴你。",
+    "archived": "先還原這個對話，才能設為 Router。"
+  },
+  "status": {
+    "running": "執行中",
+    "paused": "已暫停",
+    "reason": {
+      "manual": "手動暫停",
+      "rate": "已達每小時執行上限",
+      "agent_unavailable": "AI 代理、對話或專案無法使用"
+    }
+  },
+  "scopes": {
+    "title": "範圍",
+    "project": "專案",
+    "issue_tree": "任務樹",
+    "add_project": "新增專案",
+    "add_issue_tree": "新增任務樹",
+    "project_placeholder": "選擇專案",
+    "picker_title": "選擇根任務",
+    "picker_description": "Router 會追蹤這個任務及其所有子任務。",
+    "empty": "新增一個專案或一棵任務樹。",
+    "board": "看板 {{identifier}}",
+    "board_hint": "每個專案會建立一個看板任務，記錄 Router 的執行。",
+    "remove": "移除範圍",
+    "unknown": "無法使用"
+  },
+  "events": {
+    "title": "事件",
+    "issue_created": "新建任務",
+    "status_changed": "狀態變更",
+    "assignee_changed": "負責人變更",
+    "comment_created": "新留言",
+    "task_failed": "執行失敗"
+  },
+  "batching": {
+    "title": "合批",
+    "debounce": "靜默期（秒）",
+    "max_wait": "最長等待（秒）",
+    "max_runs": "每小時執行上限",
+    "invalid": "秒數須在 10–86400 之間，最長等待不短於靜默期，每小時執行上限為 1–60。"
+  },
+  "health": {
+    "title": "狀態",
+    "capture_miss": "漏擷取",
+    "reconciled": "對帳推進到",
+    "never": "尚未完成",
+    "last_run": "最近一次執行",
+    "no_runs": "還沒有執行",
+    "run_events": "事件：{{count}}",
+    "outcome": {
+      "running": "進行中",
+      "completed": "已完成",
+      "failed": "失敗"
+    }
+  },
+  "held": {
+    "title": "經 Router 處理的項目",
+    "empty": "Router 開始篩選收件匣後會顯示在這裡。"
+  },
+  "actions": {
+    "create": "設為 Router",
+    "save": "儲存",
+    "pause": "暫停",
+    "resume": "恢復",
+    "release": "解除 Router",
+    "cancel": "取消"
+  },
+  "release": {
+    "title": "解除這個 Router？",
+    "description": "這個對話將不再收到任務動態。",
+    "delete": "刪除它的訂閱",
+    "keep": "保留訂閱並暫停",
+    "confirm": "解除"
+  },
+  "board": {
+    "title": "Router 看板 · {{chat}}",
+    "description": "記錄對話「{{chat}}」中 Router 的執行。由 Router 設定建立。"
+  },
+  "toast": {
+    "created": "已設為 Router",
+    "scope_failed": "無法新增 {{scope}}：{{error}}",
+    "saved": "Router 設定已儲存",
+    "paused": "Router 已暫停",
+    "resumed": "Router 已恢復",
+    "released": "Router 已解除",
+    "failed": "Router 更新失敗：{{error}}"
+  },
+  "list": {
+    "tab": "Router",
+    "empty": "還沒有 Router。打開一個對話的選單，選擇「設為 Router」。",
+    "agent": "AI 代理",
+    "scopes": "範圍",
+    "status": "狀態",
+    "last_run": "最近一次執行",
+    "untitled": "未命名對話"
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "menu": {
+    "setup": "Router로 설정",
+    "settings": "Router 설정"
+  },
+  "badge": "Router",
+  "dialog": {
+    "title_setup": "Router로 설정",
+    "title_settings": "Router 설정",
+    "description": "이 범위의 태스크 활동을 모아 이 채팅으로 보내면 {{agent}}이(가) 처리하고, 필요할 때만 알려 드립니다.",
+    "archived": "Router로 설정하려면 먼저 이 채팅을 복원하세요."
+  },
+  "status": {
+    "running": "실행 중",
+    "paused": "일시 중지됨",
+    "reason": {
+      "manual": "수동 일시 중지",
+      "rate": "시간당 실행 한도 도달",
+      "agent_unavailable": "에이전트, 채팅 또는 프로젝트를 사용할 수 없음"
+    }
+  },
+  "scopes": {
+    "title": "범위",
+    "project": "프로젝트",
+    "issue_tree": "태스크 트리",
+    "add_project": "프로젝트 추가",
+    "add_issue_tree": "태스크 트리 추가",
+    "project_placeholder": "프로젝트 선택",
+    "picker_title": "루트 태스크 선택",
+    "picker_description": "Router가 이 태스크와 모든 하위 태스크를 따라갑니다.",
+    "empty": "프로젝트나 태스크 트리를 추가하세요.",
+    "board": "보드 {{identifier}}",
+    "board_hint": "프로젝트마다 Router 실행을 기록하는 보드 태스크를 만듭니다.",
+    "remove": "범위 제거",
+    "unknown": "사용할 수 없음"
+  },
+  "events": {
+    "title": "이벤트",
+    "issue_created": "태스크 생성",
+    "status_changed": "상태 변경",
+    "assignee_changed": "담당자 변경",
+    "comment_created": "새 댓글",
+    "task_failed": "실행 실패"
+  },
+  "batching": {
+    "title": "묶어 보내기",
+    "debounce": "대기 시간(초)",
+    "max_wait": "최대 대기(초)",
+    "max_runs": "시간당 실행 수",
+    "invalid": "초는 10–86400, 최대 대기는 대기 시간 이상, 시간당 실행 수는 1–60이어야 합니다."
+  },
+  "health": {
+    "title": "상태",
+    "capture_miss": "누락된 수집",
+    "reconciled": "대조 완료 시점",
+    "never": "아직 없음",
+    "last_run": "최근 실행",
+    "no_runs": "아직 실행 없음",
+    "run_events": "이벤트: {{count}}",
+    "outcome": {
+      "running": "진행 중",
+      "completed": "완료",
+      "failed": "실패"
+    }
+  },
+  "held": {
+    "title": "Router가 처리한 항목",
+    "empty": "Router가 받은 편지함을 선별하기 시작하면 여기에 표시됩니다."
+  },
+  "actions": {
+    "create": "Router로 설정",
+    "save": "저장",
+    "pause": "일시 중지",
+    "resume": "재개",
+    "release": "Router 해제",
+    "cancel": "취소"
+  },
+  "release": {
+    "title": "이 Router를 해제할까요?",
+    "description": "이 채팅은 더 이상 태스크 활동을 받지 않습니다.",
+    "delete": "구독 삭제",
+    "keep": "구독 유지, 일시 중지",
+    "confirm": "해제"
+  },
+  "board": {
+    "title": "Router 보드 · {{chat}}",
+    "description": "채팅 \"{{chat}}\"의 Router 실행을 기록합니다. Router 설정에서 만들었습니다."
+  },
+  "toast": {
+    "created": "Router로 설정했습니다",
+    "scope_failed": "{{scope}}을(를) 추가하지 못했습니다: {{error}}",
+    "saved": "Router 설정을 저장했습니다",
+    "paused": "Router를 일시 중지했습니다",
+    "resumed": "Router를 재개했습니다",
+    "released": "Router를 해제했습니다",
+    "failed": "Router를 업데이트하지 못했습니다: {{error}}"
+  },
+  "list": {
+    "tab": "Router",
+    "empty": "아직 Router가 없습니다. 채팅 메뉴에서 'Router로 설정'을 선택하세요.",
+    "agent": "에이전트",
+    "scopes": "범위",
+    "status": "상태",
+    "last_run": "최근 실행",
+    "untitled": "제목 없는 채팅"
+  }
+}
