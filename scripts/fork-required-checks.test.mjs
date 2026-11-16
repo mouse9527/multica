@@ -59,6 +59,11 @@ for (const check of requiredRule.parameters.required_status_checks) {
     // conditioned on not being cancelled; a matrix reports per-leg names.
     const condition = job.match(/^    if: (.+)$/m)?.[1];
     assert.ok(condition === undefined || condition === "${{ !cancelled() }}", `${workflow.file} ${check.context}: if: ${condition}`);
+    // A job whose dependency is skipped is skipped too, unless it runs on
+    // !cancelled() like the ci.yml aggregates that validate those skips.
+    if (/^    needs:/m.test(job)) {
+      assert.equal(condition, "${{ !cancelled() }}", `${workflow.file} ${check.context}: needs without if: \${{ !cancelled() }}`);
+    }
     assert.doesNotMatch(job, /^    strategy:/m, `${workflow.file} ${check.context}: matrix`);
     assert.doesNotMatch(job, /continue-on-error/, `${workflow.file} ${check.context}: continue-on-error`);
   });

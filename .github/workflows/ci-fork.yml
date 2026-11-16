@@ -15,6 +15,11 @@ on:
   schedule:
     - cron: "41 3 * * *"
   workflow_dispatch:
+    inputs:
+      base:
+        description: "migrations-roundtrip: base commit to upgrade from (default HEAD^1)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -85,10 +90,19 @@ jobs:
           path: ~/go/pkg/mod
           key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/go.sum') }}
 
+      # A manual run can upgrade from an older commit, so the base-then-head
+      # path also runs with real new migrations when no pull request adds any.
       - name: Check out the base tree
+        env:
+          BASE_INPUT: ${{ github.event.inputs.base }}
         run: |
-          git worktree add --detach "$RUNNER_TEMP/base" HEAD^1
-          echo "base: $(git rev-parse HEAD^1)  head: $(git rev-parse HEAD)"
+          base=HEAD^1
+          if [ -n "$BASE_INPUT" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_INPUT"
+            base=FETCH_HEAD
+          fi
+          git worktree add --detach "$RUNNER_TEMP/base" "$base"
+          echo "base: $(git rev-parse "$base")  head: $(git rev-parse HEAD)"
 
       # pg_dump must match the server's major version, so it runs inside the
       # service container rather than from the runner's client packages.

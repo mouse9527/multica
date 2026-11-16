@@ -39,6 +39,7 @@ PR 上有两个工作流：
 - **升级路径**：库 A 用 base 的迁移 `up`，再用 head 的迁移 `up`；库 B 用 head 从头 `up`。A 和 B 的结构必须一致（`upgrade-matches-fresh`）。上游同步带来的新迁移也由这一项覆盖。
 - **往返**：只对 fork 的迁移做（编号 ≥ 9000；上游有故意不可回滚的迁移，例如 494），而且每次都覆盖**全部** fork 迁移，不只是 PR 新增的（空库上只要几秒，后来的改动也可能弄坏旧的 down 文件）。fork 迁移在库 B 上全部 `down`，结构必须等于「head 去掉这些迁移后从头 `up`」的库（`down-matches-without`）；再 `up`，结构必须回到库 B（`reup-matches-fresh`）。fork 迁移没有 down 文件也算失败。
 - 失败时，结构 dump 和 diff 作为构件 `migrations-roundtrip` 上传，保留 7 天。日志开头列出新增迁移、被改动的已有迁移、参与往返的迁移。
+- 不加迁移的 PR 上，升级路径的 base 和 head 迁移相同，这一项只是空跑。要用真的新迁移跑一遍升级路径，手动触发 `CI (fork)` 并填 `base`（例如某个更早的 `main` 提交）：`gh workflow run ci-fork.yml -f base=<commit>`。手动触发要求工作流已经在 `main` 上。
 
 本机复现（需要 Go 和一个可写的 Postgres）：
 
@@ -57,7 +58,7 @@ DB_URL_PREFIX=postgres://multica:multica@localhost:5432/ \
 在 Postgres 和 Redis 就绪、`migrate up` 之后，用 `go test -race -json` 跑和 `backend-tests` 相同的包（不含不读数据库的 `pkg/agent`），再由 `scripts/fork-go-test-skips.mjs` 读 JSON：
 
 - 任何 skip 原因提到数据库（`database`、`postgres`、`DATABASE_URL`、`DB`、`not migrated`）就失败；唯一放行的是 pgvector 镜像没有的 `pg_bigm` 扩展。
-- 包的 `TestMain` 连不上数据库时会打印 `Skipping … database not reachable` 后直接退出，这种也失败。
+- 包的 `TestMain` 连不上数据库时会打印 `Skipping … database not reachable` 后直接退出，这种也失败；包级输出里其他提到 skip 又带数据库原因的行（例如 `SKIP: DATABASE_URL not set`）同样算。
 - 一个用例都没通过（输出为空或被截断）也失败。
 - 运行摘要写进这次 run 的 Summary：有测试的包数、通过、失败、跳过的数量，数据库相关的 skip 数，以及其他 skip 的列表。失败时上传构件 `backend-db-no-skip`（原始 JSON）。
 
@@ -78,7 +79,7 @@ DB_URL_PREFIX=postgres://multica:multica@localhost:5432/ \
 - 没有 bypass：智能体用 Owner 的 `gh` 登录合并，有管理员 bypass 的话门禁对它们不生效。紧急情况下由 Owner 临时停用（见下文「回滚」）。
 - 这个规则也会拦直接推到 `main` 的提交（没有这些检查结果的提交推不上去）；tag 不受影响。
 
-`scripts/fork-required-checks.test.mjs`（`fork-ci-config` 里跑）核对 ruleset 和工作流对得上：每个必需检查恰好对应一个 job，job 没有改名、不是 matrix、没有 `continue-on-error`，只允许 `if: ${{ !cancelled() }}`（跳过的 job 会被当成通过），所在工作流对 `main` 的 `pull_request` 不按路径过滤（否则无关 PR 上永远等不到这个检查）。
+`scripts/fork-required-checks.test.mjs`（`fork-ci-config` 里跑）核对 ruleset 和工作流对得上：每个必需检查恰好对应一个 job，job 没有改名、不是 matrix、没有 `continue-on-error`，只允许 `if: ${{ !cancelled() }}`（跳过的 job 会被当成通过），有 `needs:` 的 job 必须带这个 `if`（否则依赖被跳过时它也被跳过），所在工作流对 `main` 的 `pull_request` 不按路径过滤（否则无关 PR 上永远等不到这个检查）。
 
 ### 什么时候启用
 

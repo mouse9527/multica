@@ -18,14 +18,21 @@ const ALLOWED_DATABASE_REASONS = [
   // pgvector/pgvector images do not ship the pg_bigm extension.
   /pg_bigm/,
 ];
-// Package TestMain functions that cannot reach the database print this line
-// and exit 0 without running a single test.
+// Package TestMain functions that cannot reach the database print a line like
+// this and exit 0 without running a single test. Any other package-level line
+// that announces a skip for a database reason counts too, so a new TestMain
+// with different wording is not missed.
 const PACKAGE_SKIP = /^Skipping .*(could not connect|database|not reachable|seed failed)/i;
+const SKIP_WORD = /\bskip/i;
 
 const SKIP_NOISE = /^(=== (RUN|PAUSE|CONT|NAME)|--- SKIP:)/;
 
 export function isDatabaseSkip(reason) {
   return DATABASE_REASON.test(reason) && !ALLOWED_DATABASE_REASONS.some((pattern) => pattern.test(reason));
+}
+
+export function isPackageDatabaseSkip(line) {
+  return PACKAGE_SKIP.test(line) || (SKIP_WORD.test(line) && isDatabaseSkip(line));
 }
 
 export function summarize(events) {
@@ -47,7 +54,7 @@ export function summarize(events) {
     if (event.Action === "output") {
       if (!outputs.has(key)) outputs.set(key, []);
       outputs.get(key).push(event.Output ?? "");
-      if (!event.Test && PACKAGE_SKIP.test((event.Output ?? "").trim())) {
+      if (!event.Test && isPackageDatabaseSkip((event.Output ?? "").trim())) {
         packageSkips.push({ package: event.Package, reason: event.Output.trim() });
       }
       continue;

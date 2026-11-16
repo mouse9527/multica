@@ -64,6 +64,27 @@ test("a TestMain that cannot reach the database fails the gate", () => {
   assert.match(problems[0], /p\/handler: Skipping tests/);
 });
 
+test("a package-level skip announced in other words still fails the gate", () => {
+  const problems = verdict(summarize([
+    ...passing,
+    out("p/new", undefined, "SKIP: DATABASE_URL not set\n"),
+    out("p/new", undefined, "ok  \tp/new\t0.01s\n"),
+    end("pass", "p/new"),
+  ]));
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /p\/new: SKIP: DATABASE_URL not set/);
+});
+
+test("package-level output that is not a skip passes the gate", () => {
+  const problems = verdict(summarize([
+    ...passing,
+    out("p/db", undefined, "migrated test database in 1.2s\n"),
+    out("p/db", undefined, "ok  \tp/db\t0.01s\n"),
+    end("pass", "p/db"),
+  ]));
+  assert.deepEqual(problems, []);
+});
+
 test("an empty stream fails the gate", () => {
   assert.match(verdict(summarize([]))[0], /no test passed/);
 });
