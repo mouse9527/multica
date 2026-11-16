@@ -12,6 +12,7 @@
 | 文件 | 任务 | 改动 | 文件内说明 |
 |---|---|---|---|
 | `.github/workflows/release.yml` | M-58 | `verify` 只在 `multica-ai` 运行，整个上游发布在 fork 上不跑（fork 用 `release-fork.yml`） | 有 |
+| `server/cmd/multica/cmd_daemon_autostart.go` | M-101 | macOS LaunchAgent 的 `ProcessType` 默认 `Standard`（上游写死 `Background`），可用 `MULTICA_DAEMON_PROCESS_TYPE` 改；非默认值同时写进 plist 的 `EnvironmentVariables` | 有 |
 | `server/cmd/multica/cmd_update.go` | M-58 | Homebrew 安装且更新源不是上游时报错，不跑 `brew upgrade` | 有 |
 | `server/internal/cli/update.go` | M-58 | Release 仓库可配置、默认 fork；替换的可执行文件路径经变量解析（测试用） | 有 |
 | `server/internal/daemon/auto_update.go` | M-58 | 版本判断接受 `-mouse.N`（两行） | 有 |
@@ -45,7 +46,7 @@
 | `server/internal/service/autopilot_quota_test.go` | M-24 | 同上 | 有 |
 | `server/internal/service/delegated_failure_recovery_settled_test.go` | M-24 | 同上 | 有 |
 
-合计：修改过的上游文件 28 个（含 10 个测试文件），其中 1 个（生成的 `models.go`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。
+合计：修改过的上游文件 29 个（含 10 个测试文件），其中 1 个（生成的 `models.go`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。
 
 ## fork 新增的文件
 
@@ -60,4 +61,5 @@
 - Router 派发与出口（M-86，见 [router.md](router.md)）：`server/internal/agentrouter/` 下的 `dispatch.go`、`notice.go`、`run.go` 及测试；`server/internal/service/router_run.go`（上游包里的新文件，只导出 `EnqueueRouterRun`）；`server/internal/handler/agent_router_dispatch.go` 及测试；`server/cmd/multica/cmd_router_dispatch.go`；`server/cmd/server/agent_router_dispatch_integration_test.go`；`server/migrations/9008_*`–`9013_*`。
 - Router chat 载体（M-96，v6 切片 1，开关 `router_chat`，默认关闭，见 [router.md](router.md)）：`server/internal/agentrouter/chat.go` 及测试；`server/internal/service/router_chat_run.go`（上游包里的新文件，只导出 `EnqueueRouterChatRun`、`RouterChatPriority`、`ErrRouterChatUnavailable`）；`server/internal/handler/agent_router_chat_test.go`；`server/migrations/9014_*`；`packages/views/chat/components/router-batch.tsx` 及测试。
 - 回复叫醒修正（M-89，开关 `handoff_reply_wake`，默认关闭）：`server/internal/handler/handoff_reply_wake.go` 及测试；`server/internal/issuestatus/handoff_fork.go`；`server/cmd/server/handoff_reply_wake_parity_test.go`。开关打开时，issue 处于「交还给人」的状态（`issueStatusIsHandoff` 为真，例如自定义的 started 状态、`in_review`、`blocked`、`done`）时，成员的任何评论（含讨论串里的回复，不含 note）在上游路由之外再叫醒处理人；智能体的评论不走这条路。
+- daemon LaunchAgent 的 ProcessType（M-101）：`server/cmd/multica/cmd_daemon_autostart_process_type.go` 及测试。
 - `docs/github-issues*.md`。
