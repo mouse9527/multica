@@ -95,6 +95,8 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 | `multica router scope <id> [--all]` | `GET /api/router/subscriptions/{id}/scope` |
 | `multica router update <id> [--anchor] [--events] [--debounce] [--max-wait] [--max-runs-per-hour]` | `PATCH /api/router/subscriptions/{id}` |
 | `multica router changes <id>` | `GET /api/router/subscriptions/{id}/changes` |
+| `multica router release --chat <current\|会话> [--keep]` | 多次 `DELETE`，或 `pause` 后 `PATCH anchor_chat_session_id=none` |
+| （`--anchor-chat current`、`--chat current` 的解析） | `GET /api/router/chats/current` |
 | `multica router runs [--subscription]` | `GET /api/router/dispatches` |
 | `multica router state get <id>` | `GET /api/router/subscriptions/{id}/state` |
 | `multica router state set <id> --expect-revision N (--state \| --state-file \| --state-stdin \| --clear)` | `PUT /api/router/subscriptions/{id}/state` |
@@ -217,7 +219,7 @@ Owner 2026-11-16 定：Router 是实例（像 issue），智能体只是执行�
 
 ## 页面设置（M-105）
 
-Owner 不用 CLI，在页面上把自己的一个 chat 设为 Router、选范围、暂停和恢复、解除，并在设置页看到自己的全部 Router。**Router 是一个 chat 会话加上绑定到它的订阅**，智能体就是这个 chat 的智能体；服务端只认订阅，前端按 `anchor_chat_session_id` 把订阅归成 Router。
+Owner 不用 CLI，在页面上（或在 chat 里对智能体下指令，见下文「在 chat 里用指令设置」）把自己的一个 chat 设为 Router、选范围、暂停和恢复、解除，并在设置页看到自己的全部 Router。**Router 是一个 chat 会话加上绑定到它的订阅**，智能体就是这个 chat 的智能体；服务端只认订阅，前端按 `anchor_chat_session_id` 把订阅归成 Router。
 
 ### 入口与开关
 
@@ -241,6 +243,20 @@ Owner 不用 CLI，在页面上把自己的一个 chat 设为 Router、选范围
 - 解除 Router（二次确认）：二选一，「删除它的订阅」，或「保留订阅并暂停」（先暂停、再解绑，所以中间不会退回锚点运行）。
 - 「经 Router 处理的条目」：给切片 2、3 的暂扣层留的位置，现在只有一句说明。
 - Router 状态没有实时事件，打开的设置对话框和列表每 30 秒刷新一次。
+
+### 在 chat 里用指令设置
+
+Owner 也可以在 chat 里直接跟这个 chat 的智能体说「把这个 chat 设为 Router，订阅 X」「暂停这个 Router」「再加一个范围」。智能体用 CLI 完成，和页面改的是同一份数据。
+
+- **当前 chat**：`GET /api/router/chats/current` 返回调用方这次 chat 运行所在的会话（id、标题、智能体、创建者）。只认智能体自己的、还没结束的、带 `chat_session_id` 的运行；成员请求、issue 上的运行、已结束的运行都返回 400，`router_chat` 关闭时也是 400。CLI 的 `current` 就是用它解析的。
+- **授权沿用 S2 的代建规则**：智能体绑定 chat 时（`POST` 带 `anchor_chat_session_id`，或 `PATCH` 绑到某个 chat），这次运行的成员发起人必须就是这个 chat 的创建者，否则 403；建订阅时发起人还要能管理这个智能体。即使智能体订阅的是自己，也按「为发起人代建」记：`created_by_type=member`、`owner_user_id` 是发起人，智能体和运行记在 `via_agent_id`、`via_task_id`。Router 批次轮次没有发起人，不能新建或改绑 Router；别人发起的运行也不能替 Owner 建 Router。暂停、恢复、删除仍按原来的规则（智能体可以改自己的订阅）。
+- `GET /api/router/subscriptions?chat_session_id=<id>`：只列绑定到这个 chat 的订阅，即一个 Router。
+- CLI：
+  - `multica router subscribe (--issue | --project) --anchor-chat current|<会话>`：建订阅时直接绑定；`--project` 不带 `--anchor` 时自动在该项目里建看板任务「Router 看板 · <chat 名>」作锚点，订阅被拒时删掉它。
+  - `router get|pause|resume|delete|update --chat current|<会话>`：作用于这个 Router 的每一条订阅（`get` 列出它们）。
+  - `router update <订阅> --anchor-chat current`：把订阅绑到当前 chat。
+  - `router release --chat current|<会话> [--keep]`：解除 Router；默认删除订阅，`--keep` 先暂停再解绑。
+- 给智能体的说明：`docs/router-setup-skill/SKILL.md`（`router-setup` skill 草案：口令对应的命令、改动前先复述并等确认、失败时怎么告诉 Owner）。由 Mika 在 Owner 确认后挂到相关智能体上。
 
 ### 代码位置
 
