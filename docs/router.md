@@ -171,13 +171,14 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 - `service.EnqueueRouterChatRun`（`server/internal/service/router_chat_run.go`）在一个事务里做和成员发消息相同的事：锁会话 → 建 chat 任务 → 任务拥有自己的输入 → 写一条 `role=user`、`message_kind=router_batch` 的消息。daemon 不用改：认领时这条消息就是本轮的输入。
 - 批次正文第一行是「[Router 事件批次 · 非 Owner 发言]」，因为认领时多条输入直接拼接、不带作者；正文告诉 Router：有话要 Owner 知道或决定才回文字，否则不输出文字。
 - 批次任务优先级 1，Owner 的 chat 是 2：排队中的 Owner 发言先被认领；正在跑的批次不会被打断。批次任务没有发起人（`originator_user_id` 为空，Router 在其中没有任何成员的授权），归责照旧回落到智能体所有者，`initiator_user_id` 是会话创建者。
-- 派发记录（`router_dispatch`）照旧写锚点 issue，`task_id` 是 chat 任务。chat 任务失败、被取消，整条重试链都没完成时，事件退回队列，下一批再带上。
+- 派发记录（`router_dispatch`）照旧写锚点 issue，`task_id` 是 chat 任务。
+- **批次轮次不做系统自动重试**（任务的 `max_attempts` 设为 1）。上游会把 chat 重试的优先级提到至少 3，那样重试中的批次会排到 Owner 排队的发言前面。批次轮次失败或被取消时，会话里照上游规则留一条失败消息（不弹通知）；派发结算为 `failed`，把事件退回队列，下一轮作为新批次（优先级 1）重新写进会话，所以整条链都排在 Owner 之后，事件也不会丢。
 
 ### 通知与显示
 
 - 批次轮次没有文字输出时，上游照常写一条 `no_response`，它不弹通知；有文字输出就是一条普通回复，走 chat 回复通知（#10424），这就是 Router 找 Owner 的方式。
 - 会话列表的预览不显示批次消息和批次轮次的 `no_response`，未读数也不算后者（`chat.sql` 两个列表查询）。
-- 前端：批次消息显示为折叠的卡片（标题是正文前两行），批次轮次的 `no_response` 不显示（`packages/views/chat/components/router-batch.tsx`）。批次写入时广播的 `chat:message` 不带 `message_id`，客户端只刷新、不先插一条不带类型的用户气泡。
+- 前端：批次消息显示为折叠的卡片（标题是正文前两行），批次轮次的 `no_response` 不显示：按输入归属识别，即 `no_response` 的任务就是写这条批次的任务（批次轮次没有系统重试，回复总是带着这个任务 ID）（`packages/views/chat/components/router-batch.tsx`）。批次写入时广播的 `chat:message` 不带 `message_id`，客户端只刷新、不先插一条不带类型的用户气泡。
 
 ### chat 不可用时
 
@@ -188,7 +189,7 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 - 会话创建者离开工作区时，Owner 就是这个人，收件箱不再收他的通知：通知记为 `skipped`，订阅仍然暂停，用 `multica router list` 可以看到。
 - Owner 在界面上取消一个排队中的批次轮次时，上游会把这条输入当成被撤回的草稿放回输入框；事件仍会退回队列重派。
 - 移动端没有改：批次消息在移动端显示成一条普通的用户气泡（`message_kind` 未知时退化为 `message`）。
-- 系统重试的 chat 任务优先级提到 3（上游规则），重试中的批次会排在 Owner 新发言之前。
+- 批次轮次因基础设施原因失败（runtime 离线、超时等）时不会原地重试，而是作为新批次重派，所以会话里会留一条失败消息和一条新的批次消息；重派计入每小时上限，一直失败会触发 `rate` 暂停并通知 Owner。
 
 ## 已知局限（S2）
 

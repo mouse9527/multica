@@ -25,6 +25,14 @@ import (
 // in the same session. A running batch is not interrupted.
 const RouterChatPriority = 1
 
+// routerChatMaxAttempts turns the system's auto-retry off for a batch turn:
+// a chat retry is raised to priority 3 (CreateRetryTask) and would then be
+// claimed before the member's queued messages. A batch whose turn fails is
+// not lost: Router dispatch settles the failed turn, puts its events back in
+// the queue, and writes them into the chat again as a new batch at
+// RouterChatPriority.
+const routerChatMaxAttempts = 1
+
 // ErrRouterChatUnavailable: the chat cannot take a batch until someone
 // changes something (it is gone, or now belongs to another agent).
 // ErrChatSessionArchived covers an archived chat.
@@ -69,7 +77,15 @@ func (s *TaskService) EnqueueRouterChatRun(ctx context.Context, sessionID, agent
 
 	var task db.AgentTaskQueue
 	var msg db.ChatMessage
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+	if s.TxStarter == nil {
+		return db.AgentTaskQueue{}, errors.New("router chat enqueue: transaction starter is required")
+	}
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("begin router chat enqueue: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := func(qtx *db.Queries) error {
 		// Same locks, in the same order, as a member's send.
 		if _, err := qtx.LockChatSessionForRuntimeBind(ctx, session.ID); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -113,6 +129,9 @@ func (s *TaskService) EnqueueRouterChatRun(ctx context.Context, sessionID, agent
 		if err != nil {
 			return fmt.Errorf("create router chat task: %w", err)
 		}
+		if _, err := tx.Exec(ctx, `UPDATE agent_task_queue SET max_attempts = $2 WHERE id = $1`, task.ID, routerChatMaxAttempts); err != nil {
+			return fmt.Errorf("disable router chat task retries: %w", err)
+		}
 		task, err = qtx.SetChatTaskInputOwnerSelf(ctx, task.ID)
 		if err != nil {
 			return fmt.Errorf("stamp router chat input owner: %w", err)
@@ -129,8 +148,11 @@ func (s *TaskService) EnqueueRouterChatRun(ctx context.Context, sessionID, agent
 			return fmt.Errorf("create router batch message: %w", err)
 		}
 		return qtx.TouchChatSession(ctx, session.ID)
-	}); err != nil {
+	}(s.Queries.WithTx(tx)); err != nil {
 		return db.AgentTaskQueue{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("commit router chat enqueue: %w", err)
 	}
 
 	slog.Info("router chat task enqueued",

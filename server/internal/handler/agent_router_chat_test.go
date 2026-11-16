@@ -92,6 +92,48 @@ func TestRouterAnchorChatAPI(t *testing.T) {
 	}
 }
 
+// routerChat is a chat-bound subscription on a daemon-backed agent, with one
+// due event from the owner, and a dispatcher with router_chat on.
+type routerChat struct {
+	agentID, sessionID, runtimeID, daemonID string
+	d                                       *agentrouter.Dispatcher
+}
+
+func newRouterChat(t *testing.T, ctx context.Context) routerChat {
+	t.Helper()
+	var rc routerChat
+	rc.agentID, rc.sessionID, rc.runtimeID, rc.daemonID = setupDirectChatSession(t, ctx, "router chat")
+	root := dbfx.Issue(t, "router chat root")
+	store := agentrouter.NewStore(testPool, testPool)
+	types, _ := agentrouter.NormalizeEventTypes(nil)
+	sub, err := store.Create(ctx, agentrouter.CreateParams{
+		WorkspaceID: testWorkspaceID, AgentID: rc.agentID, OwnerUserID: testUserID,
+		ScopeType: agentrouter.ScopeIssueTree, ScopeID: root, EventTypes: types,
+		CreatedByType: "member", CreatedByID: testUserID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupRouterChat(t, sub.ID)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `DELETE FROM chat_message WHERE chat_session_id = $1`, rc.sessionID)
+		dbfx.Exec(t, `DELETE FROM agent_task_queue WHERE agent_id = $1`, rc.agentID)
+	})
+	if _, err := store.Update(ctx, testWorkspaceID, sub.ID, agentrouter.UpdateParams{
+		AnchorChatSessionID: &rc.sessionID, Change: agentrouter.Change{ActorType: "system"},
+	}); err != nil {
+		t.Fatalf("bind chat: %v", err)
+	}
+	dbfx.Exec(t, `
+		INSERT INTO router_event (workspace_id, subscription_id, agent_id, event_key, kind, issue_id, actor_type, actor_id, source, occurred_at, created_at)
+		VALUES ($1, $2, $3, 'comment:router-chat-test', 'comment_created', $4, 'member', $5, 'bus', now(), now() - interval '1 hour')`,
+		testWorkspaceID, sub.ID, rc.agentID, root, testUserID)
+	rc.d = agentrouter.NewDispatcher(store, agentrouter.TaskRuns{Tasks: testHandler.TaskService},
+		agentrouter.NewNotifier(store, agentrouter.InboxAdapter{Queries: db.New(testPool), Bus: testHandler.Bus}))
+	rc.d.Chat = true
+	return rc
+}
+
 // TestRouterChatBatchThroughTheRealChat goes through the real task service
 // and daemon claim: a batch lands in the chat as a router_batch input, a
 // queued owner message is claimed before it, the agent receives the batch as
@@ -101,32 +143,8 @@ func TestRouterChatBatchThroughTheRealChat(t *testing.T) {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	agentID, sessionID, runtimeID, daemonID := setupDirectChatSession(t, ctx, "router chat")
-	root := dbfx.Issue(t, "router chat root")
-	store := agentrouter.NewStore(testPool, testPool)
-	types, _ := agentrouter.NormalizeEventTypes(nil)
-	sub, err := store.Create(ctx, agentrouter.CreateParams{
-		WorkspaceID: testWorkspaceID, AgentID: agentID, OwnerUserID: testUserID,
-		ScopeType: agentrouter.ScopeIssueTree, ScopeID: root, EventTypes: types,
-		CreatedByType: "member", CreatedByID: testUserID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cleanupRouterChat(t, sub.ID)
-	t.Cleanup(func() {
-		dbfx.Exec(t, `DELETE FROM chat_message WHERE chat_session_id = $1`, sessionID)
-		dbfx.Exec(t, `DELETE FROM agent_task_queue WHERE agent_id = $1`, agentID)
-	})
-	if _, err := store.Update(ctx, testWorkspaceID, sub.ID, agentrouter.UpdateParams{
-		AnchorChatSessionID: &sessionID, Change: agentrouter.Change{ActorType: "system"},
-	}); err != nil {
-		t.Fatalf("bind chat: %v", err)
-	}
-	dbfx.Exec(t, `
-		INSERT INTO router_event (workspace_id, subscription_id, agent_id, event_key, kind, issue_id, actor_type, actor_id, source, occurred_at, created_at)
-		VALUES ($1, $2, $3, 'comment:router-chat-test', 'comment_created', $4, 'member', $5, 'bus', now(), now() - interval '1 hour')`,
-		testWorkspaceID, sub.ID, agentID, root, testUserID)
+	rc := newRouterChat(t, ctx)
+	agentID, sessionID, runtimeID, daemonID, d := rc.agentID, rc.sessionID, rc.runtimeID, rc.daemonID, rc.d
 
 	var mu sync.Mutex
 	var done []protocol.ChatDonePayload
@@ -146,9 +164,6 @@ func TestRouterChatBatchThroughTheRealChat(t *testing.T) {
 		}
 	})
 
-	d := agentrouter.NewDispatcher(store, agentrouter.TaskRuns{Tasks: testHandler.TaskService},
-		agentrouter.NewNotifier(store, agentrouter.InboxAdapter{Queries: db.New(testPool), Bus: testHandler.Bus}))
-	d.Chat = true
 	if _, err := d.TickWorkspace(ctx, testWorkspaceID); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -234,5 +249,70 @@ func TestRouterChatBatchThroughTheRealChat(t *testing.T) {
 	var outcome string
 	if err := testPool.QueryRow(ctx, `SELECT COALESCE(outcome, '') FROM router_dispatch WHERE task_id = $1`, batchTask).Scan(&outcome); err != nil || outcome != "completed" {
 		t.Fatalf("dispatch outcome = %q (%v), want completed", outcome, err)
+	}
+}
+
+// TestRouterChatFailedBatchNeverJumpsTheOwner: a batch turn that fails with
+// a retryable reason (timeout: its retry would be queued at once) gets no
+// system retry (a chat retry would be raised to
+// priority 3, above the owner's 2); dispatch puts the batch back and writes
+// it into the chat again at priority 1, and the owner's queued message is
+// still claimed first.
+func TestRouterChatFailedBatchNeverJumpsTheOwner(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	rc := newRouterChat(t, ctx)
+	if _, err := rc.d.TickWorkspace(ctx, testWorkspaceID); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	claimed := claimTaskForRuntimeGuard(t, rc.runtimeID, rc.daemonID)
+	if !strings.HasPrefix(claimed.ChatMessage, agentrouter.RouterBatchLabel) {
+		t.Fatalf("claimed %q, want the batch", claimed.ChatMessage)
+	}
+	var first string
+	if err := testPool.QueryRow(ctx, `
+		SELECT id::text FROM agent_task_queue WHERE chat_session_id = $1 AND status = 'dispatched'`, rc.sessionID,
+	).Scan(&first); err != nil {
+		t.Fatalf("batch turn: %v", err)
+	}
+	markTaskRunning(t, ctx, first)
+
+	ownerTask := sendDirectChat(t, ctx, rc.agentID, rc.sessionID, "anything for me?")
+	if _, err := testHandler.TaskService.FailTask(ctx, parseUUID(first), "run timed out", "", "", "", "timeout", false, "", ""); err != nil {
+		t.Fatalf("fail batch turn: %v", err)
+	}
+	var retries int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue WHERE retry_of_task_id = $1`, first).Scan(&retries); err != nil || retries != 0 {
+		t.Errorf("system retries of the batch turn = %d (%v), want none", retries, err)
+	}
+
+	// Settle hands the batch back and dispatch writes it into the chat again.
+	if _, err := rc.d.TickWorkspace(ctx, testWorkspaceID); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	var second string
+	var priority int
+	if err := testPool.QueryRow(ctx, `
+		SELECT t.id::text, t.priority FROM agent_task_queue t JOIN chat_message m ON m.task_id = t.id
+		WHERE t.chat_session_id = $1 AND m.message_kind = 'router_batch' AND t.id <> $2`, rc.sessionID, first,
+	).Scan(&second, &priority); err != nil {
+		t.Errorf("re-dispatched batch: %v", err)
+	} else if priority != service.RouterChatPriority {
+		t.Errorf("re-dispatched batch priority = %d, want %d", priority, service.RouterChatPriority)
+	}
+
+	claimed = claimTaskForRuntimeGuard(t, rc.runtimeID, rc.daemonID)
+	if claimed.ChatMessage != "anything for me?" {
+		t.Fatalf("claimed %q after the failed batch, want the owner's message (task %s)", claimed.ChatMessage, ownerTask)
+	}
+	var above int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_task_queue t
+		WHERE t.chat_session_id = $1 AND t.priority >= 2
+		  AND EXISTS (SELECT 1 FROM chat_message m WHERE m.task_id = COALESCE(t.chat_input_task_id, t.id) AND m.message_kind = 'router_batch')`,
+		rc.sessionID).Scan(&above); err != nil || above != 0 {
+		t.Fatalf("batch turns at or above the owner's priority = %d (%v), want 0", above, err)
 	}
 }

@@ -17,9 +17,11 @@ import type { ChatMessage } from "@multica/core/types";
 import { RichContent } from "../../rich-content";
 
 /**
- * Drops the `no_response` rows of Router batch turns. A row belongs to a
- * batch turn when its task wrote a batch, or, for a retried turn whose task
- * id differs from the batch's, when the batch is the row right before it.
+ * Drops the `no_response` rows of Router batch turns: the reply of a turn
+ * whose input is a batch, matched by the task that owns that input. A batch
+ * turn is never auto-retried (the server re-dispatches a failed batch as a new
+ * turn instead), so its reply always carries the input owner's task id, and a
+ * member message or failure row in between does not matter.
  */
 export function hideSilentRouterTurns(messages: ChatMessage[]): ChatMessage[] {
   const batchTasks = new Set<string>();
@@ -27,11 +29,9 @@ export function hideSilentRouterTurns(messages: ChatMessage[]): ChatMessage[] {
     if (m.message_kind === "router_batch" && m.task_id) batchTasks.add(m.task_id);
   }
   if (batchTasks.size === 0) return messages;
-  return messages.filter((m, i) => {
-    if (m.message_kind !== "no_response") return true;
-    if (m.task_id && batchTasks.has(m.task_id)) return false;
-    return messages[i - 1]?.message_kind !== "router_batch";
-  });
+  return messages.filter(
+    (m) => m.message_kind !== "no_response" || !m.task_id || !batchTasks.has(m.task_id),
+  );
 }
 
 /** The batch's first two lines: the server's label and its one-line summary. */

@@ -46,17 +46,21 @@ function msg(over: Partial<ChatMessage> & Pick<ChatMessage, "id">): ChatMessage 
 }
 
 describe("hideSilentRouterTurns", () => {
-  it("drops a batch turn's no_response and keeps every other row", () => {
+  it("drops the no_response of the turn that owns a batch and keeps every other row", () => {
     const messages = [
       msg({ id: "b1", content: BATCH, task_id: "t1", message_kind: "router_batch" }),
-      msg({ id: "a1", role: "assistant", task_id: "t1", message_kind: "no_response" }),
+      // The member spoke while the batch turn was queued; their turn's
+      // reply lands between the batch and the batch's own reply.
       msg({ id: "u1", content: "status?", task_id: "t2" }),
       msg({ id: "a2", role: "assistant", task_id: "t2", message_kind: "no_response" }),
+      msg({ id: "a1", role: "assistant", task_id: "t1", message_kind: "no_response" }),
       msg({ id: "b2", content: BATCH, task_id: "t3", message_kind: "router_batch" }),
-      // A retried batch turn answers under the retry's task id.
-      msg({ id: "a3", role: "assistant", task_id: "t3-retry", message_kind: "no_response" }),
+      msg({ id: "f3", role: "assistant", content: "failed", task_id: "t3" }),
+      // Right after a batch, but owned by another turn: kept.
+      msg({ id: "b4", content: BATCH, task_id: "t4", message_kind: "router_batch" }),
+      msg({ id: "a5", role: "assistant", task_id: "t5", message_kind: "no_response" }),
     ];
-    expect(hideSilentRouterTurns(messages).map((m) => m.id)).toEqual(["b1", "u1", "a2", "b2"]);
+    expect(hideSilentRouterTurns(messages).map((m) => m.id)).toEqual(["b1", "u1", "a2", "b2", "f3", "b4", "a5"]);
   });
 
   it("returns the list untouched when the chat has no batch", () => {
