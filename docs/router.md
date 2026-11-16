@@ -1,6 +1,6 @@
-# Router：事件捕获（S1）、派发与出口（S2）、chat 载体（v6 切片 1）
+# Router：事件捕获（S1）、派发与出口（S2）、chat 载体（v6 切片 1）、暂扣影子模式（v6 切片 2）
 
-本文件属于 `mouse9527/multica` fork（S1 是 M-85，S2 是 M-86，设计见 M-45 v5）。Router 让一个智能体订阅一个范围（一棵 issue 树或一个项目），把范围内的事件写进持久的事件队列（S1）；再把攒下的事件合成一批，在锚点 issue 上给这个智能体起一次运行，并给它一个通知 Owner 的出口（S2，见后文「派发（S2）」）。v6 切片 1（M-96）让订阅可以绑定一个 chat 会话：批次写进这个会话，Router 在会话里回话（见后文「chat 载体（v6 切片 1）」）。
+本文件属于 `mouse9527/multica` fork（S1 是 M-85，S2 是 M-86，设计见 M-45 v5）。Router 让一个智能体订阅一个范围（一棵 issue 树或一个项目），把范围内的事件写进持久的事件队列（S1）；再把攒下的事件合成一批，在锚点 issue 上给这个智能体起一次运行，并给它一个通知 Owner 的出口（S2，见后文「派发（S2）」）。v6 切片 1（M-96）让订阅可以绑定一个 chat 会话：批次写进这个会话，Router 在会话里回话（见后文「chat 载体（v6 切片 1）」）。v6 切片 2（M-97）加上暂扣的影子模式：只记录「本来会扣」的收件箱条目，不真的扣（见后文「暂扣影子模式（v6 切片 2）」）。
 
 ## 开关
 
@@ -8,6 +8,7 @@
 - 关闭时：`/api/router/*` 返回 404，`events.Bus` 监听器和对账任务都不注册，行为与上游一致。开关在启动时读一次，改了要重启服务。
 - `router_dispatch`（S2），默认关闭，`FF_ROUTER_DISPATCH=true` 打开，**只在 `router_v1` 也打开时生效**。关闭时不注册派发任务，`/api/router/subscriptions/{id}/state` 和 `/api/router/notices` 返回 404，行为与 S1 一致。订阅的修改（`PATCH`）、审计记录和运行列表只要 `router_v1`。
 - `router_chat`（v6 切片 1），默认关闭，`FF_ROUTER_CHAT=true` 打开，**只在 `router_dispatch` 也打开时生效**。注意两个读取时点不同：派发任务在**启动时**读一次（决定绑定了 chat 的订阅是否走 chat），`PATCH` 接口在**每次请求时**读（决定是否接受 `anchor_chat_session_id`）。所以不重启就在线打开开关的话，绑定能立刻存下来，但派发要等重启后才会写进会话。关闭时：`PATCH` 里的 `anchor_chat_session_id` 返回 400；已有的绑定保留但不用，所有订阅照旧走锚点运行，行为与 S2 一致。
+- `router_hold_shadow`（v6 切片 2），默认关闭，`FF_ROUTER_HOLD_SHADOW=true` 打开，**只在 `router_chat` 也打开时生效**，启动时读一次。关闭时不注册收件箱拦截器，`CreateIfEligible` 与上游完全一致；批次里也没有「Hold preview」一节。
 - `MULTICA_ROUTER_RECONCILE_INTERVAL`：对账周期（Go duration，如 `5m`），默认 5 分钟，最小 30 秒。
 
 ## 数据（迁移 9004–9007，只新增表）
@@ -188,6 +189,72 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 
 这类暂停沿用 `agent_unavailable`（9004 的 CHECK 只允许 `rate`、`manual`、`agent_unavailable`，本切片不改表），所以 `multica router list` 和按原因统计的告警分不出「智能体不可用」「项目权限拒绝」和「chat 不可用」。具体原因看 `router changes` 里 `auto_pause` 记录的 `detail.why`，或收件箱通知的正文。
 
+## 暂扣影子模式（v6 切片 2）
+
+设计见 M-95「已定决定」2026-11-16（D1–D4）和研析 07:47 修订稿第 2 节。暂扣的目标是：Owner 收件箱里落在 Router 范围内的条目，先过 Router，再决定进不进收件箱。本切片只做**影子模式**：判定照做、记录照写，条目照常写进收件箱，收件箱的行为不变。真扣是切片 3。
+
+### 钩子
+
+- 上游只改一处：`inbox.CreateIfEligible` 在写入前调用 `intercept`（fork 新文件 `server/internal/inbox/intercept.go`）。注册方式是 `inbox.SetInterceptor(i, budget)`；没有注册时直接写入，与上游一致。
+- **fail-open**：拦截函数返回错误、panic，或超过预算（`DefaultHoldBudget`，250 毫秒），都照常写入。只有干净地返回 `hold=true` 才会不写（切片 3 才会用到；影子模式永远返回 `false`）。
+- 注册了拦截器时，没有 id 的条目在钩子里先生成 id（UUIDv7），拦截器和写入看到的是同一个 id。现有 12 个调用点都已自带 id。
+
+### 判定（D4）
+
+同时满足才算「本来会扣」：
+
+- 收件人是成员，条目有 `issue_id`；
+- 收件人是某个订阅的 Owner，这个订阅启用、未暂停，并绑定了一个 `active`、智能体相同的 chat 会话；
+- issue 在这个订阅的范围内（祖先链加项目）。收件人有多个这样的订阅时取最窄的那个（与 `pickNarrowest` 同一规则，跨智能体比较）；
+- 不在不扣名单里：`router_notice`（Router 自己的通知，含暂停、故障通知）、连接应用的四类条目（`app_action_requested`、`app_action_reminder`、`app_connect_requested`、`app_action_result`）、`autopilot_paused`、`autopilot_quota_exceeded`、`quick_create_failed`、`quick_create_unconfirmed`；
+- 条目的 actor 不是这个订阅的智能体（Router 自己的动作不扣）。
+
+订阅集合按 30 秒缓存（与捕获相同），订阅变更会让本进程的缓存立刻失效；派发自动暂停不改代数，最多 30 秒后生效。判定只对「收件人有绑定 chat 的订阅」的条目查库（一条递归查询取祖先链和项目），其他条目只读内存。
+
+### 记录
+
+- 迁移 9015 新增 `router_hold`（9016、9017 两个并发索引）。影子模式写 `mode='shadow'`、`status='shadow'` 的行：订阅、智能体、收件人、条目 id、issue、类型、标题、actor、完整的写入内容（`item`，切片 3 放行时原样写入用）、判定耗时（`decide_micros`）。切片 3 要用的列（`deadline_at`、`decided_*`、`dispatch_task_id` 等）已经建好，切片 3 不需要改表。
+- 记录**走连接池，不进写入方的事务**：写入方的事务里失败一条语句会中止整个事务，违反 fail-open。代价是写入方的事务回滚时，影子行还在；`in_inbox`（关联 `inbox_item`）区分这种情况，以及收件人不合资格没写进去的情况。
+- `inbox_item_id` 唯一，同一条目重复写只记一次。影子行保留 30 天，派发任务每小时清理一次。
+
+### 批次里的清单
+
+`router_chat` 下的批次多一节「Hold preview (shadow mode, nothing to do)」：自上一批以来本来会扣的条目（最多 30 条、3KB），写明它们已经照常进了收件箱，Router 不需要处理。列过的行记下批次任务（`dispatch_task_id`），批次失败时清空，下一批再列。影子行不单独触发批次，跟着下一批走。
+
+### 观测
+
+- `multica router holds [--subscription <id>] [--limit N]`（API：`GET /api/router/holds`，需要 `router_dispatch`）：成员看到发给自己的条目，智能体看到自己订阅的条目。
+- `multica router holds --stats`：回答这个请求的服务进程自启动以来的拦截统计——调用次数、本来会扣的次数、错误、超时、panic、issue 不可见（写入方事务里的新 issue）、订阅重载失败、平均与最大耗时、耗时分桶（≤1ms、≤5ms、≤20ms、≤100ms、>100ms）。统计在内存里，重启清零，多副本时每个进程各算各的；持久的数据是 `router_hold` 的行和其中的 `decide_micros`。
+- 拦截失败时日志打一次，之后每 100 次打一次（`router hold: interceptor failed; the inbox write went ahead`）。
+
+### 调用点核对（切片 3 前提）
+
+`CreateIfEligible` 共 12 个调用点。影子模式下钩子永远不扣，所以都不受影响；下表看的是切片 3 真扣时（返回 `inserted=false`）是否安全：
+
+| 调用点 | 条目 | `inserted=false` 时 | 切片 3 |
+|---|---|---|---|
+| `cmd/server/notification_listeners.go` `createMemberInboxItem`（issue 订阅者，经 `notifyIssueSubscribers`） | 订阅者通知 | 不发 `inbox:new`；**但返回 false 会让该成员不进 `notified`**，于是父 issue 订阅者、项目订阅者两轮又各写一次同一事件 | **不安全**：同一事件会被暂扣 2–3 次。切片 3 要把「被扣」当作已通知（例如钩子返回单独的信号，或这一处把扣下也计入 `notified`） |
+| 同文件 `notifyDirect` | 直接通知（指派等） | 不发 `inbox:new`，直接返回 | 安全 |
+| 同文件 `notifyMentionedMembers` | 提及 | 跳过这个人 | 安全 |
+| `cmd/server/autopilot_failure_monitor.go` | `autopilot_paused` | 跳过 | 不扣（不扣名单，且没有 issue） |
+| `internal/connectedapps/requests.go` | 连接应用请求、结果 | 不发 `inbox:new` | 不扣（不扣名单） |
+| `internal/service/issue_wakeup_system.go` | `children_done` | 在写入方事务里；`inserted=false` 时活动记录写成 `outcome=none`（而不是 `notified`） | **审计失真**：被扣的会记成「没人通知」。切片 3 要让这一处知道是被扣（记 `held`），否则活动记录误导 |
+| `internal/service/autopilot.go` | `issue_subscribed` | 跳过 | 安全 |
+| `internal/service/task.go`（委派失败恢复耗尽） | `task_failed`（`action_required`） | 在写入方事务里；只是不发 `inbox:new` | 安全；但切片 3 若在事务里写暂扣行，要用保存点或照影子模式走连接池 |
+| `internal/service/task.go` `quick_create_done` | 快速创建完成 | 跳过 | 安全 |
+| `internal/service/task.go` `writeQuickCreateOutcomeInbox` | 快速创建失败/未确认 | 跳过 | 不扣（不扣名单，且没有 issue） |
+| `internal/service/autopilot_quota_notifications.go` | `autopilot_quota_exceeded` | 跳过 | 不扣（不扣名单，且没有 issue） |
+| `internal/agentrouter/notice.go` `InboxAdapter` | `router_notice` | 会把投递记成 `skipped` | 不扣（不扣名单） |
+
+全仓库写 `inbox_item` 只有 `CreateIfEligible` 这一条路（`CreateInboxItem` 没有其他调用方，也没有手写 `INSERT INTO inbox_item`），所以钩子覆盖了全部收件箱写入。
+
+## 已知局限（v6 切片 2）
+
+- 统计只在进程内存里（见「观测」）；要跨重启、跨副本的数字，用 `router_hold` 的行。
+- 写入方事务里新建的 issue，判定时还看不到（记 `issue_missing`，不记影子行）。现在的调用点都是在提交之后写收件箱，所以实际不会出现；切片 3 若要覆盖，判定要进写入方事务。
+- 订阅被派发自动暂停（`rate`、`agent_unavailable`）后，最多 30 秒内仍可能记影子行。
+- 「Hold preview」只出现在 chat 批次里；没有绑定 chat 的订阅不判定、不记录。
+
 ## 已知局限（v6 切片 1）
 
 - 会话创建者离开工作区时，Owner 就是这个人，收件箱不再收他的通知：通知记为 `skipped`，订阅仍然暂停，用 `multica router list` 可以看到。
@@ -215,3 +282,11 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 2. 更新 daemon 用的 CLI（`router update --anchor-chat`）。
 3. 部署后先保持 `router_chat` 关闭，确认行为不变；再打开 `FF_ROUTER_CHAT=true`（需要重启）。
 4. Owner 在界面里和 Router 智能体建一个会话，用 `multica router update <id> --anchor-chat <session>` 绑定；在范围内改状态、发评论，确认批次进会话、Router 回话或保持安静。
+
+## 部署清单（v6 切片 2）
+
+1. 备份数据库，在真实数据副本上演练迁移 9015–9017（up、down、再 up）。
+2. 更新 daemon 用的 CLI（`router holds`）。
+3. 部署后先保持 `router_hold_shadow` 关闭，确认行为不变；再打开 `FF_ROUTER_HOLD_SHADOW=true`（需要重启，且 `router_chat` 已打开）。
+4. 在范围内 @Owner、改状态，确认收件箱照常收到；`multica router holds` 能看到对应的影子行，下一批 chat 批次里有「Hold preview」。
+5. 观察几天：`multica router holds --stats` 的耗时分桶和错误、超时计数；在副本上压测写入延迟的结论一起交给切片 3。
