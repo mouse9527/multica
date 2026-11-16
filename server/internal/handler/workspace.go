@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/agentrouter"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -1405,6 +1406,11 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			// side tables (migration 9000).
 			name: "delete github issue data",
 			run:  func() error { return qtx.DeleteWorkspaceGithubIssueData(ctx, requester.WorkspaceID) },
+		},
+		{
+			// Modified for the mouse9527/multica fork: Router tables (M-85).
+			name: "delete router data",
+			run:  func() error { return agentrouter.DeleteWorkspaceData(ctx, tx, requester.WorkspaceID) },
 		},
 		{
 			name: "delete squads and skills",

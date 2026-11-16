@@ -2122,6 +2122,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/changes", h.ListSearchIndexChanges)
 			})
 
+			// Modified for the mouse9527/multica fork: Router subscriptions
+			// and captured events (M-85), 404 unless router_v1 is on.
+			r.Route("/api/router", h.MountAgentRouter)
+
 			// Issues
 			r.Route("/api/issues", func(r chi.Router) {
 				r.Get("/limit-usage", h.GetIssueLimitUsage)
