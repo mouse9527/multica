@@ -7,7 +7,7 @@
 - `router_v1`，默认关闭。用 `FF_ROUTER_V1=true` 打开（或 `MULTICA_FEATURE_FLAGS_FILE` 里的规则）。
 - 关闭时：`/api/router/*` 返回 404，`events.Bus` 监听器和对账任务都不注册，行为与上游一致。开关在启动时读一次，改了要重启服务。
 - `router_dispatch`（S2），默认关闭，`FF_ROUTER_DISPATCH=true` 打开，**只在 `router_v1` 也打开时生效**。关闭时不注册派发任务，`/api/router/subscriptions/{id}/state` 和 `/api/router/notices` 返回 404，行为与 S1 一致。订阅的修改（`PATCH`）、审计记录和运行列表只要 `router_v1`。
-- `router_chat`（v6 切片 1），默认关闭，`FF_ROUTER_CHAT=true` 打开，**只在 `router_dispatch` 也打开时生效**，启动时读一次。关闭时：`PATCH` 里的 `anchor_chat_session_id` 返回 400；已有的绑定保留但不用，所有订阅照旧走锚点运行，行为与 S2 一致。
+- `router_chat`（v6 切片 1），默认关闭，`FF_ROUTER_CHAT=true` 打开，**只在 `router_dispatch` 也打开时生效**。注意两个读取时点不同：派发任务在**启动时**读一次（决定绑定了 chat 的订阅是否走 chat），`PATCH` 接口在**每次请求时**读（决定是否接受 `anchor_chat_session_id`）。所以不重启就在线打开开关的话，绑定能立刻存下来，但派发要等重启后才会写进会话。关闭时：`PATCH` 里的 `anchor_chat_session_id` 返回 400；已有的绑定保留但不用，所有订阅照旧走锚点运行，行为与 S2 一致。
 - `MULTICA_ROUTER_RECONCILE_INTERVAL`：对账周期（Go duration，如 `5m`），默认 5 分钟，最小 30 秒。
 
 ## 数据（迁移 9004–9007，只新增表）
@@ -171,6 +171,8 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 - `service.EnqueueRouterChatRun`（`server/internal/service/router_chat_run.go`）在一个事务里做和成员发消息相同的事：锁会话 → 建 chat 任务 → 任务拥有自己的输入 → 写一条 `role=user`、`message_kind=router_batch` 的消息。daemon 不用改：认领时这条消息就是本轮的输入。
 - 批次正文第一行是「[Router 事件批次 · 非 Owner 发言]」，因为认领时多条输入直接拼接、不带作者；正文告诉 Router：有话要 Owner 知道或决定才回文字，否则不输出文字。
 - 批次任务优先级 1，Owner 的 chat 是 2：排队中的 Owner 发言先被认领；正在跑的批次不会被打断。批次任务没有发起人（`originator_user_id` 为空，Router 在其中没有任何成员的授权），归责照旧回落到智能体所有者，`initiator_user_id` 是会话创建者。
+- **私有项目围栏与锚点运行一致**（MUL-8472）：批次里有 issue 标题和评论内容，所以写入之前先对锚点 issue 做 `guardRunProjectAccess`。这里要求两个人都能看到这个项目：一是会话创建者（批次写进的是他的会话），二是智能体所有者（在他的 runtime 上执行）。任一方看不到，就返回 `ErrProjectAccessDenied`，映射为 `ErrRunRefused`：派发暂停（`agent_unavailable`），并发收件箱通知，消息和任务都不写。
+- 和锚点运行的一个差别：锚点 issue 进入 triage 时，锚点运行会一直等待；chat 载体不受影响，因为 chat 模式下锚点 issue 只是派发记录和看板，不是运行的位置。
 - 派发记录（`router_dispatch`）照旧写锚点 issue，`task_id` 是 chat 任务。
 - **批次轮次不做系统自动重试**（任务的 `max_attempts` 设为 1）。上游会把 chat 重试的优先级提到至少 3，那样重试中的批次会排到 Owner 排队的发言前面。批次轮次失败或被取消时，会话里照上游规则留一条失败消息（不弹通知）；派发结算为 `failed`，把事件退回队列，下一轮作为新批次（优先级 1）重新写进会话，所以整条链都排在 Owner 之后，事件也不会丢。
 
@@ -184,11 +186,13 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 
 会话被归档、删除，转给了别的智能体，或会话创建者已不是工作区成员：每轮派发都会检查已绑定会话的订阅，发现了就把订阅的派发暂停（`agent_unavailable`，捕获继续），并用 `owner_notice` 走收件箱通知 Owner（不走这个已经不可用的会话），正文写明原因和恢复办法（重新绑定或 `--anchor-chat none`，再 `resume`）。入队时才发现会话已归档（竞态）也同样暂停。
 
+这类暂停沿用 `agent_unavailable`（9004 的 CHECK 只允许 `rate`、`manual`、`agent_unavailable`，本切片不改表），所以 `multica router list` 和按原因统计的告警分不出「智能体不可用」「项目权限拒绝」和「chat 不可用」。具体原因看 `router changes` 里 `auto_pause` 记录的 `detail.why`，或收件箱通知的正文。
+
 ## 已知局限（v6 切片 1）
 
 - 会话创建者离开工作区时，Owner 就是这个人，收件箱不再收他的通知：通知记为 `skipped`，订阅仍然暂停，用 `multica router list` 可以看到。
 - Owner 在界面上取消一个排队中的批次轮次时，上游会把这条输入当成被撤回的草稿放回输入框；事件仍会退回队列重派。
-- 移动端没有改：批次消息在移动端显示成一条普通的用户气泡（`message_kind` 未知时退化为 `message`）。
+- 移动端没有改：批次消息在移动端显示成一条普通的用户气泡（`message_kind` 未知时退化为 `message`），每个静默的批次轮次还会成对显示一条「本轮无文字回复」的 `no_response` 占位（移动端照常渲染它）。网页端没有这些噪音；移动端是否做同样的隐藏，留给后续切片决定。
 - 批次轮次因基础设施原因失败（runtime 离线、超时等）时不会原地重试，而是作为新批次重派，所以会话里会留一条失败消息和一条新的批次消息；重派计入每小时上限，一直失败会触发 `rate` 暂停并通知 Owner。
 
 ## 已知局限（S2）

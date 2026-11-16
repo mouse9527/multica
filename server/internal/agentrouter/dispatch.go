@@ -19,7 +19,7 @@ import (
 // tests substitute their own.
 type RunEnqueuer interface {
 	EnqueueRouterRun(ctx context.Context, issueID, agentID, note string) (taskID string, err error)
-	EnqueueRouterChatRun(ctx context.Context, chatSessionID, agentID, batch string) (taskID string, err error)
+	EnqueueRouterChatRun(ctx context.Context, chatSessionID, agentID, anchorIssueID, batch string) (taskID string, err error)
 }
 
 var (
@@ -381,7 +381,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 
 	var taskID string
 	if chatID != "" {
-		taskID, err = d.Runs.EnqueueRouterChatRun(ctx, chatID, sub.AgentID, note)
+		taskID, err = d.Runs.EnqueueRouterChatRun(ctx, chatID, sub.AgentID, *sub.AnchorIssueID, note)
 	} else {
 		taskID, err = d.Runs.EnqueueRouterRun(ctx, *sub.AnchorIssueID, sub.AgentID, note)
 	}

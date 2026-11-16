@@ -51,9 +51,16 @@ var ErrRouterChatUnavailable = errors.New("router chat: session unavailable")
 // owner fallback. The session's creator is recorded as initiator because the
 // turn belongs to their conversation.
 //
+// The private-project fence of an anchor run (guardRunProjectAccess on the
+// anchor issue, MUL-8472) applies unchanged, before anything is written: the
+// batch carries the same issue titles and comment payloads. The member it is
+// checked for is the session's creator, who reads the chat, together with the
+// agent's owner, whose runtime runs the turn.
+//
 // Errors to expect: ErrChatSessionArchived, ErrRouterChatUnavailable,
-// ErrChatTaskAgentArchived, ErrChatTaskAgentNoRuntime, ErrAttributionFailClosed.
-func (s *TaskService) EnqueueRouterChatRun(ctx context.Context, sessionID, agentID pgtype.UUID, batch string) (db.AgentTaskQueue, error) {
+// ErrChatTaskAgentArchived, ErrChatTaskAgentNoRuntime, ErrAttributionFailClosed,
+// ErrProjectAccessDenied.
+func (s *TaskService) EnqueueRouterChatRun(ctx context.Context, sessionID, agentID, anchorIssueID pgtype.UUID, batch string) (db.AgentTaskQueue, error) {
 	session, err := s.Queries.GetChatSession(ctx, sessionID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return db.AgentTaskQueue{}, fmt.Errorf("%w: the chat no longer exists", ErrRouterChatUnavailable)
@@ -70,6 +77,13 @@ func (s *TaskService) EnqueueRouterChatRun(ctx context.Context, sessionID, agent
 	}
 	attr, err := s.applyAttributionFallback(ctx, attribution.Unattributed(attribution.EvidenceChat, session.ID), agent)
 	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	anchor, err := s.Queries.GetIssue(ctx, anchorIssueID)
+	if err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("load anchor issue: %w", err)
+	}
+	if err := s.guardRunProjectAccess(ctx, anchor, agent, session.CreatorID, attr.AccountableUserID); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)

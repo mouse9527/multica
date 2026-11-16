@@ -24,7 +24,7 @@ type fakeRuns struct {
 
 type fakeRun struct{ issue, chat, agent, note, task string }
 
-func (f *fakeRuns) EnqueueRouterChatRun(_ context.Context, chatSessionID, agentID, batch string) (string, error) {
+func (f *fakeRuns) EnqueueRouterChatRun(_ context.Context, chatSessionID, agentID, _, batch string) (string, error) {
 	if f.err != nil {
 		return "", f.err
 	}

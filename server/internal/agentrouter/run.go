@@ -45,7 +45,7 @@ func (r TaskRuns) EnqueueRouterRun(ctx context.Context, issueID, agentID, note s
 
 // EnqueueRouterChatRun writes the batch into the chat session and queues the
 // chat turn that reads it (see service.EnqueueRouterChatRun).
-func (r TaskRuns) EnqueueRouterChatRun(ctx context.Context, chatSessionID, agentID, batch string) (string, error) {
+func (r TaskRuns) EnqueueRouterChatRun(ctx context.Context, chatSessionID, agentID, anchorIssueID, batch string) (string, error) {
 	sessionUUID, err := util.ParseUUID(chatSessionID)
 	if err != nil {
 		return "", err
@@ -54,12 +54,16 @@ func (r TaskRuns) EnqueueRouterChatRun(ctx context.Context, chatSessionID, agent
 	if err != nil {
 		return "", err
 	}
-	task, err := r.Tasks.EnqueueRouterChatRun(ctx, sessionUUID, agentUUID, batch)
+	anchorUUID, err := util.ParseUUID(anchorIssueID)
+	if err != nil {
+		return "", err
+	}
+	task, err := r.Tasks.EnqueueRouterChatRun(ctx, sessionUUID, agentUUID, anchorUUID, batch)
 	switch {
 	case errors.Is(err, service.ErrChatSessionArchived), errors.Is(err, service.ErrRouterChatUnavailable):
 		return "", fmt.Errorf("%w: %v", ErrChatUnavailable, err)
 	case errors.Is(err, service.ErrChatTaskAgentArchived), errors.Is(err, service.ErrChatTaskAgentNoRuntime),
-		errors.Is(err, service.ErrAttributionFailClosed):
+		errors.Is(err, service.ErrAttributionFailClosed), errors.Is(err, service.ErrProjectAccessDenied):
 		return "", fmt.Errorf("%w: %v", ErrRunRefused, err)
 	case err != nil:
 		return "", err

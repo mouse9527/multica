@@ -4,10 +4,13 @@ package handler
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/agentrouter"
 	"github.com/multica-ai/multica/server/internal/events"
@@ -314,5 +317,96 @@ func TestRouterChatFailedBatchNeverJumpsTheOwner(t *testing.T) {
 		  AND EXISTS (SELECT 1 FROM chat_message m WHERE m.task_id = COALESCE(t.chat_input_task_id, t.id) AND m.message_kind = 'router_batch')`,
 		rc.sessionID).Scan(&above); err != nil || above != 0 {
 		t.Fatalf("batch turns at or above the owner's priority = %d (%v), want 0", above, err)
+	}
+}
+
+// TestRouterChatKeepsThePrivateProjectFence: a batch carries issue titles and
+// comment payloads, so a chat turn is refused wherever an anchor run on the
+// same anchor would be (MUL-8472), and also when the member whose chat it is
+// cannot see the project. A refusal pauses dispatch and writes no batch
+// message and no task.
+func TestRouterChatKeepsThePrivateProjectFence(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	outsider := dbfx.User(t, "router chat outsider", fmt.Sprintf("router-chat-outsider-%d@example.test", time.Now().UnixNano()))
+	dbfx.Member(t, testWorkspaceID, outsider, "member")
+	private := dbfx.Project(t, "router chat private", testutil.Cols{"visibility": "private"})
+	runtime := dbfx.Runtime(t, "router chat private runtime")
+	store := agentrouter.NewStore(testPool, testPool)
+
+	for _, tc := range []struct {
+		name        string
+		agentOwner  string // cannot see the project when it is the outsider
+		chatOwner   string // the subscription's owner and the chat's creator
+		checkAnchor bool
+	}{
+		{name: "agent owner cannot see the project", agentOwner: outsider, chatOwner: testUserID, checkAnchor: true},
+		{name: "chat owner cannot see the project", agentOwner: testUserID, chatOwner: outsider},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := dbfx.Agent(t, "router chat private agent", runtime, testutil.Cols{"owner_id": tc.agentOwner})
+			root := dbfx.Issue(t, "router chat private root", testutil.Cols{"project_id": private})
+			chat := dbfx.ChatSession(t, agent, testutil.Cols{"creator_id": tc.chatOwner})
+			types, _ := agentrouter.NormalizeEventTypes(nil)
+			sub, err := store.Create(ctx, agentrouter.CreateParams{
+				WorkspaceID: testWorkspaceID, AgentID: agent, OwnerUserID: tc.chatOwner,
+				ScopeType: agentrouter.ScopeIssueTree, ScopeID: root, EventTypes: types,
+				CreatedByType: "member", CreatedByID: tc.chatOwner,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cleanupRouterChat(t, sub.ID)
+			t.Cleanup(func() {
+				dbfx.Exec(t, `DELETE FROM chat_message WHERE chat_session_id = $1`, chat)
+				dbfx.Exec(t, `DELETE FROM agent_task_queue WHERE agent_id = $1`, agent)
+				dbfx.Exec(t, `DELETE FROM inbox_item WHERE workspace_id = $1 AND type = $2`, testWorkspaceID, agentrouter.InboxNoticeType)
+			})
+			system := agentrouter.Change{ActorType: "system"}
+			if _, err := store.Update(ctx, testWorkspaceID, sub.ID, agentrouter.UpdateParams{AnchorChatSessionID: &chat, Change: system}); err != nil {
+				t.Fatalf("bind chat: %v", err)
+			}
+			dbfx.Exec(t, `
+				INSERT INTO router_event (workspace_id, subscription_id, agent_id, event_key, kind, issue_id, source, occurred_at, created_at)
+				VALUES ($1, $2, $3, 'comment:router-chat-private', 'comment_created', $4, 'bus', now(), now() - interval '1 hour')`,
+				testWorkspaceID, sub.ID, agent, root)
+			d := agentrouter.NewDispatcher(store, agentrouter.TaskRuns{Tasks: testHandler.TaskService},
+				agentrouter.NewNotifier(store, agentrouter.InboxAdapter{Queries: db.New(testPool), Bus: testHandler.Bus}))
+			refused := func(carrier string) {
+				t.Helper()
+				if _, err := d.TickWorkspace(ctx, testWorkspaceID); err != nil {
+					t.Fatalf("%s dispatch: %v", carrier, err)
+				}
+				got, err := store.Get(ctx, testWorkspaceID, sub.ID)
+				if err != nil || got.PausedReason == nil || *got.PausedReason != agentrouter.PausedAgentUnavailable {
+					t.Fatalf("%s: subscription = %+v (%v), want dispatch paused", carrier, got.PausedReason, err)
+				}
+				var tasks, messages int
+				if err := testPool.QueryRow(ctx, `
+					SELECT (SELECT count(*) FROM agent_task_queue WHERE agent_id = $1),
+					       (SELECT count(*) FROM chat_message WHERE chat_session_id = $2)`, agent, chat).Scan(&tasks, &messages); err != nil {
+					t.Fatal(err)
+				}
+				if tasks != 0 || messages != 0 {
+					t.Fatalf("%s: %d task(s), %d chat message(s) written, want none", carrier, tasks, messages)
+				}
+			}
+
+			if tc.checkAnchor {
+				refused("anchor run")
+				if _, err := store.Resume(ctx, testWorkspaceID, sub.ID, system); err != nil {
+					t.Fatal(err)
+				}
+			}
+			d.Chat = true
+			refused("chat")
+
+			_, err = agentrouter.TaskRuns{Tasks: testHandler.TaskService}.EnqueueRouterChatRun(ctx, chat, agent, root, "[Router 事件批次 · 非 Owner 发言]\nprobe")
+			if !errors.Is(err, agentrouter.ErrRunRefused) || !strings.Contains(err.Error(), service.ErrProjectAccessDenied.Error()) {
+				t.Fatalf("direct enqueue err = %v, want ErrRunRefused for the private project", err)
+			}
+		})
 	}
 }
