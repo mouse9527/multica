@@ -1,0 +1,28 @@
+{
+  "name": "main: required checks",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["~DEFAULT_BRANCH"],
+      "exclude": []
+    }
+  },
+  "bypass_actors": [],
+  "rules": [
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          { "context": "backend", "integration_id": 15368 },
+          { "context": "frontend", "integration_id": 15368 },
+          { "context": "migrations-roundtrip", "integration_id": 15368 },
+          { "context": "backend-db-no-skip", "integration_id": 15368 },
+          { "context": "fork-ci-config", "integration_id": 15368 }
+        ]
+      }
+    }
+  ]
+}
