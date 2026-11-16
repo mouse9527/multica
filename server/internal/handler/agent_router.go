@@ -36,6 +36,7 @@ func (h *Handler) MountAgentRouter(r chi.Router) {
 	r.Delete("/subscriptions/{id}", h.DeleteRouterSubscription)
 	r.Get("/subscriptions/{id}/scope", h.GetRouterSubscriptionScope)
 	r.Get("/events", h.ListRouterEvents)
+	r.Get("/chats/current", h.GetCurrentRouterChat)
 	h.mountRouterDispatch(r)
 }
 
@@ -152,14 +153,21 @@ func (h *Handler) CreateRouterSubscription(w http.ResponseWriter, r *http.Reques
 	// authority of the member who started its current run, who must be able
 	// to manage that agent. The subscription is then that member's, and the
 	// acting agent is recorded as via.
+	//
+	// Binding a chat counts as acting for that chat's creator even when the
+	// agent subscribes itself (M-105): the run's originator must have started
+	// the chat, and the Router becomes theirs.
 	createdByType, createdByID, ownerUserID := actorType, actorID, userID
 	change := agentrouter.Change{ActorType: actorType, ActorID: actorID}
 	if actorType == "agent" {
 		auth := h.routerAgentAuthority(r, workspaceID)
 		change.AuthorizedBy = auth.userID
-		if uuidToString(agent.ID) != actorID {
+		if chatID != "" && !h.agentMayBindChat(w, r, auth, workspaceID, chatID) {
+			return
+		}
+		if uuidToString(agent.ID) != actorID || chatID != "" {
 			if !auth.canManageAgent(agent) {
-				writeError(w, http.StatusForbidden, "an agent can subscribe another agent only in a run started by a member who can manage that agent (its owner or a workspace admin)")
+				writeError(w, http.StatusForbidden, "an agent can subscribe another agent, or bind a chat, only in a run started by a member who can manage the agent (its owner or a workspace admin)")
 				return
 			}
 			createdByType, createdByID, ownerUserID = "member", auth.userID, auth.userID
@@ -247,10 +255,28 @@ func (h *Handler) ListRouterSubscriptions(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	chatID := strings.TrimSpace(r.URL.Query().Get("chat_session_id"))
+	if chatID != "" {
+		id, ok := parseUUIDOrBadRequest(w, chatID, "chat_session_id")
+		if !ok {
+			return
+		}
+		chatID = uuidToString(id)
+	}
 	subs, err := h.routerStore().List(r.Context(), workspaceID, agentID)
 	if err != nil {
 		h.routerFail(w, r, err)
 		return
+	}
+	if chatID != "" {
+		// One Router: the subscriptions bound to this chat (M-105).
+		bound := subs[:0]
+		for _, s := range subs {
+			if s.AnchorChatSessionID != nil && *s.AnchorChatSessionID == chatID {
+				bound = append(bound, s)
+			}
+		}
+		subs = bound
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"subscriptions": subs})
 }

@@ -32,7 +32,7 @@ func TestRouterCommandsAreRegistered(t *testing.T) {
 		{"router", "subscribe"}, {"router", "list"}, {"router", "get"}, {"router", "pause"},
 		{"router", "resume"}, {"router", "delete"}, {"router", "events"}, {"router", "scope"},
 		{"router", "update"}, {"router", "state", "get"}, {"router", "state", "set"},
-		{"router", "runs"}, {"router", "changes"}, {"notify", "owner"}, {"notify", "list"},
+		{"router", "runs"}, {"router", "changes"}, {"router", "release"}, {"notify", "owner"}, {"notify", "list"},
 	} {
 		cmd, _, err := rootCmd.Find(path)
 		if err != nil || cmd.Name() != path[len(path)-1] {
