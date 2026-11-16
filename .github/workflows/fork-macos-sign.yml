@@ -1,9 +1,9 @@
 # Fork-only workflow (not present upstream). Checks the macOS signing of fork
-# releases without the real key: runs the signing script's tests, then a
-# GoReleaser snapshot of .goreleaser.fork.yml signed with a throwaway
-# certificate, and verifies the darwin archives it produced. The real key is
-# only in the `release` environment used by release-fork.yml, which pull
-# requests and branch pushes cannot reach. See docs/fork-release.md.
+# releases without the real key: runs the tests of the signing and macOS
+# install scripts, then a GoReleaser snapshot of .goreleaser.fork.yml signed
+# with a throwaway certificate, and verifies the darwin archives it produced.
+# The real key is only in the `release` environment used by release-fork.yml,
+# which pull requests and branch pushes cannot reach. See docs/fork-release.md.
 name: macOS signing (fork)
 
 on:
@@ -14,6 +14,7 @@ on:
       - .github/workflows/fork-macos-sign.yml
       - scripts/fork-macos-sign*.sh
       - scripts/fork-install-rcodesign.sh
+      - scripts/fork-install-macos*.sh
   push:
     branches: [main]
     paths:
@@ -22,6 +23,7 @@ on:
       - .github/workflows/fork-macos-sign.yml
       - scripts/fork-macos-sign*.sh
       - scripts/fork-install-rcodesign.sh
+      - scripts/fork-install-macos*.sh
 
 permissions:
   contents: read
@@ -51,6 +53,9 @@ jobs:
 
       - name: Test macOS signing
         run: bash scripts/fork-macos-sign.test.sh
+
+      - name: Test installing a release on macOS
+        run: bash scripts/fork-install-macos.test.sh
 
       # Same PKCS#12 encryption as the real key (rcodesign reads only
       # PBE-SHA1-3DES); the pinned SHA-1 is overridden for this certificate.

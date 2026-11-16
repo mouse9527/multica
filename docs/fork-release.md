@@ -71,7 +71,7 @@ identifier "ai.multica.cli" and certificate leaf = H"<证书 SHA-1>"
 - 自签名证书，CN `multica-ci`，扩展用途只有 Code Signing，有效期 10 年。它不是 Apple 签发的，不做公证（notarization）；只解决「身份不变」，不解决 Gatekeeper。命令行下载的二进制没有隔离属性（quarantine），Gatekeeper 不拦。
 - 私钥只在 GitHub `release` Environment 的两个 Secret 里：`MACOS_SIGN_P12_BASE64`（PKCS#12，base64）和 `MACOS_SIGN_P12_PASSWORD`。生成时用管道直接产出 PKCS#12 写进 Secret，不落盘；只保留公开的证书。
 - PKCS#12 必须用 `PBE-SHA1-3DES` 加密（`-keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1`）：rcodesign 0.29 读不了 OpenSSL 3 默认的 AES 加密，会报密码错误。
-- 证书的 SHA-1 固定在 `scripts/fork-macos-sign.sh` 的 `PINNED_CERT_SHA1`。Secret 里换成别的证书，签名后的校验对不上，发布失败。
+- 证书的 SHA-1（`706a5367ebdf9a6deebae02d1301fe303e0287e7`，有效期到 2036-11-13）固定在 `scripts/fork-macos-sign.sh` 的 `PINNED_CERT_SHA1`。Secret 里换成别的证书，签名后的校验对不上，发布失败。
 - 换证书（泄露或到期）：生成新证书、替换两个 Secret、在 PR 里更新 `PINNED_CERT_SHA1`。新证书是新身份，所有机器会再弹一次窗。
 
 ### 签名怎么做
@@ -94,10 +94,24 @@ identifier "ai.multica.cli" and certificate leaf = H"<证书 SHA-1>"
 
 ### 本机过渡
 
-- 现在（第一个签名版本发布前）：本机 runner 的二进制用本机证书 `multica-local` 签名，靠本机的签名脚本 `bin/sign.sh`（在 runner 机器上，不在仓库里）。
-- 第一个签名版本发布后：本机只跑 CI 发布的二进制（第一次手动安装见下文，之后靠 daemon 自动更新）。证书从 `multica-local` 换成 `multica-ci`，DR 变了，**会再弹一次窗**；按意愿选「允许」或「不允许」后会被记住，以后升级不再弹。
-- `bin/sign.sh` 只留作应急（比如要在本机临时编译一个版本跑）。注意：本机编译、用 `multica-local` 签名的版本是**另一个身份**，切过去会按 `multica-local` 的授权走（没有记录就弹窗），切回 CI 版本也一样。尽量不要来回换。
-- 自动更新（`multica update` 和 daemon）下载的就是 Release 里签过名的包：校验 `checksums.txt`、解压出 `multica`、原样写入临时文件、改权限、改名覆盖，不改动二进制内容，签名和身份保持不变。daemon 在空闲时 re-exec 进新二进制，从那时起用新二进制的身份。
+- 现在（第一个签名版本发布前）：本机 runner 的二进制是本机编译、用本机证书 `multica-local` 签名的，靠本机的签名脚本 `bin/sign.sh`（在 runner 机器上，不在仓库里）。这些二进制都没有构建记录。
+- 第一个签名版本发布后，**本机只用 fork Release 里的 darwin 产物，不再在本机编译 multica**。证书从 `multica-local` 换成 `multica-ci`，DR 变了，**会再弹一次窗**；按意愿选「允许」或「不允许」后会被记住，以后升级不再弹。
+- **怎么拿二进制：由运维用 `scripts/fork-install-macos.sh` 下载并替换**，不用 daemon 自动更新。自动更新只校验 `checksums.txt`，不检查签名身份；这台机器上保持关闭（不设 `MULTICA_DAEMON_AUTO_UPDATE=true`）。
+
+  ```bash
+  # 在 fork main 的检出里运行；<target> 省略时取 PATH 上的 multica（解析软链）
+  bash scripts/fork-install-macos.sh v0.8.1-mouse.1 [<target>]
+  ```
+
+  脚本按顺序核对，任何一项不过都**不替换**，原二进制不动：
+  1. 包的 SHA-256 和 Release 的 `checksums.txt` 一致；
+  2. `codesign --verify --strict` 通过，`codesign -d -r-` 等于 `designated => identifier "ai.multica.cli" and certificate leaf = H"<CI 证书 SHA-1>"`（期望值来自 `scripts/fork-macos-sign.sh expected-requirement`，和发布时用的是同一个固定值）；
+  3. 二进制 `--version` 报告的版本等于 tag、提交是 tag 指向的提交；
+  4. 这个 tag、这个提交有一次成功的 Release (fork) 运行。
+
+  通过后原子替换，旧二进制留在 `<target>.prev`，并打印提交和 Release 运行链接：**每个版本都能对应到具体提交和 CI 运行记录**。daemon 在空闲时 re-exec 进新二进制（auto-reload），也可以在没有任务时手动 `multica daemon restart`。装回旧版本：同样的命令换成旧 tag，或把 `.prev` 移回去。
+- `bin/sign.sh` 只留作应急（比如必须在本机临时编译一个版本）。本机编译、用 `multica-local` 签名的版本是**另一个身份**：切过去按 `multica-local` 的授权走（没有记录就弹窗），切回 CI 版本也一样，而且它没有构建记录。不要来回换。
+- 自动更新（`multica update` 和 daemon）下载的也是 Release 里签过名的包：校验 `checksums.txt`、解压出 `multica`、原样写入临时文件、改权限、改名覆盖，不改动二进制内容，签名和身份保持不变。别的 runner 可以照常用它；只是它不额外核对签名身份。
 
 ## runner 怎么更新
 
