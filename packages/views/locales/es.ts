@@ -24,6 +24,8 @@ import esUsage from "./es/usage.json";
 import esUi from "./es/ui.json";
 import esSquads from "./es/squads.json";
 import esBilling from "./es/billing.json";
+// Modified by the mouse9527/multica fork (M-105): the Router namespace.
+import esRouter from "./es/router.json";
 
 const resources: LocaleResources = {
   common: esCommon,
@@ -51,6 +53,7 @@ const resources: LocaleResources = {
   ui: esUi,
   squads: esSquads,
   billing: esBilling,
+  router: esRouter,
 };
 
 export default resources;

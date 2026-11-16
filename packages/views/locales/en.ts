@@ -24,6 +24,8 @@ import enUsage from "./en/usage.json";
 import enUi from "./en/ui.json";
 import enSquads from "./en/squads.json";
 import enBilling from "./en/billing.json";
+// Modified by the mouse9527/multica fork (M-105): the Router namespace.
+import enRouter from "./en/router.json";
 
 const resources: LocaleResources = {
   common: enCommon,
@@ -51,6 +53,7 @@ const resources: LocaleResources = {
   ui: enUi,
   squads: enSquads,
   billing: enBilling,
+  router: enRouter,
 };
 
 export default resources;

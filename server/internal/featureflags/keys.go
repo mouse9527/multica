@@ -130,5 +130,8 @@ func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service
 	out[agentSkillTogglesCompat] = true
 	out[resourceLabelsCompat] = true
 	out[projectWorkflowsCompat] = true
+	// mouse9527/multica fork (M-105): the Router settings UI shows only when
+	// a chat binding would be accepted and used.
+	out[RouterChat] = RouterChatEnabled(ctx, flags)
 	return out
 }

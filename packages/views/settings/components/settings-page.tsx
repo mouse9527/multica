@@ -53,6 +53,8 @@ import { KeyboardShortcutsTab } from "./keyboard-shortcuts-tab";
 import { PluginsTab } from "./plugins-tab";
 import { McpTab } from "./mcp-tab";
 import { BillingTab } from "./billing-tab";
+// Modified by the mouse9527/multica fork (M-105): the Routers entry.
+import { useRouterSettingsTabs } from "../../router/use-router-settings-tabs";
 import {
   SETTINGS_ANCHOR_ATTR,
   SettingsHeaderContext,
@@ -136,6 +138,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
     false,
   );
   const appsAvailable = useComposioAvailable();
+  const routerTabs = useRouterSettingsTabs();
   const entry = (
     value: string,
     label: string,
@@ -178,6 +181,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
               <KeyboardShortcutsTab />,
             ),
             entry("tokens", t(($) => $.page.tabs.tokens), KeyRound, <TokensTab />),
+            ...routerTabs,
           ],
         },
       ],

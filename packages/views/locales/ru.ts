@@ -24,6 +24,8 @@ import ruUsage from "./ru/usage.json";
 import ruUi from "./ru/ui.json";
 import ruSquads from "./ru/squads.json";
 import ruBilling from "./ru/billing.json";
+// Modified by the mouse9527/multica fork (M-105): the Router namespace.
+import ruRouter from "./ru/router.json";
 
 const resources: LocaleResources = {
   common: ruCommon,
@@ -51,6 +53,7 @@ const resources: LocaleResources = {
   ui: ruUi,
   squads: ruSquads,
   billing: ruBilling,
+  router: ruRouter,
 };
 
 export default resources;
