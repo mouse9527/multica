@@ -165,9 +165,13 @@ func scanNotice(row pgx.Row) (Notice, error) {
 	return n, nil
 }
 
+// noSender stands in for the missing sender_id of system notices in the
+// dedupe index (migration 9013).
+const noSender = "00000000-0000-0000-0000-000000000000"
+
 // insertNotice writes a notice row through q, which may be a transaction. A
-// notice whose dedupe key already exists is not written again; the existing
-// row is returned with created false.
+// notice whose dedupe key the same sender already used for the same
+// recipient is not written again; that row is returned with created false.
 func insertNotice(ctx context.Context, q Querier, in NoticeInput) (Notice, bool, error) {
 	if err := in.Validate(); err != nil {
 		return Notice{}, false, err
@@ -183,7 +187,8 @@ func insertNotice(ctx context.Context, q Querier, in NoticeInput) (Notice, bool,
 		    sender_type, sender_id, source_subscription_id, source_task_id
 		) VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, NULLIF($7, ''),
 		          $8, NULLIF($9, '')::uuid, NULLIF($10, '')::uuid, NULLIF($11, '')::uuid)
-		ON CONFLICT (workspace_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
+		ON CONFLICT (workspace_id, sender_type, (COALESCE(sender_id, '`+noSender+`'::uuid)), recipient_user_id, dedupe_key)
+		    WHERE dedupe_key IS NOT NULL DO NOTHING
 		RETURNING `+noticeColumns,
 		in.WorkspaceID, in.RecipientUserID, in.Title, in.Body, refsJSON, in.Urgency, in.DedupeKey,
 		in.SenderType, in.SenderID, in.SourceSubscriptionID, in.SourceTaskID))
@@ -195,7 +200,10 @@ func insertNotice(ctx context.Context, q Querier, in NoticeInput) (Notice, bool,
 	}
 	n, err = scanNotice(q.QueryRow(ctx, `
 		SELECT `+noticeColumns+` FROM owner_notice
-		WHERE workspace_id = $1::uuid AND dedupe_key = $2`, in.WorkspaceID, in.DedupeKey))
+		WHERE workspace_id = $1::uuid AND dedupe_key = $2 AND sender_type = $3
+		  AND COALESCE(sender_id, '`+noSender+`'::uuid) = COALESCE(NULLIF($4, '')::uuid, '`+noSender+`'::uuid)
+		  AND recipient_user_id = $5::uuid`,
+		in.WorkspaceID, in.DedupeKey, in.SenderType, in.SenderID, in.RecipientUserID))
 	return n, false, err
 }
 

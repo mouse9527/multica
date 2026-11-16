@@ -26,7 +26,7 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 |---|---|
 | `router_dispatch` | 每次锚点运行一行：哪个订阅、哪个任务、带了几个事件；运行（连同系统重试）结束后记 `outcome` |
 | `router_subscription_change` | 订阅的审计记录：谁改的（`actor`）、凭谁的权限（`authorized_by_user_id`）、经哪个智能体的哪次运行代办（`via_agent_id`、`via_task_id`）；订阅删掉后保留 |
-| `owner_notice` | 「通知 Owner」：收件人、标题、正文、关联 issue、紧急程度、`dedupe_key`（工作区内唯一）、各渠道投递结果 `channel_states` |
+| `owner_notice` | 「通知 Owner」：收件人、标题、正文、关联 issue、紧急程度、`dedupe_key`（同一发送者、同一收件人内唯一）、各渠道投递结果 `channel_states` |
 
 回滚：按 9013→9004 的顺序执行 down（只回滚 S2 就到 9008 为止），表连同数据一起删除；上游表不受影响。
 
@@ -151,7 +151,7 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 
 - `multica notify owner` 写一行 `owner_notice`，再交给各渠道适配器；Router 只调用这一个原语，不知道渠道。
 - 收件人：带 `--subscription` 时是该订阅的 `owner_user_id`（没有时是智能体所有者），智能体只能用自己的订阅；不带时，智能体通知自己的所有者，成员通知自己。
-- `--dedupe-key` 在工作区内唯一，重复发送返回第一条（HTTP 200，`created=false`），不会再投递。智能体每小时最多发 30 条（429）。
+- `--dedupe-key` 只在同一发送者（成员、智能体或系统）发给同一收件人的通知之间去重：重复发送返回第一条（HTTP 200，`created=false`），不会再投递。别人用同一个键发的通知互不影响，也读不到。智能体每小时最多发 30 条（429）。
 - **适配器**（`agentrouter.Adapter`）：MVP 只有收件箱。投递前先把该渠道记为 `unknown` 再发送，发完写 `sent`、`failed` 或 `skipped`；**`unknown` 不自动重试**（发送不幂等）。派发在事务里写的暂停通知，提交后立即投递；进程在这之间退出的，下一轮派发补投。
 - **收件箱适配器**：写一条 `type=router_notice` 的收件箱条目，`severity` 为 `action_required`（`--urgency high`）或 `info`，issue 是第一个 `--ref`；走现有的收件箱资格检查（私有项目不可见的成员会得到 `skipped`）。这个类型不在通知分组里，不会被静音或专注模式过滤。前端把它当未知类型：列表和详情显示标题和正文，详情头部没有类型名称（本切片不改前端）。chat、IM 适配器只留接口。
 

@@ -189,6 +189,17 @@ func TestRouterStateAndNotices(t *testing.T) {
 	routerCall(t, asAgent(newRequest("POST", "/api/router/notices", map[string]any{
 		"subscription_id": id, "title": "Decide", "dedupe_key": "decide-" + id,
 	}), f.agentA, f.taskA)).Want(http.StatusOK)
+	// Another member reusing the key gets a notice of their own, not A's.
+	var theirs struct {
+		Notice  map[string]any `json:"notice"`
+		Created bool           `json:"created"`
+	}
+	routerCall(t, newRequestAs(f.member, "POST", "/api/router/notices", map[string]any{
+		"title": "Mine", "dedupe_key": "decide-" + id,
+	})).Want(http.StatusCreated).JSON(&theirs)
+	if !theirs.Created || theirs.Notice["id"] == sent.Notice["id"] || theirs.Notice["body"] != "" || theirs.Notice["recipient_user_id"] != f.member {
+		t.Fatalf("member reusing the key = %v", theirs)
+	}
 	routerCall(t, asAgent(newRequest("POST", "/api/router/notices", map[string]any{"title": ""}), f.agentA, f.taskA)).Want(http.StatusBadRequest)
 	routerCall(t, asAgent(newRequest("POST", "/api/router/notices", map[string]any{"title": "x", "urgency": "panic"}), f.agentA, f.taskA)).Want(http.StatusBadRequest)
 

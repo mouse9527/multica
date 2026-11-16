@@ -112,7 +112,7 @@ func init() {
 	notifyOwnerCmd.Flags().Bool("body-stdin", false, "Read details from stdin")
 	notifyOwnerCmd.Flags().StringArray("ref", nil, "Issue the notice is about (key or UUID; repeatable; the first opens from the inbox)")
 	notifyOwnerCmd.Flags().String("urgency", "normal", "normal, or high when the owner must act")
-	notifyOwnerCmd.Flags().String("dedupe-key", "", "Send at most once per key in the workspace")
+	notifyOwnerCmd.Flags().String("dedupe-key", "", "Send at most once per key, sender and recipient")
 	notifyOwnerCmd.Flags().String("subscription", "", "Send to this subscription's owner (ID or prefix)")
 	notifyOwnerCmd.Flags().String("output", "json", "Output format: table or json")
 

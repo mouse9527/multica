@@ -167,6 +167,59 @@ func TestOwnEventsAloneNeverDispatch(t *testing.T) {
 	}
 }
 
+// TestOwnEventsBacklogDoesNotHoldBackOthers: more of the agent's own events
+// than one batch takes, ahead of one event someone else caused, still give a
+// run, and every one of them is consumed with it.
+func TestOwnEventsBacklogDoesNotHoldBackOthers(t *testing.T) {
+	e, d, runs := newDispatchEnv(t)
+	root := e.issue("router root")
+	sub := e.subscribe(e.agentA, ScopeIssueTree, root)
+	for range maxBatchEvents + 50 {
+		e.publishComment(e.comment(root, testutil.Cols{"author_type": "agent", "author_id": e.agentA}))
+	}
+	e.publishComment(e.comment(root))
+	e.age(sub.ID)
+	e.tick(d)
+	if len(runs.calls) != 1 {
+		t.Fatalf("runs = %d, want 1: own events held the batch back", len(runs.calls))
+	}
+	if p := e.pending(sub.ID); len(p) != 0 {
+		t.Fatalf("pending after dispatch = %d, want 0", len(p))
+	}
+	if !strings.Contains(runs.calls[0].note, "1 new event(s)") {
+		t.Fatalf("note:\n%s", runs.calls[0].note)
+	}
+}
+
+// TestFullBatchLeavesLaterEventsForTheNext: a batch cut at the limit takes
+// the oldest events others caused and the own events before the last of
+// them; everything after waits for the next batch.
+func TestFullBatchLeavesLaterEventsForTheNext(t *testing.T) {
+	e, d, runs := newDispatchEnv(t)
+	root := e.issue("router root")
+	sub := e.subscribe(e.agentA, ScopeIssueTree, root)
+	e.publishComment(e.comment(root, testutil.Cols{"author_type": "agent", "author_id": e.agentA}))
+	for range maxBatchEvents + 1 {
+		e.publishComment(e.comment(root))
+	}
+	e.publishComment(e.comment(root, testutil.Cols{"author_type": "agent", "author_id": e.agentA}))
+	e.age(sub.ID)
+	e.tick(d)
+	if len(runs.calls) != 1 {
+		t.Fatalf("runs = %d, want 1", len(runs.calls))
+	}
+	p := e.pending(sub.ID)
+	self := 0
+	for _, ev := range p {
+		if ev.Self {
+			self++
+		}
+	}
+	if len(p) != 2 || self != 1 {
+		t.Fatalf("pending = %d (%d own), want the last outside event and the own one after it", len(p), self)
+	}
+}
+
 func TestFailedRunHandsTheBatchBack(t *testing.T) {
 	e, d, runs := newDispatchEnv(t)
 	root := e.issue("router root")
@@ -372,11 +425,38 @@ func TestNoticeDedupeAndDelivery(t *testing.T) {
 	if err != nil || created || again.ID != n.ID {
 		t.Fatalf("resend = %s created %v (%v), want the first notice", again.ID, created, err)
 	}
+	// The same key from another sender, or to another recipient, is a new
+	// notice and reveals nothing of the first.
+	other := e.fx.User(t, "router other", "router-other-"+e.ws[:8]+"@example.com")
+	e.fx.Member(t, e.ws, other, "member")
+	for name, in2 := range map[string]NoticeInput{
+		"another agent":               {SenderType: "agent", SenderID: e.agentB, RecipientUserID: e.user},
+		"a member":                    {SenderType: "member", SenderID: other, RecipientUserID: other},
+		"the system":                  {SenderType: "system", RecipientUserID: e.user},
+		"same agent, other recipient": {SenderType: "agent", SenderID: e.agentA, RecipientUserID: other},
+	} {
+		in2.WorkspaceID, in2.Title, in2.DedupeKey = e.ws, "Mine", in.DedupeKey
+		got, created, err := d.Notices.Send(e.ctx, in2)
+		if err != nil || !created || got.ID == n.ID || got.Body != "" {
+			t.Fatalf("%s reusing the key = %+v created %v (%v), want a new notice of its own", name, got, created, err)
+		}
+	}
+	// A system notice's key is taken only by the system.
+	sys := NoticeInput{WorkspaceID: e.ws, RecipientUserID: e.user, Title: "paused", DedupeKey: "router_paused:x", SenderType: "system"}
+	squat := sys
+	squat.SenderType, squat.SenderID = "agent", e.agentB
+	if _, created, err := d.Notices.Send(e.ctx, squat); err != nil || !created {
+		t.Fatal(err)
+	}
+	if _, created, err := d.Notices.Send(e.ctx, sys); err != nil || !created {
+		t.Fatalf("system notice suppressed by another sender's key: created %v (%v)", created, err)
+	}
+
 	var items int
 	var severity, issueID string
 	if err := pool.QueryRow(e.ctx, `
 		SELECT count(*), min(severity), min(issue_id::text) FROM inbox_item
-		WHERE workspace_id = $1 AND type = $2`, e.ws, InboxNoticeType).Scan(&items, &severity, &issueID); err != nil {
+		WHERE workspace_id = $1 AND type = $2 AND title = $3`, e.ws, InboxNoticeType, in.Title).Scan(&items, &severity, &issueID); err != nil {
 		t.Fatal(err)
 	}
 	if items != 1 || severity != "action_required" || issueID != root {

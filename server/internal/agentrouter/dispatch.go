@@ -458,27 +458,27 @@ type batchEvent struct {
 	OccurredAt time.Time
 }
 
-type batch struct{ events []batchEvent }
-
-func (b batch) hasOthers() bool {
-	for _, e := range b.events {
-		if !e.Self {
-			return true
-		}
-	}
-	return false
+// batch is what one run takes: up to maxBatchEvents events others caused,
+// and the agent's own pending events, which are consumed with the batch but
+// never shown.
+type batch struct {
+	events  []batchEvent
+	selfIDs []string
 }
 
+func (b batch) hasOthers() bool { return len(b.events) > 0 }
+
 func (b batch) ids() []string {
-	out := make([]string, 0, len(b.events))
+	out := make([]string, 0, len(b.events)+len(b.selfIDs))
 	for _, e := range b.events {
 		out = append(out, e.ID)
 	}
-	return out
+	return append(out, b.selfIDs...)
 }
 
-// loadBatch reads the subscription's pending events, oldest first, self
-// events included so they are consumed with the batch.
+// loadBatch reads the subscription's pending events. The limit applies to
+// events others caused only, so any number of the agent's own events ahead
+// of them cannot hold a batch back.
 func loadBatch(ctx context.Context, q Querier, subscriptionID string) (batch, error) {
 	rows, err := q.Query(ctx, `
 		SELECT e.id::text, e.kind, COALESCE(w.issue_prefix || '-' || i.number, ''), COALESCE(i.title, ''),
@@ -488,7 +488,7 @@ func loadBatch(ctx context.Context, q Querier, subscriptionID string) (batch, er
 		LEFT JOIN workspace w ON w.id = i.workspace_id
 		LEFT JOIN agent a ON e.actor_type = 'agent' AND a.id = e.actor_id
 		LEFT JOIN "user" u ON e.actor_type = 'member' AND u.id = e.actor_id
-		WHERE e.subscription_id = $1::uuid AND e.consumed_task_id IS NULL
+		WHERE e.subscription_id = $1::uuid AND e.consumed_task_id IS NULL AND NOT e.is_self
 		ORDER BY e.created_at, e.id
 		LIMIT $2`, subscriptionID, maxBatchEvents)
 	if err != nil {
@@ -499,7 +499,25 @@ func loadBatch(ctx context.Context, q Querier, subscriptionID string) (batch, er
 		err := r.Scan(&e.ID, &e.Kind, &e.IssueKey, &e.IssueTitle, &e.ActorType, &e.ActorName, &e.Self, &e.Payload, &e.OccurredAt)
 		return e, err
 	})
-	return batch{events: evs}, err
+	if err != nil || len(evs) == 0 {
+		return batch{events: evs}, err
+	}
+	// A batch cut at the limit takes own events only up to its last event;
+	// the rest go with the next batch.
+	last := ""
+	if len(evs) == maxBatchEvents {
+		last = evs[len(evs)-1].ID
+	}
+	rows, err = q.Query(ctx, `
+		SELECT e.id::text FROM router_event e
+		WHERE e.subscription_id = $1::uuid AND e.consumed_task_id IS NULL AND e.is_self
+		  AND ($2 = '' OR (e.created_at, e.id) <= (
+		      SELECT l.created_at, l.id FROM router_event l WHERE l.id = NULLIF($2, '')::uuid))`, subscriptionID, last)
+	if err != nil {
+		return batch{}, err
+	}
+	self, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	return batch{events: evs, selfIDs: self}, err
 }
 
 // inFlightIssue is one open issue in scope as the note shows it.
