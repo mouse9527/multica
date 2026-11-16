@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and Router v6 slice 1 (M-96).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and Router v6 slices 1 (M-96) and 2 (M-97).
 //
 // HTTP surface of Router dispatch: subscription updates, state, the audit
 // trail, anchor runs and owner notices. Like agent_router.go it only adapts
@@ -33,6 +33,7 @@ func (h *Handler) mountRouterDispatch(r chi.Router) {
 		r.Put("/subscriptions/{id}/state", h.SetRouterState)
 		r.Post("/notices", h.CreateOwnerNotice)
 		r.Get("/notices", h.ListOwnerNotices)
+		r.Get("/holds", h.ListRouterHolds)
 	})
 }
 

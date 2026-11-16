@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and Router v6 slice 1 (M-96).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and Router v6 slices 1 (M-96) and 2 (M-97).
 
 package agentrouter
 
@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -62,6 +63,12 @@ type Dispatcher struct {
 	// Chat sends a chat-bound subscription's batches to its chat (the
 	// router_chat feature). Off, every subscription gets anchor runs.
 	Chat bool
+	// HoldShadow lists, in each chat batch, the inbox items the hold would
+	// have taken since the last batch, and prunes old shadow rows (the
+	// router_hold_shadow feature, hold.go).
+	HoldShadow bool
+
+	lastPrune atomic.Int64
 }
 
 func NewDispatcher(store *Store, runs RunEnqueuer, notices *Notifier) *Dispatcher {
@@ -99,6 +106,9 @@ func (d *Dispatcher) TickWorkspace(ctx context.Context, workspaceID string) (Dis
 			d.Logger.Warn("router: deliver pending notices failed", "error", err)
 		}
 	}
+	if d.HoldShadow {
+		d.pruneHolds(ctx)
+	}
 	if d.Chat {
 		n, err := d.pauseUnusableChats(ctx, workspaceID)
 		res.Paused += n
@@ -132,6 +142,20 @@ func (d *Dispatcher) TickWorkspace(ctx context.Context, workspaceID string) (Dis
 		}
 	}
 	return res, errors.Join(errs...)
+}
+
+// pruneHolds deletes old shadow rows, at most once an hour per process.
+func (d *Dispatcher) pruneHolds(ctx context.Context) {
+	last := d.lastPrune.Load()
+	now := time.Now().Unix()
+	if now-last < int64(time.Hour/time.Second) || !d.lastPrune.CompareAndSwap(last, now) {
+		return
+	}
+	if n, err := pruneShadowHolds(ctx, d.Store.DB); err != nil {
+		d.Logger.Warn("router: pruning shadow holds failed", "error", err)
+	} else if n > 0 {
+		d.Logger.Info("router: pruned shadow holds", "rows", n)
+	}
 }
 
 // settle closes open dispatch rows whose run, followed through its system
@@ -211,6 +235,10 @@ func (d *Dispatcher) settleOne(ctx context.Context, dispatchID string, completed
 			return 0, false, err
 		}
 		released = int(tag.RowsAffected())
+		// The hold rows the failed batch listed are listed again.
+		if _, err := tx.Exec(ctx, `UPDATE router_hold SET dispatch_task_id = NULL WHERE dispatch_task_id = $1::uuid`, taskID); err != nil {
+			return 0, false, err
+		}
 	}
 	return released, true, tx.Commit(ctx)
 }
@@ -374,9 +402,17 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 			return outcomeWaiting, "", err
 		}
 	}
+	var shadow []shadowHold
+	shadowTotal := 0
+	if chatID != "" && d.HoldShadow {
+		if shadow, shadowTotal, err = loadShadowHolds(ctx, tx, sub.ID); err != nil {
+			return outcomeWaiting, "", err
+		}
+	}
 	note := buildNote(noteInput{
 		sub: sub, anchorKey: anchorKey, scopeLabel: scopeLabel(ctx, tx, sub),
 		batch: batch, inflight: inflight, inflightTotal: total, now: time.Now(), chat: chatID != "",
+		shadow: shadow, shadowTotal: shadowTotal,
 	})
 
 	var taskID string
@@ -408,6 +444,17 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 		UPDATE router_event SET consumed_task_id = $2::uuid
 		WHERE id = ANY($1::uuid[]) AND consumed_task_id IS NULL`, batch.ids(), taskID); err != nil {
 		return outcomeWaiting, "", err
+	}
+	if len(shadow) > 0 {
+		ids := make([]string, len(shadow))
+		for i, x := range shadow {
+			ids[i] = x.ID
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE router_hold SET dispatch_task_id = $2::uuid
+			WHERE id = ANY($1::uuid[]) AND dispatch_task_id IS NULL`, ids, taskID); err != nil {
+			return outcomeWaiting, "", err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return outcomeWaiting, "", err
@@ -622,11 +669,16 @@ type noteInput struct {
 	now           time.Time
 	// chat: the note is written into the subscription's chat (M-96).
 	chat bool
+	// shadow lists the inbox items the hold would have taken (M-97), of
+	// shadowTotal not yet listed.
+	shadow      []shadowHold
+	shadowTotal int
 }
 
 const (
 	maxNoteEventsBytes   = 6 * 1024
 	maxNoteInFlightBytes = 6 * 1024
+	maxNoteShadowBytes   = 3 * 1024
 	maxNoteTitle         = 80
 )
 
@@ -676,6 +728,8 @@ func buildNote(in noteInput) string {
 		fmt.Fprintf(&b, "- ... %d more: `multica router events --subscription %s --state pending --output json`\n", others-shown, id)
 	}
 
+	writeShadowHolds(&b, in)
+
 	fmt.Fprintf(&b, "\nOpen issues in scope (%d of %d, most recently updated first):\n", len(in.inflight), in.inflightTotal)
 	size = 0
 	listed := 0
@@ -709,6 +763,41 @@ func buildNote(in noteInput) string {
 		}
 	}
 	return b.String()
+}
+
+// writeShadowHolds lists the inbox items the hold would have taken. They are
+// in the owner's inbox already: the list shows the Router what the hold will
+// bring it, and asks for nothing.
+func writeShadowHolds(b *strings.Builder, in noteInput) {
+	if len(in.shadow) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "\nHold preview (shadow mode, nothing to do): %d inbox item(s) for the owner in this scope since the last batch. "+
+		"They went to the owner's inbox as usual; once the hold is on, items like these will come to you first:\n", in.shadowTotal)
+	size, shown := 0, 0
+	for _, x := range in.shadow {
+		line := "- " + x.CreatedAt.UTC().Format(time.RFC3339) + " " + x.IssueKey + " " + x.ItemType
+		if x.ActorType != nil {
+			line += " by " + *x.ActorType
+			if x.ActorName != "" {
+				line += " " + x.ActorName
+			}
+		}
+		line += ": " + truncate(x.Title, maxNoteTitle)
+		if !x.InInbox {
+			line += " (not in the inbox)"
+		}
+		line += "\n"
+		if size+len(line) > maxNoteShadowBytes {
+			break
+		}
+		b.WriteString(line)
+		size += len(line)
+		shown++
+	}
+	if shown < in.shadowTotal {
+		fmt.Fprintf(b, "- ... %d more: `multica router holds --subscription %s`\n", in.shadowTotal-shown, in.sub.ID)
+	}
 }
 
 func eventLine(e batchEvent) string {

@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S1 (M-85).
+// Modified for the mouse9527/multica fork: Router MVP, slice S1 (M-85), and Router v6 slice 2 (M-97).
 
 package agentrouter
 
@@ -36,36 +36,19 @@ func (s scopeSub) wants(kind string) bool {
 // unusual data shape can produce, go to the earliest subscription. The SQL in
 // membersCTE implements the same rule for reconcile; keep them in step.
 func pickNarrowest(subs []scopeSub, chain []string, projectID string) []scopeSub {
-	depth := make(map[string]int, len(chain))
-	for i, id := range chain {
-		if _, seen := depth[id]; !seen {
-			depth[id] = i
-		}
-	}
+	depth := chainDepths(chain)
 	type ranked struct {
 		sub  scopeSub
 		rank int
 	}
 	best := map[string]ranked{}
 	for _, s := range subs {
-		rank := -1
-		switch s.ScopeType {
-		case ScopeIssueTree:
-			if d, ok := depth[s.ScopeID]; ok {
-				rank = d
-			}
-		case ScopeProject:
-			if projectID != "" && s.ScopeID == projectID {
-				rank = projectRank
-			}
-		}
+		rank := scopeRank(s, depth, projectID)
 		if rank < 0 {
 			continue
 		}
 		cur, ok := best[s.AgentID]
-		if !ok || rank < cur.rank ||
-			(rank == cur.rank && (s.CreatedAt.Before(cur.sub.CreatedAt) ||
-				(s.CreatedAt.Equal(cur.sub.CreatedAt) && s.ID < cur.sub.ID))) {
+		if !ok || narrower(s, rank, cur.sub, cur.rank) {
 			best[s.AgentID] = ranked{sub: s, rank: rank}
 		}
 	}
@@ -75,4 +58,39 @@ func pickNarrowest(subs []scopeSub, chain []string, projectID string) []scopeSub
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// chainDepths maps each issue of an ancestor chain to its distance from the
+// issue, nearest first.
+func chainDepths(chain []string) map[string]int {
+	depth := make(map[string]int, len(chain))
+	for i, id := range chain {
+		if _, seen := depth[id]; !seen {
+			depth[id] = i
+		}
+	}
+	return depth
+}
+
+// scopeRank is how narrowly s covers an issue: the depth of its root in the
+// issue's chain, projectRank for its project, or -1 when s does not cover it.
+func scopeRank(s scopeSub, depth map[string]int, projectID string) int {
+	switch s.ScopeType {
+	case ScopeIssueTree:
+		if d, ok := depth[s.ScopeID]; ok {
+			return d
+		}
+	case ScopeProject:
+		if projectID != "" && s.ScopeID == projectID {
+			return projectRank
+		}
+	}
+	return -1
+}
+
+// narrower reports whether a (with rank ra) beats b (with rank rb): the lower
+// rank, then the earlier subscription.
+func narrower(a scopeSub, ra int, b scopeSub, rb int) bool {
+	return ra < rb || (ra == rb && (a.CreatedAt.Before(b.CreatedAt) ||
+		(a.CreatedAt.Equal(b.CreatedAt) && a.ID < b.ID)))
 }
