@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router v6 slice 1 (M-96).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slice 1 (M-96), and Router parallelism (M-104).
 
 // Package agentrouter captures issue events for agents that subscribe to an
 // issue tree or a project (the "Router" of the fork's Super-agent design), and
@@ -7,9 +7,11 @@
 // Slice S1 captures: a subscription, a durable event queue, an in-process
 // events.Bus listener and a periodic reconcile that adds whatever the listener
 // missed. Slice S2 dispatches: it batches a subscription's pending events,
-// starts one anchor run per batch (one run at a time per agent), keeps a small
-// state document per subscription, and gives the agent one outlet to reach a
-// member, the owner notice, delivered by channel adapters (inbox only).
+// starts one anchor run per batch (one run at a time per Router: a
+// subscription, or the chat it is bound to; an agent's Routers run in
+// parallel), keeps a small state document per subscription, and gives the
+// agent one outlet to reach a member, the owner notice, delivered by channel
+// adapters (inbox only).
 // Router v6 slice 1 lets a subscription be bound to a chat session: its
 // batches are then written into that chat and answered there (chat.go).
 //
