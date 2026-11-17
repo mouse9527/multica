@@ -395,3 +395,113 @@ func TestRegisterInboxResolveFollowsTheFlag(t *testing.T) {
 		t.Fatalf("registered without router_v1: jobs = %v", jobs.names)
 	}
 }
+
+// handoff records a workflow handoff the way the upstream activity listener
+// writes it: one status row carrying the new assignee as handoff_*, and no
+// assignee row.
+func (e *inboxEnv) handoff(issueID, from, to, toType, toID string, ago time.Duration) {
+	e.t.Helper()
+	e.activity(issueID, "status_changed", fmt.Sprintf(
+		`{"from":%q,"to":%q,"handoff_workflow":"Delivery","handoff_to_type":%q,"handoff_to_id":%q,"handoff_run":"true"}`,
+		from, to, toType, toID), ago)
+}
+
+// TestInboxResolveReconcileFollowsWorkflowHandoffs: a handoff that takes an
+// issue away from the owner outside a waiting status is a leave, though its
+// activity row does not name the previous assignee.
+func TestInboxResolveReconcileFollowsWorkflowHandoffs(t *testing.T) {
+	e := newInboxEnv(t)
+	afterOwner := func(title string) string {
+		return e.issue(title, testutil.Cols{"status": "in_progress", "assignee_type": "agent", "assignee_id": e.agentA})
+	}
+
+	// Assigned to the owner by an assignee change, then handed off.
+	chained := afterOwner("assigned, then handed off")
+	e.activity(chained, "assignee_changed", fmt.Sprintf(`{"to_type":"member","to_id":%q}`, e.user), 2*time.Hour)
+	chainedItem := e.item(e.user, chained, time.Hour)
+	e.handoff(chained, "todo", "in_progress", "agent", e.agentA, 30*time.Minute)
+
+	// Assigned to the owner by an earlier handoff, then handed off again.
+	handedTwice := afterOwner("handed to the owner, then away")
+	e.handoff(handedTwice, "backlog", "todo", "member", e.user, 2*time.Hour)
+	handedTwiceItem := e.item(e.user, handedTwice, time.Hour)
+	e.handoff(handedTwice, "todo", "in_progress", "agent", e.agentA, 30*time.Minute)
+
+	// Created assigned to the owner (the issue_assigned item shows it), then
+	// handed off before any other assignment.
+	created := afterOwner("created for the owner")
+	assignedItem := e.fx.Insert(t, "inbox_item", testutil.Cols{
+		"workspace_id": e.ws, "recipient_type": "member", "recipient_id": e.user, "type": "issue_assigned",
+		"severity": "action_required", "title": "assigned", "issue_id": created,
+		"created_at": testutil.Raw("now() - interval '2 hours'"),
+	})
+	createdItem := e.item(e.user, created, time.Hour)
+	e.handoff(created, "todo", "in_progress", "agent", e.agentA, 30*time.Minute)
+
+	// Someone else's issue handed between agents: the owner's mention stays.
+	others := afterOwner("between agents")
+	e.activity(others, "assignee_changed", fmt.Sprintf(`{"to_type":"agent","to_id":%q}`, e.agentB), 2*time.Hour)
+	othersItem := e.item(e.user, others, time.Hour)
+	e.handoff(others, "todo", "in_progress", "agent", e.agentA, 30*time.Minute)
+
+	// Unassigned before the handoff: the owner was no longer the assignee.
+	dropped := afterOwner("owner dropped earlier")
+	e.activity(dropped, "assignee_changed", fmt.Sprintf(`{"to_type":"member","to_id":%q}`, e.user), 3*time.Hour)
+	droppedItem := e.item(e.user, dropped, 10*time.Minute)
+	e.activity(dropped, "assignee_changed", fmt.Sprintf(`{"from_type":"member","from_id":%q}`, e.user), 2*time.Hour)
+	e.handoff(dropped, "todo", "in_progress", "agent", e.agentA, 5*time.Minute)
+
+	res, err := e.resolver.ReconcileWorkspace(e.ctx, e.ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.assertArchived("handed off away from the owner", true, chainedItem, handedTwiceItem, assignedItem, createdItem)
+	e.assertArchived("never the owner's", false, othersItem, droppedItem)
+	if res.Archived != 4 || res.ArchivedIssues != 3 {
+		t.Fatalf("reconcile = %+v", res)
+	}
+}
+
+func TestInboxResolveListenerArchivesWhenTheOwnersIssueCloses(t *testing.T) {
+	e := newInboxEnv(t)
+	closed := e.issue("closed", testutil.Cols{"status": "todo", "assignee_type": "member", "assignee_id": e.user})
+	moved := e.issue("moved on", testutil.Cols{"status": "todo", "assignee_type": "member", "assignee_id": e.user})
+	closedItem, movedItem := e.item(e.user, closed, 0), e.item(e.user, moved, 0)
+
+	e.setStatus(closed, "done")
+	e.update(closed, map[string]any{"status_changed": true, "prev_status": "todo"})
+	e.setStatus(moved, "in_progress")
+	e.update(moved, map[string]any{"status_changed": true, "prev_status": "todo"})
+
+	e.assertArchived("the owner's issue closed", true, closedItem)
+	e.assertArchived("the owner's issue still open", false, movedItem)
+	if st := e.resolver.Stats(); st.Archived[ArchiveReasonLeftStatus] != 1 || st.StillWaiting != 1 {
+		t.Fatalf("stats = %+v", st)
+	}
+}
+
+// TestInboxResolveReconcileFollowsClosingAndDuplicates: closing an issue
+// assigned to the owner, and a duplicate mark, whose activity row replaces the
+// status row and names no previous status, both end the wait.
+func TestInboxResolveReconcileFollowsClosingAndDuplicates(t *testing.T) {
+	e := newInboxEnv(t)
+	closed := e.issue("closed", testutil.Cols{"status": "done", "assignee_type": "member", "assignee_id": e.user})
+	closedItem := e.item(e.user, closed, time.Hour)
+	e.activity(closed, "status_changed", `{"from":"todo","to":"done"}`, 30*time.Minute)
+
+	dup := e.issue("duplicate", testutil.Cols{"status": "cancelled"})
+	e.activity(dup, "status_changed", `{"from":"todo","to":"started_2"}`, 2*time.Hour)
+	dupItem := e.item(e.user, dup, time.Hour)
+	e.activity(dup, "duplicate_marked", `{"original_id":"x","original_identifier":"RT-1"}`, 30*time.Minute)
+
+	reopened := e.issue("closed, then the owner's", testutil.Cols{"status": "done", "assignee_type": "member", "assignee_id": e.user})
+	e.activity(reopened, "status_changed", `{"from":"in_progress","to":"done"}`, 2*time.Hour)
+	reopenedItem := e.item(e.user, reopened, time.Hour)
+	e.activity(reopened, "title_changed", `{}`, 30*time.Minute)
+
+	if _, err := e.resolver.ReconcileWorkspace(e.ctx, e.ws); err != nil {
+		t.Fatal(err)
+	}
+	e.assertArchived("waited after the item, now closed", true, closedItem, dupItem)
+	e.assertArchived("closed before the item", false, reopenedItem)
+}

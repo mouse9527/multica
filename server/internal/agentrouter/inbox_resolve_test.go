@@ -48,15 +48,17 @@ func TestIssueUpdateLeaveReason(t *testing.T) {
 		u    issueUpdate
 		want string
 	}{
-		"left the waiting status":      {update("todo", true, "started_2", nil, nil, nil, nil), ArchiveReasonLeftStatus},
-		"entered the waiting status":   {update("started_2", true, "todo", nil, nil, nil, nil), ""},
-		"between other statuses":       {update("in_review", true, "in_progress", nil, nil, nil, nil), ""},
-		"status flag off":              {update("todo", false, "started_2", nil, nil, nil, nil), ""},
-		"unassigned from the owner":    {update("todo", false, "", &agent, &other, &member, &owner), ArchiveReasonUnassigned},
-		"cleared from the owner":       {update("todo", false, "", nil, nil, &member, &owner), ArchiveReasonUnassigned},
-		"from another member":          {update("todo", false, "", &agent, &other, &member, &other), ""},
-		"from an agent with owner id":  {update("todo", false, "", nil, nil, &agent, &owner), ""},
-		"assigned to the owner (gain)": {update("todo", false, "", &member, &owner, &agent, &other), ""},
+		"left the waiting status":        {update("todo", true, "started_2", nil, nil, nil, nil), ArchiveReasonLeftStatus},
+		"entered the waiting status":     {update("started_2", true, "todo", nil, nil, nil, nil), ""},
+		"between other statuses":         {update("in_review", true, "in_progress", nil, nil, nil, nil), ""},
+		"status flag off":                {update("todo", false, "started_2", nil, nil, nil, nil), ""},
+		"unassigned from the owner":      {update("todo", false, "", &agent, &other, &member, &owner), ArchiveReasonUnassigned},
+		"cleared from the owner":         {update("todo", false, "", nil, nil, &member, &owner), ArchiveReasonUnassigned},
+		"from another member":            {update("todo", false, "", &agent, &other, &member, &other), ""},
+		"from an agent with owner id":    {update("todo", false, "", nil, nil, &agent, &owner), ""},
+		"assigned to the owner (gain)":   {update("todo", false, "", &member, &owner, &agent, &other), ""},
+		"moved while the owner's":        {update("done", true, "todo", &member, &owner, nil, nil), ArchiveReasonLeftStatus},
+		"into waiting while the owner's": {update("started_2", true, "todo", &member, &owner, nil, nil), ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := tc.u.leaveReason(cfg); got != tc.want {

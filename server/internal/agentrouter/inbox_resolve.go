@@ -27,15 +27,15 @@ import (
 // waits for them (S3a of the M-117 design). An issue waits for the owner while
 // it sits in one of the configured waiting statuses, is assigned to them and
 // open, or is open with its latest task failed. When an issue stops waiting —
-// it leaves a waiting status, or is no longer assigned to the owner — the
-// owner's unarchived inbox items on it are archived. It never holds back,
-// delays or writes an inbox item.
+// it leaves a waiting status, is no longer assigned to the owner, or is
+// closed while assigned to them — the owner's unarchived inbox items on it
+// are archived. It never holds back, delays or writes an inbox item.
 //
 // Two paths do the archiving. An events.Bus listener acts on issue:updated
 // right after the change. A periodic reconcile archives what the listener
-// missed: an owner item on an issue that no longer waits, written before the
-// issue last left the wait (activity_log is the record of that), and counts
-// the waiting issues that have no owner item without writing one.
+// missed: an owner item on an issue that no longer waits but waited at some
+// point after the item was written (activity_log is the record of that), and
+// counts the waiting issues that have no owner item without writing one.
 //
 // It is behind the router_inbox_resolve feature flag (with router_v1), and
 // only acts in workspaces whose settings name an owner under
@@ -184,19 +184,84 @@ const (
 	    WHERE last_task.status = 'failed')`
 	// inboxWaitingSQL is "the issue waits for the owner".
 	inboxWaitingSQL = `(` + inboxStatusSQL + ` OR (NOT ` + inboxClosedSQL + ` AND (` + inboxAssignedSQL + ` OR ` + inboxFailedSQL + `)))`
-	// inboxLeaveSQL is "activity row a took the issue out of the wait": out of
-	// a waiting status, or away from the owner as assignee.
-	inboxLeaveSQL = `((a.action = 'status_changed' AND a.details->>'from' = ANY($3::text[])
-	        AND NOT (COALESCE(a.details->>'to', '') = ANY($3::text[])))
-	    OR (a.action = 'assignee_changed' AND a.details->>'from_type' = 'member' AND a.details->>'from_id' = $2::uuid::text))`
-	// inboxLeftAfterItemSQL is "issue i left the wait after inbox item ii
-	// was written", with $4 the slack and $5 the grace in seconds.
+	// The reconcile asks whether an issue waited for the owner at some point
+	// after an inbox item arrived. Waiting is a state, and activity_log records
+	// the changes to it: status rows (status_changed, which a workflow handoff
+	// also writes, and duplicate_marked / duplicate_unmarked, which stand in
+	// for it when a duplicate mark moves the status) and assignment rows
+	// (assignee_changed, and a handoff's status row, which carries the new
+	// assignee as handoff_to_* and no assignee row). Every state the issue was
+	// in after the item is the state just before one of the change rows that
+	// follow it, or the current state; so the issue left a wait after the item
+	// if it does not wait now and waited just before one of those rows.
+	inboxStatusRowSQL     = `p.action IN ('status_changed', 'duplicate_marked', 'duplicate_unmarked')`
+	inboxAssignmentRowSQL = `(p.action = 'assignee_changed' OR (p.action = 'status_changed' AND p.details ? 'handoff_to_type'))`
+	inboxBeforeASQL       = `p.issue_id = a.issue_id AND (p.created_at, p.id) < (a.created_at, a.id)`
+	inboxFromASQL         = `p.issue_id = a.issue_id AND (p.created_at, p.id) >= (a.created_at, a.id)`
+	// inboxStateBeforeSQL joins, for change row a: sb, the status the last
+	// status row before a set; sa, the first status row from a on, whose
+	// "from" is the status before a when nothing earlier set it; ab, the
+	// assignee the last assignment row before a set; aa, the first assignment
+	// row from a on.
+	inboxStateBeforeSQL = `
+	    LEFT JOIN LATERAL (
+	        SELECT p.details->>'to' AS status FROM activity_log p
+	        WHERE ` + inboxBeforeASQL + ` AND ` + inboxStatusRowSQL + ` AND p.details ? 'to'
+	        ORDER BY p.created_at DESC, p.id DESC LIMIT 1) sb ON true
+	    LEFT JOIN LATERAL (
+	        SELECT p.action, p.details->>'from' AS status FROM activity_log p
+	        WHERE ` + inboxFromASQL + ` AND ` + inboxStatusRowSQL + `
+	        ORDER BY p.created_at, p.id LIMIT 1) sa ON true
+	    LEFT JOIN LATERAL (
+	        SELECT p.action,
+	               CASE WHEN p.action = 'assignee_changed' THEN p.details->>'to_type' ELSE p.details->>'handoff_to_type' END AS type,
+	               CASE WHEN p.action = 'assignee_changed' THEN p.details->>'to_id' ELSE p.details->>'handoff_to_id' END AS id
+	        FROM activity_log p
+	        WHERE ` + inboxBeforeASQL + ` AND ` + inboxAssignmentRowSQL + `
+	        ORDER BY p.created_at DESC, p.id DESC LIMIT 1) ab ON true
+	    LEFT JOIN LATERAL (
+	        SELECT p.action, p.details->>'from_type' AS type, p.details->>'from_id' AS id FROM activity_log p
+	        WHERE ` + inboxFromASQL + ` AND ` + inboxAssignmentRowSQL + `
+	        ORDER BY p.created_at, p.id LIMIT 1) aa ON true`
+	// inboxStatusBeforeSQL is the status just before a; NULL when only a
+	// duplicate mark row, which names no "from", could tell.
+	inboxStatusBeforeSQL = `(CASE WHEN sb.status IS NOT NULL THEN sb.status
+	        WHEN sa.action IS NULL THEN i.status
+	        WHEN sa.action = 'status_changed' THEN sa.status END)`
+	// inboxOwnerBeforeSQL is "the owner was the assignee just before a". When
+	// the first assignment row from a on is a handoff, which names no previous
+	// assignee, and nothing earlier set one, the issue was created with that
+	// assignee; an issue_assigned item for the owner from before a shows it
+	// was the owner.
+	inboxOwnerBeforeSQL = `(CASE WHEN ab.action IS NOT NULL
+	            THEN ab.type IS NOT DISTINCT FROM 'member' AND ab.id IS NOT DISTINCT FROM $2::uuid::text
+	        WHEN aa.action IS NULL THEN ` + inboxAssignedSQL + `
+	        WHEN aa.action = 'assignee_changed'
+	            THEN aa.type IS NOT DISTINCT FROM 'member' AND aa.id IS NOT DISTINCT FROM $2::uuid::text
+	        ELSE EXISTS (
+	            SELECT 1 FROM inbox_item q
+	            WHERE q.workspace_id = a.workspace_id AND q.issue_id = a.issue_id
+	              AND q.recipient_type = 'member' AND q.recipient_id = $2::uuid
+	              AND q.type = 'issue_assigned' AND q.created_at <= a.created_at) END)`
+	// inboxClosedBeforeSQL is "the status just before a is done or closed".
+	inboxClosedBeforeSQL = `(` + inboxStatusBeforeSQL + ` IN ('done', 'cancelled') OR EXISTS (
+	    SELECT 1 FROM issue_status st
+	    WHERE st.workspace_id = i.workspace_id AND st.key = ` + inboxStatusBeforeSQL + ` AND st.category IN ('done', 'closed')))`
+	// inboxWaitedBeforeSQL is "the issue waited for the owner just before a".
+	// A failed task is not traced back: it only keeps items, never archives.
+	inboxWaitedBeforeSQL = `COALESCE(` + inboxStatusBeforeSQL + ` = ANY($3::text[])
+	    OR (` + inboxOwnerBeforeSQL + ` AND NOT COALESCE(` + inboxClosedBeforeSQL + `, false)), false)`
+	// inboxLeftAfterItemSQL is "issue i waited for the owner after inbox item
+	// ii was written" (it does not wait now; inboxOwnerItemsSQL checks), with
+	// $4 the slack and $5 the grace in seconds. Change rows younger than the
+	// grace are left to the listener.
 	inboxLeftAfterItemSQL = `EXISTS (
-	    SELECT 1 FROM activity_log a
+	    SELECT 1 FROM activity_log a` + inboxStateBeforeSQL + `
 	    WHERE a.issue_id = i.id
+	      AND a.action IN ('status_changed', 'assignee_changed', 'duplicate_marked', 'duplicate_unmarked')
 	      AND a.created_at >= ii.created_at - make_interval(secs => $4)
 	      AND a.created_at < now() - make_interval(secs => $5)
-	      AND ` + inboxLeaveSQL + `)`
+	      AND ` + inboxWaitedBeforeSQL + `)`
 	// inboxOwnerItemsSQL selects the owner's unarchived items on issues that
 	// no longer wait.
 	inboxOwnerItemsSQL = `FROM inbox_item ii
@@ -262,18 +327,20 @@ type issueUpdate struct {
 	PrevAssigneeID   *string `json:"prev_assignee_id"`
 }
 
-// leaveReason says whether the update took the issue out of the wait as far
-// as the payload shows, and how. The database decides whether it still waits
-// for another reason.
+// leaveReason says whether the update may have ended the issue's wait for
+// the owner as far as the payload shows, and how: it moved out of a waiting
+// status, moved status while assigned to the owner (closing it ends that
+// wait), or moved away from the owner as assignee. The database decides
+// whether the issue still waits.
 func (u issueUpdate) leaveReason(cfg InboxResolveConfig) string {
-	if u.StatusChanged && slices.Contains(cfg.WaitingStatuses, u.PrevStatus) &&
-		!slices.Contains(cfg.WaitingStatuses, u.Issue.Status) {
+	isOwner := u.Issue.AssigneeType != nil && *u.Issue.AssigneeType == "member" &&
+		u.Issue.AssigneeID != nil && *u.Issue.AssigneeID == cfg.OwnerUserID
+	if u.StatusChanged && !slices.Contains(cfg.WaitingStatuses, u.Issue.Status) &&
+		(slices.Contains(cfg.WaitingStatuses, u.PrevStatus) || isOwner) {
 		return ArchiveReasonLeftStatus
 	}
 	wasOwner := u.PrevAssigneeType != nil && *u.PrevAssigneeType == "member" &&
 		u.PrevAssigneeID != nil && *u.PrevAssigneeID == cfg.OwnerUserID
-	isOwner := u.Issue.AssigneeType != nil && *u.Issue.AssigneeType == "member" &&
-		u.Issue.AssigneeID != nil && *u.Issue.AssigneeID == cfg.OwnerUserID
 	if u.AssigneeChanged && wasOwner && !isOwner {
 		return ArchiveReasonUnassigned
 	}

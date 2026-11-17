@@ -436,8 +436,8 @@ M-118，设计见 M-117（Owner 2026-11-17 选 D1–D4 全 A）。目标是收�
 
 ### 两条路径
 
-- **监听器**（`issue:updated`，在上游的通知监听器之后运行）：负载显示 issue 离开了等待状态（`prev_status` 在列表里、新状态不在），或者不再指派给 Owner（之前指派给 Owner 这个成员）时，按数据库里的当前状态再判断一次；不再等 Owner 就用上游的 `ArchiveInboxByIssue` 归档 Owner 在这个 issue 上的全部未归档条目，并发 `inbox:batch-archived`（`reason=router_inbox_resolve`）让客户端刷新。仍在等（例如离开了 `started_2` 但还指派给 Owner）就不动。出错或超时（500ms）只记日志和计数，issue 状态的修改早已提交，不受影响。
-- **对账**（调度任务 `router_inbox_resolve`，周期同 `MULTICA_ROUTER_RECONCILE_INTERVAL`，默认 5 分钟）：归档「多余」的条目——Owner 的未归档条目，issue 现在不等 Owner，并且 `activity_log` 显示 issue 在这条条目写入之后（含 10 秒余量，覆盖同一次改动发出的通知）离开过等待（状态从等待状态移出，或指派人从 Owner 改走）。30 秒内的离开留给监听器。归档语句带 `archived = false` 条件，多副本或与监听器同时跑也只归档、计数一次。离开等待之后才写进来的条目（例如之后的新 @）不动。
+- **监听器**（`issue:updated`，在上游的通知监听器之后运行）：负载显示 issue 可能结束了等待——离开等待状态（`prev_status` 在列表里、新状态不在）、指派给 Owner 时改了状态（例如关闭）、或者不再指派给 Owner——时，按数据库里的当前状态再判断一次；不再等 Owner 就用上游的 `ArchiveInboxByIssue` 归档 Owner 在这个 issue 上的全部未归档条目，并发 `inbox:batch-archived`（`reason=router_inbox_resolve`）让客户端刷新。仍在等（例如离开了 `started_2` 但还指派给 Owner）就不动。出错或超时（500ms）只记日志和计数，issue 状态的修改早已提交，不受影响。
+- **对账**（调度任务 `router_inbox_resolve`，周期同 `MULTICA_ROUTER_RECONCILE_INTERVAL`，默认 5 分钟）：归档「多余」的条目——Owner 的未归档条目，issue 现在不等 Owner，但在这条条目写入之后（含 10 秒余量，覆盖同一次改动发出的通知）曾经等过。判断用 `activity_log`：条目之后的每一行状态变化（`status_changed`，工作流交接也写这一行；标记、取消重复时上游用 `duplicate_marked` / `duplicate_unmarked` 代替状态行）和指派变化（`assignee_changed`；交接只写状态行，新指派人在 `handoff_to_*` 里），还原这一行**之前**的状态和指派人：状态取之前最后一行的 `to`，没有就取这一行起第一行状态行的 `from`，再没有就是当前状态；指派人同理，取之前最后一行指派的对象，没有就取这一行起第一行 `assignee_changed` 的 `from_*`，都没有就是当前指派人。若这一行起第一行指派记录是交接（不记原指派人）且之前没有指派记录，说明 issue 创建时就带着那个指派人，以 Owner 在交接前收到的 `issue_assigned` 条目为证据。任一行之前处于等待状态，或指派给 Owner 且未关闭，就算「之后等过」。30 秒内的变化留给监听器。归档语句带 `archived = false` 条件，多副本或与监听器同时跑也只归档、计数一次。issue 已经不等之后才写进来的条目（例如之后的新 @）不动。
 - **缺失只计数**：「等 Owner」的 issue 上没有 Owner 的未归档条目，按原因（`waiting_status` / `assigned` / `failed`）计数，不写入。
 
 ### 观测
@@ -450,8 +450,8 @@ M-118，设计见 M-117（Owner 2026-11-17 选 D1–D4 全 A）。目标是收�
 
 ## 已知局限（S3a）
 
-- 工作流交接（handoff）同时改状态和指派人时，上游只写一条 `status_changed` 活动；如果 issue 指派给 Owner 但不在等待状态，被交接走时对账看不到「指派离开」，只有监听器处理。
-- 「最近一个任务失败」按 issue 的最新任务判断，不看 Owner 有没有处理过那次失败；Owner 没订阅的 issue 会计入 `missing.failed`。
+- 对账靠 `activity_log` 还原历史状态。两种情况还原不出来，会把条目留在 `outside_wait`（只有监听器能处理）：issue 创建时就指派给 Owner、且是 Owner 自己创建的（没有 `issue_assigned` 条目可作证据），之后第一次指派变化就是工作流交接；issue 创建时就在等待状态、之后第一次状态变化就是标记重复（`duplicate_marked` 不记原状态）。
+- 「最近一个任务失败」只用来保留条目（仍在等），不用来判断「之后等过」；Owner 没订阅的 issue 会计入 `missing.failed`。
 - `stats` 是进程内计数；要看所有副本的历史，查调度器执行记录。
 
 ## 部署清单（S3a）
