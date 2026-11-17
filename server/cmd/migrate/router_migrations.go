@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router v6 slice 2 (M-97).
 
 package main
 
@@ -15,6 +15,8 @@ var routerConcurrentIndexCleanups = map[string]string{
 	"9011_router_event_consumed_idx":        "idx_router_event_consumed",
 	"9012_router_subscription_change_idx":   "idx_router_subscription_change",
 	"9013_router_owner_notice_dedupe_idx":   "idx_owner_notice_dedupe",
+	"9016_router_hold_item_idx":             "idx_router_hold_item",
+	"9017_router_hold_subscription_idx":     "idx_router_hold_subscription",
 }
 
 func init() {

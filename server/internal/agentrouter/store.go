@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slice 1 (M-96), and Router page settings (M-105).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), and Router page settings (M-105).
 
 package agentrouter
 
@@ -518,6 +518,7 @@ func DeleteWorkspaceData(ctx context.Context, q Querier, workspaceID any) error 
 	for _, table := range []string{
 		"router_event", "router_issue_seen", "router_reconcile_cursor", "router_subscription",
 		"router_dispatch", "router_subscription_change", "owner_notice", "router_chat_anchor",
+		"router_hold",
 	} {
 		if _, err := q.Exec(ctx, `DELETE FROM `+table+` WHERE workspace_id = $1`, workspaceID); err != nil {
 			return fmt.Errorf("delete %s: %w", table, err)

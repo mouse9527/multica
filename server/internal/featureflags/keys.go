@@ -48,6 +48,13 @@ const (
 	// fork, M-96). It only takes effect with RouterDispatch on. Off by
 	// default; off means dispatch as with RouterDispatch alone.
 	RouterChat = "router_chat"
+	// RouterHoldShadow runs the Router hold in shadow mode (mouse9527/multica
+	// fork, M-97): every inbox write is checked against chat-bound
+	// subscriptions, the items the hold would take are recorded and listed in
+	// the next chat batch, and every write still reaches the inbox unchanged.
+	// It only takes effect with RouterChat on. Off by default; off means no
+	// inbox interceptor is registered.
+	RouterHoldShadow = "router_hold_shadow"
 	// HandoffReplyWake makes a member comment on an issue in a handoff status
 	// also wake the issue's agent assignee, thread replies included
 	// (mouse9527/multica fork, M-89). Off by default; off means upstream
@@ -119,6 +126,12 @@ func RouterDispatchEnabled(ctx context.Context, flags *featureflag.Service) bool
 // RouterDispatch: the chat is where dispatch delivers.
 func RouterChatEnabled(ctx context.Context, flags *featureflag.Service) bool {
 	return RouterDispatchEnabled(ctx, flags) && flags.IsEnabled(ctx, RouterChat, false)
+}
+
+// RouterHoldShadowEnabled is added by the mouse9527/multica fork (M-97). It
+// requires RouterChat: the hold routes through a subscription's chat.
+func RouterHoldShadowEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return RouterChatEnabled(ctx, flags) && flags.IsEnabled(ctx, RouterHoldShadow, false)
 }
 
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {
