@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and Router v6 slices 1 (M-96) and 2 (M-97).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), and Router settings by instruction (M-105).
 //
 // HTTP surface of Router dispatch: subscription updates, state, the audit
 // trail, anchor runs and owner notices. Like agent_router.go it only adapts
@@ -183,6 +183,13 @@ func (h *Handler) UpdateRouterSubscription(w http.ResponseWriter, r *http.Reques
 				return
 			}
 			chat = uuidToString(id)
+			// An agent binds a chat only for that chat's creator (M-105).
+			if change.ActorType == "agent" {
+				auth := h.routerAgentAuthority(r, sub.WorkspaceID)
+				if !h.agentMayBindChat(w, r, auth, sub.WorkspaceID, chat) {
+					return
+				}
+			}
 		}
 		p.AnchorChatSessionID = &chat
 	}

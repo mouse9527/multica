@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router v6 slices 1 (M-96) and 2 (M-97).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), and Router page settings (M-105).
 
 package agentrouter
 
@@ -134,6 +134,10 @@ type CreateParams struct {
 	Batching      Batching
 	CreatedByType string
 	CreatedByID   string
+	// AnchorChatSessionID, when set, binds the new subscription to a chat in
+	// the same transaction (M-105), so it never dispatches an anchor run
+	// between being created and being bound.
+	AnchorChatSessionID string
 	// Change records who created it and on whose authority; its Action is
 	// set to "create".
 	Change Change
@@ -224,6 +228,13 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (Subscription, error
 	change.Action = ChangeCreate
 	if change.ActorType == "" {
 		change.ActorType, change.ActorID = p.CreatedByType, p.CreatedByID
+	}
+	if p.AnchorChatSessionID != "" {
+		bound := Subscription{ID: id, WorkspaceID: p.WorkspaceID, AgentID: p.AgentID}
+		if err := setChatAnchor(ctx, tx, bound, p.AnchorIssueID, p.AnchorChatSessionID); err != nil {
+			return Subscription{}, err
+		}
+		change.Detail = map[string]any{"anchor_chat_session_id": p.AnchorChatSessionID}
 	}
 	if err := recordChange(ctx, tx, p.WorkspaceID, id, change); err != nil {
 		return Subscription{}, err

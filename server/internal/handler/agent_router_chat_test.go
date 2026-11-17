@@ -1,4 +1,5 @@
-// Modified for the mouse9527/multica fork: Router v6, slice 1 (M-96).
+// Modified for the mouse9527/multica fork: Router v6, slice 1 (M-96), and
+// Router page settings (M-105).
 
 package handler
 
@@ -92,6 +93,79 @@ func TestRouterAnchorChatAPI(t *testing.T) {
 		Want(http.StatusOK).JSON(&sub)
 	if sub["anchor_chat_session_id"] != nil {
 		t.Fatalf("after none = %v", sub)
+	}
+}
+
+// TestRouterCreateBoundToChat: the settings page creates a subscription
+// already bound to its chat, in one transaction, so it never dispatches an
+// anchor run in between. A binding that fails validation creates nothing.
+func TestRouterCreateBoundToChat(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	f := newRouterFixture(t)
+	cleanupRouterS2(t, f)
+	chat := dbfx.ChatSession(t, f.agentA)
+	project := dbfx.Project(t, "router create bound project")
+	create := func(body map[string]any) *testutil.Response {
+		body["agent_id"] = f.agentA
+		body["anchor_chat_session_id"] = chat
+		return routerCall(t, newRequest("POST", "/api/router/subscriptions", body))
+	}
+	countSubs := func() int {
+		var n int
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT count(*) FROM router_subscription WHERE agent_id = $1`, f.agentA).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	withRouterChatFlags(t, false)
+	create(map[string]any{"scope_type": "issue_tree", "scope_id": f.root}).Want(http.StatusBadRequest)
+
+	withRouterChatFlags(t, true)
+	for name, body := range map[string]map[string]any{
+		// A project scope has no default anchor issue; a bound one needs it.
+		"project without anchor": {"scope_type": "project", "scope_id": project},
+		"another agent's chat":   {"scope_type": "issue_tree", "scope_id": f.root, "anchor_chat_session_id": dbfx.ChatSession(t, f.agentB)},
+		"archived chat":          {"scope_type": "issue_tree", "scope_id": f.root, "anchor_chat_session_id": dbfx.ChatSession(t, f.agentA, testutil.Cols{"status": "archived"})},
+		"someone else's chat":    {"scope_type": "issue_tree", "scope_id": f.root, "anchor_chat_session_id": dbfx.ChatSession(t, f.agentA, testutil.Cols{"creator_id": f.member})},
+		"not a uuid":             {"scope_type": "issue_tree", "scope_id": f.root, "anchor_chat_session_id": "M-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := map[string]any{"agent_id": f.agentA, "anchor_chat_session_id": chat}
+			for k, v := range body {
+				req[k] = v
+			}
+			routerCall(t, newRequest("POST", "/api/router/subscriptions", req)).Want(http.StatusBadRequest)
+			if n := countSubs(); n != 0 {
+				t.Fatalf("a refused binding left %d subscriptions", n)
+			}
+		})
+	}
+
+	var tree, proj map[string]any
+	create(map[string]any{"scope_type": "issue_tree", "scope_id": f.root}).Want(http.StatusCreated).JSON(&tree)
+	cleanupRouterChat(t, tree["id"].(string))
+	if tree["anchor_chat_session_id"] != chat || tree["anchor_issue_id"] != f.root {
+		t.Fatalf("tree subscription = %v", tree)
+	}
+	create(map[string]any{"scope_type": "project", "scope_id": project, "anchor_issue_id": f.child}).
+		Want(http.StatusCreated).JSON(&proj)
+	cleanupRouterChat(t, proj["id"].(string))
+	if proj["anchor_chat_session_id"] != chat || proj["anchor_issue_id"] != f.child {
+		t.Fatalf("project subscription = %v", proj)
+	}
+
+	var detail string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT detail->>'anchor_chat_session_id' FROM router_subscription_change
+		WHERE subscription_id = $1 AND action = 'create'`, tree["id"]).Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail != chat {
+		t.Fatalf("create audit detail anchor_chat_session_id = %q, want %q", detail, chat)
 	}
 }
 

@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and Router v6 slice 1 (M-96).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slice 1 (M-96), and Router settings by instruction (M-105).
 
 package main
 
@@ -20,9 +20,9 @@ import (
 // router_dispatch is off.
 
 var routerUpdateCmd = &cobra.Command{
-	Use:   "update <subscription-id>",
-	Short: "Change a subscription's anchor issue or chat, event types or batching",
-	Args:  exactArgs(1),
+	Use:   "update [<subscription-id> | --chat <current|chat-id>]",
+	Short: "Change a subscription's anchor issue or chat, event types or batching; with --chat, every subscription of a Router",
+	Args:  cobra.MaximumNArgs(1),
 	RunE:  runRouterUpdate,
 }
 
@@ -91,7 +91,8 @@ func init() {
 		c.Flags().Int("max-runs-per-hour", 0, "Runs per hour before dispatch pauses and the owner is notified (default 6)")
 	}
 	routerUpdateCmd.Flags().StringSlice("events", nil, "Event types to capture from now on")
-	routerUpdateCmd.Flags().String("anchor-chat", "", "Chat session (UUID) that receives the batches instead of anchor runs; \"none\" goes back to anchor runs (needs router_chat)")
+	routerUpdateCmd.Flags().String("anchor-chat", "", "Chat that receives the batches instead of anchor runs: current (inside a chat run) or a chat session UUID; \"none\" goes back to anchor runs (needs router_chat)")
+	routerUpdateCmd.Flags().String("chat", "", "Change every subscription of the Router bound to this chat: current (inside a chat run) or a chat session UUID")
 	routerUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	routerStateGetCmd.Flags().String("output", "json", "Output format: text (state only) or json")
@@ -149,10 +150,6 @@ func runRouterUpdate(cmd *cobra.Command, args []string) error {
 	}
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
-	id, err := resolveRouterSubscriptionID(ctx, client, args[0])
-	if err != nil {
-		return err
-	}
 	body := map[string]any{}
 	if err := routerBatchingBody(ctx, cmd, client, body); err != nil {
 		return err
@@ -163,19 +160,35 @@ func runRouterUpdate(cmd *cobra.Command, args []string) error {
 	}
 	if cmd.Flags().Changed("anchor-chat") {
 		chat, _ := cmd.Flags().GetString("anchor-chat")
-		if strings.TrimSpace(chat) == "" {
-			return fmt.Errorf("--anchor-chat needs a chat session id, or none")
+		chat = strings.TrimSpace(chat)
+		if chat == "" {
+			return fmt.Errorf("--anchor-chat needs current, a chat session id, or none")
 		}
-		body["anchor_chat_session_id"] = strings.TrimSpace(chat)
+		if chat == currentChat {
+			resolved, err := resolveRouterChat(ctx, client, chat)
+			if err != nil {
+				return err
+			}
+			chat = resolved.ID
+		}
+		body["anchor_chat_session_id"] = chat
 	}
 	if len(body) == 0 {
 		return fmt.Errorf("nothing to change: pass --anchor, --anchor-chat, --events, --debounce, --max-wait or --max-runs-per-hour")
 	}
-	var sub map[string]any
-	if err := client.PatchJSON(ctx, routerSubscriptionPath(id), body, &sub); err != nil {
-		return fmt.Errorf("update subscription: %w", err)
+	ids, err := routerTargets(ctx, cmd, client, args)
+	if err != nil {
+		return err
 	}
-	return printRouterSubscription(cmd, sub)
+	out := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		var sub map[string]any
+		if err := client.PatchJSON(ctx, routerSubscriptionPath(id), body, &sub); err != nil {
+			return fmt.Errorf("update subscription %s: %w", id, err)
+		}
+		out = append(out, sub)
+	}
+	return printRouterSubscriptions(cmd, out)
 }
 
 func runRouterStateGet(cmd *cobra.Command, args []string) error {

@@ -24,6 +24,8 @@ import jaUsage from "./ja/usage.json";
 import jaUi from "./ja/ui.json";
 import jaSquads from "./ja/squads.json";
 import jaBilling from "./ja/billing.json";
+// Modified by the mouse9527/multica fork (M-105): the Router namespace.
+import jaRouter from "./ja/router.json";
 
 const resources: LocaleResources = {
   common: jaCommon,
@@ -51,6 +53,7 @@ const resources: LocaleResources = {
   ui: jaUi,
   squads: jaSquads,
   billing: jaBilling,
+  router: jaRouter,
 };
 
 export default resources;

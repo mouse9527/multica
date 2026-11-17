@@ -24,6 +24,8 @@ import zhHantUsage from "./zh-Hant/usage.json";
 import zhHantUi from "./zh-Hant/ui.json";
 import zhHantSquads from "./zh-Hant/squads.json";
 import zhHantBilling from "./zh-Hant/billing.json";
+// Modified by the mouse9527/multica fork (M-105): the Router namespace.
+import zhHantRouter from "./zh-Hant/router.json";
 
 const resources: LocaleResources = {
   common: zhHantCommon,
@@ -51,6 +53,7 @@ const resources: LocaleResources = {
   ui: zhHantUi,
   squads: zhHantSquads,
   billing: zhHantBilling,
+  router: zhHantRouter,
 };
 
 export default resources;

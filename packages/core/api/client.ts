@@ -1096,6 +1096,14 @@ export class ApiClient {
     return res.json() as Promise<T>;
   }
 
+  // Modified by the mouse9527/multica fork (M-105): fork-owned modules such as
+  // `packages/core/router` call their endpoints through the shared request
+  // path (auth, CSRF, errors) instead of adding methods to this file. Callers
+  // parse the body with their own schema.
+  async forkRequest(path: string, init?: RequestInit): Promise<unknown> {
+    return this.fetch<unknown>(path, init);
+  }
+
   // Auth
   async sendCode(email: string): Promise<void> {
     await this.fetch("/auth/send-code", {

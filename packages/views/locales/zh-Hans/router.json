@@ -1,0 +1,115 @@
+{
+  "menu": {
+    "setup": "设为 Router",
+    "settings": "Router 设置"
+  },
+  "badge": "Router",
+  "dialog": {
+    "title_setup": "设为 Router",
+    "title_settings": "Router 设置",
+    "description": "这些范围内任务的动态会合批送进这个对话，由 {{agent}} 处理，只在需要你时告诉你。",
+    "archived": "先恢复这个对话，才能设为 Router。"
+  },
+  "status": {
+    "running": "运行中",
+    "paused": "已暂停",
+    "reason": {
+      "manual": "手动暂停",
+      "rate": "达到每小时运行上限",
+      "agent_unavailable": "智能体、对话或项目不可用"
+    }
+  },
+  "scopes": {
+    "title": "范围",
+    "project": "项目",
+    "issue_tree": "任务树",
+    "add_project": "添加项目",
+    "add_issue_tree": "添加任务树",
+    "project_placeholder": "选择项目",
+    "picker_title": "选择根任务",
+    "picker_description": "Router 跟进这个任务及其全部子任务。",
+    "empty": "添加一个项目或一棵任务树。",
+    "board": "看板 {{identifier}}",
+    "board_hint": "每个项目会建一个看板任务，记录 Router 的运行。",
+    "remove": "移除范围",
+    "unknown": "不可用"
+  },
+  "events": {
+    "title": "事件",
+    "issue_created": "新建任务",
+    "status_changed": "状态变更",
+    "assignee_changed": "处理人变更",
+    "comment_created": "新评论",
+    "task_failed": "运行失败"
+  },
+  "batching": {
+    "title": "合批",
+    "debounce": "静默期（秒）",
+    "max_wait": "最长等待（秒）",
+    "max_runs": "每小时运行上限",
+    "invalid": "秒数须在 10–86400 之间，最长等待不短于静默期，每小时运行上限为 1–60。"
+  },
+  "health": {
+    "title": "状态",
+    "capture_miss": "漏捕获",
+    "reconciled": "对账推进到",
+    "never": "尚未完成",
+    "last_run": "最近一次运行",
+    "no_runs": "还没有运行",
+    "run_events": "事件：{{count}}",
+    "outcome": {
+      "running": "进行中",
+      "completed": "已完成",
+      "failed": "失败"
+    }
+  },
+  "held": {
+    "title": "经 Router 处理的条目",
+    "empty": "Router 开始过滤收件箱后显示在这里。"
+  },
+  "actions": {
+    "create": "设为 Router",
+    "save": "保存",
+    "pause": "暂停",
+    "resume": "恢复",
+    "release": "解除 Router",
+    "cancel": "取消"
+  },
+  "release": {
+    "title": "解除这个 Router？",
+    "description": "这个对话将不再收到任务动态。",
+    "delete": "删除它的订阅",
+    "keep": "保留订阅，并暂停",
+    "confirm": "解除",
+    "keep_hint": "以后把一个对话设为 Router 并选同样的范围，就会接回这些订阅并恢复。"
+  },
+  "board": {
+    "title": "Router 看板 · {{chat}}",
+    "description": "记录对话「{{chat}}」里 Router 的运行。由 Router 设置创建。"
+  },
+  "toast": {
+    "created": "已设为 Router",
+    "scope_failed": "没能添加 {{scope}}：{{error}}",
+    "saved": "Router 设置已保存",
+    "paused": "Router 已暂停",
+    "resumed": "Router 已恢复",
+    "released": "Router 已解除",
+    "failed": "Router 更新失败：{{error}}",
+    "scope_taken": "{{scope}} 已在另一个对话的 Router 里。先解除那个 Router，或在那里移除这个范围。",
+    "deleted": "订阅已删除"
+  },
+  "list": {
+    "tab": "Router",
+    "empty": "还没有 Router。打开一个对话的菜单，选择「设为 Router」。",
+    "agent": "智能体",
+    "scopes": "范围",
+    "status": "状态",
+    "last_run": "最近一次运行",
+    "untitled": "未命名对话",
+    "unbound_title": "不在 Router 里的订阅",
+    "unbound_hint": "解除 Router 时保留下来的订阅。把一个对话设为 Router 并选同样的范围，就会接回它。",
+    "delete": "删除",
+    "delete_title": "删除这条订阅？",
+    "delete_description": "它已捕获的事件也会一起删除。"
+  }
+}

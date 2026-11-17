@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and Router v6 slice 1 (M-96).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slice 1 (M-96), and Router parallelism (M-104).
 
 package agentrouter
 
@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -19,6 +20,7 @@ import (
 type fakeRuns struct {
 	e     *env
 	err   error
+	mu    sync.Mutex
 	calls []fakeRun
 }
 
@@ -29,6 +31,8 @@ func (f *fakeRuns) EnqueueRouterChatRun(_ context.Context, chatSessionID, agentI
 		return "", f.err
 	}
 	task := f.e.fx.Task(f.e.t, agentID, testutil.Cols{"chat_session_id": chatSessionID, "runtime_id": f.e.runtimeOf(agentID)})
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, fakeRun{chat: chatSessionID, agent: agentID, note: batch, task: task})
 	return task, nil
 }
@@ -38,6 +42,8 @@ func (f *fakeRuns) EnqueueRouterRun(_ context.Context, issueID, agentID, note st
 		return "", f.err
 	}
 	task := f.e.fx.Task(f.e.t, agentID, testutil.Cols{"issue_id": issueID, "runtime_id": f.e.runtimeOf(agentID)})
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, fakeRun{issue: issueID, agent: agentID, note: note, task: task})
 	return task, nil
 }
@@ -150,7 +156,7 @@ func TestDispatchBatchesEventsIntoOneAnchorRun(t *testing.T) {
 	e.age(sub.ID)
 	e.tick(d)
 	if len(runs.calls) != 1 {
-		t.Fatalf("dispatched while the agent's run was open")
+		t.Fatalf("dispatched while the subscription's run was open")
 	}
 	// Once the run completes, the next batch goes.
 	e.setTask(run.task, "completed")
@@ -259,27 +265,6 @@ func TestFailedRunHandsTheBatchBack(t *testing.T) {
 	evs := e.events(sub.ID)
 	if len(evs) != 1 || evs[0].ConsumedTaskID == nil || *evs[0].ConsumedTaskID != runs.calls[1].task {
 		t.Fatalf("event after redispatch = %+v", evs)
-	}
-}
-
-func TestOneRunAtATimePerAgent(t *testing.T) {
-	e, d, runs := newDispatchEnv(t)
-	rootA := e.issue("router root a")
-	rootB := e.issue("router root b")
-	subA := e.subscribe(e.agentA, ScopeIssueTree, rootA)
-	subB := e.subscribe(e.agentA, ScopeIssueTree, rootB)
-	e.publishComment(e.comment(rootA))
-	e.publishComment(e.comment(rootB))
-	e.age(subA.ID)
-	e.age(subB.ID)
-	e.tick(d)
-	if len(runs.calls) != 1 {
-		t.Fatalf("runs = %d, want one: the agent's two subscriptions run one at a time", len(runs.calls))
-	}
-	e.setTask(runs.calls[0].task, "completed")
-	e.tick(d)
-	if len(runs.calls) != 2 || runs.calls[0].issue == runs.calls[1].issue {
-		t.Fatalf("second run = %+v, want the other anchor", runs.calls)
 	}
 }
 

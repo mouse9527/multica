@@ -24,6 +24,8 @@ import zhHansUsage from "./zh-Hans/usage.json";
 import zhHansUi from "./zh-Hans/ui.json";
 import zhHansSquads from "./zh-Hans/squads.json";
 import zhHansBilling from "./zh-Hans/billing.json";
+// Modified by the mouse9527/multica fork (M-105): the Router namespace.
+import zhHansRouter from "./zh-Hans/router.json";
 
 const resources: LocaleResources = {
   common: zhHansCommon,
@@ -51,6 +53,7 @@ const resources: LocaleResources = {
   ui: zhHansUi,
   squads: zhHansSquads,
   billing: zhHansBilling,
+  router: zhHansRouter,
 };
 
 export default resources;

@@ -34,6 +34,8 @@ import { BreadcrumbHeader } from "../../layout/breadcrumb-header";
 import { useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
+// Modified by the mouse9527/multica fork (M-105): Router settings in the ⋯ menu.
+import { useRouterChatMenu } from "../../router/use-router-chat-menu";
 
 /**
  * Per-session header for the conversation pane, read as a breadcrumb: the
@@ -66,6 +68,7 @@ export function ChatSessionHeader({
   const deleteSession = useDeleteChatSession();
   const setArchived = useSetChatSessionArchived();
   const setActiveSession = useChatStore((s) => s.setActiveSession);
+  const router = useRouterChatMenu(session, agent);
 
   const isArchived = session.status === "archived";
 
@@ -254,6 +257,7 @@ export function ChatSessionHeader({
                   {t(($) => $.header.agent_settings)}
                 </DropdownMenuItem>
               )}
+              {router.menuItem}
               <DropdownMenuSeparator />
               {isArchived ? (
                 <>
@@ -277,6 +281,8 @@ export function ChatSessionHeader({
           </DropdownMenu>
         }
       />
+
+      {router.dialog}
 
       <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <AlertDialogContent>

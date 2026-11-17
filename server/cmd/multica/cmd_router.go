@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router settings by instruction (M-105).
 
 package main
 
@@ -39,30 +39,30 @@ var routerListCmd = &cobra.Command{
 }
 
 var routerGetCmd = &cobra.Command{
-	Use:   "get <subscription-id>",
-	Short: "Get a subscription, including its capture_miss count",
-	Args:  exactArgs(1),
+	Use:   "get [<subscription-id> | --chat <current|chat-id>]",
+	Short: "Get a subscription, including its capture_miss count, or with --chat every subscription of a Router",
+	Args:  cobra.MaximumNArgs(1),
 	RunE:  runRouterGet,
 }
 
 var routerPauseCmd = &cobra.Command{
-	Use:   "pause <subscription-id>",
-	Short: "Stop capturing events for a subscription",
-	Args:  exactArgs(1),
-	RunE:  func(cmd *cobra.Command, args []string) error { return runRouterAction(cmd, args[0], "pause") },
+	Use:   "pause [<subscription-id> | --chat <current|chat-id>]",
+	Short: "Stop capturing events for a subscription, or with --chat for a whole Router",
+	Args:  cobra.MaximumNArgs(1),
+	RunE:  func(cmd *cobra.Command, args []string) error { return runRouterAction(cmd, args, "pause") },
 }
 
 var routerResumeCmd = &cobra.Command{
-	Use:   "resume <subscription-id>",
-	Short: "Resume capturing events for a subscription, starting from now",
-	Args:  exactArgs(1),
-	RunE:  func(cmd *cobra.Command, args []string) error { return runRouterAction(cmd, args[0], "resume") },
+	Use:   "resume [<subscription-id> | --chat <current|chat-id>]",
+	Short: "Resume a subscription, or with --chat a whole Router, starting from now",
+	Args:  cobra.MaximumNArgs(1),
+	RunE:  func(cmd *cobra.Command, args []string) error { return runRouterAction(cmd, args, "resume") },
 }
 
 var routerDeleteCmd = &cobra.Command{
-	Use:   "delete <subscription-id>",
-	Short: "Delete a subscription and its captured events",
-	Args:  exactArgs(1),
+	Use:   "delete [<subscription-id> | --chat <current|chat-id>]",
+	Short: "Delete a subscription and its captured events, or with --chat every subscription of a Router",
+	Args:  cobra.MaximumNArgs(1),
 	RunE:  runRouterDelete,
 }
 
@@ -89,7 +89,11 @@ func init() {
 	routerSubscribeCmd.Flags().String("issue", "", "Root issue of the subscribed tree (key or UUID)")
 	routerSubscribeCmd.Flags().String("project", "", "Subscribed project (ID)")
 	routerSubscribeCmd.Flags().StringSlice("events", nil, "Event types to capture (default: all): issue_created, status_changed, assignee_changed, comment_created, task_failed")
+	routerSubscribeCmd.Flags().String("anchor-chat", "", "Bind the subscription to a chat (a Router): current (inside a chat run) or a chat session UUID; a --project scope without --anchor gets a board issue (needs router_chat)")
 	routerSubscribeCmd.Flags().String("output", "json", "Output format: table or json")
+	for _, c := range []*cobra.Command{routerGetCmd, routerPauseCmd, routerResumeCmd, routerDeleteCmd} {
+		c.Flags().String("chat", "", "Act on every subscription of the Router bound to this chat: current (inside a chat run) or a chat session UUID")
+	}
 
 	routerListCmd.Flags().String("agent", "", "Only this agent's subscriptions (name or ID)")
 	routerListCmd.Flags().String("output", "table", "Output format: table or json")
@@ -98,6 +102,7 @@ func init() {
 	routerGetCmd.Flags().String("output", "json", "Output format: table or json")
 	routerPauseCmd.Flags().String("output", "json", "Output format: table or json")
 	routerResumeCmd.Flags().String("output", "json", "Output format: table or json")
+	routerDeleteCmd.Flags().String("output", "json", "Output format: table or json")
 
 	routerEventsCmd.Flags().String("subscription", "", "Only this subscription's events (ID or prefix)")
 	routerEventsCmd.Flags().String("agent", "", "Only this agent's events (name or ID)")
@@ -172,9 +177,26 @@ func runRouterSubscribe(cmd *cobra.Command, _ []string) error {
 	if err := routerBatchingBody(ctx, cmd, client, body); err != nil {
 		return err
 	}
+	board := ""
+	if chatRef, _ := cmd.Flags().GetString("anchor-chat"); chatRef != "" {
+		chat, err := resolveRouterChat(ctx, client, chatRef)
+		if err != nil {
+			return err
+		}
+		body["anchor_chat_session_id"] = chat.ID
+		if project != "" && body["anchor_issue_id"] == nil {
+			if board, err = routerChatBoard(ctx, client, body["scope_id"].(string), chat); err != nil {
+				return err
+			}
+			body["anchor_issue_id"] = board
+		}
+	}
 
 	var sub map[string]any
 	if err := client.PostJSON(ctx, "/api/router/subscriptions", body, &sub); err != nil {
+		if board != "" {
+			_ = client.DeleteJSON(ctx, "/api/issues/"+url.PathEscape(board))
+		}
 		return fmt.Errorf("subscribe: %w", err)
 	}
 	return printRouterSubscription(cmd, sub)
@@ -273,6 +295,30 @@ func runRouterGet(cmd *cobra.Command, args []string) error {
 	}
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
+	if chatRef, _ := cmd.Flags().GetString("chat"); chatRef != "" {
+		if len(args) > 0 {
+			return fmt.Errorf("pass a subscription id or --chat, not both")
+		}
+		chat, err := resolveRouterChat(ctx, client, chatRef)
+		if err != nil {
+			return err
+		}
+		subs, err := routerChatSubscriptions(ctx, client, chat.ID)
+		if err != nil {
+			return err
+		}
+		if output, _ := cmd.Flags().GetString("output"); output == "table" {
+			if len(subs) == 0 {
+				fmt.Fprintf(os.Stderr, "Chat %s is not a Router.\n", chat.ID)
+			}
+			cli.PrintTable(os.Stdout, routerSubscriptionHeaders, routerSubscriptionRows(subs, true))
+			return nil
+		}
+		return cli.PrintJSON(os.Stdout, map[string]any{"chat_session_id": chat.ID, "subscriptions": subs})
+	}
+	if len(args) != 1 {
+		return fmt.Errorf("pass a subscription id, or --chat for a Router")
+	}
 	id, err := resolveRouterSubscriptionID(ctx, client, args[0])
 	if err != nil {
 		return err
@@ -284,22 +330,26 @@ func runRouterGet(cmd *cobra.Command, args []string) error {
 	return printRouterSubscription(cmd, sub)
 }
 
-func runRouterAction(cmd *cobra.Command, input, action string) error {
+func runRouterAction(cmd *cobra.Command, args []string, action string) error {
 	client, err := newAPIClient(cmd)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
-	id, err := resolveRouterSubscriptionID(ctx, client, input)
+	ids, err := routerTargets(ctx, cmd, client, args)
 	if err != nil {
 		return err
 	}
-	var sub map[string]any
-	if err := client.PostJSON(ctx, routerSubscriptionPath(id)+"/"+action, map[string]any{}, &sub); err != nil {
-		return fmt.Errorf("%s subscription: %w", action, err)
+	out := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		var sub map[string]any
+		if err := client.PostJSON(ctx, routerSubscriptionPath(id)+"/"+action, map[string]any{}, &sub); err != nil {
+			return fmt.Errorf("%s subscription %s: %w", action, id, err)
+		}
+		out = append(out, sub)
 	}
-	return printRouterSubscription(cmd, sub)
+	return printRouterSubscriptions(cmd, out)
 }
 
 func runRouterDelete(cmd *cobra.Command, args []string) error {
@@ -309,14 +359,16 @@ func runRouterDelete(cmd *cobra.Command, args []string) error {
 	}
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
-	id, err := resolveRouterSubscriptionID(ctx, client, args[0])
+	ids, err := routerTargets(ctx, cmd, client, args)
 	if err != nil {
 		return err
 	}
-	if err := client.DeleteJSON(ctx, routerSubscriptionPath(id)); err != nil {
-		return fmt.Errorf("delete subscription: %w", err)
+	for _, id := range ids {
+		if err := client.DeleteJSON(ctx, routerSubscriptionPath(id)); err != nil {
+			return fmt.Errorf("delete subscription %s: %w", id, err)
+		}
+		fmt.Fprintf(os.Stderr, "Deleted subscription %s\n", id)
 	}
-	fmt.Fprintf(os.Stderr, "Deleted subscription %s\n", id)
 	return nil
 }
 
