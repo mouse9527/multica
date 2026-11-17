@@ -4,6 +4,7 @@ export * from "./types";
 export {
   createRouterSubscription,
   deleteRouterSubscription,
+  listRouterChats,
   listRouterDispatches,
   listRouterSubscriptionChanges,
   listRouterSubscriptions,
@@ -22,6 +23,7 @@ export {
 export {
   ROUTER_POLL_MS,
   routerChangesOptions,
+  routerChatsOptions,
   routerKeys,
   routerLastDispatchOptions,
   routerSubscriptionsOptions,

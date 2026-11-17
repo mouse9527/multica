@@ -332,6 +332,17 @@ Owner 也可以在 chat 里直接跟这个 chat 的智能体说「把这个 chat
 - 前端：`packages/core/router/`（API、zod 校验、查询与变更、分组）；`packages/views/router/`（对话框、范围选择、列表页、两个挂载钩子）；文案在 `packages/views/locales/*/router.json`。
 - 上游触点：`packages/core/api/client.ts` 新增一个公开方法 `forkRequest`（fork 模块借用共享的请求路径），`packages/core/package.json` 导出 `./router`，`chat-session-header.tsx` 与 `settings-page.tsx` 各加一个挂载钩子，8 个语言入口和 `resources-types.ts` 登记 `router` 命名空间，`featureflags/keys.go` 公开 `router_chat`。见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。
 
+## 聊天列表的 Router 标记（M-108）
+
+在聊天列表和会话头部一眼看出哪个会话是 Router。开关与入口同上（只在 `router_chat` 生效时显示；关闭时不发请求，列表和头部与上游一致）。
+
+- **图标**：雷达（`Radar`，外圈加内圈和一道扫描线），意思是「它在替我盯着」。比较过卫星天线、信号塔：前者小尺寸下像一只碗，后者细节太多、14px 时糊成一团；雷达是圆形轮廓，和头像、未读角标放在一起也容易分辨。
+- **状态**：所有范围都在运行时用品牌色；任一范围暂停（`paused_reason` 非空，或手动暂停）时变灰，右下角加一个小的暂停标记。
+- **悬停提示**（也是无障碍名称）：`Router · 范围：multica 项目 · 运行中`；多个范围用「、」列出，部分暂停时在暂停的范围后标「（已暂停）」，状态写成「已暂停（原因）」。看不到的范围（私有项目、已删除）写「不可用」，不显示名字。
+- **位置**：列表行在标题前（和置顶图标同一处，行悬停时右侧的置顶 / 归档按钮不会盖住它）；会话头部在标题后，是一个按钮，点开 Router 设置（M-105 的对话框）。手机宽度下没有悬停，点头部的标记即可看到状态。
+- **数据**：`GET /api/router/chats` 一次返回调用成员自己的 chat 里全部 Router 的摘要（会话 id、去重后的暂停原因、每个范围的类型、名字、标识、是否可见、暂停原因），列表只发这一个请求，不按会话逐个查。名字在服务端解析：项目标题，或任务树根的标识和标题；范围落在调用者看不到的私有项目里时 `visible=false`，名字和标识留空。`router_chat` 关闭时返回 404。没有改上游的聊天列表接口：会话缓存会被实时事件整条替换，摘要放在里面会随更新丢失，所以单独一个查询，挂在 `routerKeys` 下，Router 设置里的修改会让它一起刷新，另外每 30 秒轮询一次。
+- 代码：`packages/views/router/router-chat-marker.tsx`；`packages/core/router/`（`listRouterChats`、`routerChatsOptions`）；`server/internal/agentrouter/chat_summary.go`、`server/internal/handler/agent_router_chat_list.go`。上游触点：`chat-thread-list.tsx`、`chat-session-header.tsx` 各一处挂载，`drawings.mjs` 加 `Radar` 并重新生成图标。
+
 ## 已知局限（v6 切片 1）
 
 - 会话创建者离开工作区时，Owner 就是这个人，收件箱不再收他的通知：通知记为 `skipped`，订阅仍然暂停，用 `multica router list` 可以看到。

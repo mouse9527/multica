@@ -1,7 +1,8 @@
-// Added by the mouse9527/multica fork: Router page settings (M-105).
+// Added by the mouse9527/multica fork: Router page settings (M-105) and the
+// chat list's Router marker (M-108).
 
 import { queryOptions, useQueries } from "@tanstack/react-query";
-import { listRouterDispatches, listRouterSubscriptionChanges, listRouterSubscriptions } from "./api";
+import { listRouterChats, listRouterDispatches, listRouterSubscriptionChanges, listRouterSubscriptions } from "./api";
 import { latestDispatch } from "./group";
 import type { RouterDispatch, RouterSubscription } from "./types";
 
@@ -11,6 +12,7 @@ export const ROUTER_POLL_MS = 30_000;
 export const routerKeys = {
   all: (wsId: string) => ["router", wsId] as const,
   subscriptions: (wsId: string) => [...routerKeys.all(wsId), "subscriptions"] as const,
+  chats: (wsId: string) => [...routerKeys.all(wsId), "chats"] as const,
   dispatches: (wsId: string) => [...routerKeys.all(wsId), "dispatches"] as const,
   lastDispatch: (wsId: string, subscriptionId: string) =>
     [...routerKeys.all(wsId), "dispatches", "last", subscriptionId] as const,
@@ -22,6 +24,15 @@ export function routerSubscriptionsOptions(wsId: string) {
   return queryOptions({
     queryKey: routerKeys.subscriptions(wsId),
     queryFn: () => listRouterSubscriptions(wsId),
+    refetchInterval: ROUTER_POLL_MS,
+  });
+}
+
+/** The Routers among the member's chats, one request for the whole chat list. */
+export function routerChatsOptions(wsId: string) {
+  return queryOptions({
+    queryKey: routerKeys.chats(wsId),
+    queryFn: () => listRouterChats(wsId),
     refetchInterval: ROUTER_POLL_MS,
   });
 }

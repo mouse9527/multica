@@ -111,5 +111,13 @@
     "delete": "Удалить",
     "delete_title": "Удалить эту подписку?",
     "delete_description": "Собранные ею события тоже будут удалены."
+  },
+  "marker": {
+    "label": "Router · Области: {{scopes}} · {{status}}",
+    "scope_project": "Проект {{name}}",
+    "scope_issue_tree": "{{identifier}} {{name}}",
+    "scope_paused": "{{scope}} (приостановлено)",
+    "paused": "Приостановлен ({{reasons}})",
+    "separator": ", "
   }
 }
