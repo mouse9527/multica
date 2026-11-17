@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router v6 slice 2 (M-97).
 
 package main
 
@@ -32,7 +32,7 @@ func TestRouterCommandsAreRegistered(t *testing.T) {
 		{"router", "subscribe"}, {"router", "list"}, {"router", "get"}, {"router", "pause"},
 		{"router", "resume"}, {"router", "delete"}, {"router", "events"}, {"router", "scope"},
 		{"router", "update"}, {"router", "state", "get"}, {"router", "state", "set"},
-		{"router", "runs"}, {"router", "changes"}, {"router", "release"}, {"notify", "owner"}, {"notify", "list"},
+		{"router", "runs"}, {"router", "changes"}, {"router", "release"}, {"router", "holds"}, {"notify", "owner"}, {"notify", "list"},
 	} {
 		cmd, _, err := rootCmd.Find(path)
 		if err != nil || cmd.Name() != path[len(path)-1] {

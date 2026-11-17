@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router v6 slice 1 (M-96).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router v6 slices 1 (M-96) and 2 (M-97).
 
 package migrations
 
@@ -13,6 +13,7 @@ import (
 var routerTables = []string{
 	"router_subscription", "router_event", "router_issue_seen", "router_reconcile_cursor",
 	"router_dispatch", "router_subscription_change", "owner_notice", "router_chat_anchor",
+	"router_hold",
 }
 
 var routerIndexes = []string{
@@ -24,6 +25,8 @@ var routerIndexes = []string{
 	"idx_router_event_consumed",
 	"idx_router_subscription_change",
 	"idx_owner_notice_dedupe",
+	"idx_router_hold_item",
+	"idx_router_hold_subscription",
 }
 
 var routerUpMigrations = []string{
@@ -38,9 +41,15 @@ var routerUpMigrations = []string{
 	"9012_router_subscription_change_idx.up.sql",
 	"9013_router_owner_notice_dedupe_idx.up.sql",
 	"9014_router_chat_anchor.up.sql",
+	"9015_router_hold.up.sql",
+	"9016_router_hold_item_idx.up.sql",
+	"9017_router_hold_subscription_idx.up.sql",
 }
 
 var routerDownMigrations = []string{
+	"9017_router_hold_subscription_idx.down.sql",
+	"9016_router_hold_item_idx.down.sql",
+	"9015_router_hold.down.sql",
 	"9014_router_chat_anchor.down.sql",
 	"9013_router_owner_notice_dedupe_idx.down.sql",
 	"9012_router_subscription_change_idx.down.sql",

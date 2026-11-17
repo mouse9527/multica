@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router v6 slice 1 (M-96).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router v6 slices 1 (M-96) and 2 (M-97).
 
 package agentrouter
 
@@ -12,6 +12,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/scheduler"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
@@ -47,8 +48,10 @@ type JobRegistrar interface {
 // Register wires the Router into the server when router_v1 is on: the Bus
 // listener and the reconcile job, and with router_dispatch also on, the
 // dispatch job, which sends chat-bound subscriptions' batches to their chats
-// only with router_chat on as well. With router_v1 off it registers nothing, so the server
-// behaves exactly as upstream. It returns whether it registered capture.
+// only with router_chat on as well. With router_chat and router_hold_shadow on
+// it also registers the shadow hold as the inbox interceptor (hold.go). With
+// router_v1 off it registers nothing, so the server behaves exactly as
+// upstream. It returns whether it registered capture.
 func Register(ctx context.Context, flags *featureflag.Service, bus *events.Bus, db Database, jobs JobRegistrar, tasks *service.TaskService) bool {
 	if !featureflags.RouterV1Enabled(ctx, flags) {
 		return false
@@ -69,10 +72,17 @@ func Register(ctx context.Context, flags *featureflag.Service, bus *events.Bus, 
 		notices := NewNotifier(store, InboxAdapter{Queries: tasks.Queries, Bus: bus})
 		d := NewDispatcher(store, TaskRuns{Tasks: tasks}, notices)
 		d.Chat = featureflags.RouterChatEnabled(ctx, flags)
+		d.HoldShadow = featureflags.RouterHoldShadowEnabled(ctx, flags)
 		if err := jobs.Register(DispatchJob(d)); err != nil {
 			slog.Error("router: register dispatch job", "error", err)
 		} else {
 			slog.Info("router: dispatch enabled", "interval", DispatchInterval, "chat", d.Chat)
+			if d.HoldShadow {
+				h := NewHoldShadow(store)
+				activeHold.Store(h)
+				inbox.SetInterceptor(h, DefaultHoldBudget)
+				slog.Info("router: hold enabled in shadow mode", "budget", DefaultHoldBudget)
+			}
 		}
 	}
 	return true
