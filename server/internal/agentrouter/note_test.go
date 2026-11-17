@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and the Router's boundary (M-112).
 
 package agentrouter
 
@@ -53,5 +53,31 @@ func TestBuildNote(t *testing.T) {
 	}
 	if len(note) > 9*1024 {
 		t.Errorf("note is %d bytes; the event list should be capped", len(note))
+	}
+}
+
+// Both carriers tell the Router to hand substantive work to workers and say
+// where small and repository-worthy work goes (M-112).
+func TestBuildNoteStatesRouterBoundary(t *testing.T) {
+	member := "member"
+	evs := []batchEvent{{ID: "1", Kind: KindCommentCreated, IssueKey: "RT-2", ActorType: &member, ActorName: "Mouse",
+		Payload: map[string]any{"comment_id": "c1"}, OccurredAt: time.Now()}}
+	for _, chat := range []bool{false, true} {
+		note := buildNote(noteInput{sub: dispatchSub{ID: "sub-1"}, batch: batch{events: evs}, anchorKey: "RT-1",
+			scopeLabel: "issue tree RT-1", now: time.Now(), chat: chat})
+		for _, want := range []string{
+			"you do not do the work yourself",
+			"querying or analysing business data",
+			"a small task becomes a local Multica issue assigned to a fitting worker",
+			"also gets a GitHub issue, linked as `gh_issue` per the github-evidence skill",
+			"ops, environment and credential work stays a local issue only",
+		} {
+			if !strings.Contains(note, want) {
+				t.Errorf("chat=%v: note lacks %q", chat, want)
+			}
+		}
+		if got := strings.Contains(note, "When the owner asks you something here"); got != chat {
+			t.Errorf("chat=%v: owner-question rule present=%v", chat, got)
+		}
 	}
 }

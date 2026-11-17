@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), and no rate pause (M-111).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), and no rate pause (M-111).
 
 package agentrouter
 
@@ -805,6 +805,18 @@ const (
 	maxNoteTitle         = 80
 )
 
+// routerBoundary keeps the Router to dispatching, tracking and relaying: the
+// substantive work goes to workers through issues (M-112).
+const routerBoundary = "You dispatch, track and relay; you do not do the work yourself. " +
+	"Yours: reading state to decide and relay (issues, comments, runs, subscriptions, PR and Actions status) " +
+	"and issue and project operations (create, assign, change status, comment to @ the handler, update Router state). " +
+	"Hand off everything else, including querying or analysing business data (databases, logs, metrics), research, root-cause diagnosis, " +
+	"writing plans or docs, changing code or config, and any work whose result is itself the deliverable: " +
+	"a small task becomes a local Multica issue assigned to a fitting worker; " +
+	"work worth tracking in the repository (a code change that will produce a PR, a design conclusion that needs a public record) " +
+	"also gets a GitHub issue, linked as `gh_issue` per the github-evidence skill; " +
+	"ops, environment and credential work stays a local issue only.\n"
+
 // buildNote renders the run's context: the batch, the open issues in scope
 // and the subscription's state, with the CLI commands that reach further.
 // The daemon puts it in the run's prompt as the handoff note.
@@ -826,11 +838,15 @@ func buildNote(in noteInput) string {
 			"You are the Router for this scope. Read the events, check current state where it matters, and act. " +
 			"Your own actions are left out and never start a batch. " +
 			"Any text you reply here notifies the owner: reply only when they need to know, decide or act, and say so plainly. " +
-			"When nothing needs them, finish without any text reply; the turn stays silent.\n\n")
+			"When nothing needs them, finish without any text reply; the turn stays silent.\n" +
+			routerBoundary +
+			"When the owner asks you something here, answer directly only if one sentence from current state answers it; " +
+			"otherwise open an issue, hand it off and reply with one line naming the issue and who has it.\n\n")
 	} else {
 		b.WriteString("You are the Router for this scope. Read the events, check current state where it matters, and act. " +
 			"Your own actions are left out and never start a run. " +
-			"When a person has to decide or act, tell them with `multica notify owner --subscription " + id + " --title ... --body ...`; do not rely on issue comments alone.\n\n")
+			"When a person has to decide or act, tell them with `multica notify owner --subscription " + id + " --title ... --body ...`; do not rely on issue comments alone.\n" +
+			routerBoundary + "\n")
 	}
 
 	b.WriteString("Events, oldest first:\n")
