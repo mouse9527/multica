@@ -1,6 +1,6 @@
 # Router：事件捕获（S1）、派发与出口（S2）、chat 载体（v6 切片 1）、暂扣影子模式（v6 切片 2）
 
-本文件属于 `mouse9527/multica` fork（S1 是 M-85，S2 是 M-86，设计见 M-45 v5）。Router 让一个智能体订阅一个范围（一棵 issue 树或一个项目），把范围内的事件写进持久的事件队列（S1）；再把攒下的事件合成一批，在锚点 issue 上给这个智能体起一次运行，并给它一个通知 Owner 的出口（S2，见后文「派发（S2）」）。v6 切片 1（M-96）让订阅可以绑定一个 chat 会话：批次写进这个会话，Router 在会话里回话（见后文「chat 载体（v6 切片 1）」）。v6 切片 2（M-97）加上暂扣的影子模式：只记录「本来会扣」的收件箱条目，不真的扣（见后文「暂扣影子模式（v6 切片 2）」）。M-105 让 Owner 在页面上自己设置 Router（见后文「页面设置（M-105）」）。
+本文件属于 `mouse9527/multica` fork（S1 是 M-85，S2 是 M-86，设计见 M-45 v5）。Router 让一个智能体订阅一个范围（一棵 issue 树或一个项目），把范围内的事件写进持久的事件队列（S1）；再把攒下的事件合成一批，在锚点 issue 上给这个智能体起一次运行，并给它一个通知 Owner 的出口（S2，见后文「派发（S2）」）。v6 切片 1（M-96）让订阅可以绑定一个 chat 会话：批次写进这个会话，Router 在会话里回话（见后文「chat 载体（v6 切片 1）」）。v6 切片 2（M-97）加上暂扣的影子模式：只记录「本来会扣」的收件箱条目，不真的扣（见后文「暂扣影子模式（v6 切片 2）」）。M-105 让 Owner 在页面上自己设置 Router（见后文「页面设置（M-105）」）。M-111 去掉了按每小时运行次数的自动暂停（`max_runs_per_hour` 只作提醒阈值），并把派发的系统通知直接写进 Router chat、收件箱兜底（见后文「暂停（不静默）」和「出口：owner_notice」）。
 
 ## 开关
 
@@ -80,7 +80,7 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
   - **成员**：能管理该智能体（智能体所有者或工作区所有者、管理员）就能给它建订阅；修改、暂停、恢复、删除：创建它的成员、被订阅智能体的所有者、工作区所有者或管理员。
   - **智能体订阅自己**：照旧允许，不需要成员授权。
   - **智能体代建、代改**（给别的智能体）：只看这次运行的发起人（任务的 `originator_user_id`），不看提示词。运行必须还没结束，发起人必须是工作区成员，并且按上面成员的规则有权操作目标智能体或订阅。没有人类发起人的运行（autopilot 的规则所有者、owner_fallback 归责）没有这个权限。代建的订阅记为该成员创建（`created_by_type=member`、`owner_user_id` 也是该成员），代办的智能体和运行记在 `via_agent_id`、`via_task_id`。
-  - 每次创建、修改、暂停、恢复、删除和自动暂停都写一条 `router_subscription_change`，`multica router changes <id>` 可查。
+  - 每次创建、修改、暂停、恢复、删除和自动暂停都写一条 `router_subscription_change`，`multica router changes <id>` 可查（派发自动解除旧的 `rate` 暂停记为 `resume`、`actor_type=system`）。
   - 读取对工作区成员开放，私有项目里的 issue 按现有的可见性规则过滤。
 
 ## API 与 CLI
@@ -156,7 +156,7 @@ Owner 2026-11-16 定：Router 是实例（像 issue），智能体只是执行�
 - **事件消费**：事件按订阅存。派发在订阅行锁下读批次，写 `consumed_task_id` 时还带 `consumed_task_id IS NULL`，同一事件不会进两批。
 - **`state`**：按订阅存、带 revision。同一订阅串行，所以同一时间只有一个运行读写它；不同订阅的 state 互不相干。写入照旧要带 revision，冲突返回 409。
 - **结算与退回**：按派发行处理，只退回这个任务消费的事件（`consumed_task_id = 任务`），不涉及别的订阅。
-- **每小时上限**：按订阅计数（`router_dispatch.subscription_id`），在订阅行锁下数，和派发写入在同一事务，不会被并发派发绕过。
+- **每小时提醒阈值**：按订阅计数（`router_dispatch.subscription_id`），在订阅行锁下数，和派发写入在同一事务；提醒按「订阅、小时」去重，只提醒，不拦派发。
 - **暂停**：按订阅（`UPDATE … WHERE paused_reason IS NULL`），通知按「订阅、原因、小时」去重。
 - **chat 会话**：会话锁加「会话内没有在途批次」保证一个会话同时只有一个批次轮次；上游认领也按会话串行；Owner 的发言优先级仍高于批次。
 - **多副本、滚动升级**：订阅行锁 `FOR UPDATE` 始终在，旧版本（拿智能体锁）和新版本同时派发同一订阅时也由它串行，后到的看到在途派发就跳过。
@@ -167,12 +167,16 @@ Owner 2026-11-16 定：Router 是实例（像 issue），智能体只是执行�
 
 ### 暂停（不静默）
 
-以下情况把订阅的 `paused_reason` 设为 `rate` 或 `agent_unavailable`，**捕获继续**，只停派发，并给 Owner 发一条紧急通知（每个订阅、原因、小时只发一条）：
+Router 只要范围里有事件就一直派发，直到 Owner 主动暂停或解除（2026-11-17 Owner 决定，M-111）。派发只在以下情况把订阅的 `paused_reason` 设为 `agent_unavailable`，**捕获继续**，只停派发，并给 Owner 发一条紧急通知（每个订阅、原因、小时只发一条），正文写明原因、积压的事件条数和恢复命令：
 
-- 最近一小时的派发次数达到 `max_runs_per_hour`（默认 6，最大 60）→ `rate`；
-- 智能体被归档、没有 runtime，锚点 issue 被删，或入队被拒（私有项目无权限、工作区归责 fail-closed）→ `agent_unavailable`。
+- 智能体被归档、没有 runtime，锚点 issue 被删，或入队被拒（私有项目无权限、工作区归责 fail-closed）；
+- 绑定的 chat 不可用（见「chat 不可用时」）。
 
-`multica router resume <id>` 清掉原因，暂停期间攒下的事件作为一批派发。手动 `pause` 仍是 S1 的含义（停止捕获）。通知的收件人是订阅的 `owner_user_id`，没有时是智能体所有者。
+`multica router resume <id>` 清掉原因，暂停期间攒下的事件作为一批派发。手动 `pause` 仍是 S1 的含义（停止捕获）。通知的收件人是订阅的 `owner_user_id`，没有时是智能体所有者。绑定了可用 chat 的订阅，通知直接写进这个 chat（见「出口：owner_notice」的 chat 适配器），收件箱只做兜底。
+
+**运行次数不再导致暂停**。`max_runs_per_hour` 现在是提醒阈值（默认 20，范围 1–60）：派发写入后数最近一小时的派发次数（含这一次），超过阈值就给 Owner 发一条普通通知「Router busy」，说明次数、阈值和可选的处理办法（看 `router runs`、调高阈值、或手动暂停），**派发照常继续**。每个订阅每个整点小时最多一条（`dedupe_key = router_busy:<订阅>:<小时>`）。防循环靠原有机制：自己的动作不触发批次、同一个 Router 串行、合批的静默期和最长等待。
+
+兼容：字段、9004 的 CHECK（仍允许 `rate`）和数据库默认值都不改，没有迁移。新订阅的默认值从 6 改为 20（服务端 `DefaultMaxRunsPerHour` 和前端 `ROUTER_BATCHING`；数据库列默认值 6 只在绕过服务端直接插行时生效）。已有订阅保留原值，含义变为提醒阈值。旧版本留下的 `rate` 暂停，新版本每轮派发会自动解除（`paused_reason` 清空，`router changes` 里记一条 `resume`、`actor_type=system`、`detail.reason=rate`），积压的事件作为一批派发；滚动升级期间旧副本若又按 `rate` 暂停，下一轮也会被解除。
 
 ### state
 
@@ -183,12 +187,14 @@ Owner 2026-11-16 定：Router 是实例（像 issue），智能体只是执行�
 - `multica notify owner` 写一行 `owner_notice`，再交给各渠道适配器；Router 只调用这一个原语，不知道渠道。
 - 收件人：带 `--subscription` 时是该订阅的 `owner_user_id`（没有时是智能体所有者），智能体只能用自己的订阅；不带时，智能体通知自己的所有者，成员通知自己。
 - `--dedupe-key` 只在同一发送者（成员、智能体或系统）发给同一收件人的通知之间去重：重复发送返回第一条（HTTP 200，`created=false`），不会再投递。别人用同一个键发的通知互不影响，也读不到。智能体每小时最多发 30 条（429）。
-- **适配器**（`agentrouter.Adapter`）：MVP 只有收件箱。投递前先把该渠道记为 `unknown` 再发送，发完写 `sent`、`failed` 或 `skipped`；**`unknown` 不自动重试**（发送不幂等）。派发在事务里写的暂停通知，提交后立即投递；进程在这之间退出的，下一轮派发补投。
-- **收件箱适配器**：写一条 `type=router_notice` 的收件箱条目，`severity` 为 `action_required`（`--urgency high`）或 `info`，issue 是第一个 `--ref`；走现有的收件箱资格检查（私有项目不可见的成员会得到 `skipped`）。这个类型不在通知分组里，不会被静音或专注模式过滤。前端把它当未知类型：列表和详情显示标题和正文，详情头部没有类型名称（本切片不改前端）。chat、IM 适配器只留接口。
+- **适配器**（`agentrouter.Adapter`）：按顺序投递。投递前先把该渠道记为 `unknown` 再发送，发完写 `sent`、`failed` 或 `skipped`；**`unknown` 不自动重试**（发送不幂等）。派发在事务里写的系统通知（暂停、运行过多），提交后立即投递；进程在这之间退出的，下一轮派发补投。派发用的通知器在 `router_chat` 打开时依次是 chat、收件箱；`multica notify owner` 走的通知器只有收件箱。
+- **兜底适配器**（`FallbackAdapter`）：前面已有渠道 `sent` 时，它不再投递，记为 `skipped`（`sent through another channel`）。收件箱是兜底适配器。
+- **chat 适配器**（M-111，`chat_notice.go`）：只投派发自己的系统通知（`sender_type=system` 且有 `source_subscription_id`），智能体发的通知记 `skipped`。订阅绑定的 chat 要能用：`active`、智能体相同、创建者就是通知的收件人且仍是工作区成员，否则记 `skipped`，由收件箱兜底。投递是 `service.PostRouterChatNotice`：在会话锁下写一条普通 assistant 消息（`message_kind=message`，没有任务，与 Mika 开场白同一写法），正文以「[Router 系统通知 · 非 Router 回复]」开头，接标题和正文；提交后广播 `chat:message`（带消息 id），并发 `chat:reply_notification`（只发给会话创建者在该工作区的连接），所以 Owner 收到与 Router 回复相同的系统通知，会话也算未读。智能体不会把这条消息当作输入。
+- **收件箱适配器**：写一条 `type=router_notice` 的收件箱条目，`severity` 为 `action_required`（`--urgency high`）或 `info`，issue 是第一个 `--ref`；走现有的收件箱资格检查（私有项目不可见的成员会得到 `skipped`）。这个类型不在通知分组里，不会被静音或专注模式过滤。前端把它当未知类型：列表和详情显示标题和正文，详情头部没有类型名称（本切片不改前端）。IM 适配器只留接口。
 
 ## chat 载体（v6 切片 1）
 
-设计见 M-95「已定决定」2026-11-16。订阅绑定一个 chat 会话后（`router_chat` 打开时），派发不再在锚点 issue 上起运行，而是把批次写进这个会话、由一个 chat 任务读它。Owner 在同一个会话里和 Router 说话，Router 也在这里回话。合批、每小时上限、暂停、`state`、结算与重派都和锚点运行一样；串行单位是会话（见「并行与串行」）。
+设计见 M-95「已定决定」2026-11-16。订阅绑定一个 chat 会话后（`router_chat` 打开时），派发不再在锚点 issue 上起运行，而是把批次写进这个会话、由一个 chat 任务读它。Owner 在同一个会话里和 Router 说话，Router 也在这里回话。合批、每小时提醒阈值、暂停、`state`、结算与重派都和锚点运行一样；串行单位是会话（见「并行与串行」）。
 
 ### 绑定
 
@@ -201,7 +207,7 @@ Owner 2026-11-16 定：Router 是实例（像 issue），智能体只是执行�
 - `service.EnqueueRouterChatRun`（`server/internal/service/router_chat_run.go`）在一个事务里做和成员发消息相同的事：锁会话 → 建 chat 任务 → 任务拥有自己的输入 → 写一条 `role=user`、`message_kind=router_batch` 的消息。daemon 不用改：认领时这条消息就是本轮的输入。
 - 批次正文第一行是「[Router 事件批次 · 非 Owner 发言]」，因为认领时多条输入直接拼接、不带作者；正文告诉 Router：有话要 Owner 知道或决定才回文字，否则不输出文字。
 - 批次任务优先级 1，Owner 的 chat 是 2：排队中的 Owner 发言先被认领；正在跑的批次不会被打断。批次任务没有发起人（`originator_user_id` 为空，Router 在其中没有任何成员的授权），归责照旧回落到智能体所有者，`initiator_user_id` 是会话创建者。
-- **私有项目围栏与锚点运行一致**（MUL-8472）：批次里有 issue 标题和评论内容，所以写入之前先对锚点 issue 做 `guardRunProjectAccess`。这里要求两个人都能看到这个项目：一是会话创建者（批次写进的是他的会话），二是智能体所有者（在他的 runtime 上执行）。任一方看不到，就返回 `ErrProjectAccessDenied`，映射为 `ErrRunRefused`：派发暂停（`agent_unavailable`），并发收件箱通知，消息和任务都不写。
+- **私有项目围栏与锚点运行一致**（MUL-8472）：批次里有 issue 标题和评论内容，所以写入之前先对锚点 issue 做 `guardRunProjectAccess`。这里要求两个人都能看到这个项目：一是会话创建者（批次写进的是他的会话），二是智能体所有者（在他的 runtime 上执行）。任一方看不到，就返回 `ErrProjectAccessDenied`，映射为 `ErrRunRefused`：派发暂停（`agent_unavailable`），并通知 Owner（会话可用，所以写进会话，见「暂停（不静默）」），批次消息和任务都不写。
 - 和锚点运行的一个差别：锚点 issue 进入 triage 时，锚点运行会一直等待；chat 载体不受影响，因为 chat 模式下锚点 issue 只是派发记录和看板，不是运行的位置。
 - 派发记录（`router_dispatch`）照旧写锚点 issue，`task_id` 是 chat 任务。
 - **批次轮次不做系统自动重试**（任务的 `max_attempts` 设为 1）。上游会把 chat 重试的优先级提到至少 3，那样重试中的批次会排到 Owner 排队的发言前面。批次轮次失败或被取消时，会话里照上游规则留一条失败消息（不弹通知）；派发结算为 `failed`，把事件退回队列，下一轮作为新批次（优先级 1）重新写进会话，所以整条链都排在 Owner 之后，事件也不会丢。
@@ -214,7 +220,7 @@ Owner 2026-11-16 定：Router 是实例（像 issue），智能体只是执行�
 
 ### chat 不可用时
 
-会话被归档、删除，转给了别的智能体，或会话创建者已不是工作区成员：每轮派发都会检查已绑定会话的订阅，发现了就把订阅的派发暂停（`agent_unavailable`，捕获继续），并用 `owner_notice` 走收件箱通知 Owner（不走这个已经不可用的会话），正文写明原因和恢复办法（重新绑定或 `--anchor-chat none`，再 `resume`）。入队时才发现会话已归档（竞态）也同样暂停。
+会话被归档、删除，转给了别的智能体，或会话创建者已不是工作区成员：每轮派发都会检查已绑定会话的订阅，发现了就把订阅的派发暂停（`agent_unavailable`，捕获继续），并用 `owner_notice` 走收件箱通知 Owner（chat 适配器发现会话不可用，记 `skipped`，由收件箱兜底），正文写明原因和恢复办法（重新绑定或 `--anchor-chat none`，再 `resume`）。入队时才发现会话已归档（竞态）也同样暂停。
 
 这类暂停沿用 `agent_unavailable`（9004 的 CHECK 只允许 `rate`、`manual`、`agent_unavailable`，本切片不改表），所以 `multica router list` 和按原因统计的告警分不出「智能体不可用」「项目权限拒绝」和「chat 不可用」。具体原因看 `router changes` 里 `auto_pause` 记录的 `detail.why`，或收件箱通知的正文。
 
@@ -282,7 +288,7 @@ Owner 2026-11-16 定：Router 是实例（像 issue），智能体只是执行�
 
 - 统计只在进程内存里（见「观测」）；要跨重启、跨副本的数字，用 `router_hold` 的行。
 - 写入方事务里新建的 issue，判定时还看不到（记 `issue_missing`，不记影子行）。现在的调用点都是在提交之后写收件箱，所以实际不会出现；切片 3 若要覆盖，判定要进写入方事务。
-- 订阅被派发自动暂停（`rate`、`agent_unavailable`）后，最多 30 秒内仍可能记影子行。
+- 订阅被派发自动暂停（`agent_unavailable`）后，最多 30 秒内仍可能记影子行。
 - 「Hold preview」只出现在 chat 批次里；没有绑定 chat 的订阅不判定、不记录。
 
 ## 页面设置（M-105）
@@ -298,13 +304,13 @@ Owner 不用 CLI，在页面上（或在 chat 里对智能体下指令，见下�
 ### 设为 Router
 
 - 范围可以加多个：项目（`project`），或一棵任务树（选根任务，`issue_tree`）。项目列表和任务搜索沿用现有接口，看不到的私有项目不会出现。
-- 事件类型默认全选；合批参数（静默期、最长等待、每小时运行上限）默认 60 / 600 / 6，前端按服务端同样的范围校验。
+- 事件类型默认全选；合批参数（静默期、最长等待、每小时运行提醒阈值）默认 60 / 600 / 20，前端按服务端同样的范围校验。
 - 每个范围一条订阅，**创建时直接绑定这个 chat**：`POST /api/router/subscriptions` 新增 `anchor_chat_session_id`（需要 `router_chat`），绑定和建订阅在同一个事务里，校验与 `PATCH` 相同（会话在本工作区、未归档、智能体相同、创建者是订阅 Owner）。所以订阅不会有「已建好、还没绑定」而去起锚点运行的窗口；绑定校验失败时什么都不建。
 - **锚点 issue**：任务树用树根。项目范围没有自己的 issue，而派发记录和私有项目围栏都按锚点 issue 走，所以页面会在**该项目里**新建一个看板任务「Router 看板 · <chat 名>」作为锚点，并在 Router 设置里显示「看板 ACME-12」的链接。每个项目各建一个（围栏检查的是锚点所在项目）。订阅创建失败时，刚建的看板任务会被删掉。没有为「不要锚点」改后端：那要改 `router_dispatch` 等表，属于迁移。
 
 ### Router 设置
 
-- 状态：运行中，或已暂停并列出原因（手动暂停 / 达到每小时运行上限 / 智能体、对话或项目不可用）；自动暂停（`agent_unavailable`）时再显示服务端审计里记的具体原因（`router changes` 里 `auto_pause` 的 `detail.why`）。每个范围也单独标出暂停原因。
+- 状态：运行中，或已暂停并列出原因（手动暂停 / 智能体、对话或项目不可用；旧版本留下的「达到每小时运行上限」会被派发自动解除）；自动暂停（`agent_unavailable`）时再显示服务端审计里记的具体原因（`router changes` 里 `auto_pause` 的 `detail.why`）。每个范围也单独标出暂停原因。
 - 健康：最近一次运行（时间、结果、事件数；按订阅各查最新一条，不受工作区里其他 Router 运行多少影响）、对账推进到（各订阅 `reconciled_through` 里最早的那个）、漏捕获（`capture_miss` 合计）。
 - 修改事件类型、合批参数时写到这个 Router 的每一条订阅；可以继续加范围，或移除某个范围（删除那条订阅；最后一个范围要用「解除 Router」）。
 - **同一智能体同一范围只能有一条订阅**（`(agent_id, scope_type, scope_id)` 唯一）。所以加范围时：这个智能体已有一条**未绑定**的同范围订阅（例如解除时选了「保留」），页面直接接回它——先绑到这个 chat 并写入表单的设置，再恢复，不新建、也不再建看板；已经在**别的 chat 的 Router** 里的范围不出现在选择器里，万一撞上（数据过期）就提示先去那边解除或移除。
@@ -348,7 +354,7 @@ Owner 也可以在 chat 里直接跟这个 chat 的智能体说「把这个 chat
 - 会话创建者离开工作区时，Owner 就是这个人，收件箱不再收他的通知：通知记为 `skipped`，订阅仍然暂停，用 `multica router list` 可以看到。
 - Owner 在界面上取消一个排队中的批次轮次时，上游会把这条输入当成被撤回的草稿放回输入框；事件仍会退回队列重派。
 - 移动端没有改：批次消息在移动端显示成一条普通的用户气泡（`message_kind` 未知时退化为 `message`），每个静默的批次轮次还会成对显示一条「本轮无文字回复」的 `no_response` 占位（移动端照常渲染它）。网页端没有这些噪音；移动端是否做同样的隐藏，留给后续切片决定。
-- 批次轮次因基础设施原因失败（runtime 离线、超时等）时不会原地重试，而是作为新批次重派，所以会话里会留一条失败消息和一条新的批次消息；重派计入每小时上限，一直失败会触发 `rate` 暂停并通知 Owner。
+- 批次轮次因基础设施原因失败（runtime 离线、超时等）时不会原地重试，而是作为新批次重派，所以会话里会留一条失败消息和一条新的批次消息；重派计入每小时运行次数，一直失败会超过提醒阈值，Owner 每小时收到一次「Router busy」提醒，派发不停。
 
 ## 已知局限（并行，M-104）
 
