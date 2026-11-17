@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slice 1 (M-96), and Router settings by instruction (M-105).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slice 1 (M-96), Router settings by instruction (M-105), and no rate pause (M-111).
 
 package main
 
@@ -88,7 +88,7 @@ func init() {
 		c.Flags().String("anchor", "", "Issue anchor runs go to (key or UUID; default for --issue: the tree root)")
 		c.Flags().Int("debounce", 0, "Seconds without a new event before a batch starts (default 60)")
 		c.Flags().Int("max-wait", 0, "Most seconds the oldest event waits before a batch starts (default 600)")
-		c.Flags().Int("max-runs-per-hour", 0, "Runs per hour before dispatch pauses and the owner is notified (default 6)")
+		c.Flags().Int("max-runs-per-hour", 0, "Runs per hour above which the owner is alerted, at most once an hour; dispatch never pauses for it (default 20)")
 	}
 	routerUpdateCmd.Flags().StringSlice("events", nil, "Event types to capture from now on")
 	routerUpdateCmd.Flags().String("anchor-chat", "", "Chat that receives the batches instead of anchor runs: current (inside a chat run) or a chat session UUID; \"none\" goes back to anchor runs (needs router_chat)")

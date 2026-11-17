@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), and Router parallelism (M-104).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), and no rate pause (M-111).
 
 package agentrouter
 
@@ -121,6 +121,9 @@ func (d *Dispatcher) TickWorkspace(ctx context.Context, workspaceID string) (Dis
 		if err != nil {
 			d.Logger.Warn("router: pausing subscriptions with an unusable chat failed", "error", err)
 		}
+	}
+	if _, err := d.liftRatePauses(ctx, workspaceID); err != nil {
+		d.Logger.Warn("router: lifting rate pauses failed", "error", err)
 	}
 	due, err := d.dueSubscriptions(ctx, workspaceID)
 	if err != nil {
@@ -306,8 +309,8 @@ type dispatchSub struct {
 }
 
 // dispatchOne dispatches one due subscription. It returns the outcome and,
-// when it paused the subscription, the id of the notice to deliver after the
-// commit.
+// when it paused the subscription or found it busy, the id of the notice to
+// deliver after the commit.
 func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutcome, string, error) {
 	tx, err := d.Store.Tx.Begin(ctx)
 	if err != nil {
@@ -383,16 +386,6 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 		return outcomeWaiting, "", err
 	}
 
-	var recent int
-	if err := tx.QueryRow(ctx, `
-		SELECT count(*) FROM router_dispatch
-		WHERE subscription_id = $1::uuid AND created_at > now() - interval '1 hour'`, sub.ID).Scan(&recent); err != nil {
-		return outcomeWaiting, "", err
-	}
-	if recent >= sub.MaxRunsPerHour {
-		return pause(PausedRate, fmt.Sprintf("it started %d runs in the last hour, the limit is %d", recent, sub.MaxRunsPerHour))
-	}
-
 	batch, err := loadBatch(ctx, tx, sub.ID)
 	if err != nil {
 		return outcomeWaiting, "", err
@@ -461,12 +454,54 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 			return outcomeWaiting, "", err
 		}
 	}
+	notice, err := d.alertBusy(ctx, tx, sub, agentName, agentOwner)
+	if err != nil {
+		return outcomeWaiting, "", err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return outcomeWaiting, "", err
 	}
 	d.Logger.Info("router: run queued", "subscription_id", sub.ID, "agent_id", sub.AgentID,
 		"task_id", taskID, "chat_session_id", chatID, "events", len(batch.events))
-	return outcomeDispatched, "", nil
+	return outcomeDispatched, notice, nil
+}
+
+// alertBusy tells the owner, at most once per subscription and hour, that the
+// Router started more runs in the last hour than max_runs_per_hour, the run
+// just queued included. It only tells: dispatch goes on, because a Router
+// keeps working for as long as its scope has events (M-111). It returns the
+// id of the notice to deliver after the commit, or "".
+func (d *Dispatcher) alertBusy(ctx context.Context, tx pgx.Tx, sub dispatchSub, agentName, agentOwner string) (string, error) {
+	var recent int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM router_dispatch
+		WHERE subscription_id = $1::uuid AND created_at > now() - interval '1 hour'`, sub.ID).Scan(&recent); err != nil {
+		return "", err
+	}
+	recipient := noticeRecipient(sub, agentOwner)
+	if recent <= sub.MaxRunsPerHour || recipient == "" {
+		return "", nil
+	}
+	n, created, err := insertNotice(ctx, tx, NoticeInput{
+		WorkspaceID:     sub.WorkspaceID,
+		RecipientUserID: recipient,
+		Title:           fmt.Sprintf("Router busy for %s", agentName),
+		Body: fmt.Sprintf("Router subscription %s started %d runs in the last hour, more than its alert threshold of %d "+
+			"(max_runs_per_hour). It keeps dispatching; nothing is paused. If this is more than the scope's activity explains, "+
+			"look at `multica router runs --subscription %s`; raise the threshold with `multica router update %s --max-runs-per-hour <n>`, "+
+			"or stop it with `multica router pause %s`.", sub.ID, recent, sub.MaxRunsPerHour, sub.ID, sub.ID, sub.ID),
+		Refs:                 anchorRefs(sub),
+		Urgency:              UrgencyNormal,
+		DedupeKey:            fmt.Sprintf("router_busy:%s:%s", sub.ID, time.Now().UTC().Format("2006010215")),
+		SenderType:           "system",
+		SourceSubscriptionID: sub.ID,
+	})
+	if err != nil || !created {
+		return "", err
+	}
+	d.Logger.Info("router: busy", "subscription_id", sub.ID, "agent_id", sub.AgentID,
+		"runs_last_hour", recent, "max_runs_per_hour", sub.MaxRunsPerHour)
+	return n.ID, nil
 }
 
 // testHookBeforeEnqueue, when set by a test, runs with the dispatch's locks
@@ -527,26 +562,26 @@ func (d *Dispatcher) pauseDispatch(ctx context.Context, tx pgx.Tx, sub dispatchS
 	}); err != nil {
 		return "", err
 	}
-	recipient := agentOwner
-	if sub.OwnerUserID != nil {
-		recipient = *sub.OwnerUserID
-	}
+	recipient := noticeRecipient(sub, agentOwner)
 	d.Logger.Warn("router: dispatch paused", "subscription_id", sub.ID, "agent_id", sub.AgentID,
 		"reason", reason, "why", why)
 	if recipient == "" {
 		return "", nil
 	}
-	var refs []string
-	if sub.AnchorIssueID != nil {
-		refs = []string{*sub.AnchorIssueID}
+	var waiting int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM router_event
+		WHERE subscription_id = $1::uuid AND consumed_task_id IS NULL AND NOT is_self`, sub.ID).Scan(&waiting); err != nil {
+		return "", err
 	}
 	n, _, err := insertNotice(ctx, tx, NoticeInput{
 		WorkspaceID:     sub.WorkspaceID,
 		RecipientUserID: recipient,
 		Title:           fmt.Sprintf("Router paused for %s", agentName),
 		Body: fmt.Sprintf("Router subscription %s stopped starting runs for %s: %s. "+
-			"Events are still captured. Resume with `multica router resume %s`.", sub.ID, agentName, why, sub.ID),
-		Refs:                 refs,
+			"%d event(s) are waiting, and events are still captured. Resume with `multica router resume %s`.",
+			sub.ID, agentName, why, waiting, sub.ID),
+		Refs:                 anchorRefs(sub),
 		Urgency:              UrgencyHigh,
 		DedupeKey:            fmt.Sprintf("router_paused:%s:%s:%s", sub.ID, reason, time.Now().UTC().Format("2006010215")),
 		SenderType:           "system",
@@ -556,6 +591,60 @@ func (d *Dispatcher) pauseDispatch(ctx context.Context, tx pgx.Tx, sub dispatchS
 		return "", err
 	}
 	return n.ID, nil
+}
+
+// noticeRecipient is the member a subscription's system notices go to: its
+// owner, or the subscribed agent's owner (see subscriptionOwnerSQL).
+func noticeRecipient(sub dispatchSub, agentOwner string) string {
+	if sub.OwnerUserID != nil {
+		return *sub.OwnerUserID
+	}
+	return agentOwner
+}
+
+func anchorRefs(sub dispatchSub) []string {
+	if sub.AnchorIssueID == nil {
+		return nil
+	}
+	return []string{*sub.AnchorIssueID}
+}
+
+// liftRatePauses resumes dispatch for subscriptions an older release paused
+// for "rate". Dispatch no longer pauses for the hourly run count (M-111), so
+// this finds rows only after an upgrade, or while an older replica still runs
+// during a rolling one.
+func (d *Dispatcher) liftRatePauses(ctx context.Context, workspaceID string) (int, error) {
+	tx, err := d.Store.Tx.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	rows, err := tx.Query(ctx, `
+		UPDATE router_subscription SET paused_reason = NULL, updated_at = now()
+		WHERE enabled AND paused_reason = $1 AND ($2 = '' OR workspace_id = NULLIF($2, '')::uuid)
+		RETURNING id::text, workspace_id::text`, PausedRate, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	type lifted struct{ id, ws string }
+	subs, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (lifted, error) {
+		var x lifted
+		err := r.Scan(&x.id, &x.ws)
+		return x, err
+	})
+	if err != nil {
+		return 0, err
+	}
+	for _, s := range subs {
+		if err := recordChange(ctx, tx, s.ws, s.id, Change{
+			Action: ChangeResume, ActorType: "system",
+			Detail: map[string]any{"reason": PausedRate, "why": "the Router no longer pauses for its hourly run count"},
+		}); err != nil {
+			return 0, err
+		}
+		d.Logger.Info("router: lifted a rate pause", "subscription_id", s.id)
+	}
+	return len(subs), tx.Commit(ctx)
 }
 
 // batchEvent is one pending event as the note shows it.

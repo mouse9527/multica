@@ -21,7 +21,7 @@ export type RouterEventType = (typeof ROUTER_EVENT_TYPES)[number];
 export const ROUTER_BATCHING = {
   defaultDebounceSeconds: 60,
   defaultMaxWaitSeconds: 600,
-  defaultMaxRunsPerHour: 6,
+  defaultMaxRunsPerHour: 20,
   minSeconds: 10,
   maxSeconds: 86400,
   maxRunsPerHourLimit: 60,

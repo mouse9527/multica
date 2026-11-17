@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router v6 slices 1 (M-96) and 2 (M-97).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), and Router notices in the Router chat (M-111).
 
 package agentrouter
 
@@ -69,9 +69,15 @@ func Register(ctx context.Context, flags *featureflag.Service, bus *events.Bus, 
 	}
 	slog.Info("router: capture enabled", "reconcile_interval", interval)
 	if featureflags.RouterDispatchEnabled(ctx, flags) && tasks != nil {
-		notices := NewNotifier(store, InboxAdapter{Queries: tasks.Queries, Bus: bus})
-		d := NewDispatcher(store, TaskRuns{Tasks: tasks}, notices)
-		d.Chat = featureflags.RouterChatEnabled(ctx, flags)
+		runs := TaskRuns{Tasks: tasks}
+		inboxAdapter := InboxAdapter{Queries: tasks.Queries, Bus: bus}
+		notices := NewNotifier(store, inboxAdapter)
+		chat := featureflags.RouterChatEnabled(ctx, flags)
+		if chat {
+			notices = NewNotifier(store, ChatAdapter{Store: store, Poster: runs}, inboxAdapter)
+		}
+		d := NewDispatcher(store, runs, notices)
+		d.Chat = chat
 		d.HoldShadow = featureflags.RouterHoldShadowEnabled(ctx, flags)
 		if err := jobs.Register(DispatchJob(d)); err != nil {
 			slog.Error("router: register dispatch job", "error", err)

@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router v6, slice 1 (M-96).
+// Modified for the mouse9527/multica fork: Router v6, slice 1 (M-96), and Router notices in the Router chat (M-111).
 
 package agentrouter
 
@@ -179,6 +179,10 @@ func TestUnusableChatPausesDispatchAndTellsTheOwner(t *testing.T) {
 			if !strings.Contains(body, chat) || !strings.Contains(body, "--anchor-chat") {
 				t.Fatalf("notice %q: %s", title, body)
 			}
+			// The chat cannot carry it: the inbox does.
+			if len(runs.notices) != 0 {
+				t.Fatalf("notice posted into an unusable chat: %+v", runs.notices)
+			}
 			// A member who left the workspace has no inbox there: the notice
 			// is kept, and its inbox delivery recorded as skipped.
 			want := 1
@@ -219,5 +223,53 @@ func TestChatUnavailableOnEnqueuePauses(t *testing.T) {
 	}
 	if p := e.pending(sub.ID); len(p) != 1 {
 		t.Fatalf("pending = %d, want the event kept", len(p))
+	}
+}
+
+// TestPauseNoticeGoesToTheRouterChat: a pause whose cause leaves the chat
+// usable is told in the chat, with the backlog and the way out; the inbox
+// does not repeat it.
+func TestPauseNoticeGoesToTheRouterChat(t *testing.T) {
+	e, d, runs := newDispatchEnv(t)
+	d.Chat = true
+	root := e.issue("router root")
+	sub := e.subscribe(e.agentA, ScopeIssueTree, root)
+	chat := e.bindChat(sub)
+	e.publishComment(e.comment(root))
+	e.publishComment(e.comment(root))
+	e.age(sub.ID)
+	e.fx.Exec(t, `UPDATE agent SET runtime_id = NULL WHERE id = $1`, e.agentA)
+	e.tick(d)
+
+	if r := e.get(sub.ID).PausedReason; r == nil || *r != PausedAgentUnavailable {
+		t.Fatalf("paused_reason = %v, want agent_unavailable", r)
+	}
+	if len(runs.calls) != 0 || len(runs.notices) != 1 {
+		t.Fatalf("runs = %d, chat notices = %d; want 0 and 1", len(runs.calls), len(runs.notices))
+	}
+	got := runs.notices[0]
+	if got.chat != chat || !strings.HasPrefix(got.note, RouterNoticeLabel+"\n") || !strings.Contains(got.note, "Router paused") ||
+		!strings.Contains(got.note, "no runtime") || !strings.Contains(got.note, "2 event(s) are waiting") ||
+		!strings.Contains(got.note, "multica router resume "+sub.ID) {
+		t.Fatalf("chat notice = %+v", got)
+	}
+	notices, _ := d.Notices.ListNotices(e.ctx, NoticeFilter{WorkspaceID: e.ws, SubscriptionID: sub.ID})
+	if len(notices) != 1 || notices[0].ChannelStates["chat"].State != DeliverySent || notices[0].ChannelStates["chat"].Ref != "message-1" ||
+		notices[0].ChannelStates["inbox"].State != DeliverySkipped {
+		t.Fatalf("notices = %+v", notices)
+	}
+	var inbox int
+	if err := pool.QueryRow(e.ctx, `SELECT count(*) FROM inbox_item WHERE workspace_id = $1`, e.ws).Scan(&inbox); err != nil || inbox != 0 {
+		t.Fatalf("inbox items = %d (%v), want none", inbox, err)
+	}
+
+	// A chat started by someone else than the notice's recipient never gets it.
+	other := e.fx.User(t, "router other", fmt.Sprintf("router-other-%d@example.test", time.Now().UnixNano()))
+	e.fx.Exec(t, `UPDATE chat_session SET creator_id = $2 WHERE id = $1`, chat, other)
+	n, _, err := d.Notices.Send(e.ctx, NoticeInput{
+		WorkspaceID: e.ws, RecipientUserID: e.user, Title: "t", SenderType: "system", SourceSubscriptionID: sub.ID,
+	})
+	if err != nil || n.ChannelStates["chat"].State != DeliverySkipped || n.ChannelStates["inbox"].State != DeliverySent {
+		t.Fatalf("notice = %+v (%v), want it in the inbox only", n, err)
 	}
 }

@@ -116,7 +116,7 @@ func TestRouterUpdateSubscription(t *testing.T) {
 		"agent_id": f.agentA, "scope_type": "issue_tree", "scope_id": f.root,
 	})).Want(http.StatusCreated).JSON(&sub)
 	id := sub["id"].(string)
-	if sub["debounce_seconds"] != float64(60) || sub["max_wait_seconds"] != float64(600) || sub["max_runs_per_hour"] != float64(6) {
+	if sub["debounce_seconds"] != float64(60) || sub["max_wait_seconds"] != float64(600) || sub["max_runs_per_hour"] != float64(20) {
 		t.Fatalf("defaults = %v", sub)
 	}
 

@@ -204,7 +204,7 @@ describe("Router in the chat menu", () => {
         event_types: ["issue_created"],
         debounce_seconds: 60,
         max_wait_seconds: 600,
-        max_runs_per_hour: 6,
+        max_runs_per_hour: 20,
       },
     });
     expect(api.createIssue).not.toHaveBeenCalled();
