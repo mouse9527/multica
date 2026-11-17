@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and Router notices in the Router chat (M-111).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router notices in the Router chat (M-111), and no late redelivery of pending notices (M-116).
 
 package agentrouter
 
@@ -278,10 +278,20 @@ func (nf *Notifier) Deliver(ctx context.Context, id string) Notice {
 	return last
 }
 
+// PendingNoticeWindow is how old a notice may be and still be delivered by
+// DeliverPending. A notice tells the state of a moment (a pause, a busy
+// Router); past this window that state may be over, so the notice is left
+// as it is rather than delivered late.
+const PendingNoticeWindow = 15 * time.Minute
+
 // DeliverPending delivers notices written inside another transaction (the
 // dispatcher's pause notices) that some adapter has not claimed yet, for
 // instance because the process stopped right after the commit. It returns how
 // many it handed over. An empty workspaceID covers every workspace.
+//
+// A notice some channel has already sent reached its recipient and is not
+// pending: a channel added by a later release (or turned on later) must not
+// deliver it a second time.
 func (nf *Notifier) DeliverPending(ctx context.Context, workspaceID string) (int, error) {
 	channels := make([]string, 0, len(nf.Adapters))
 	for _, a := range nf.Adapters {
@@ -292,10 +302,11 @@ func (nf *Notifier) DeliverPending(ctx context.Context, workspaceID string) (int
 	}
 	rows, err := nf.Store.DB.Query(ctx, `
 		SELECT id::text FROM owner_notice
-		WHERE created_at > now() - interval '1 day'
+		WHERE created_at > now() - make_interval(secs => $3)
 		  AND NOT (channel_states ?& $1::text[])
+		  AND NOT EXISTS (SELECT 1 FROM jsonb_each(channel_states) c WHERE c.value->>'state' = 'sent')
 		  AND ($2 = '' OR workspace_id = NULLIF($2, '')::uuid)
-		ORDER BY created_at LIMIT 50`, channels, workspaceID)
+		ORDER BY created_at LIMIT 50`, channels, workspaceID, PendingNoticeWindow.Seconds())
 	if err != nil {
 		return 0, err
 	}

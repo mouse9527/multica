@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router v6, slice 1 (M-96), and Router notices in the Router chat (M-111).
+// Modified for the mouse9527/multica fork: Router v6, slice 1 (M-96), Router notices in the Router chat (M-111), and no late redelivery of pending notices (M-116).
 
 package agentrouter
 
@@ -271,5 +271,50 @@ func TestPauseNoticeGoesToTheRouterChat(t *testing.T) {
 	})
 	if err != nil || n.ChannelStates["chat"].State != DeliverySkipped || n.ChannelStates["inbox"].State != DeliverySent {
 		t.Fatalf("notice = %+v (%v), want it in the inbox only", n, err)
+	}
+}
+
+// TestPendingNoticesAreNotRedeliveredLate: the next pass delivers a notice
+// no channel has attempted yet, but not one an older release already sent
+// to the inbox (the chat channel did not exist then), nor one past
+// PendingNoticeWindow, whose state may be over.
+func TestPendingNoticesAreNotRedeliveredLate(t *testing.T) {
+	e, d, runs := newDispatchEnv(t)
+	d.Chat = true
+	root := e.issue("router root")
+	sub := e.subscribe(e.agentA, ScopeIssueTree, root)
+	chat := e.bindChat(sub)
+	write := func(key string) Notice {
+		t.Helper()
+		n, _, err := insertNotice(e.ctx, pool, NoticeInput{
+			WorkspaceID: e.ws, RecipientUserID: e.user, Title: "Router paused " + key, Urgency: UrgencyHigh,
+			DedupeKey: key, SenderType: "system", SourceSubscriptionID: sub.ID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	sent := write("sent-before")
+	e.fx.Exec(t, `UPDATE owner_notice SET channel_states = '{"inbox":{"state":"sent","ref":"item-1"}}' WHERE id = $1`, sent.ID)
+	stale := write("stale")
+	e.fx.Exec(t, `UPDATE owner_notice SET created_at = now() - interval '20 minutes' WHERE id = $1`, stale.ID)
+	fresh := write("fresh")
+
+	if _, err := d.Notices.DeliverPending(e.ctx, e.ws); err != nil {
+		t.Fatal(err)
+	}
+	if len(runs.notices) != 1 || runs.notices[0].chat != chat || !strings.Contains(runs.notices[0].note, fresh.Title) {
+		t.Fatalf("chat notices = %+v, want only %q", runs.notices, fresh.Title)
+	}
+	if got, _ := d.Notices.Get(e.ctx, e.ws, fresh.ID); got.ChannelStates["chat"].State != DeliverySent ||
+		got.ChannelStates["inbox"].State != DeliverySkipped {
+		t.Fatalf("fresh notice = %+v", got.ChannelStates)
+	}
+	if got, _ := d.Notices.Get(e.ctx, e.ws, sent.ID); len(got.ChannelStates) != 1 || got.ChannelStates["inbox"].State != DeliverySent {
+		t.Fatalf("notice already sent to the inbox = %+v, want it left alone", got.ChannelStates)
+	}
+	if got, _ := d.Notices.Get(e.ctx, e.ws, stale.ID); len(got.ChannelStates) != 0 {
+		t.Fatalf("stale notice = %+v, want it left alone", got.ChannelStates)
 	}
 }
