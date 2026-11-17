@@ -34,11 +34,26 @@ Router = 一个 chat 会话 + 绑定到它的订阅。你就是这个 chat 的�
 
 说明：
 
-- 项目用 ID（`multica project list` 查）；任务树用任务编号或 UUID，树根和它的全部子任务都在范围里。
+- 项目用 ID（`multica project list` 查）；任务树用任务编号或 UUID。范围怎么算见下一节。
 - 项目范围没有自己的任务，`subscribe` 会在该项目里自动建一个看板任务「Router 看板 · <chat 名>」作为锚点，并在输出里说是哪一个。把这个编号告诉 Owner。
 - 事件类型可选：`issue_created`、`status_changed`、`assignee_changed`、`comment_created`、`task_failed`；不传就是全部。
 - `--chat current` 作用于这个 Router 的**每一条**订阅。
 - `delete --chat current` 会删除这个 Router 的全部订阅，只在 Owner 明确要求「全部删掉」时用；平时用 `release`。
+
+## 范围覆盖哪些 issue
+
+- **任务树（`--issue`，`issue_tree`）= 树根 + 全部子孙**：沿 `parent_issue_id` 一层层往下，最多 32 层。是否在范围里是事件发生时按 issue 当前的父链算的，所以之后新建的子任务、后来挂到树里的任务自动在范围里，**不用**给子任务单独订阅。挂进来这个动作本身不产生事件，之后它的新评论、状态和负责人变化会进来；移出树后就不再进来。子孙在不在同一个项目里都不影响。
+- **项目（`--project`，`project`）= 这个项目的全部 issue**，按 issue 自己的项目算；子任务在别的项目里就不算。
+- **同一个智能体的范围有重叠时，事件只进最窄的那条订阅**：离 issue 更近的树根优先，任何任务树优先于项目，同级取创建最早的。例如同一个智能体既订阅了项目、又订阅了项目里的 M-12，M-12 树里的事件只进 M-12 那个 Router，项目那个收不到。不同智能体各收各的。
+- 暂停的订阅不覆盖任何 issue；这个智能体自己做的改动会记下来，但不会触发 Router 运行。
+
+**Router 订阅不是 issue 的通知订阅。** `multica issue subscriber list` 里的订阅者（原因如 `creator`、`assignee`、`delegated`）只决定谁在收件箱里收到这个 issue 的通知，跟 Router 无关：Router 收不收事件只看上面的范围，不要用 issue 订阅者来判断，也不要为了让 Router 收到事件去加 issue 订阅者。
+
+Owner 问「订阅父任务能不能收到子任务的事件」时，按上面回答，再用下面的命令给证据：
+
+- `multica router get --chat current --output table`（或 `multica router list`）：看这个 Router 有哪些范围、是否在运行。
+- `multica router scope <订阅ID>`：列出这条订阅现在覆盖的 issue（已完成、已取消的要加 `--all`）。子任务在列表里就在范围里。
+- `multica router events --subscription <订阅ID> --since 10m`：看最近有没有收到事件。
 
 ## 确认方式
 
@@ -55,6 +70,7 @@ Router = 一个 chat 会话 + 绑定到它的订阅。你就是这个 chat 的�
   - 「only in a run started by that chat's creator」：这轮不是 Owner 在这个 chat 里发起的。请 Owner 在这个 chat 里直接说一遍。
   - 「needs the router_chat feature」：Router chat 功能没开，需要 Owner 或运维打开 `router_chat`。
   - 「already subscribes to this scope」(409)：你已经订阅过这个范围。用 `multica router list --output json` 找到它：没有 `anchor_chat_session_id` 的（之前解除时保留的），复述后用 `multica router update <订阅ID> --anchor-chat current` 接回、再 `multica router resume <订阅ID>`；绑在别的 chat 上的，告诉 Owner 它在哪个 Router 里，问是去那边移除还是保留。
+  - 「unknown flag: --chat」或「unknown flag: --anchor-chat」：本机 CLI 太旧，没有「当前 chat」能力（`multica version` 看版本，需要 `v0.8.2-mouse.2` 或更新）。请 Owner 升级 CLI，或改在页面的「Router 设置」里操作；不要去猜会话 id。
   - 「the chat is archived」：先在页面上恢复这个对话。
   - 403「can manage the agent」：Owner 不是你的所有者也不是管理员，这个 Router 得由你的所有者来设。
 - 不要为了绕过失败去改别的订阅、换别的 chat 或用别人的权限重试。
