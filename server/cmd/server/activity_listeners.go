@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 
+	"github.com/multica-ai/multica/server/internal/agentrouter"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -93,6 +94,9 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 			for k, v := range handoff {
 				detailsMap["handoff_"+k] = v
 			}
+			if handoff != nil {
+				agentrouter.AnnotateHandoffActivity(detailsMap, payload) // mouse9527/multica fork (M-118)
+			}
 			// PR auto-complete (MUL-7429): say why the status moved, so the
 			// timeline explains the change without a hidden rule.
 			if source, _ := payload["source"].(string); source == "pr_automation" {
@@ -160,6 +164,7 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 				detailsMap["to_id"] = *issue.AssigneeID
 			}
 
+			agentrouter.AnnotateAssigneeActivity(detailsMap, payload) // mouse9527/multica fork (M-118)
 			details, _ := json.Marshal(detailsMap)
 			activity, err := queries.CreateActivity(ctx, db.CreateActivityParams{
 				ID:          dbid.NewV7(),

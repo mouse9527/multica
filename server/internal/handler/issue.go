@@ -20,6 +20,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/agentrouter"
 	"github.com/multica-ai/multica/server/internal/channelmedia"
 	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/issueguard"
@@ -5147,6 +5148,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if handoff != nil {
 			batchPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun)
 		}
+		agentrouter.AnnotateBatchUpdate(batchPayload, textToPtr(prevIssue.AssigneeType), uuidToPtr(prevIssue.AssigneeID)) // mouse9527/multica fork (M-118)
 		h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, batchPayload)
 
 		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —

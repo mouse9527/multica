@@ -1,6 +1,6 @@
-# Router：事件捕获（S1）、派发与出口（S2）、chat 载体（v6 切片 1）、暂扣影子模式（v6 切片 2）
+# Router：事件捕获（S1）、派发与出口（S2）、chat 载体（v6 切片 1）、暂扣影子模式（v6 切片 2）、收件箱自动归档（S3a）
 
-本文件属于 `mouse9527/multica` fork（S1 是 M-85，S2 是 M-86，设计见 M-45 v5）。Router 让一个智能体订阅一个范围（一棵 issue 树或一个项目），把范围内的事件写进持久的事件队列（S1）；再把攒下的事件合成一批，在锚点 issue 上给这个智能体起一次运行，并给它一个通知 Owner 的出口（S2，见后文「派发（S2）」）。v6 切片 1（M-96）让订阅可以绑定一个 chat 会话：批次写进这个会话，Router 在会话里回话（见后文「chat 载体（v6 切片 1）」）。v6 切片 2（M-97）加上暂扣的影子模式：只记录「本来会扣」的收件箱条目，不真的扣（见后文「暂扣影子模式（v6 切片 2）」）。M-105 让 Owner 在页面上自己设置 Router（见后文「页面设置（M-105）」）。Router 只分派不干活（M-112，见后文「Router 的边界」）。M-111 去掉了按每小时运行次数的自动暂停（`max_runs_per_hour` 只作提醒阈值），并把派发的系统通知直接写进 Router chat、收件箱兜底（见后文「暂停（不静默）」和「出口：owner_notice」）。
+本文件属于 `mouse9527/multica` fork（S1 是 M-85，S2 是 M-86，设计见 M-45 v5）。Router 让一个智能体订阅一个范围（一棵 issue 树或一个项目），把范围内的事件写进持久的事件队列（S1）；再把攒下的事件合成一批，在锚点 issue 上给这个智能体起一次运行，并给它一个通知 Owner 的出口（S2，见后文「派发（S2）」）。v6 切片 1（M-96）让订阅可以绑定一个 chat 会话：批次写进这个会话，Router 在会话里回话（见后文「chat 载体（v6 切片 1）」）。v6 切片 2（M-97）加上暂扣的影子模式：只记录「本来会扣」的收件箱条目，不真的扣（见后文「暂扣影子模式（v6 切片 2）」）。M-105 让 Owner 在页面上自己设置 Router（见后文「页面设置（M-105）」）。Router 只分派不干活（M-112，见后文「Router 的边界」）。M-111 去掉了按每小时运行次数的自动暂停（`max_runs_per_hour` 只作提醒阈值），并把派发的系统通知直接写进 Router chat、收件箱兜底（见后文「暂停（不静默）」和「出口：owner_notice」）。M-118（收件箱 S3a，设计见 M-117）在「等 Owner」的事结束后自动归档 Owner 的收件箱条目，并对账（见后文「收件箱自动归档（S3a）」）。
 
 ## 开关
 
@@ -9,6 +9,7 @@
 - `router_dispatch`（S2），默认关闭，`FF_ROUTER_DISPATCH=true` 打开，**只在 `router_v1` 也打开时生效**。关闭时不注册派发任务，`/api/router/subscriptions/{id}/state` 和 `/api/router/notices` 返回 404，行为与 S1 一致。订阅的修改（`PATCH`）、审计记录和运行列表只要 `router_v1`。
 - `router_chat`（v6 切片 1），默认关闭，`FF_ROUTER_CHAT=true` 打开，**只在 `router_dispatch` 也打开时生效**。注意两个读取时点不同：派发任务在**启动时**读一次（决定绑定了 chat 的订阅是否走 chat），`PATCH` 接口在**每次请求时**读（决定是否接受 `anchor_chat_session_id`）。所以不重启就在线打开开关的话，绑定能立刻存下来，但派发要等重启后才会写进会话。关闭时：`PATCH` 里的 `anchor_chat_session_id` 返回 400；已有的绑定保留但不用，所有订阅照旧走锚点运行，行为与 S2 一致。
 - `router_hold_shadow`（v6 切片 2），默认关闭，`FF_ROUTER_HOLD_SHADOW=true` 打开，**只在 `router_chat` 也打开时生效**，启动时读一次。关闭时不注册收件箱拦截器，`CreateIfEligible` 与上游完全一致；批次里也没有「Hold preview」一节。
+- `router_inbox_resolve`（S3a，M-118），默认关闭，`FF_ROUTER_INBOX_RESOLVE=true` 打开，**只在 `router_v1` 也打开时生效**，启动时读一次。另外只在工作区设置里有 `router_inbox_resolve`（指定了 Owner）的工作区生效。任一缺失时不注册监听器和对账任务、不归档任何条目，行为与上游一致。开关常量放在 `internal/agentrouter/inbox_resolve.go`，没有改 `featureflags/keys.go`。
 - `MULTICA_ROUTER_RECONCILE_INTERVAL`：对账周期（Go duration，如 `5m`），默认 5 分钟，最小 30 秒。
 
 ## 数据（迁移 9004–9007，只新增表）
@@ -409,3 +410,68 @@ Owner 也可以在 chat 里直接跟这个 chat 的智能体说「把这个 chat
 3. 部署后先保持 `router_hold_shadow` 关闭，确认行为不变；再打开 `FF_ROUTER_HOLD_SHADOW=true`（需要重启，且 `router_chat` 已打开）。
 4. 在范围内 @Owner、改状态，确认收件箱照常收到；`multica router holds` 能看到对应的影子行，下一批 chat 批次里有「Hold preview」。
 5. 观察几天：`multica router holds --stats` 的耗时分桶和错误、超时计数；在副本上压测写入延迟的结论一起交给切片 3。
+
+## 收件箱自动归档（S3a）
+
+M-118，设计见 M-117（Owner 2026-11-17 选 D1–D4 全 A）。目标是收件箱「不多」的第一步：等 Owner 的事结束了，Owner 在那个 issue 上的条目自动归档。**不拦截、不延迟、不补写任何收件箱条目，没有迁移**；上游文件只加了几处薄钩子（`cmd/server/activity_listeners.go`、`internal/handler/issue.go`，见下文「交接与批量更新的记录」）；代码在 `internal/agentrouter/inbox_resolve.go`，API 在 `internal/handler/agent_router_inbox.go`，CLI 在 `cmd/multica/cmd_router_inbox.go`。
+
+### 配置
+
+工作区设置键 `router_inbox_resolve`（与 `system_wakeup_child_done` 一样放在 `workspace.settings`）：
+
+```json
+{"router_inbox_resolve": {"owner_user_id": "<成员 user id>", "waiting_statuses": ["started_2"]}}
+```
+
+- 用 `multica router inbox-resolve set --waiting-status started_2 [--owner <user id>]` 设置（默认 Owner 是自己；只有工作区 owner/admin 能改；状态要在工作区状态目录里存在），`--off` 删除。
+- 没有这个键、或者没有 Owner，这个工作区就是关闭的。只在 mouse 工作区设置；BIPO 不设（M-117 D4）。
+
+### 「等 Owner」是什么
+
+一个 issue 在下面任一情况下算「等 Owner」：
+
+1. 状态是配置的等待状态之一（mouse 工作区是 `started_2`「待你决定」）；
+2. 指派给 Owner 且没关闭（状态不属于 done / closed 类）；
+3. 没关闭，且最近一个任务失败（`agent_task_queue` 里该 issue 最新一行是 `failed`）。
+
+### 两条路径
+
+- **监听器**（`issue:updated`，在上游的通知监听器之后运行）：负载显示 issue 可能结束了等待——离开等待状态（`prev_status` 在列表里、新状态不在）、指派给 Owner 时改了状态（例如关闭）、或者不再指派给 Owner——时，按数据库里的当前状态再判断一次；不再等 Owner 就用上游的 `ArchiveInboxByIssue` 归档 Owner 在这个 issue 上的全部未归档条目，并发 `inbox:batch-archived`（`reason=router_inbox_resolve`）让客户端刷新。仍在等（例如离开了 `started_2` 但还指派给 Owner）就不动。出错或超时（500ms）只记日志和计数，issue 状态的修改早已提交，不受影响。
+- **对账**（调度任务 `router_inbox_resolve`，周期同 `MULTICA_ROUTER_RECONCILE_INTERVAL`，默认 5 分钟）：归档「多余」的条目——Owner 的未归档条目，issue 现在不等 Owner，但在这条条目写入之后（含 10 秒余量，覆盖同一次改动发出的通知）曾经等过。判断用 `activity_log`：条目之后的每一行状态变化（`status_changed`，工作流交接也写这一行；标记、取消重复时上游用 `duplicate_marked` / `duplicate_unmarked` 代替状态行）和指派变化（`assignee_changed`；交接只写状态行，新指派人在 `handoff_to_*` 里），还原这一行**之前**的状态和指派人：状态取之前最后一行的 `to`，没有就取这一行起第一行状态行的 `from`，再没有就是当前状态；指派人同理，取之前最后一行指派的对象，没有就取这一行起第一行 `assignee_changed` 的 `from_*`，都没有就是当前指派人。若之前没有指派记录，就看这一行起第一行指派记录：指派行优先读 `router_from_*`，交接行读 `handoff_from_*`（见下文「交接与批量更新的记录」）；开关打开之前写下的交接行没有这两个字段，这时以 Owner 在交接前收到的 `issue_assigned` 条目为证据（说明 issue 创建时就指派给了 Owner）。任一行之前处于等待状态，或指派给 Owner 且未关闭，就算「之后等过」。30 秒内的变化留给监听器。归档语句带 `archived = false` 条件，多副本或与监听器同时跑也只归档、计数一次。issue 已经不等之后才写进来的条目（例如之后的新 @）不动。
+- **缺失只计数**：「等 Owner」的 issue 上没有 Owner 的未归档条目，按原因（`waiting_status` / `assigned` / `failed`）计数，不写入。
+
+### 观测
+
+- `multica router inbox-resolve [--output json]`（API：`GET /api/router/inbox-resolve`，需要 `router_v1`）：
+  - `config`：工作区设置；
+  - `survey`：现在的实时计数——`excess`（下一轮对账会归档的）、`outside_wait`（在不等 Owner 的 issue 上、但不是「离开等待之前写入」的条目，S3a 不动，是后续切片要分流的噪音）、`missing`（按原因）；
+  - `stats`：回答请求的服务进程自启动以来的计数——按原因的归档行数（`left_status`、`unassigned`、`reconcile`）、监听到的离开次数、离开后仍在等的次数、失败次数、对账轮数和这个进程最近一轮的结果。统计在内存里，重启清零，多副本各算各的；每一轮对账的结果也存在调度器的执行记录里（`sys_cron_executions`，`job_name='router_inbox_resolve'`）。
+- `stats.archived.reconcile` 就是监听器漏掉、由对账补上的归档数。
+
+### 交接与批量更新的记录
+
+对账要知道「这次变化之前谁是指派人」，有两处上游记录没写：
+
+- 工作流交接只写一条 `status_changed` 行（新指派人在 `handoff_to_*`），不写 `assignee_changed`，所以不记原指派人。Owner 自己建、自己指派的 issue 没有 `issue_assigned` 条目，订阅原因也是 `creator`，活动记录里看不出交接前是 Owner。
+- 批量更新（`POST /api/issues/batch-update`）的 `issue:updated` 负载里没有 `prev_assignee_*`，它写出的指派行没有 `from_*`，交接行也拿不到原指派人。
+
+所以加了三处薄钩子，都只在 `router_inbox_resolve` 打开（收件箱自动归档已注册）时起作用，关闭时负载和活动行与上游完全一样：
+
+- `internal/handler/issue.go` 批量更新发布前调用 `agentrouter.AnnotateBatchUpdate`，在负载里加 fork 自己的 `router_prev_assignee_type` / `router_prev_assignee_id`。不用上游的 `prev_assignee_*`：上游的通知监听器读它们，加了会给原成员指派人多发「取消指派」通知。监听器在负载没有 `prev_assignee_*` 时读这两个键。
+- `cmd/server/activity_listeners.go` 写交接行时调用 `agentrouter.AnnotateHandoffActivity`，加 `handoff_from_type` / `handoff_from_id`；写指派行时调用 `agentrouter.AnnotateAssigneeActivity`，加 `router_from_type` / `router_from_id`（`from_*` 是时间线显示用的，保持上游的样子）。原指派人取自 `prev_assignee_*`，没有就取 fork 的两个键；没有指派人时写空字符串；负载两种都没有（说不清原指派人）时**什么都不写**，对账对这样的行保留原来的兜底判断。
+
+前端只读 `handoff_to_*`、`handoff_note`、`handoff_run` 和指派行的 `from_*` / `to_*`，新字段不显示。
+
+## 已知局限（S3a）
+
+- 对账靠 `activity_log` 还原历史状态。打开开关**之前**写下的交接行没有 `handoff_from_*`、批量指派行没有 `router_from_*`（会被读成「原来没人指派」），其中 Owner 自建自指派、第一次指派变化就是交接的情况还原不出来；issue 创建时就在等待状态、之后第一次状态变化就是标记重复（`duplicate_marked` 不记原状态）也还原不出来。这些条目会留在 `outside_wait`。开关打开之后监听器在场，它们漏掉时才需要对账。
+- 「最近一个任务失败」只用来保留条目（仍在等），不用来判断「之后等过」；Owner 没订阅的 issue 会计入 `missing.failed`。
+- `stats` 是进程内计数；要看所有副本的历史，查调度器执行记录。
+
+## 部署清单（S3a）
+
+1. 没有迁移。更新 daemon 用的 CLI（`router inbox-resolve`）。
+2. 部署后先保持 `router_inbox_resolve` 关闭，确认行为不变。
+3. 用 `multica router inbox-resolve set --waiting-status started_2` 在 mouse 工作区设置 Owner（Owner 本人或 admin 执行）；关闭开关时这一步不改变任何行为。
+4. 打开 `FF_ROUTER_INBOX_RESOLVE=true`（需要重启，`router_v1` 已打开）。先看 `multica router inbox-resolve` 的 `survey.excess`，第一轮对账会把存量的多余条目一次归档。
+5. 验证：把一个「待你决定」的 issue 移走，Owner 在它上面的条目立即归档；仍在「待你决定」的 issue 的条目不动。
