@@ -111,5 +111,13 @@
     "delete": "删除",
     "delete_title": "删除这条订阅？",
     "delete_description": "它已捕获的事件也会一起删除。"
+  },
+  "marker": {
+    "label": "Router · 范围：{{scopes}} · {{status}}",
+    "scope_project": "{{name}} 项目",
+    "scope_issue_tree": "{{identifier}} {{name}}",
+    "scope_paused": "{{scope}}（已暂停）",
+    "paused": "已暂停（{{reasons}}）",
+    "separator": "、"
   }
 }

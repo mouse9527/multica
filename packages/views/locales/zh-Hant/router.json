@@ -111,5 +111,13 @@
     "delete": "刪除",
     "delete_title": "刪除這筆訂閱？",
     "delete_description": "它已擷取的事件也會一併刪除。"
+  },
+  "marker": {
+    "label": "Router · 範圍：{{scopes}} · {{status}}",
+    "scope_project": "{{name}} 專案",
+    "scope_issue_tree": "{{identifier}} {{name}}",
+    "scope_paused": "{{scope}}（已暫停）",
+    "paused": "已暫停（{{reasons}}）",
+    "separator": "、"
   }
 }

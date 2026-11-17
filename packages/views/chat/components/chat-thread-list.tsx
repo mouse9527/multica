@@ -47,6 +47,8 @@ import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useLocale, useT } from "../../i18n";
 import { SessionHistoryList } from "./session-history-list";
 import { SessionRenameInput } from "./session-rename-input";
+// Modified by the mouse9527/multica fork (M-108): the Router marker beside a Router chat's title.
+import { RouterChatListMarker } from "../../router/router-chat-marker";
 
 const apiLogger = createLogger("chat.api");
 
@@ -446,6 +448,7 @@ export function ChatThreadList({
                 className="size-3 shrink-0 -rotate-45 fill-current text-muted-foreground"
               />
             )}
+            <RouterChatListMarker sessionId={session.id} />
             {isRenaming ? (
               <div className="min-w-0 flex-1">
                 <SessionRenameInput
