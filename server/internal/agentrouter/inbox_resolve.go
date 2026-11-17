@@ -220,7 +220,12 @@ const (
 	        WHERE ` + inboxBeforeASQL + ` AND ` + inboxAssignmentRowSQL + `
 	        ORDER BY p.created_at DESC, p.id DESC LIMIT 1) ab ON true
 	    LEFT JOIN LATERAL (
-	        SELECT p.action, p.details->>'from_type' AS type, p.details->>'from_id' AS id FROM activity_log p
+	        SELECT p.action, p.action = 'assignee_changed' OR p.details ? 'handoff_from_type' AS names_from,
+	               CASE WHEN p.action = 'assignee_changed' THEN p.details->>'from_type'
+	                    ELSE NULLIF(p.details->>'handoff_from_type', '') END AS type,
+	               CASE WHEN p.action = 'assignee_changed' THEN p.details->>'from_id'
+	                    ELSE NULLIF(p.details->>'handoff_from_id', '') END AS id
+	        FROM activity_log p
 	        WHERE ` + inboxFromASQL + ` AND ` + inboxAssignmentRowSQL + `
 	        ORDER BY p.created_at, p.id LIMIT 1) aa ON true`
 	// inboxStatusBeforeSQL is the status just before a; NULL when only a
@@ -229,14 +234,16 @@ const (
 	        WHEN sa.action IS NULL THEN i.status
 	        WHEN sa.action = 'status_changed' THEN sa.status END)`
 	// inboxOwnerBeforeSQL is "the owner was the assignee just before a". When
-	// the first assignment row from a on is a handoff, which names no previous
-	// assignee, and nothing earlier set one, the issue was created with that
-	// assignee; an issue_assigned item for the owner from before a shows it
-	// was the owner.
+	// nothing earlier set an assignee, the first assignment row from a on
+	// names it: an assignee change in from_*, a handoff in handoff_from_*
+	// (AnnotateHandoffActivity). A handoff row written without them, before
+	// inbox resolve ran, names none; the issue was then created with that
+	// assignee, and an issue_assigned item for the owner from before a shows
+	// it was the owner.
 	inboxOwnerBeforeSQL = `(CASE WHEN ab.action IS NOT NULL
 	            THEN ab.type IS NOT DISTINCT FROM 'member' AND ab.id IS NOT DISTINCT FROM $2::uuid::text
 	        WHEN aa.action IS NULL THEN ` + inboxAssignedSQL + `
-	        WHEN aa.action = 'assignee_changed'
+	        WHEN aa.names_from
 	            THEN aa.type IS NOT DISTINCT FROM 'member' AND aa.id IS NOT DISTINCT FROM $2::uuid::text
 	        ELSE EXISTS (
 	            SELECT 1 FROM inbox_item q
@@ -306,6 +313,34 @@ func NewInboxResolver(q Querier, bus *events.Bus) *InboxResolver {
 
 // activeInboxResolver is the resolver this process registered, for the API.
 var activeInboxResolver atomic.Pointer[InboxResolver]
+
+// handoffAnnotation is on while this process runs inbox resolve.
+var handoffAnnotation atomic.Bool
+
+// SetHandoffAnnotation turns AnnotateHandoffActivity on or off. Register
+// turns it on with inbox resolve.
+func SetHandoffAnnotation(on bool) { handoffAnnotation.Store(on) }
+
+// AnnotateHandoffActivity adds the previous assignee, as handoff_from_type
+// and handoff_from_id ("" for none), to the details of the status activity
+// row a workflow handoff writes. That row replaces the assignee row, which
+// would have named the previous assignee, so without these reconcile cannot
+// tell that a handoff took an issue away from the owner. The upstream
+// activity listener calls it for handoff rows; with inbox resolve off it does
+// nothing, and the row is as upstream writes it.
+func AnnotateHandoffActivity(details map[string]string, payload map[string]any) {
+	if !handoffAnnotation.Load() {
+		return
+	}
+	deref := func(v any) string {
+		if s, ok := v.(*string); ok && s != nil {
+			return *s
+		}
+		return ""
+	}
+	details["handoff_from_type"] = deref(payload["prev_assignee_type"])
+	details["handoff_from_id"] = deref(payload["prev_assignee_id"])
+}
 
 // Subscribe registers the listener.
 func (r *InboxResolver) Subscribe(bus *events.Bus) {

@@ -72,6 +72,7 @@ func Register(ctx context.Context, flags *featureflag.Service, bus *events.Bus, 
 		ir := NewInboxResolver(db, bus)
 		ir.Subscribe(bus)
 		activeInboxResolver.Store(ir)
+		SetHandoffAnnotation(true)
 		if err := jobs.Register(InboxResolveJob(ir, interval)); err != nil {
 			slog.Error("router: register inbox resolve job", "error", err)
 		}

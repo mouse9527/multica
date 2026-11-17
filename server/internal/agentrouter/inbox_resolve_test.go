@@ -67,3 +67,27 @@ func TestIssueUpdateLeaveReason(t *testing.T) {
 		})
 	}
 }
+
+func TestAnnotateHandoffActivity(t *testing.T) {
+	member, owner := "member", "owner-id"
+	payload := map[string]any{"prev_assignee_type": &member, "prev_assignee_id": &owner}
+
+	off := map[string]string{"from": "todo"}
+	AnnotateHandoffActivity(off, payload)
+	if len(off) != 1 {
+		t.Fatalf("annotation off wrote %v", off)
+	}
+
+	SetHandoffAnnotation(true)
+	t.Cleanup(func() { SetHandoffAnnotation(false) })
+	on := map[string]string{}
+	AnnotateHandoffActivity(on, payload)
+	if on["handoff_from_type"] != "member" || on["handoff_from_id"] != "owner-id" {
+		t.Fatalf("annotated = %v", on)
+	}
+	none := map[string]string{}
+	AnnotateHandoffActivity(none, map[string]any{"prev_assignee_type": (*string)(nil)})
+	if v, ok := none["handoff_from_type"]; !ok || v != "" || none["handoff_from_id"] != "" {
+		t.Fatalf("unassigned before = %v, want empty handoff_from_*", none)
+	}
+}

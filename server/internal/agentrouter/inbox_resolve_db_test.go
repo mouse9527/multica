@@ -385,7 +385,10 @@ func TestRegisterInboxResolveFollowsTheFlag(t *testing.T) {
 	if n := bus.SubscriberCount(protocol.EventIssueUpdated); n != 2 {
 		t.Fatalf("issue:updated listeners = %d, want capture and inbox resolve", n)
 	}
-	t.Cleanup(func() { activeInboxResolver.Store(nil) })
+	t.Cleanup(func() { activeInboxResolver.Store(nil); SetHandoffAnnotation(false) })
+	if !handoffAnnotation.Load() {
+		t.Fatal("handoff annotation not turned on with inbox resolve")
+	}
 
 	bus, jobs = events.New(), &recordingRegistrar{}
 	only := featureflag.NewStaticProvider()
@@ -451,13 +454,28 @@ func TestInboxResolveReconcileFollowsWorkflowHandoffs(t *testing.T) {
 	e.activity(dropped, "assignee_changed", fmt.Sprintf(`{"from_type":"member","from_id":%q}`, e.user), 2*time.Hour)
 	e.handoff(dropped, "todo", "in_progress", "agent", e.agentA, 5*time.Minute)
 
+	// Created assigned to the owner by the owner (no issue_assigned item),
+	// first handed off with the previous assignee recorded
+	// (AnnotateHandoffActivity); and the same from someone else or from no one.
+	annotated := func(title, fromType, fromID string) string {
+		issue := afterOwner(title)
+		item := e.item(e.user, issue, time.Hour)
+		e.activity(issue, "status_changed", fmt.Sprintf(
+			`{"from":"todo","to":"in_progress","handoff_to_type":"agent","handoff_to_id":%q,"handoff_from_type":%q,"handoff_from_id":%q}`,
+			e.agentA, fromType, fromID), 30*time.Minute)
+		return item
+	}
+	selfAssignedItem := annotated("self-assigned, handed off", "member", e.user)
+	fromOtherItem := annotated("someone else's, handed off", "agent", e.agentB)
+	fromNoneItem := annotated("unassigned, handed off", "", "")
+
 	res, err := e.resolver.ReconcileWorkspace(e.ctx, e.ws)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.assertArchived("handed off away from the owner", true, chainedItem, handedTwiceItem, assignedItem, createdItem)
-	e.assertArchived("never the owner's", false, othersItem, droppedItem)
-	if res.Archived != 4 || res.ArchivedIssues != 3 {
+	e.assertArchived("handed off away from the owner", true, chainedItem, handedTwiceItem, assignedItem, createdItem, selfAssignedItem)
+	e.assertArchived("never the owner's", false, othersItem, droppedItem, fromOtherItem, fromNoneItem)
+	if res.Archived != 5 || res.ArchivedIssues != 4 {
 		t.Fatalf("reconcile = %+v", res)
 	}
 }
