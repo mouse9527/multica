@@ -201,7 +201,7 @@ Router 只做分派、跟踪、转告，不自己干活。实质性工作交给 
 - `multica notify owner` 写一行 `owner_notice`，再交给各渠道适配器；Router 只调用这一个原语，不知道渠道。
 - 收件人：带 `--subscription` 时是该订阅的 `owner_user_id`（没有时是智能体所有者），智能体只能用自己的订阅；不带时，智能体通知自己的所有者，成员通知自己。
 - `--dedupe-key` 只在同一发送者（成员、智能体或系统）发给同一收件人的通知之间去重：重复发送返回第一条（HTTP 200，`created=false`），不会再投递。别人用同一个键发的通知互不影响，也读不到。智能体每小时最多发 30 条（429）。
-- **适配器**（`agentrouter.Adapter`）：按顺序投递。投递前先把该渠道记为 `unknown` 再发送，发完写 `sent`、`failed` 或 `skipped`；**`unknown` 不自动重试**（发送不幂等）。派发在事务里写的系统通知（暂停、运行过多），提交后立即投递；进程在这之间退出的，下一轮派发补投。派发用的通知器在 `router_chat` 打开时依次是 chat、收件箱；`multica notify owner` 走的通知器只有收件箱。
+- **适配器**（`agentrouter.Adapter`）：按顺序投递。投递前先把该渠道记为 `unknown` 再发送，发完写 `sent`、`failed` 或 `skipped`；**`unknown` 不自动重试**（发送不幂等）。派发在事务里写的系统通知（暂停、运行过多），提交后立即投递；进程在这之间退出的，下一轮派发补投：只补投 15 分钟内、还没有任何渠道发出（`sent`）的通知；已经有渠道发出的通知，之后新增或新开的渠道不会再投一次。派发用的通知器在 `router_chat` 打开时依次是 chat、收件箱；`multica notify owner` 走的通知器只有收件箱。
 - **兜底适配器**（`FallbackAdapter`）：前面已有渠道 `sent` 时，它不再投递，记为 `skipped`（`sent through another channel`）。收件箱是兜底适配器。
 - **chat 适配器**（M-111，`chat_notice.go`）：只投派发自己的系统通知（`sender_type=system` 且有 `source_subscription_id`），智能体发的通知记 `skipped`。订阅绑定的 chat 要能用：`active`、智能体相同、创建者就是通知的收件人且仍是工作区成员，否则记 `skipped`，由收件箱兜底。投递是 `service.PostRouterChatNotice`：在会话锁下写一条普通 assistant 消息（`message_kind=message`，没有任务，与 Mika 开场白同一写法），正文以「[Router 系统通知 · 非 Router 回复]」开头，接标题和正文；提交后广播 `chat:message`（带消息 id），并发 `chat:reply_notification`（只发给会话创建者在该工作区的连接），所以 Owner 收到与 Router 回复相同的系统通知，会话也算未读。智能体不会把这条消息当作输入。
 - **收件箱适配器**：写一条 `type=router_notice` 的收件箱条目，`severity` 为 `action_required`（`--urgency high`）或 `info`，issue 是第一个 `--ref`；走现有的收件箱资格检查（私有项目不可见的成员会得到 `skipped`）。这个类型不在通知分组里，不会被静音或专注模式过滤。前端把它当未知类型：列表和详情显示标题和正文，详情头部没有类型名称（本切片不改前端）。IM 适配器只留接口。
