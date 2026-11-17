@@ -413,7 +413,7 @@ Owner 也可以在 chat 里直接跟这个 chat 的智能体说「把这个 chat
 
 ## 收件箱自动归档（S3a）
 
-M-118，设计见 M-117（Owner 2026-11-17 选 D1–D4 全 A）。目标是收件箱「不多」的第一步：等 Owner 的事结束了，Owner 在那个 issue 上的条目自动归档。**不拦截、不延迟、不补写任何收件箱条目，没有迁移**；上游文件只改了一处薄钩子（`cmd/server/activity_listeners.go`，见下文「交接记录」）；代码在 `internal/agentrouter/inbox_resolve.go`，API 在 `internal/handler/agent_router_inbox.go`，CLI 在 `cmd/multica/cmd_router_inbox.go`。
+M-118，设计见 M-117（Owner 2026-11-17 选 D1–D4 全 A）。目标是收件箱「不多」的第一步：等 Owner 的事结束了，Owner 在那个 issue 上的条目自动归档。**不拦截、不延迟、不补写任何收件箱条目，没有迁移**；上游文件只加了几处薄钩子（`cmd/server/activity_listeners.go`、`internal/handler/issue.go`，见下文「交接与批量更新的记录」）；代码在 `internal/agentrouter/inbox_resolve.go`，API 在 `internal/handler/agent_router_inbox.go`，CLI 在 `cmd/multica/cmd_router_inbox.go`。
 
 ### 配置
 
@@ -437,7 +437,7 @@ M-118，设计见 M-117（Owner 2026-11-17 选 D1–D4 全 A）。目标是收�
 ### 两条路径
 
 - **监听器**（`issue:updated`，在上游的通知监听器之后运行）：负载显示 issue 可能结束了等待——离开等待状态（`prev_status` 在列表里、新状态不在）、指派给 Owner 时改了状态（例如关闭）、或者不再指派给 Owner——时，按数据库里的当前状态再判断一次；不再等 Owner 就用上游的 `ArchiveInboxByIssue` 归档 Owner 在这个 issue 上的全部未归档条目，并发 `inbox:batch-archived`（`reason=router_inbox_resolve`）让客户端刷新。仍在等（例如离开了 `started_2` 但还指派给 Owner）就不动。出错或超时（500ms）只记日志和计数，issue 状态的修改早已提交，不受影响。
-- **对账**（调度任务 `router_inbox_resolve`，周期同 `MULTICA_ROUTER_RECONCILE_INTERVAL`，默认 5 分钟）：归档「多余」的条目——Owner 的未归档条目，issue 现在不等 Owner，但在这条条目写入之后（含 10 秒余量，覆盖同一次改动发出的通知）曾经等过。判断用 `activity_log`：条目之后的每一行状态变化（`status_changed`，工作流交接也写这一行；标记、取消重复时上游用 `duplicate_marked` / `duplicate_unmarked` 代替状态行）和指派变化（`assignee_changed`；交接只写状态行，新指派人在 `handoff_to_*` 里），还原这一行**之前**的状态和指派人：状态取之前最后一行的 `to`，没有就取这一行起第一行状态行的 `from`，再没有就是当前状态；指派人同理，取之前最后一行指派的对象，没有就取这一行起第一行 `assignee_changed` 的 `from_*`，都没有就是当前指派人。若这一行起第一行指派记录是交接、之前没有指派记录，交接行里的 `handoff_from_*` 就是交接前的指派人（见下文「交接记录」）；开关打开之前写下的交接行没有这两个字段，这时以 Owner 在交接前收到的 `issue_assigned` 条目为证据（说明 issue 创建时就指派给了 Owner）。任一行之前处于等待状态，或指派给 Owner 且未关闭，就算「之后等过」。30 秒内的变化留给监听器。归档语句带 `archived = false` 条件，多副本或与监听器同时跑也只归档、计数一次。issue 已经不等之后才写进来的条目（例如之后的新 @）不动。
+- **对账**（调度任务 `router_inbox_resolve`，周期同 `MULTICA_ROUTER_RECONCILE_INTERVAL`，默认 5 分钟）：归档「多余」的条目——Owner 的未归档条目，issue 现在不等 Owner，但在这条条目写入之后（含 10 秒余量，覆盖同一次改动发出的通知）曾经等过。判断用 `activity_log`：条目之后的每一行状态变化（`status_changed`，工作流交接也写这一行；标记、取消重复时上游用 `duplicate_marked` / `duplicate_unmarked` 代替状态行）和指派变化（`assignee_changed`；交接只写状态行，新指派人在 `handoff_to_*` 里），还原这一行**之前**的状态和指派人：状态取之前最后一行的 `to`，没有就取这一行起第一行状态行的 `from`，再没有就是当前状态；指派人同理，取之前最后一行指派的对象，没有就取这一行起第一行 `assignee_changed` 的 `from_*`，都没有就是当前指派人。若之前没有指派记录，就看这一行起第一行指派记录：指派行优先读 `router_from_*`，交接行读 `handoff_from_*`（见下文「交接与批量更新的记录」）；开关打开之前写下的交接行没有这两个字段，这时以 Owner 在交接前收到的 `issue_assigned` 条目为证据（说明 issue 创建时就指派给了 Owner）。任一行之前处于等待状态，或指派给 Owner 且未关闭，就算「之后等过」。30 秒内的变化留给监听器。归档语句带 `archived = false` 条件，多副本或与监听器同时跑也只归档、计数一次。issue 已经不等之后才写进来的条目（例如之后的新 @）不动。
 - **缺失只计数**：「等 Owner」的 issue 上没有 Owner 的未归档条目，按原因（`waiting_status` / `assigned` / `failed`）计数，不写入。
 
 ### 观测
@@ -448,13 +448,23 @@ M-118，设计见 M-117（Owner 2026-11-17 选 D1–D4 全 A）。目标是收�
   - `stats`：回答请求的服务进程自启动以来的计数——按原因的归档行数（`left_status`、`unassigned`、`reconcile`）、监听到的离开次数、离开后仍在等的次数、失败次数、对账轮数和这个进程最近一轮的结果。统计在内存里，重启清零，多副本各算各的；每一轮对账的结果也存在调度器的执行记录里（`sys_cron_executions`，`job_name='router_inbox_resolve'`）。
 - `stats.archived.reconcile` 就是监听器漏掉、由对账补上的归档数。
 
-### 交接记录
+### 交接与批量更新的记录
 
-上游的工作流交接只写一条 `status_changed` 活动行（新指派人在 `handoff_to_*`），不写 `assignee_changed` 行，所以不记交接前的指派人。Owner 自己建、自己指派的 issue 没有 `issue_assigned` 条目，订阅原因也是 `creator`，这时活动记录里没有任何地方能看出交接前的指派人是 Owner。为此在上游 `cmd/server/activity_listeners.go` 写交接行的地方加了一行，调用 `agentrouter.AnnotateHandoffActivity`：`router_inbox_resolve` 打开时，在 details 里加 `handoff_from_type` / `handoff_from_id`（交接前的指派人，没有就是空字符串）；关闭时什么都不加，写出的行与上游完全一样。前端只读 `handoff_to_*`、`handoff_note`、`handoff_run`，多出的两个字段不显示。
+对账要知道「这次变化之前谁是指派人」，有两处上游记录没写：
+
+- 工作流交接只写一条 `status_changed` 行（新指派人在 `handoff_to_*`），不写 `assignee_changed`，所以不记原指派人。Owner 自己建、自己指派的 issue 没有 `issue_assigned` 条目，订阅原因也是 `creator`，活动记录里看不出交接前是 Owner。
+- 批量更新（`POST /api/issues/batch-update`）的 `issue:updated` 负载里没有 `prev_assignee_*`，它写出的指派行没有 `from_*`，交接行也拿不到原指派人。
+
+所以加了三处薄钩子，都只在 `router_inbox_resolve` 打开（收件箱自动归档已注册）时起作用，关闭时负载和活动行与上游完全一样：
+
+- `internal/handler/issue.go` 批量更新发布前调用 `agentrouter.AnnotateBatchUpdate`，在负载里加 fork 自己的 `router_prev_assignee_type` / `router_prev_assignee_id`。不用上游的 `prev_assignee_*`：上游的通知监听器读它们，加了会给原成员指派人多发「取消指派」通知。监听器在负载没有 `prev_assignee_*` 时读这两个键。
+- `cmd/server/activity_listeners.go` 写交接行时调用 `agentrouter.AnnotateHandoffActivity`，加 `handoff_from_type` / `handoff_from_id`；写指派行时调用 `agentrouter.AnnotateAssigneeActivity`，加 `router_from_type` / `router_from_id`（`from_*` 是时间线显示用的，保持上游的样子）。原指派人取自 `prev_assignee_*`，没有就取 fork 的两个键；没有指派人时写空字符串；负载两种都没有（说不清原指派人）时**什么都不写**，对账对这样的行保留原来的兜底判断。
+
+前端只读 `handoff_to_*`、`handoff_note`、`handoff_run` 和指派行的 `from_*` / `to_*`，新字段不显示。
 
 ## 已知局限（S3a）
 
-- 对账靠 `activity_log` 还原历史状态。打开开关**之前**写下的交接行没有 `handoff_from_*`，其中 Owner 自建自指派、第一次指派变化就是交接的情况还原不出来；issue 创建时就在等待状态、之后第一次状态变化就是标记重复（`duplicate_marked` 不记原状态）也还原不出来。这些条目会留在 `outside_wait`。开关打开之后监听器在场，它们漏掉时才需要对账。
+- 对账靠 `activity_log` 还原历史状态。打开开关**之前**写下的交接行没有 `handoff_from_*`、批量指派行没有 `router_from_*`（会被读成「原来没人指派」），其中 Owner 自建自指派、第一次指派变化就是交接的情况还原不出来；issue 创建时就在等待状态、之后第一次状态变化就是标记重复（`duplicate_marked` 不记原状态）也还原不出来。这些条目会留在 `outside_wait`。开关打开之后监听器在场，它们漏掉时才需要对账。
 - 「最近一个任务失败」只用来保留条目（仍在等），不用来判断「之后等过」；Owner 没订阅的 issue 会计入 `missing.failed`。
 - `stats` 是进程内计数；要看所有副本的历史，查调度器执行记录。
 

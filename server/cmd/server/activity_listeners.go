@@ -164,6 +164,7 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 				detailsMap["to_id"] = *issue.AssigneeID
 			}
 
+			agentrouter.AnnotateAssigneeActivity(detailsMap, payload) // mouse9527/multica fork (M-118)
 			details, _ := json.Marshal(detailsMap)
 			activity, err := queries.CreateActivity(ctx, db.CreateActivityParams{
 				ID:          dbid.NewV7(),

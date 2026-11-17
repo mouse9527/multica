@@ -68,26 +68,45 @@ func TestIssueUpdateLeaveReason(t *testing.T) {
 	}
 }
 
-func TestAnnotateHandoffActivity(t *testing.T) {
+func TestActivityAnnotation(t *testing.T) {
 	member, owner := "member", "owner-id"
-	payload := map[string]any{"prev_assignee_type": &member, "prev_assignee_id": &owner}
+	single := map[string]any{"prev_assignee_type": &member, "prev_assignee_id": &owner}
+	batch := map[string]any{}
 
+	// Off: nothing is added anywhere.
+	AnnotateBatchUpdate(batch, &member, &owner)
 	off := map[string]string{"from": "todo"}
-	AnnotateHandoffActivity(off, payload)
-	if len(off) != 1 {
-		t.Fatalf("annotation off wrote %v", off)
+	AnnotateHandoffActivity(off, single)
+	AnnotateAssigneeActivity(off, single)
+	if len(batch) != 0 || len(off) != 1 {
+		t.Fatalf("annotation off wrote payload %v, details %v", batch, off)
 	}
 
-	SetHandoffAnnotation(true)
-	t.Cleanup(func() { SetHandoffAnnotation(false) })
-	on := map[string]string{}
-	AnnotateHandoffActivity(on, payload)
-	if on["handoff_from_type"] != "member" || on["handoff_from_id"] != "owner-id" {
-		t.Fatalf("annotated = %v", on)
+	SetActivityAnnotation(true)
+	t.Cleanup(func() { SetActivityAnnotation(false) })
+	AnnotateBatchUpdate(batch, &member, &owner)
+	for name, payload := range map[string]map[string]any{"single update": single, "batch update": batch} {
+		handoff, assignee := map[string]string{}, map[string]string{}
+		AnnotateHandoffActivity(handoff, payload)
+		AnnotateAssigneeActivity(assignee, payload)
+		if handoff["handoff_from_type"] != "member" || handoff["handoff_from_id"] != "owner-id" ||
+			assignee["router_from_type"] != "member" || assignee["router_from_id"] != "owner-id" {
+			t.Fatalf("%s: handoff %v, assignee %v", name, handoff, assignee)
+		}
 	}
+
+	// Known to have had no assignee: empty values.
 	none := map[string]string{}
-	AnnotateHandoffActivity(none, map[string]any{"prev_assignee_type": (*string)(nil)})
+	AnnotateHandoffActivity(none, map[string]any{"prev_assignee_type": (*string)(nil), "prev_assignee_id": (*string)(nil)})
 	if v, ok := none["handoff_from_type"]; !ok || v != "" || none["handoff_from_id"] != "" {
-		t.Fatalf("unassigned before = %v, want empty handoff_from_*", none)
+		t.Fatalf("no assignee before = %v, want empty handoff_from_*", none)
+	}
+	// A payload that does not say who the assignee was: nothing, so reconcile
+	// keeps its fallback for the row.
+	unknown := map[string]string{}
+	AnnotateHandoffActivity(unknown, map[string]any{"status_changed": true})
+	AnnotateAssigneeActivity(unknown, map[string]any{"assignee_changed": true})
+	if len(unknown) != 0 {
+		t.Fatalf("unknown previous assignee wrote %v", unknown)
 	}
 }

@@ -14,7 +14,8 @@
 | `.github/workflows/release.yml` | M-58 | `verify` 只在 `multica-ai` 运行，整个上游发布在 fork 上不跑（fork 用 `release-fork.yml`） | 有 |
 | `server/cmd/multica/cmd_daemon_autostart.go` | M-101 | macOS LaunchAgent 的 `ProcessType` 默认 `Standard`（上游写死 `Background`），可用 `MULTICA_DAEMON_PROCESS_TYPE` 改；非默认值同时写进 plist 的 `EnvironmentVariables` | 有 |
 | `server/cmd/multica/cmd_update.go` | M-58 | Homebrew 安装且更新源不是上游时报错，不跑 `brew upgrade` | 有 |
-| `server/cmd/server/activity_listeners.go` | M-118 | 工作流交接写状态活动行时调用 `agentrouter.AnnotateHandoffActivity`（一行）：`router_inbox_resolve` 打开时在 details 里加 `handoff_from_type` / `handoff_from_id`（交接前的指派人），供收件箱对账判断交接是否把 issue 从 Owner 手里移走；关闭时什么都不加，与上游一致 | 有 |
+| `server/cmd/server/activity_listeners.go` | M-118 | 交接写状态活动行时调用 `agentrouter.AnnotateHandoffActivity`，写指派活动行时调用 `agentrouter.AnnotateAssigneeActivity`（各一行）：`router_inbox_resolve` 打开、且负载说明了原指派人时，分别在 details 里加 `handoff_from_type` / `handoff_from_id` 和 `router_from_type` / `router_from_id`，供收件箱对账判断是否从 Owner 手里移走；关闭时什么都不加，与上游一致 | 有 |
+| `server/internal/handler/issue.go` | M-118 | 批量更新发布 `issue:updated` 前调用 `agentrouter.AnnotateBatchUpdate`（一行加 import）：`router_inbox_resolve` 打开时在负载里加 fork 自己的 `router_prev_assignee_type` / `router_prev_assignee_id`（批量负载原本没有原指派人；不用上游的 `prev_assignee_*`，以免改变上游的「取消指派」通知）；关闭时什么都不加 | 有 |
 | `server/internal/cli/update.go` | M-58 | Release 仓库可配置、默认 fork；替换的可执行文件路径经变量解析（测试用） | 有 |
 | `server/internal/daemon/auto_update.go` | M-58 | 版本判断接受 `-mouse.N`（两行） | 有 |
 | `server/internal/daemon/daemon.go` | M-58 | `runUpdate` 前的 Homebrew 检查 | 有 |

@@ -221,9 +221,11 @@ const (
 	        ORDER BY p.created_at DESC, p.id DESC LIMIT 1) ab ON true
 	    LEFT JOIN LATERAL (
 	        SELECT p.action, p.action = 'assignee_changed' OR p.details ? 'handoff_from_type' AS names_from,
-	               CASE WHEN p.action = 'assignee_changed' THEN p.details->>'from_type'
+	               CASE WHEN p.details ? 'router_from_type' THEN NULLIF(p.details->>'router_from_type', '')
+	                    WHEN p.action = 'assignee_changed' THEN p.details->>'from_type'
 	                    ELSE NULLIF(p.details->>'handoff_from_type', '') END AS type,
-	               CASE WHEN p.action = 'assignee_changed' THEN p.details->>'from_id'
+	               CASE WHEN p.details ? 'router_from_type' THEN NULLIF(p.details->>'router_from_id', '')
+	                    WHEN p.action = 'assignee_changed' THEN p.details->>'from_id'
 	                    ELSE NULLIF(p.details->>'handoff_from_id', '') END AS id
 	        FROM activity_log p
 	        WHERE ` + inboxFromASQL + ` AND ` + inboxAssignmentRowSQL + `
@@ -235,8 +237,8 @@ const (
 	        WHEN sa.action = 'status_changed' THEN sa.status END)`
 	// inboxOwnerBeforeSQL is "the owner was the assignee just before a". When
 	// nothing earlier set an assignee, the first assignment row from a on
-	// names it: an assignee change in from_*, a handoff in handoff_from_*
-	// (AnnotateHandoffActivity). A handoff row written without them, before
+	// names it: an assignee change in router_from_* (AnnotateAssigneeActivity)
+	// or else from_*, a handoff in handoff_from_* (AnnotateHandoffActivity). A handoff row written without them, before
 	// inbox resolve ran, names none; the issue was then created with that
 	// assignee, and an issue_assigned item for the owner from before a shows
 	// it was the owner.
@@ -314,32 +316,86 @@ func NewInboxResolver(q Querier, bus *events.Bus) *InboxResolver {
 // activeInboxResolver is the resolver this process registered, for the API.
 var activeInboxResolver atomic.Pointer[InboxResolver]
 
-// handoffAnnotation is on while this process runs inbox resolve.
-var handoffAnnotation atomic.Bool
+// Payload keys AnnotateBatchUpdate adds to the batch update's issue:updated
+// payload. Upstream's batch payload has no prev_assignee_*; adding those keys
+// would also change upstream's notifications (an "unassigned" item for the
+// previous member assignee), so the previous assignee rides under the fork's
+// own keys, read only by the fork.
+const (
+	PayloadPrevAssigneeType = "router_prev_assignee_type"
+	PayloadPrevAssigneeID   = "router_prev_assignee_id"
+)
 
-// SetHandoffAnnotation turns AnnotateHandoffActivity on or off. Register
-// turns it on with inbox resolve.
-func SetHandoffAnnotation(on bool) { handoffAnnotation.Store(on) }
+// activityAnnotation is on while this process runs inbox resolve.
+var activityAnnotation atomic.Bool
+
+// SetActivityAnnotation turns AnnotateBatchUpdate, AnnotateHandoffActivity
+// and AnnotateAssigneeActivity on or off. Register turns them on with inbox
+// resolve; off, they do nothing and payloads and activity rows are exactly
+// upstream's.
+func SetActivityAnnotation(on bool) { activityAnnotation.Store(on) }
+
+// AnnotateBatchUpdate adds the issue's assignee before a batch update to the
+// update's issue:updated payload, under PayloadPrevAssigneeType and
+// PayloadPrevAssigneeID (nil for none). The upstream batch update handler
+// calls it.
+func AnnotateBatchUpdate(payload map[string]any, prevType, prevID *string) {
+	if !activityAnnotation.Load() {
+		return
+	}
+	payload[PayloadPrevAssigneeType] = prevType
+	payload[PayloadPrevAssigneeID] = prevID
+}
+
+// payloadPrevAssignee is the assignee before the update an issue:updated
+// payload carries: upstream's prev_assignee_* (single updates), else the
+// fork's keys (batch updates). ok is false when the payload carries neither,
+// so callers write nothing rather than claim there was no assignee.
+func payloadPrevAssignee(payload map[string]any) (typ, id string, ok bool) {
+	deref := func(v any) string {
+		if s, isPtr := v.(*string); isPtr && s != nil {
+			return *s
+		}
+		return ""
+	}
+	for _, keys := range [][2]string{{"prev_assignee_type", "prev_assignee_id"}, {PayloadPrevAssigneeType, PayloadPrevAssigneeID}} {
+		if _, has := payload[keys[0]]; has {
+			return deref(payload[keys[0]]), deref(payload[keys[1]]), true
+		}
+	}
+	return "", "", false
+}
 
 // AnnotateHandoffActivity adds the previous assignee, as handoff_from_type
 // and handoff_from_id ("" for none), to the details of the status activity
 // row a workflow handoff writes. That row replaces the assignee row, which
 // would have named the previous assignee, so without these reconcile cannot
 // tell that a handoff took an issue away from the owner. The upstream
-// activity listener calls it for handoff rows; with inbox resolve off it does
-// nothing, and the row is as upstream writes it.
+// activity listener calls it for handoff rows. It writes nothing when the
+// payload does not say who the assignee was, which leaves reconcile its
+// fallback for such rows.
 func AnnotateHandoffActivity(details map[string]string, payload map[string]any) {
-	if !handoffAnnotation.Load() {
+	if !activityAnnotation.Load() {
 		return
 	}
-	deref := func(v any) string {
-		if s, ok := v.(*string); ok && s != nil {
-			return *s
-		}
-		return ""
+	if typ, id, ok := payloadPrevAssignee(payload); ok {
+		details["handoff_from_type"], details["handoff_from_id"] = typ, id
 	}
-	details["handoff_from_type"] = deref(payload["prev_assignee_type"])
-	details["handoff_from_id"] = deref(payload["prev_assignee_id"])
+}
+
+// AnnotateAssigneeActivity adds the previous assignee, as router_from_type
+// and router_from_id ("" for none), to an assignee_changed activity row.
+// Upstream fills from_* only from prev_assignee_*, which a batch update does
+// not send, so its row reads as "from no one". The fork's keys leave from_*,
+// which the timeline shows, as upstream writes it. The upstream activity
+// listener calls it for assignee rows.
+func AnnotateAssigneeActivity(details map[string]string, payload map[string]any) {
+	if !activityAnnotation.Load() {
+		return
+	}
+	if typ, id, ok := payloadPrevAssignee(payload); ok {
+		details["router_from_type"], details["router_from_id"] = typ, id
+	}
 }
 
 // Subscribe registers the listener.
@@ -360,6 +416,10 @@ type issueUpdate struct {
 	AssigneeChanged  bool    `json:"assignee_changed"`
 	PrevAssigneeType *string `json:"prev_assignee_type"`
 	PrevAssigneeID   *string `json:"prev_assignee_id"`
+	// RouterPrevAssignee* are AnnotateBatchUpdate's keys, set when the
+	// payload has no prev_assignee_*.
+	RouterPrevAssigneeType *string `json:"router_prev_assignee_type"`
+	RouterPrevAssigneeID   *string `json:"router_prev_assignee_id"`
 }
 
 // leaveReason says whether the update may have ended the issue's wait for
@@ -396,6 +456,9 @@ func (r *InboxResolver) Handle(e events.Event) {
 	var u issueUpdate
 	if json.Unmarshal(raw, &u) != nil || u.Issue.ID == "" || (!u.StatusChanged && !u.AssigneeChanged) {
 		return
+	}
+	if u.PrevAssigneeType == nil && u.PrevAssigneeID == nil {
+		u.PrevAssigneeType, u.PrevAssigneeID = u.RouterPrevAssigneeType, u.RouterPrevAssigneeID
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), r.Timeout)
 	defer cancel()

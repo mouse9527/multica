@@ -385,8 +385,8 @@ func TestRegisterInboxResolveFollowsTheFlag(t *testing.T) {
 	if n := bus.SubscriberCount(protocol.EventIssueUpdated); n != 2 {
 		t.Fatalf("issue:updated listeners = %d, want capture and inbox resolve", n)
 	}
-	t.Cleanup(func() { activeInboxResolver.Store(nil); SetHandoffAnnotation(false) })
-	if !handoffAnnotation.Load() {
+	t.Cleanup(func() { activeInboxResolver.Store(nil); SetActivityAnnotation(false) })
+	if !activityAnnotation.Load() {
 		t.Fatal("handoff annotation not turned on with inbox resolve")
 	}
 
@@ -522,4 +522,34 @@ func TestInboxResolveReconcileFollowsClosingAndDuplicates(t *testing.T) {
 	}
 	e.assertArchived("waited after the item, now closed", true, closedItem, dupItem)
 	e.assertArchived("closed before the item", false, reopenedItem)
+}
+
+// TestInboxResolveFollowsBatchAssigneeChanges: a batch update carries the
+// previous assignee under the fork's keys and its assignee row under
+// router_from_*; both the listener and reconcile read them.
+func TestInboxResolveFollowsBatchAssigneeChanges(t *testing.T) {
+	e := newInboxEnv(t)
+	member := "member"
+
+	viaListener := e.issue("batch reassigned", testutil.Cols{"status": "todo", "assignee_type": "agent", "assignee_id": e.agentA})
+	listenerItem := e.item(e.user, viaListener, 0)
+	e.update(viaListener, map[string]any{"assignee_changed": true,
+		PayloadPrevAssigneeType: &member, PayloadPrevAssigneeID: &e.user})
+	e.assertArchived("batch payload names the owner", true, listenerItem)
+
+	viaReconcile := e.issue("batch reassigned, listener missed", testutil.Cols{"status": "todo", "assignee_type": "agent", "assignee_id": e.agentA})
+	reconcileItem := e.item(e.user, viaReconcile, time.Hour)
+	e.activity(viaReconcile, "assignee_changed", fmt.Sprintf(
+		`{"to_type":"agent","to_id":%q,"router_from_type":"member","router_from_id":%q}`, e.agentA, e.user), 30*time.Minute)
+
+	fromNone := e.issue("batch assigned from no one", testutil.Cols{"status": "todo", "assignee_type": "agent", "assignee_id": e.agentA})
+	fromNoneItem := e.item(e.user, fromNone, time.Hour)
+	e.activity(fromNone, "assignee_changed", fmt.Sprintf(
+		`{"to_type":"agent","to_id":%q,"router_from_type":"","router_from_id":""}`, e.agentA), 30*time.Minute)
+
+	if _, err := e.resolver.ReconcileWorkspace(e.ctx, e.ws); err != nil {
+		t.Fatal(err)
+	}
+	e.assertArchived("assignee row names the owner", true, reconcileItem)
+	e.assertArchived("assignee row names no one", false, fromNoneItem)
 }
