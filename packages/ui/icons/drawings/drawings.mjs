@@ -198,6 +198,8 @@ Object.assign(DRAWINGS, {
   Wifi: wifi(3),
   WifiHigh: wifi(2),
   WifiOff: `${wifi(3)}<path d="m3 3 18 18"/>`,
+  // Added by the mouse9527/multica fork (M-108): the Router marker in the chat list.
+  Radar: `${ring}<circle class="k" cx="12" cy="12" r="4.75"/><path class="k" d="M12 12l6.54-6.54"/>`,
   SignalHigh: `<path d="M3.25 20.5h.01M7.75 20.5V16M12.25 20.5V12M16.75 20.5V8"/>`,
   GitBranch: `<circle cx="6.5" cy="18" r="2.75"/><circle cx="17.5" cy="6.5" r="2.75"/><path d="M6.5 3v12.25M17.5 9.25c0 4.8-3.45 8.75-8.25 8.75"/>`,
   GitPullRequest: `<circle cx="6.25" cy="6" r="2.75"/><circle cx="17.75" cy="18" r="2.75"/>

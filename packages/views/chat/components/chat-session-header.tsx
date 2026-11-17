@@ -230,7 +230,8 @@ export function ChatSessionHeader({
               ]
             : []
         }
-        leaf={leaf}
+        // Modified by the mouse9527/multica fork (M-108): the Router marker beside the title.
+        leaf={<>{leaf}{router.marker}</>}
         actions={
           <DropdownMenu>
             <DropdownMenuTrigger

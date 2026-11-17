@@ -237,6 +237,7 @@ export const PlugZap = /* @__PURE__ */ createIcon("PlugZap", glyph.PlugZap);
 export const Plus = /* @__PURE__ */ createIcon("Plus", glyph.Plus);
 export const Power = /* @__PURE__ */ createIcon("Power", glyph.Power);
 export const Quote = /* @__PURE__ */ createIcon("Quote", glyph.Quote);
+export const Radar = /* @__PURE__ */ createIcon("Radar", glyph.Radar);
 export const Redo2 = /* @__PURE__ */ createIcon("Redo2", glyph.Redo2);
 export const RefreshCw = /* @__PURE__ */ createIcon("RefreshCw", glyph.RefreshCw);
 export const Rocket = /* @__PURE__ */ createIcon("Rocket", glyph.Rocket);
