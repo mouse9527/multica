@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slice 1 (M-96), and Router parallelism (M-104).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slice 1 (M-96), Router parallelism (M-104), and no rate pause (M-111).
 
 package agentrouter
 
@@ -16,15 +16,24 @@ import (
 )
 
 // fakeRuns stands in for the task service: it queues a plain task row so
-// settle sees a real run, and can be told to refuse or report busy.
+// settle sees a real run, and can be told to refuse or report busy. It also
+// records the notices posted into Router chats.
 type fakeRuns struct {
-	e     *env
-	err   error
-	mu    sync.Mutex
-	calls []fakeRun
+	e       *env
+	err     error
+	mu      sync.Mutex
+	calls   []fakeRun
+	notices []fakeRun
 }
 
 type fakeRun struct{ issue, chat, agent, note, task string }
+
+func (f *fakeRuns) PostRouterChatNotice(_ context.Context, chatSessionID, agentID, content string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.notices = append(f.notices, fakeRun{chat: chatSessionID, agent: agentID, note: content})
+	return fmt.Sprintf("message-%d", len(f.notices)), nil
+}
 
 func (f *fakeRuns) EnqueueRouterChatRun(_ context.Context, chatSessionID, agentID, _, batch string) (string, error) {
 	if f.err != nil {
@@ -62,7 +71,7 @@ var testChange = Change{ActorType: "system"}
 func newDispatchEnv(t *testing.T) (*env, *Dispatcher, *fakeRuns) {
 	e := newEnv(t)
 	runs := &fakeRuns{e: e}
-	d := NewDispatcher(e.store, runs, NewNotifier(e.store, InboxAdapter{Queries: db.New(pool)}))
+	d := NewDispatcher(e.store, runs, NewNotifier(e.store, ChatAdapter{Store: e.store, Poster: runs}, InboxAdapter{Queries: db.New(pool)}))
 	t.Cleanup(func() {
 		e.fx.Exec(t, `DELETE FROM inbox_item WHERE workspace_id = $1`, e.ws)
 		e.fx.Exec(t, `DELETE FROM agent_task_queue WHERE agent_id = ANY($1::uuid[])`, []string{e.agentA, e.agentB})
@@ -268,59 +277,116 @@ func TestFailedRunHandsTheBatchBack(t *testing.T) {
 	}
 }
 
-func TestRateLimitPausesDispatchAndNotifiesTheOwner(t *testing.T) {
+func TestBusyRouterKeepsDispatchingAndTellsTheOwnerOnce(t *testing.T) {
 	e, d, runs := newDispatchEnv(t)
 	root := e.issue("router root")
 	sub := e.subscribe(e.agentA, ScopeIssueTree, root)
 	if _, err := e.store.Update(e.ctx, e.ws, sub.ID, UpdateParams{Batching: Batching{MaxRunsPerHour: 1}, Change: testChange}); err != nil {
 		t.Fatal(err)
 	}
-	e.publishComment(e.comment(root))
-	e.age(sub.ID)
-	e.tick(d)
-	e.setTask(runs.calls[0].task, "completed")
+	for i := range 3 {
+		e.publishComment(e.comment(root))
+		e.age(sub.ID)
+		e.tick(d)
+		if len(runs.calls) != i+1 {
+			t.Fatalf("batch %d: runs = %d, want every batch dispatched past the threshold", i+1, len(runs.calls))
+		}
+		e.setTask(runs.calls[i].task, "completed")
+	}
+	if got := e.get(sub.ID); !got.Enabled || got.PausedReason != nil {
+		t.Fatalf("subscription = enabled %v reason %v, want it still dispatching", got.Enabled, got.PausedReason)
+	}
 
-	e.publishComment(e.comment(root))
-	e.age(sub.ID)
-	e.tick(d)
-	if len(runs.calls) != 1 {
-		t.Fatalf("dispatched past the hourly limit")
+	// The second run went past the threshold; the third did not alert again.
+	notices, err := d.Notices.ListNotices(e.ctx, NoticeFilter{WorkspaceID: e.ws, SubscriptionID: sub.ID})
+	if err != nil || len(notices) != 1 {
+		t.Fatalf("notices = %+v (%v), want one", notices, err)
 	}
-	got := e.get(sub.ID)
-	if !got.Enabled || got.PausedReason == nil || *got.PausedReason != PausedRate {
-		t.Fatalf("subscription = enabled %v reason %v, want capture on and dispatch paused for rate", got.Enabled, got.PausedReason)
+	n := notices[0]
+	if !strings.Contains(n.Title, "Router busy") || !strings.Contains(n.Body, "started 2 runs in the last hour") ||
+		!strings.Contains(n.Body, "nothing is paused") || n.Urgency != UrgencyNormal || n.RecipientUserID != e.user {
+		t.Fatalf("notice = %+v", n)
 	}
-	var title, typ string
+	// Not bound to a chat: the chat skips it and the inbox delivers it.
+	if n.ChannelStates["chat"].State != DeliverySkipped || n.ChannelStates["inbox"].State != DeliverySent {
+		t.Fatalf("channel states = %+v", n.ChannelStates)
+	}
+	var typ, severity string
 	if err := pool.QueryRow(e.ctx, `
-		SELECT title, type FROM inbox_item WHERE workspace_id = $1 AND recipient_id = $2`, e.ws, e.user).Scan(&title, &typ); err != nil {
+		SELECT type, severity FROM inbox_item WHERE workspace_id = $1 AND recipient_id = $2`, e.ws, e.user).Scan(&typ, &severity); err != nil {
 		t.Fatalf("owner inbox: %v", err)
 	}
-	if typ != InboxNoticeType || !strings.Contains(title, "Router paused") {
-		t.Fatalf("inbox item = %q %q", typ, title)
-	}
-	notices, err := d.Notices.ListNotices(e.ctx, NoticeFilter{WorkspaceID: e.ws, SubscriptionID: sub.ID})
-	if err != nil || len(notices) != 1 || notices[0].ChannelStates["inbox"].State != DeliverySent {
-		t.Fatalf("notices = %+v (%v)", notices, err)
+	if typ != InboxNoticeType || severity != "info" {
+		t.Fatalf("inbox item = %s %s", typ, severity)
 	}
 	changes, _ := e.store.ListChanges(e.ctx, e.ws, sub.ID)
-	if last := changes[len(changes)-1]; last.Action != ChangeAutoPause || last.ActorType != "system" {
-		t.Fatalf("last change = %+v", last)
+	for _, c := range changes {
+		if c.Action == ChangeAutoPause {
+			t.Fatalf("auto pause recorded: %+v", c)
+		}
 	}
+}
 
-	// Capture went on; a resume dispatches what arrived meanwhile once the
-	// hour allows it.
-	e.publishComment(e.comment(root))
-	if len(e.pending(sub.ID)) != 2 {
-		t.Fatalf("capture stopped while dispatch was paused")
-	}
-	if _, err := e.store.Resume(e.ctx, e.ws, sub.ID, Change{ActorType: "member", ActorID: e.user}); err != nil {
+func TestBusyRouterAlertGoesToItsChat(t *testing.T) {
+	e, d, runs := newDispatchEnv(t)
+	d.Chat = true
+	root := e.issue("router root")
+	sub := e.subscribe(e.agentA, ScopeIssueTree, root)
+	chat := e.bindChat(sub)
+	if _, err := e.store.Update(e.ctx, e.ws, sub.ID, UpdateParams{Batching: Batching{MaxRunsPerHour: 1}, Change: testChange}); err != nil {
 		t.Fatal(err)
 	}
-	e.fx.Exec(t, `UPDATE router_dispatch SET created_at = created_at - interval '2 hours' WHERE subscription_id = $1`, sub.ID)
+	for i := range 2 {
+		e.publishComment(e.comment(root))
+		e.age(sub.ID)
+		e.tick(d)
+		e.setTask(runs.calls[i].task, "completed")
+	}
+	if len(runs.calls) != 2 || len(runs.notices) != 1 {
+		t.Fatalf("runs = %d, chat notices = %d; want 2 and 1", len(runs.calls), len(runs.notices))
+	}
+	if got := runs.notices[0]; got.chat != chat || got.agent != e.agentA ||
+		!strings.HasPrefix(got.note, RouterNoticeLabel+"\n") || !strings.Contains(got.note, "Router busy") {
+		t.Fatalf("chat notice = %+v", got)
+	}
+	notices, _ := d.Notices.ListNotices(e.ctx, NoticeFilter{WorkspaceID: e.ws, SubscriptionID: sub.ID})
+	if len(notices) != 1 || notices[0].ChannelStates["chat"].State != DeliverySent ||
+		notices[0].ChannelStates["inbox"].State != DeliverySkipped {
+		t.Fatalf("notices = %+v, want sent to the chat and not to the inbox", notices)
+	}
+	var inbox int
+	if err := pool.QueryRow(e.ctx, `SELECT count(*) FROM inbox_item WHERE workspace_id = $1`, e.ws).Scan(&inbox); err != nil || inbox != 0 {
+		t.Fatalf("inbox items = %d (%v), want none", inbox, err)
+	}
+}
+
+// TestRatePauseFromAnOlderReleaseIsLifted: a subscription an older release
+// paused for "rate" dispatches again, with what it captured meanwhile.
+func TestRatePauseFromAnOlderReleaseIsLifted(t *testing.T) {
+	e, d, runs := newDispatchEnv(t)
+	root := e.issue("router root")
+	sub := e.subscribe(e.agentA, ScopeIssueTree, root)
+	manual := e.subscribe(e.agentB, ScopeIssueTree, root)
+	e.fx.Exec(t, `UPDATE router_subscription SET paused_reason = 'rate' WHERE id = $1`, sub.ID)
+	if _, err := e.store.Pause(e.ctx, e.ws, manual.ID, testChange); err != nil {
+		t.Fatal(err)
+	}
+	e.publishComment(e.comment(root))
+	e.publishComment(e.comment(root))
 	e.age(sub.ID)
 	e.tick(d)
-	if len(runs.calls) != 2 {
-		t.Fatalf("runs = %d after resume, want 2", len(runs.calls))
+	if got := e.get(sub.ID); got.PausedReason != nil || !got.Enabled {
+		t.Fatalf("subscription = enabled %v reason %v, want dispatching again", got.Enabled, got.PausedReason)
+	}
+	if len(runs.calls) != 1 || runs.calls[0].agent != e.agentA || !strings.Contains(runs.calls[0].note, "2 new event(s)") {
+		t.Fatalf("runs = %+v, want the backlog dispatched as one batch", runs.calls)
+	}
+	changes, _ := e.store.ListChanges(e.ctx, e.ws, sub.ID)
+	if last := changes[len(changes)-1]; last.Action != ChangeResume || last.ActorType != "system" || last.Detail["reason"] != PausedRate {
+		t.Fatalf("last change = %+v", last)
+	}
+	if got := e.get(manual.ID); got.Enabled || got.PausedReason == nil || *got.PausedReason != PausedManual {
+		t.Fatalf("manual pause = enabled %v reason %v, want it kept", got.Enabled, got.PausedReason)
 	}
 }
 

@@ -46,8 +46,8 @@
     "title": "Batching",
     "debounce": "Quiet period (seconds)",
     "max_wait": "Longest wait (seconds)",
-    "max_runs": "Runs per hour",
-    "invalid": "Seconds must be 10–86400, the longest wait at least the quiet period, and runs per hour 1–60."
+    "max_runs": "Alert above runs per hour",
+    "invalid": "Seconds must be 10–86400, the longest wait at least the quiet period, and the hourly run alert 1–60."
   },
   "health": {
     "title": "Health",

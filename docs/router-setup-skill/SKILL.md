@@ -41,7 +41,7 @@ Router 只做分派、跟踪、转告，不自己干活。实质性工作交给 
 | 「再加一个范围：Y」 | 复述并等确认 | 同上，一个范围一条命令 |
 | 「去掉 Y 这个范围」 | 复述并等确认 | 先 `router get --chat current` 找到那条订阅的 id，再 `multica router delete <订阅ID>` |
 | 「只要状态变更和新评论」 | 复述并等确认 | `multica router update --chat current --events status_changed,comment_created` |
-| 「静默 2 分钟再合批 / 每小时最多 3 次」 | 复述并等确认 | `multica router update --chat current --debounce 120` / `--max-runs-per-hour 3` |
+| 「静默 2 分钟再合批 / 每小时超过 30 次再提醒我」 | 复述并等确认 | `multica router update --chat current --debounce 120` / `--max-runs-per-hour 30` |
 | 「暂停这个 Router」 | — | `multica router pause --chat current` |
 | 「恢复」 | — | `multica router resume --chat current` |
 | 「解除这个 Router」 | 复述并等确认；问清删掉订阅还是保留 | `multica router release --chat current`（删除）或 `--keep`（保留订阅、暂停并解绑） |
@@ -53,6 +53,8 @@ Router 只做分派、跟踪、转告，不自己干活。实质性工作交给 
 - 事件类型可选：`issue_created`、`status_changed`、`assignee_changed`、`comment_created`、`task_failed`；不传就是全部。
 - `--chat current` 作用于这个 Router 的**每一条**订阅。
 - `delete --chat current` 会删除这个 Router 的全部订阅，只在 Owner 明确要求「全部删掉」时用；平时用 `release`。
+- `--max-runs-per-hour` 不是上限，是**提醒阈值**（默认 20，范围 1–60）：一小时内启动的运行超过它，系统在这个 chat 里提醒 Owner 一次（每小时最多一次），派发照常继续。Router 不会因为运行次数多而暂停；只有 Owner 主动暂停，或智能体、锚点、chat 不可用时才停。Owner 说「每小时最多 N 次」时，要说明这只会提醒、不会限流，再问是否照这个数设提醒阈值。
+- chat 里以「[Router 系统通知 · 非 Router 回复]」开头的消息是系统写的（暂停、运行过多的提醒），不是你说的话。Owner 问起时照它的内容解释，需要恢复就按上表 `resume`。
 
 ## 范围覆盖哪些 issue
 
@@ -73,7 +75,7 @@ Owner 问「订阅父任务能不能收到子任务的事件」时，按上面�
 
 新建、改范围、改设置、解除之前，先用一两句话复述你要做的事，等 Owner 回答「好」「可以」再执行。例如：
 
-> 我会把这个对话设为 Router，订阅 multica 项目（会在项目里建一个看板任务）和 M-45 这棵任务树，事件全选，默认合批（静默 60 秒、最长等 10 分钟、每小时最多 6 次）。可以吗？
+> 我会把这个对话设为 Router，订阅 multica 项目（会在项目里建一个看板任务）和 M-45 这棵任务树，事件全选，默认合批（静默 60 秒、最长等 10 分钟，每小时运行超过 20 次时提醒一次）。可以吗？
 
 暂停、恢复、查看状态可以直接做，做完说一声。
 

@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and Router v6 slice 1 (M-96).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slice 1 (M-96), and Router notices in the Router chat (M-111).
 
 package agentrouter
 
@@ -41,6 +41,27 @@ func (r TaskRuns) EnqueueRouterRun(ctx context.Context, issueID, agentID, note s
 		return "", err
 	}
 	return util.UUIDToString(task.ID), nil
+}
+
+// PostRouterChatNotice writes a Router system notice into the chat (see
+// service.PostRouterChatNotice).
+func (r TaskRuns) PostRouterChatNotice(ctx context.Context, chatSessionID, agentID, content string) (string, error) {
+	sessionUUID, err := util.ParseUUID(chatSessionID)
+	if err != nil {
+		return "", err
+	}
+	agentUUID, err := util.ParseUUID(agentID)
+	if err != nil {
+		return "", err
+	}
+	msg, err := r.Tasks.PostRouterChatNotice(ctx, sessionUUID, agentUUID, content)
+	if errors.Is(err, service.ErrChatSessionArchived) || errors.Is(err, service.ErrRouterChatUnavailable) {
+		return "", fmt.Errorf("%w: %v", ErrChatUnavailable, err)
+	}
+	if err != nil {
+		return "", err
+	}
+	return util.UUIDToString(msg.ID), nil
 }
 
 // EnqueueRouterChatRun writes the batch into the chat session and queues the

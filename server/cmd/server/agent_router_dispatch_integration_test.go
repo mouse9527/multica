@@ -103,7 +103,7 @@ func TestRouterDispatchesRealAnchorRun(t *testing.T) {
 		"agent_id": agent, "scope_type": "issue_tree", "scope_id": rootID, "debounce_seconds": 10,
 	}, http.StatusCreated, &sub)
 	subID := sub["id"].(string)
-	if sub["anchor_issue_id"] != rootID || sub["debounce_seconds"] != float64(10) || sub["max_runs_per_hour"] != float64(6) {
+	if sub["anchor_issue_id"] != rootID || sub["debounce_seconds"] != float64(10) || sub["max_runs_per_hour"] != float64(20) {
 		t.Fatalf("subscription = %v", sub)
 	}
 

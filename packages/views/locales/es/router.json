@@ -46,8 +46,8 @@
     "title": "Agrupación",
     "debounce": "Periodo de calma (segundos)",
     "max_wait": "Espera máxima (segundos)",
-    "max_runs": "Ejecuciones por hora",
-    "invalid": "Los segundos van de 10 a 86400, la espera máxima no puede ser menor que el periodo de calma y las ejecuciones por hora van de 1 a 60."
+    "max_runs": "Avisar por encima de ejecuciones por hora",
+    "invalid": "Los segundos van de 10 a 86400, la espera máxima no puede ser menor que el periodo de calma y el aviso de ejecuciones por hora va de 1 a 60."
   },
   "health": {
     "title": "Estado",

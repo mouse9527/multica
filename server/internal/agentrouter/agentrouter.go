@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slice 1 (M-96), and Router parallelism (M-104).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slice 1 (M-96), Router parallelism (M-104), and no rate pause (M-111).
 
 // Package agentrouter captures issue events for agents that subscribe to an
 // issue tree or a project (the "Router" of the fork's Super-agent design), and
@@ -49,14 +49,18 @@ const (
 	SourceBus       = "bus"
 	SourceReconcile = "reconcile"
 
+	// Pause reasons. PausedRate is no longer set: a Router keeps dispatching
+	// for as long as its scope has events, and max_runs_per_hour only raises
+	// an alert (M-111). Dispatch lifts a rate pause an older release left.
 	PausedManual           = "manual"
 	PausedRate             = "rate"
 	PausedAgentUnavailable = "agent_unavailable"
 
-	// Batching defaults and bounds, in seconds (debounce, max wait) and runs.
+	// Batching defaults and bounds, in seconds (debounce, max wait) and runs
+	// per hour before the owner is alerted.
 	DefaultDebounceSeconds = 60
 	DefaultMaxWaitSeconds  = 600
-	DefaultMaxRunsPerHour  = 6
+	DefaultMaxRunsPerHour  = 20
 	MinDebounceSeconds     = 10
 	MaxBatchWaitSeconds    = 86400
 	MaxRunsPerHourLimit    = 60
@@ -126,8 +130,8 @@ type Subscription struct {
 	EventTypes    []string `json:"event_types"`
 	Enabled       bool     `json:"enabled"`
 	// PausedReason with Enabled false is a manual pause: capture stopped.
-	// With Enabled true it is "rate" or "agent_unavailable": dispatch stopped
-	// but capture goes on, so a resume dispatches what arrived meanwhile.
+	// With Enabled true it is "agent_unavailable": dispatch stopped but
+	// capture goes on, so a resume dispatches what arrived meanwhile.
 	PausedReason    *string   `json:"paused_reason"`
 	DebounceSeconds int       `json:"debounce_seconds"`
 	MaxWaitSeconds  int       `json:"max_wait_seconds"`
