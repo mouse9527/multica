@@ -1,5 +1,6 @@
 // @vitest-environment node
-// Added by the mouse9527/multica fork: Router page settings (M-105).
+// Added by the mouse9527/multica fork: Router page settings (M-105) and the
+// chat list's Router marker (M-108).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClient, setApiInstance } from "../api";
 import {
@@ -8,6 +9,7 @@ import {
   RouterScopeTakenError,
   unboundSubscriptions,
   latestDispatch,
+  listRouterChats,
   listRouterDispatches,
   listRouterSubscriptions,
   reconciledThrough,
@@ -112,6 +114,32 @@ describe("router reads", () => {
     serve(() => Response.json({ dispatches: [] }));
     await listRouterDispatches("ws", { subscriptionId: "s1", limit: 1 });
     expect(new URL(vi.mocked(fetch).mock.calls[0]?.[0] as string).search).toBe("?limit=1&subscription_id=s1");
+  });
+
+  it("reads the chat list's Router summaries with defaults", async () => {
+    serve(() =>
+      Response.json({
+        chats: [{ chat_session_id: "c1", scopes: [{ subscription_id: "s1", scope_type: "project", scope_id: "p" }] }],
+      }),
+    );
+    await expect(listRouterChats("ws-1")).resolves.toEqual([
+      {
+        chat_session_id: "c1",
+        paused_reasons: [],
+        scopes: [
+          { subscription_id: "s1", scope_type: "project", scope_id: "p", name: "", identifier: "", visible: false, paused_reason: null },
+        ],
+      },
+    ]);
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe("https://api.example.test/api/router/chats");
+  });
+
+  it.each([
+    ["a null body", null],
+    ["a wrong shape", { chats: [{ scopes: "nope" }] }],
+  ])("reads %s as no Router chats", async (_name, body) => {
+    serve(() => Response.json(body));
+    await expect(listRouterChats("ws")).resolves.toEqual([]);
   });
 
   it("reads a malformed dispatch list as empty", async () => {

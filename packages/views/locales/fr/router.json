@@ -111,5 +111,13 @@
     "delete": "Supprimer",
     "delete_title": "Supprimer cet abonnement ?",
     "delete_description": "Ses événements capturés sont aussi supprimés."
+  },
+  "marker": {
+    "label": "Router · Périmètres : {{scopes}} · {{status}}",
+    "scope_project": "Projet {{name}}",
+    "scope_issue_tree": "{{identifier}} {{name}}",
+    "scope_paused": "{{scope}} (en pause)",
+    "paused": "En pause ({{reasons}})",
+    "separator": ", "
   }
 }

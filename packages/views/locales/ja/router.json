@@ -111,5 +111,13 @@
     "delete": "削除",
     "delete_title": "この購読を削除しますか？",
     "delete_description": "取得済みのイベントも削除されます。"
+  },
+  "marker": {
+    "label": "Router · 範囲：{{scopes}} · {{status}}",
+    "scope_project": "{{name}} プロジェクト",
+    "scope_issue_tree": "{{identifier}} {{name}}",
+    "scope_paused": "{{scope}}（一時停止中）",
+    "paused": "一時停止中（{{reasons}}）",
+    "separator": "、"
   }
 }

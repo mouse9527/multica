@@ -1,4 +1,5 @@
-// Added by the mouse9527/multica fork: Router page settings (M-105).
+// Added by the mouse9527/multica fork: Router page settings (M-105) and the
+// chat list's Router marker (M-108).
 //
 // A Router is a chat session plus the subscriptions bound to it
 // (`anchor_chat_session_id`); its agent is the chat's agent. The server only
@@ -97,3 +98,26 @@ export interface RouterInstance {
 export type RouterStatus =
   | { kind: "running" }
   | { kind: "paused"; reasons: string[] };
+
+/** One scope of a Router as the chat list shows it (`GET /api/router/chats`). */
+export interface RouterChatScope {
+  subscription_id: string;
+  scope_type: string;
+  scope_id: string;
+  /** Project title or root issue title; empty when not `visible`. */
+  name: string;
+  /** Root issue identifier of an issue tree; empty for a project. */
+  identifier: string;
+  /** False when the scope is gone or in a project the member cannot see. */
+  visible: boolean;
+  /** "manual", "rate" or "agent_unavailable"; null while it runs. */
+  paused_reason: string | null;
+}
+
+/** A Router among the member's chats, for the chat list and header marker. */
+export interface RouterChatSummary {
+  chat_session_id: string;
+  /** Distinct reasons of its paused scopes; empty while all run. */
+  paused_reasons: string[];
+  scopes: RouterChatScope[];
+}

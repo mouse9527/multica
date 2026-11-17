@@ -111,5 +111,13 @@
     "delete": "Eliminar",
     "delete_title": "¿Eliminar esta suscripción?",
     "delete_description": "También se eliminan sus eventos capturados."
+  },
+  "marker": {
+    "label": "Router · Ámbitos: {{scopes}} · {{status}}",
+    "scope_project": "Proyecto {{name}}",
+    "scope_issue_tree": "{{identifier}} {{name}}",
+    "scope_paused": "{{scope}} (en pausa)",
+    "paused": "En pausa ({{reasons}})",
+    "separator": ", "
   }
 }

@@ -1,16 +1,19 @@
-// Added by the mouse9527/multica fork: Router page settings (M-105).
+// Added by the mouse9527/multica fork: Router page settings (M-105) and the
+// chat list's Router marker (M-108).
 //
 // Router endpoints (`/api/router/*`, see docs/router.md). They answer 404
 // while `router_v1` is off; the UI only calls them when `router_chat` is on.
 
 import { api, parseWithFallback } from "../api";
 import {
+  RouterChatSummaryListSchema,
   RouterDispatchListSchema,
   RouterSubscriptionChangeListSchema,
   RouterSubscriptionListSchema,
   RouterSubscriptionSchema,
 } from "./schemas";
 import type {
+  RouterChatSummary,
   RouterDispatch,
   RouterScopeInput,
   RouterSettingsInput,
@@ -34,6 +37,14 @@ export async function listRouterSubscriptions(wsId: string): Promise<RouterSubsc
   return parseWithFallback(raw, RouterSubscriptionListSchema, { subscriptions: [] as RouterSubscription[] }, {
     endpoint: "GET /api/router/subscriptions",
   }).subscriptions;
+}
+
+/** The Routers among the member's own chats, with scope names; needs router_chat. */
+export async function listRouterChats(wsId: string): Promise<RouterChatSummary[]> {
+  const raw = await api.forkRequest("/api/router/chats", scoped(wsId));
+  return parseWithFallback(raw, RouterChatSummaryListSchema, { chats: [] as RouterChatSummary[] }, {
+    endpoint: "GET /api/router/chats",
+  }).chats;
 }
 
 export async function listRouterDispatches(

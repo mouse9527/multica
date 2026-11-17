@@ -1,4 +1,5 @@
-// Added by the mouse9527/multica fork: Router page settings (M-105).
+// Added by the mouse9527/multica fork: Router page settings (M-105) and the
+// chat list's Router marker (M-108).
 
 import { z } from "zod";
 
@@ -58,6 +59,35 @@ export const RouterSubscriptionChangeListSchema = z.object({
         actor_type: z.string().default(""),
         detail: z.record(z.string(), z.unknown()).nullable().optional().transform((v) => v ?? {}),
         created_at: z.string().default(""),
+      }),
+    )
+    .nullable()
+    .transform((v) => v ?? []),
+});
+
+const stringList = z.array(z.string()).nullable().optional().transform((v) => v ?? []);
+
+export const RouterChatSummaryListSchema = z.object({
+  chats: z
+    .array(
+      z.object({
+        chat_session_id: z.string(),
+        paused_reasons: stringList,
+        scopes: z
+          .array(
+            z.object({
+              subscription_id: z.string(),
+              scope_type: z.string(),
+              scope_id: z.string(),
+              name: z.string().default(""),
+              identifier: z.string().default(""),
+              visible: z.boolean().default(false),
+              paused_reason: nullableString,
+            }),
+          )
+          .nullable()
+          .optional()
+          .transform((v) => v ?? []),
       }),
     )
     .nullable()

@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router page settings (M-105).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router page settings (M-105), and the chat list's Router marker (M-108).
 //
 // HTTP surface of internal/agentrouter. It lives in package handler only to
 // reuse the request helpers (actor, workspace, issue and agent loaders,
@@ -36,6 +36,7 @@ func (h *Handler) MountAgentRouter(r chi.Router) {
 	r.Delete("/subscriptions/{id}", h.DeleteRouterSubscription)
 	r.Get("/subscriptions/{id}/scope", h.GetRouterSubscriptionScope)
 	r.Get("/events", h.ListRouterEvents)
+	r.Get("/chats", h.ListRouterChats)
 	r.Get("/chats/current", h.GetCurrentRouterChat)
 	h.mountRouterDispatch(r)
 }
