@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router page settings (M-105), the chat list's Router marker (M-108), and Router inbox S3a (M-118).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router page settings (M-105), the chat list's Router marker (M-108), Router inbox S3a (M-118), and live Super Agent settings (M-147).
 //
 // HTTP surface of internal/agentrouter. It lives in package handler only to
 // reuse the request helpers (actor, workspace, issue and agent loaders,
@@ -224,6 +224,7 @@ func (h *Handler) CreateRouterSubscription(w http.ResponseWriter, r *http.Reques
 		h.routerFail(w, r, err)
 		return
 	}
+	h.publishRouterSubscriptionChanged(workspaceID, sub.ID, routerChangeCreated, actorType, actorID)
 	writeJSON(w, http.StatusCreated, sub)
 }
 
@@ -362,6 +363,7 @@ func (h *Handler) PauseRouterSubscription(w http.ResponseWriter, r *http.Request
 		h.routerFail(w, r, err)
 		return
 	}
+	h.publishRouterSubscriptionChanged(sub.WorkspaceID, sub.ID, routerChangePaused, change.ActorType, change.ActorID)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -379,6 +381,7 @@ func (h *Handler) ResumeRouterSubscription(w http.ResponseWriter, r *http.Reques
 		h.routerFail(w, r, err)
 		return
 	}
+	h.publishRouterSubscriptionChanged(sub.WorkspaceID, sub.ID, routerChangeResumed, change.ActorType, change.ActorID)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -395,6 +398,7 @@ func (h *Handler) DeleteRouterSubscription(w http.ResponseWriter, r *http.Reques
 		h.routerFail(w, r, err)
 		return
 	}
+	h.publishRouterSubscriptionChanged(sub.WorkspaceID, sub.ID, routerChangeDeleted, change.ActorType, change.ActorID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
