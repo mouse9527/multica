@@ -38,6 +38,8 @@ import { slackKeys } from "../slack/queries";
 import { dingtalkKeys } from "../dingtalk/queries";
 import { wecomKeys } from "../wecom/queries";
 import { telegramKeys } from "../telegram/queries";
+// Modified by the mouse9527/multica fork (M-147): Super Agent subscription changes.
+import { routerKeys } from "../router/queries";
 import {
   onIssueCreated,
   onIssueUpdated,
@@ -875,6 +877,11 @@ export function useRealtimeSync(
       app_call: () => {
         const wsId = getCurrentWsId();
         if (wsId) qc.invalidateQueries({ queryKey: connectedAppsKeys.calls(wsId) });
+      },
+      // Modified by the mouse9527/multica fork (M-147): router:subscription_changed.
+      router: () => {
+        const wsId = getCurrentWsId();
+        if (wsId) qc.invalidateQueries({ queryKey: routerKeys.all(wsId) });
       },
       skill: () => {
         const wsId = getCurrentWsId();

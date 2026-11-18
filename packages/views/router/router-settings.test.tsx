@@ -1,4 +1,5 @@
-// Added by the mouse9527/multica fork: Router page settings (M-105).
+// Added by the mouse9527/multica fork: Router page settings (M-105) and live
+// Super Agent settings (M-147).
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -135,8 +136,8 @@ function Harness({ chat }: { chat: ChatSession }) {
   );
 }
 
-function show(ui: React.ReactElement) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+function show(ui: React.ReactElement, queries: { staleTime?: number } = {}) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0, ...queries } } });
   return renderWithI18n(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
 }
 
@@ -241,6 +242,17 @@ describe("Router in the chat menu", () => {
     const dialog = await screen.findByRole("dialog", { name: en.dialog.title_setup });
     fireEvent.click(within(dialog).getByRole("button", { name: en.scopes.add_issue_tree }));
     expect(screen.getByRole("button", { name: "pick root" })).toHaveAttribute("data-exclude", "issue-root");
+  });
+
+  it("shows a subscription made elsewhere when the dialog opens, without a reload (M-147)", async () => {
+    // As in the app, where cached queries never go stale on their own.
+    show(<Harness chat={session} />, { staleTime: Infinity });
+    openMenu();
+    const item = await screen.findByRole("menuitem", { name: en.menu.setup });
+    // Meanwhile the chat's agent subscribes this chat through the CLI.
+    state.subscriptions = [sub()];
+    fireEvent.click(item);
+    expect(await screen.findByRole("dialog", { name: en.dialog.title_settings })).toBeInTheDocument();
   });
 
   it("rejects batching outside the server's limits", async () => {
