@@ -21,11 +21,14 @@
 | `server/internal/daemon/auto_update.go` | M-58 | 版本判断接受 `-mouse.N`（两行） | 有 |
 | `server/internal/daemon/daemon.go` | M-58 | `runUpdate` 前的 Homebrew 检查 | 有 |
 | `server/cmd/server/main.go` | M-85、M-86 | 调用 `agentrouter.Register`（M-86 起多传 `taskSvc`）：`router_v1` 打开时注册 Router 监听器和对账任务，`router_dispatch` 也打开时再注册派发任务；关闭时什么都不注册 | 有 |
-| `server/cmd/server/router.go` | M-85 | 挂载 `/api/router`（开关关闭时返回 404） | 有 |
-| `server/internal/featureflags/keys.go` | M-85、M-89、M-86、M-96、M-97、M-105 | 新开关 `router_v1` 与 `RouterV1Enabled`；`handoff_reply_wake` 与 `HandoffReplyWakeEnabled`；`router_dispatch` 与 `RouterDispatchEnabled`；`router_chat` 与 `RouterChatEnabled`；`router_hold_shadow` 与 `RouterHoldShadowEnabled`；`EvaluateFrontendPublicFlags` 把 `router_chat` 的组合结果发给前端（一行） | 有 |
+| `server/cmd/server/router.go` | M-85、M-135 | 挂载 `/api/router`（开关关闭时返回 404）；M-135 在旁边挂载 `/api/evolution`（`evolution_v1` 关闭时返回 404，一块） | 有 |
+| `server/internal/featureflags/keys.go` | M-85、M-89、M-86、M-96、M-97、M-105、M-135 | 新开关 `router_v1` 与 `RouterV1Enabled`；`handoff_reply_wake` 与 `HandoffReplyWakeEnabled`；`router_dispatch` 与 `RouterDispatchEnabled`；`router_chat` 与 `RouterChatEnabled`；`router_hold_shadow` 与 `RouterHoldShadowEnabled`；`EvaluateFrontendPublicFlags` 把 `router_chat` 的组合结果发给前端（一行）；M-135 再发布 `evolution_v1`（一行，常量和判断函数在 fork 文件 `evolution_fork.go`） | 有 |
 | `server/internal/handler/comment.go` | M-89 | `computeCommentAgentTriggers` 改名为 `computeUpstreamCommentAgentTriggers`（一行），由 fork 的同名包装函数调用，见 `handoff_reply_wake.go` | 有 |
 | `server/internal/handler/workspace.go` | M-20、M-85 | 删除工作区时清理迁移 9000 建的 5 张表（功能撤回后表仍在，见 [github-issues.md](github-issues.md)），以及 Router 的表（迁移 9004、9008，由 `agentrouter.DeleteWorkspaceData` 删除；M-86 新增的 3 张表不再改这个文件） | 有 |
 | `server/pkg/db/generated/models.go` | M-20 | sqlc 按迁移 9000 的表生成的模型（生成文件，不手改） | 无（生成） |
+| `server/internal/handler/daemon.go` | M-135 | 领取任务组装 agent 时，在 Mika 的提示词拼接之后调用 `service.ComposeForkSystemInstructions`（一个 `if`）：fork 的系统 agent（「进化」）拼上随二进制发布的系统提示词；其他 agent 不变 | 有 |
+| `server/internal/handler/mika_agent.go` | M-135 | `systemInstructionsFor` 在返回空串前调用 `service.ForkSystemInstructions`（一个 `if`），界面只读展示「进化」的系统提示词 | 有 |
+| `server/internal/service/builtin_skills.go` | M-135 | `builtinSkillSystemKey` 加一行：`multica-evolution` 只发给「进化」 | 有 |
 | `server/internal/inbox/create.go` | M-97 | `CreateIfEligible` 在写入前调用 fork 的拦截钩子（一个 `if`，钩子在 fork 新文件 `intercept.go`）；没有注册拦截器时行为不变 | 有 |
 | `server/pkg/protocol/messages.go` | M-96 | 新常量 `ChatMessageKindRouterBatch`（`router_batch`） | 有 |
 | `server/internal/handler/chat.go` | M-96 | `normalizeMessageKind` 原样透出 `router_batch`（一个 case） | 有 |
@@ -35,14 +38,14 @@
 | `packages/core/types/chat.ts` | M-96 | `ChatMessageKind` 加 `router_batch` | 有 |
 | `packages/views/chat/components/chat-message-list.tsx` | M-96 | 引入 `router-batch.tsx`：批次消息折叠显示，批次轮次的 `no_response` 不显示（一个 import、一个过滤、一个分支） | 有 |
 | `packages/core/api/client.ts` | M-105 | 新增公开方法 `forkRequest`：fork 模块（`packages/core/router`）借用共享的请求路径，不再往这个文件加方法 | 有 |
-| `packages/core/package.json` | M-105 | 导出 `./router` | 无（JSON） |
+| `packages/core/package.json` | M-105、M-135 | 导出 `./router`；M-135 导出 `./evolution`（紧挨着的一行） | 无（JSON） |
 | `packages/views/chat/components/chat-session-header.tsx` | M-105、M-108 | ⋯ 菜单挂 Router 设置：一个 import、一个钩子调用、菜单项和对话框各一处；M-108 在标题后挂 Router 标记（`leaf` 一处） | 有 |
 | `packages/views/chat/components/chat-thread-list.tsx` | M-108 | 聊天列表行的标题前挂 Router 标记：一个 import、一行组件 | 有 |
 | `packages/ui/icons/drawings/drawings.mjs` | M-108 | 新图标 `Radar`（一行绘制） | 有 |
 | `packages/ui/icons/glyphs.ts`、`packages/ui/icons/index.ts` | M-108 | 由 `pnpm --filter @multica/ui icons` 按 `drawings.mjs` 生成的 `Radar`（生成文件，不手改） | 无（生成） |
-| `packages/views/settings/components/settings-page.tsx` | M-105 | 「个人」组末尾挂「Router」页：一个 import、一个钩子调用、一处展开 | 有 |
-| `packages/views/i18n/resources-types.ts` | M-105 | 登记 `router` 命名空间的类型 | 有 |
-| `packages/views/locales/{en,zh-Hans,zh-Hant,ja,ko,ru,fr,es}.ts`（8 个） | M-105 | 登记 `router` 命名空间（一个 import、一个条目） | 有 |
+| `packages/views/settings/components/settings-page.tsx` | M-105、M-135 | 「个人」组末尾挂「Router」页：一个 import、一个钩子调用、一处展开；M-135 在「工作区」组（账单之后）挂「进化」页：同样一个 import、一个钩子调用、一处展开，前两处紧挨 Router 的行 | 有 |
+| `packages/views/i18n/resources-types.ts` | M-105、M-135 | 登记 `router`、`evolution` 命名空间的类型 | 有 |
+| `packages/views/locales/{en,zh-Hans,zh-Hant,ja,ko,ru,fr,es}.ts`（8 个） | M-105、M-135 | 登记 `router`、`evolution` 命名空间（各一个 import、一个条目，`evolution` 紧挨 `router`） | 有 |
 
 ### 只改测试的上游文件
 
@@ -60,7 +63,7 @@
 | `server/internal/service/autopilot_quota_test.go` | M-24 | 同上 | 有 |
 | `server/internal/service/delegated_failure_recovery_settled_test.go` | M-24 | 同上 | 有 |
 
-合计：修改过的上游文件 51 个（含 11 个测试文件），其中 4 个（生成的 `models.go`、`glyphs.ts`、`icons/index.ts`，以及 `packages/core/package.json`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。M-105 新增的 13 个前端上游触点和 `keys.go` 的一行也集中在同一个提交里。M-97 只新增 1 个上游触点（`inbox/create.go`）。M-108 的 5 处（两个挂载点、图标绘制与两个生成文件）同样在一个提交里。M-125 新增 2 个上游触点（`cmd_daemon.go`、`cmd_daemon_autostart_test.go`），并在 `cmd_daemon_autostart.go` 上追加改动。
+合计：修改过的上游文件 54 个（含 11 个测试文件），其中 4 个（生成的 `models.go`、`glyphs.ts`、`icons/index.ts`，以及 `packages/core/package.json`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。M-105 新增的 13 个前端上游触点和 `keys.go` 的一行也集中在同一个提交里。M-97 只新增 1 个上游触点（`inbox/create.go`）。M-108 的 5 处（两个挂载点、图标绘制与两个生成文件）同样在一个提交里。M-125 新增 2 个上游触点（`cmd_daemon.go`、`cmd_daemon_autostart_test.go`），并在 `cmd_daemon_autostart.go` 上追加改动。M-135（「进化」P1）新增 3 个上游触点（`daemon.go`、`mika_agent.go`、`builtin_skills.go`，各一块），并在 13 个已有触点上追加：`router.go`、`keys.go`、`package.json` 各一块，设置页三块，i18n 类型与 8 个语言入口各两块，共 27 块，全部在同一个提交里；除设置页「工作区」组那一处和 3 个新触点外，都紧挨着已有的 fork 行。同步估算：新增的独立冲突点只有 3 个新触点和设置页那一处，按 M-132 的统计，前 3 处所在位置近 6 个月被上游改动过 0–2 次（推断，未做同步演练），预计每次同步多 0–1 处手工冲突。
 
 ## fork 新增的文件
 
@@ -79,6 +82,7 @@
 - Router 页面设置与指令设置（M-105，开关 `router_chat`，见 [router.md](router.md)「页面设置」）：`packages/core/router/`；`packages/views/router/`；`packages/views/locales/*/router.json`；`server/internal/featureflags/router_fork_test.go`；`server/internal/handler/agent_router_chat_setup.go` 及测试；`server/cmd/multica/cmd_router_chat.go` 及测试；`docs/router-setup-skill/SKILL.md`（skill 草案）。
 - Router 会话标记（M-108，开关 `router_chat`，见 [router.md](router.md)「聊天列表的 Router 标记」）：`packages/views/router/router-chat-marker.tsx` 及测试；`server/internal/agentrouter/chat_summary.go`；`server/internal/handler/agent_router_chat_list.go` 及测试；`packages/core/router/` 与 `router.json` 的增量。
 - 回复叫醒修正（M-89，开关 `handoff_reply_wake`，默认关闭）：`server/internal/handler/handoff_reply_wake.go` 及测试；`server/internal/issuestatus/handoff_fork.go`；`server/cmd/server/handoff_reply_wake_parity_test.go`。开关打开时，issue 处于「交还给人」的状态（`issueStatusIsHandoff` 为真，例如自定义的 started 状态、`in_review`、`blocked`、`done`）时，成员的任何评论（含讨论串里的回复，不含 note）在上游路由之外再叫醒处理人；智能体的评论不走这条路。
+- 内置 agent「进化」P1（M-135，开关 `evolution_v1`，默认关闭，见 [evolution.md](evolution.md)）：`server/internal/evolution/`；`server/internal/featureflags/evolution_fork.go` 及测试；`server/internal/handler/evolution_agent.go` 及测试；`server/internal/service/builtin_agents_evolution.go` 及测试（上游包里的新文件）；`server/internal/service/builtin_agents/evolution/INSTRUCTIONS.md`；`server/internal/service/builtin_skills/multica-evolution/SKILL.md`；`packages/core/evolution/`；`packages/views/evolution/`；`packages/views/locales/*/evolution.json`；`docs/evolution.md`。
 - daemon LaunchAgent 的 ProcessType（M-101）：`server/cmd/multica/cmd_daemon_autostart_process_type.go` 及测试。
 - daemon 在 LaunchAgent 下的升级重启交给 launchd（M-125）：`server/cmd/multica/cmd_daemon_launchd_handoff.go` 及测试。
 - `docs/github-issues*.md`。
