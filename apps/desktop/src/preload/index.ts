@@ -4,6 +4,7 @@ import type { RuntimeConfigResult } from "../shared/runtime-config";
 import type { FreezeBreadcrumb } from "../shared/freeze-breadcrumb";
 import type {
   ManualUpdateCheckResult,
+  UpdaterDownloadState,
   UpdaterPreferences,
 } from "../shared/updater-types";
 import {
@@ -20,6 +21,10 @@ import {
   type IssueWindowRequest,
 } from "../shared/issue-window";
 import { AUTH_SESSION_STATE_CHANNEL } from "../shared/auth-session";
+import {
+  DEV_TOOLBAR_VISIBLE_CHANGED_CHANNEL,
+  DEV_TOOLBAR_VISIBLE_GET_CHANNEL,
+} from "../shared/dev-toolbar";
 import {
   CONTEXT_MENU_COMMAND_CHANNEL,
   CONTEXT_MENU_REQUEST_CHANNEL,
@@ -40,6 +45,31 @@ import type {
   DaemonStatus,
   LocalRuntimeProbe,
 } from "../shared/daemon-types";
+import {
+  VOICE_HISTORY_AUDIO_CHANNEL,
+  VOICE_HISTORY_CHANGED_CHANNEL,
+  VOICE_HISTORY_LIST_CHANNEL,
+  VOICE_HISTORY_RETENTION_CHANNEL,
+  VOICE_HISTORY_CLEAR_CHANNEL,
+  VOICE_HISTORY_REMOVE_CHANNEL,
+  VOICE_HISTORY_SAVE_CHANNEL,
+  VOICE_HISTORY_UPDATE_CHANNEL,
+  VOICE_MODEL_CANCEL_CHANNEL,
+  VOICE_MODEL_DELETE_CHANNEL,
+  VOICE_MODEL_DOWNLOAD_CHANNEL,
+  VOICE_MODELS_CHANGED_CHANNEL,
+  VOICE_MODELS_LIST_CHANNEL,
+  VOICE_PREPARE_CHANNEL,
+  VOICE_TRANSCRIBE_CHANNEL,
+  type VoiceHistoryAudio,
+  type VoiceHistoryEntry,
+  type VoiceHistorySaveRequest,
+  type VoiceHistoryUpdate,
+  type VoiceModelRequest,
+  type VoiceModelsSnapshot,
+  type VoiceTranscribeRequest,
+  type VoiceTranscribeResult,
+} from "../shared/voice";
 import {
   MAIN_RENDERER_CHANNEL_STATE_CHANNEL,
   NEW_WINDOW_SHORTCUT_CHANNEL,
@@ -273,6 +303,43 @@ const desktopAPI = {
   /** Create a theme folder from files; never replaces an existing one. */
   writeThemeFolder: (name: string, files: ThemeFolderFile[]): Promise<ThemeFolderWriteResult> =>
     ipcRenderer.invoke(THEME_FOLDER_WRITE_CHANNEL, name, files),
+  /** On-device voice input: speech models and transcription in main. */
+  voice: {
+    listModels: (): Promise<VoiceModelsSnapshot> => ipcRenderer.invoke(VOICE_MODELS_LIST_CHANNEL),
+    onModelsChanged: (callback: (snapshot: VoiceModelsSnapshot) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: VoiceModelsSnapshot) =>
+        callback(snapshot);
+      ipcRenderer.on(VOICE_MODELS_CHANGED_CHANNEL, handler);
+      return () => {
+        ipcRenderer.removeListener(VOICE_MODELS_CHANGED_CHANNEL, handler);
+      };
+    },
+    downloadModel: (id: string): Promise<void> => ipcRenderer.invoke(VOICE_MODEL_DOWNLOAD_CHANNEL, id),
+    cancelDownload: (id: string): Promise<void> => ipcRenderer.invoke(VOICE_MODEL_CANCEL_CHANNEL, id),
+    deleteModel: (id: string): Promise<void> => ipcRenderer.invoke(VOICE_MODEL_DELETE_CHANNEL, id),
+    prepare: (request: VoiceModelRequest) => ipcRenderer.send(VOICE_PREPARE_CHANNEL, request),
+    transcribe: (request: VoiceTranscribeRequest): Promise<VoiceTranscribeResult> =>
+      ipcRenderer.invoke(VOICE_TRANSCRIBE_CHANNEL, request),
+    history: {
+      list: (): Promise<VoiceHistoryEntry[]> => ipcRenderer.invoke(VOICE_HISTORY_LIST_CHANNEL),
+      onChanged: (callback: () => void) => {
+        const handler = () => callback();
+        ipcRenderer.on(VOICE_HISTORY_CHANGED_CHANNEL, handler);
+        return () => {
+          ipcRenderer.removeListener(VOICE_HISTORY_CHANGED_CHANNEL, handler);
+        };
+      },
+      save: (request: VoiceHistorySaveRequest): Promise<VoiceHistoryEntry | null> =>
+        ipcRenderer.invoke(VOICE_HISTORY_SAVE_CHANNEL, request),
+      update: (id: string, patch: VoiceHistoryUpdate): Promise<void> =>
+        ipcRenderer.invoke(VOICE_HISTORY_UPDATE_CHANNEL, id, patch),
+      audio: (id: string): Promise<VoiceHistoryAudio | null> => ipcRenderer.invoke(VOICE_HISTORY_AUDIO_CHANNEL, id),
+      remove: (id: string): Promise<void> => ipcRenderer.invoke(VOICE_HISTORY_REMOVE_CHANNEL, id),
+      setRetention: (keepDays: number | null): Promise<void> =>
+        ipcRenderer.invoke(VOICE_HISTORY_RETENTION_CHANNEL, keepDays),
+      clear: (): Promise<void> => ipcRenderer.invoke(VOICE_HISTORY_CLEAR_CHANNEL),
+    },
+  },
   /** Listen for Cmd/Ctrl+W tab-close requests from the main process.
    *  The renderer should close the active tab; if it was the last tab,
    *  call `closeWindow()` to dismiss the window. Returns an unsubscribe fn. */
@@ -356,6 +423,25 @@ const desktopAPI = {
   /** Listen for Cmd/Ctrl+Shift+N new-window requests. */
   onNewWindowShortcut: (callback: () => void) =>
     subscribeToMainRendererChannel(NEW_WINDOW_SHORTCUT_CHANNEL, () => callback()),
+  /** Whether View → Show Dev Toolbar is checked. Always false unless the
+   *  dev build was started with VITE_DEV_TOOLBAR. */
+  getDevToolbarVisible: (): boolean => {
+    try {
+      return ipcRenderer.sendSync(DEV_TOOLBAR_VISIBLE_GET_CHANNEL) === true;
+    } catch {
+      return false;
+    }
+  },
+  /** Listen for View → Show Dev Toolbar being toggled. Returns an unsubscribe fn. */
+  onDevToolbarVisibleChange: (callback: (visible: boolean) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, visible: unknown) => {
+      if (typeof visible === "boolean") callback(visible);
+    };
+    ipcRenderer.on(DEV_TOOLBAR_VISIBLE_CHANGED_CHANNEL, handler);
+    return () => {
+      ipcRenderer.removeListener(DEV_TOOLBAR_VISIBLE_CHANGED_CHANNEL, handler);
+    };
+  },
 };
 
 type DaemonReauthResult =
@@ -420,6 +506,12 @@ const daemonAPI = {
 };
 
 const updaterAPI = {
+  getDownloadState: (): Promise<UpdaterDownloadState> => ipcRenderer.invoke("updater:get-download-state"),
+  onDownloadState: (callback: (state: UpdaterDownloadState) => void) => {
+    const handler = (_: unknown, state: UpdaterDownloadState) => callback(state);
+    ipcRenderer.on("updater:download-state", handler);
+    return () => ipcRenderer.removeListener("updater:download-state", handler);
+  },
   onUpdateAvailable: (callback: (info: { version: string; releaseNotes?: string }) => void) => {
     const handler = (_: unknown, info: { version: string; releaseNotes?: string }) => callback(info);
     ipcRenderer.on("updater:update-available", handler);

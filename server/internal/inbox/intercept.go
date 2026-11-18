@@ -15,7 +15,7 @@ import (
 )
 
 // Interceptor is asked about every inbox write before it is made. Returning
-// hold=true keeps the item out of the inbox: CreateIfEligible then reports
+// hold=true keeps the item out of the inbox: createIfEligible then reports
 // inserted=false. The fork's Router registers one (internal/agentrouter); with
 // none registered every write goes through unchanged, as upstream.
 //
@@ -116,4 +116,12 @@ func intercept(ctx context.Context, params *db.CreateInboxItemParams) bool {
 		}
 		return false
 	}
+}
+
+// CreateIfEligible writes one inbox row through createIfEligible, the
+// interceptor included, without Deliver's type registry, preferences or
+// announcement. The fork's Router notices use it and announce the row
+// themselves; upstream writes go through Deliver.
+func CreateIfEligible(ctx context.Context, queries *db.Queries, params db.CreateInboxItemParams) (item db.InboxItem, inserted bool, err error) {
+	return createIfEligible(ctx, queries, params)
 }

@@ -351,7 +351,7 @@ Owner 也可以在 chat 里直接跟这个 chat 的智能体说「把这个 chat
 ### 代码位置
 
 - 前端：`packages/core/router/`（API、zod 校验、查询与变更、分组）；`packages/views/router/`（对话框、范围选择、列表页、两个挂载钩子）；文案在 `packages/views/locales/*/router.json`。
-- 上游触点：`packages/core/api/client.ts` 新增一个公开方法 `forkRequest`（fork 模块借用共享的请求路径），`packages/core/package.json` 导出 `./router`，`chat-session-header.tsx` 与 `settings-page.tsx` 各加一个挂载钩子，8 个语言入口和 `resources-types.ts` 登记 `router` 命名空间，`featureflags/keys.go` 公开 `router_chat`。见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。
+- 上游触点：`packages/core/package.json` 导出 `./router`（API 调用用上游 `cd969f848` 起提供的 `ApiClient.request`，原先 fork 加在 `client.ts` 的 `forkRequest` 已在 M-131 同步时去掉），`chat-session-header.tsx` 与 `settings-page.tsx` 各加一个挂载钩子，8 个语言入口和 `resources-types.ts` 登记 `router` 命名空间，`featureflags/keys.go` 公开 `router_chat`。见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。
 
 ## 聊天列表的 Super Agent 标记（M-108）
 
