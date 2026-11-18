@@ -1,14 +1,14 @@
 {
   "menu": {
-    "setup": "Convertir en Router",
-    "settings": "Ajustes del Router"
+    "setup": "Convertir en Super Agent",
+    "settings": "Ajustes del Super Agent"
   },
-  "badge": "Router",
+  "badge": "Super Agent",
   "dialog": {
-    "title_setup": "Convertir en Router",
-    "title_settings": "Ajustes del Router",
+    "title_setup": "Convertir en Super Agent",
+    "title_settings": "Ajustes del Super Agent",
     "description": "La actividad de las tareas de estos ámbitos llega por lotes a este chat; {{agent}} la atiende y solo te avisa de lo que te necesita.",
-    "archived": "Restaura este chat para convertirlo en Router."
+    "archived": "Restaura este chat para convertirlo en Super Agent."
   },
   "status": {
     "running": "Activo",
@@ -27,10 +27,10 @@
     "add_issue_tree": "Añadir árbol de tareas",
     "project_placeholder": "Elige un proyecto",
     "picker_title": "Elige la tarea raíz",
-    "picker_description": "El Router sigue esta tarea y todas sus subtareas.",
+    "picker_description": "El Super Agent sigue esta tarea y todas sus subtareas.",
     "empty": "Añade un proyecto o un árbol de tareas.",
     "board": "Tablero {{identifier}}",
-    "board_hint": "Cada proyecto recibe una tarea tablero que registra las ejecuciones del Router.",
+    "board_hint": "Cada proyecto recibe una tarea tablero que registra las ejecuciones del Super Agent.",
     "remove": "Quitar ámbito",
     "unknown": "No disponible"
   },
@@ -64,56 +64,56 @@
     }
   },
   "held": {
-    "title": "Elementos que gestionó el Router",
-    "empty": "Aparecerán aquí cuando el Router filtre la bandeja de entrada."
+    "title": "Elementos que gestionó el Super Agent",
+    "empty": "Aparecerán aquí cuando el Super Agent filtre la bandeja de entrada."
   },
   "actions": {
-    "create": "Convertir en Router",
+    "create": "Convertir en Super Agent",
     "save": "Guardar",
     "pause": "Pausar",
     "resume": "Reanudar",
-    "release": "Quitar Router",
+    "release": "Quitar Super Agent",
     "cancel": "Cancelar"
   },
   "release": {
-    "title": "¿Quitar este Router?",
+    "title": "¿Quitar este Super Agent?",
     "description": "Este chat dejará de recibir la actividad de las tareas.",
     "delete": "Eliminar sus suscripciones",
     "keep": "Conservar sus suscripciones, en pausa",
     "confirm": "Quitar",
-    "keep_hint": "Para volver a usarlas, convierte un chat en Router con los mismos ámbitos: se recuperan y se reanudan."
+    "keep_hint": "Para volver a usarlas, convierte un chat en Super Agent con los mismos ámbitos: se recuperan y se reanudan."
   },
   "board": {
-    "title": "Tablero del Router · {{chat}}",
-    "description": "Registra las ejecuciones del Router del chat «{{chat}}». Creado desde los ajustes del Router."
+    "title": "Tablero del Super Agent · {{chat}}",
+    "description": "Registra las ejecuciones del Super Agent del chat «{{chat}}». Creado desde los ajustes del Super Agent."
   },
   "toast": {
-    "created": "Router configurado",
+    "created": "Super Agent configurado",
     "scope_failed": "No se pudo añadir {{scope}}: {{error}}",
-    "saved": "Ajustes del Router guardados",
-    "paused": "Router en pausa",
-    "resumed": "Router reanudado",
-    "released": "Router quitado",
-    "failed": "No se pudo actualizar el Router: {{error}}",
-    "scope_taken": "{{scope}} ya pertenece al Router de otro chat. Quita primero ese Router o quita allí este ámbito.",
+    "saved": "Ajustes del Super Agent guardados",
+    "paused": "Super Agent en pausa",
+    "resumed": "Super Agent reanudado",
+    "released": "Super Agent quitado",
+    "failed": "No se pudo actualizar el Super Agent: {{error}}",
+    "scope_taken": "{{scope}} ya pertenece al Super Agent de otro chat. Quita primero ese Super Agent o quita allí este ámbito.",
     "deleted": "Suscripción eliminada"
   },
   "list": {
-    "tab": "Routers",
-    "empty": "Aún no hay Routers. Abre el menú de un chat y elige «Convertir en Router».",
+    "tab": "Super Agents",
+    "empty": "Aún no hay Super Agents. Abre el menú de un chat y elige «Convertir en Super Agent».",
     "agent": "Agente",
     "scopes": "Ámbitos",
     "status": "Estado",
     "last_run": "Última ejecución",
     "untitled": "Chat sin título",
-    "unbound_title": "Suscripciones fuera de un Router",
-    "unbound_hint": "Se conservaron al quitar un Router. Convertir un chat en Router con el mismo ámbito la recupera.",
+    "unbound_title": "Suscripciones fuera de un Super Agent",
+    "unbound_hint": "Se conservaron al quitar un Super Agent. Convertir un chat en Super Agent con el mismo ámbito la recupera.",
     "delete": "Eliminar",
     "delete_title": "¿Eliminar esta suscripción?",
     "delete_description": "También se eliminan sus eventos capturados."
   },
   "marker": {
-    "label": "Router · Ámbitos: {{scopes}} · {{status}}",
+    "label": "Super Agent · Ámbitos: {{scopes}} · {{status}}",
     "scope_project": "Proyecto {{name}}",
     "scope_issue_tree": "{{identifier}} {{name}}",
     "scope_paused": "{{scope}} (en pausa)",

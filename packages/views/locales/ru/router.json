@@ -1,14 +1,14 @@
 {
   "menu": {
-    "setup": "Сделать Router",
-    "settings": "Настройки Router"
+    "setup": "Сделать Super Agent",
+    "settings": "Настройки Super Agent"
   },
-  "badge": "Router",
+  "badge": "Super Agent",
   "dialog": {
-    "title_setup": "Сделать Router",
-    "title_settings": "Настройки Router",
+    "title_setup": "Сделать Super Agent",
+    "title_settings": "Настройки Super Agent",
     "description": "Активность по задачам в этих областях пакетами приходит в этот чат; {{agent}} разбирает её и сообщает только то, что требует вашего участия.",
-    "archived": "Восстановите чат, чтобы сделать его Router."
+    "archived": "Восстановите чат, чтобы сделать его Super Agent."
   },
   "status": {
     "running": "Работает",
@@ -27,10 +27,10 @@
     "add_issue_tree": "Добавить дерево задач",
     "project_placeholder": "Выберите проект",
     "picker_title": "Выберите корневую задачу",
-    "picker_description": "Router следит за этой задачей и всеми её подзадачами.",
+    "picker_description": "Super Agent следит за этой задачей и всеми её подзадачами.",
     "empty": "Добавьте проект или дерево задач.",
     "board": "Доска {{identifier}}",
-    "board_hint": "Для каждого проекта создаётся задача-доска, где записываются запуски Router.",
+    "board_hint": "Для каждого проекта создаётся задача-доска, где записываются запуски Super Agent.",
     "remove": "Удалить область",
     "unknown": "Недоступно"
   },
@@ -64,56 +64,56 @@
     }
   },
   "held": {
-    "title": "Элементы, обработанные Router",
-    "empty": "Появятся здесь, когда Router начнёт фильтровать входящие."
+    "title": "Элементы, обработанные Super Agent",
+    "empty": "Появятся здесь, когда Super Agent начнёт фильтровать входящие."
   },
   "actions": {
-    "create": "Сделать Router",
+    "create": "Сделать Super Agent",
     "save": "Сохранить",
     "pause": "Приостановить",
     "resume": "Возобновить",
-    "release": "Отключить Router",
+    "release": "Отключить Super Agent",
     "cancel": "Отмена"
   },
   "release": {
-    "title": "Отключить этот Router?",
+    "title": "Отключить этот Super Agent?",
     "description": "Чат перестанет получать активность по задачам.",
     "delete": "Удалить подписки",
     "keep": "Оставить подписки, приостановив их",
     "confirm": "Отключить",
-    "keep_hint": "Чтобы снова их использовать, сделайте чат Router с теми же областями — подписки будут подхвачены и возобновлены."
+    "keep_hint": "Чтобы снова их использовать, сделайте чат Super Agent с теми же областями — подписки будут подхвачены и возобновлены."
   },
   "board": {
-    "title": "Доска Router · {{chat}}",
-    "description": "Здесь записываются запуски Router из чата «{{chat}}». Создано в настройках Router."
+    "title": "Доска Super Agent · {{chat}}",
+    "description": "Здесь записываются запуски Super Agent из чата «{{chat}}». Создано в настройках Super Agent."
   },
   "toast": {
-    "created": "Router настроен",
+    "created": "Super Agent настроен",
     "scope_failed": "Не удалось добавить {{scope}}: {{error}}",
-    "saved": "Настройки Router сохранены",
-    "paused": "Router приостановлен",
-    "resumed": "Router возобновлён",
-    "released": "Router отключён",
-    "failed": "Не удалось обновить Router: {{error}}",
-    "scope_taken": "{{scope}} уже входит в Router другого чата. Сначала отключите тот Router или удалите там эту область.",
+    "saved": "Настройки Super Agent сохранены",
+    "paused": "Super Agent приостановлен",
+    "resumed": "Super Agent возобновлён",
+    "released": "Super Agent отключён",
+    "failed": "Не удалось обновить Super Agent: {{error}}",
+    "scope_taken": "{{scope}} уже входит в Super Agent другого чата. Сначала отключите тот Super Agent или удалите там эту область.",
     "deleted": "Подписка удалена"
   },
   "list": {
-    "tab": "Router",
-    "empty": "Router пока нет. Откройте меню чата и выберите «Сделать Router».",
+    "tab": "Super Agent",
+    "empty": "Super Agent пока нет. Откройте меню чата и выберите «Сделать Super Agent».",
     "agent": "Агент",
     "scopes": "Области",
     "status": "Состояние",
     "last_run": "Последний запуск",
     "untitled": "Чат без названия",
-    "unbound_title": "Подписки вне Router",
-    "unbound_hint": "Оставлены при отключении Router. Если сделать чат Router с той же областью, подписка будет подхвачена снова.",
+    "unbound_title": "Подписки вне Super Agent",
+    "unbound_hint": "Оставлены при отключении Super Agent. Если сделать чат Super Agent с той же областью, подписка будет подхвачена снова.",
     "delete": "Удалить",
     "delete_title": "Удалить эту подписку?",
     "delete_description": "Собранные ею события тоже будут удалены."
   },
   "marker": {
-    "label": "Router · Области: {{scopes}} · {{status}}",
+    "label": "Super Agent · Области: {{scopes}} · {{status}}",
     "scope_project": "Проект {{name}}",
     "scope_issue_tree": "{{identifier}} {{name}}",
     "scope_paused": "{{scope}} (приостановлено)",

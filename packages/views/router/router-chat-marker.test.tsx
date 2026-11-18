@@ -86,7 +86,7 @@ describe("Router marker in the chat list", () => {
         <RouterChatListMarker sessionId="chat-3" />
       </>,
     );
-    const marker = await screen.findByRole("img", { name: "Router · Scopes: multica project · Running" });
+    const marker = await screen.findByRole("img", { name: "Super Agent · Scopes: multica project · Running" });
     expect(marker).toHaveAttribute("data-router-status", "running");
     expect(screen.getAllByRole("img")).toHaveLength(1);
     expect(chatsRequests()).toHaveLength(1);
@@ -108,7 +108,7 @@ describe("Router marker in the chat list", () => {
     const marker = await screen.findByRole("img");
     expect(marker).toHaveAttribute("data-router-status", "paused");
     expect(marker).toHaveAccessibleName(
-      `Router · Scopes: multica project, M-1 Root (paused), ${en.scopes.unknown} · Paused (${en.status.reason.rate})`,
+      `Super Agent · Scopes: multica project, M-1 Root (paused), ${en.scopes.unknown} · Paused (${en.status.reason.rate})`,
     );
   });
 
@@ -122,7 +122,7 @@ describe("Router marker in the chat list", () => {
     ];
     show(<RouterChatListMarker sessionId="chat-1" />);
     expect(await screen.findByRole("img")).toHaveAccessibleName(
-      `Router · Scopes: multica project, web project · Paused (${en.status.reason.manual}, ${en.status.reason.agent_unavailable})`,
+      `Super Agent · Scopes: multica project, web project · Paused (${en.status.reason.manual}, ${en.status.reason.agent_unavailable})`,
     );
   });
 });
@@ -164,7 +164,7 @@ describe("Router marker in the chat header", () => {
       },
     ];
     show(<Header chat={session} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Router · Scopes: multica project · Running" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Super Agent · Scopes: multica project · Running" }));
     expect(await screen.findByRole("dialog", { name: en.dialog.title_settings })).toBeInTheDocument();
   });
 
