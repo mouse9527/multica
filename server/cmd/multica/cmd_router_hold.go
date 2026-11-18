@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router v6, slice 2 (M-97), and Router inbox S3b (M-133).
+// Modified for the mouse9527/multica fork: Router v6, slice 2 (M-97), Router inbox S3b (M-133), and the Super Agent name in help (M-148).
 
 package main
 
@@ -18,7 +18,7 @@ import (
 // items it would have taken. It answers 404 unless router_dispatch is on.
 var routerHoldsCmd = &cobra.Command{
 	Use:   "holds",
-	Short: "List the inbox items the Router hold took or, in shadow mode, would have taken",
+	Short: "List the inbox items the Super Agent hold took or, in shadow mode, would have taken",
 	Args:  exactArgs(0),
 	RunE:  runRouterHolds,
 }

@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router settings by instruction (M-105).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router settings by instruction (M-105), and the Super Agent name in help (M-148).
 
 package main
 
@@ -18,10 +18,23 @@ import (
 
 // Router commands: subscriptions that capture issue events for an agent, and
 // the captured events. The server answers 404 while router_v1 is off.
+//
+// People and the UI call a Router a "Super Agent" (M-124); the command keeps
+// its technical name. Help text says both, because an agent asked to "make
+// this chat a Super Agent" searches `multica --help` for that phrase and has
+// no other way to learn the command is called router.
 
 var routerCmd = &cobra.Command{
 	Use:   "router",
-	Short: "Work with Router subscriptions and captured events",
+	Short: "Super Agent (technical name: router): a chat that runs on events from subscribed issue trees or projects",
+	Example: `  # Make the current chat a Super Agent for an issue tree (inside a chat run)
+  $ multica router subscribe --issue M-12 --anchor-chat current
+
+  # Is this chat a Super Agent, and what does it cover?
+  $ multica router get --chat current --output table
+
+A Super Agent subscription is not an issue subscription: ` + "`multica issue subscriber add`" + `
+only sends inbox notifications and never starts a run.`,
 }
 
 var routerSubscribeCmd = &cobra.Command{
@@ -40,28 +53,28 @@ var routerListCmd = &cobra.Command{
 
 var routerGetCmd = &cobra.Command{
 	Use:   "get [<subscription-id> | --chat <current|chat-id>]",
-	Short: "Get a subscription, including its capture_miss count, or with --chat every subscription of a Router",
+	Short: "Get a subscription, including its capture_miss count, or with --chat every subscription of a Super Agent",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  runRouterGet,
 }
 
 var routerPauseCmd = &cobra.Command{
 	Use:   "pause [<subscription-id> | --chat <current|chat-id>]",
-	Short: "Stop capturing events for a subscription, or with --chat for a whole Router",
+	Short: "Stop capturing events for a subscription, or with --chat for a whole Super Agent",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  func(cmd *cobra.Command, args []string) error { return runRouterAction(cmd, args, "pause") },
 }
 
 var routerResumeCmd = &cobra.Command{
 	Use:   "resume [<subscription-id> | --chat <current|chat-id>]",
-	Short: "Resume a subscription, or with --chat a whole Router, starting from now",
+	Short: "Resume a subscription, or with --chat a whole Super Agent, starting from now",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  func(cmd *cobra.Command, args []string) error { return runRouterAction(cmd, args, "resume") },
 }
 
 var routerDeleteCmd = &cobra.Command{
 	Use:   "delete [<subscription-id> | --chat <current|chat-id>]",
-	Short: "Delete a subscription and its captured events, or with --chat every subscription of a Router",
+	Short: "Delete a subscription and its captured events, or with --chat every subscription of a Super Agent",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  runRouterDelete,
 }
@@ -81,7 +94,15 @@ var routerScopeCmd = &cobra.Command{
 }
 
 func init() {
+	// Without a group the root help template leaves the command out entirely.
+	routerCmd.GroupID = groupCore
 	rootCmd.AddCommand(routerCmd)
+	// The upstream issue subscriber commands are where an agent lands when it
+	// takes "subscribe as a Super Agent" literally; point it at router instead.
+	issueSubscriberCmd.Short = "Work with issue subscribers (inbox notifications only; a Super Agent subscription is `multica router subscribe`)"
+	issueSubscriberAddCmd.Long = issueSubscriberAddCmd.Short + ".\n\n" +
+		"This only sends the subscriber inbox notifications about the issue; it never starts a run.\n" +
+		"To have a chat run on an issue's events (a Super Agent), use `multica router subscribe --issue <id> --anchor-chat current`."
 	routerCmd.AddCommand(routerSubscribeCmd, routerListCmd, routerGetCmd, routerPauseCmd,
 		routerResumeCmd, routerDeleteCmd, routerEventsCmd, routerScopeCmd)
 
@@ -89,10 +110,10 @@ func init() {
 	routerSubscribeCmd.Flags().String("issue", "", "Root issue of the subscribed tree (key or UUID)")
 	routerSubscribeCmd.Flags().String("project", "", "Subscribed project (ID)")
 	routerSubscribeCmd.Flags().StringSlice("events", nil, "Event types to capture (default: all): issue_created, status_changed, assignee_changed, comment_created, task_failed")
-	routerSubscribeCmd.Flags().String("anchor-chat", "", "Bind the subscription to a chat (a Router): current (inside a chat run) or a chat session UUID; a --project scope without --anchor gets a board issue (needs router_chat)")
+	routerSubscribeCmd.Flags().String("anchor-chat", "", "Bind the subscription to a chat (a Super Agent): current (inside a chat run) or a chat session UUID; a --project scope without --anchor gets a board issue (needs router_chat)")
 	routerSubscribeCmd.Flags().String("output", "json", "Output format: table or json")
 	for _, c := range []*cobra.Command{routerGetCmd, routerPauseCmd, routerResumeCmd, routerDeleteCmd} {
-		c.Flags().String("chat", "", "Act on every subscription of the Router bound to this chat: current (inside a chat run) or a chat session UUID")
+		c.Flags().String("chat", "", "Act on every subscription of the Super Agent bound to this chat: current (inside a chat run) or a chat session UUID")
 	}
 
 	routerListCmd.Flags().String("agent", "", "Only this agent's subscriptions (name or ID)")
