@@ -1,4 +1,4 @@
-// Added by the mouse9527/multica fork: Router settings by instruction (M-105).
+// Added by the mouse9527/multica fork: Router settings by instruction (M-105), and the Super Agent name in help (M-148).
 
 package main
 
@@ -22,14 +22,14 @@ const currentChat = "current"
 
 var routerReleaseCmd = &cobra.Command{
 	Use:   "release",
-	Short: "Stop a chat being a Router: delete its subscriptions, or with --keep pause and unbind them",
+	Short: "Stop a chat being a Super Agent: delete its subscriptions, or with --keep pause and unbind them",
 	Args:  exactArgs(0),
 	RunE:  runRouterRelease,
 }
 
 func init() {
 	routerCmd.AddCommand(routerReleaseCmd)
-	routerReleaseCmd.Flags().String("chat", "", "The Router's chat: current (inside a chat run) or a chat session UUID (required)")
+	routerReleaseCmd.Flags().String("chat", "", "The Super Agent's chat: current (inside a chat run) or a chat session UUID (required)")
 	routerReleaseCmd.Flags().Bool("keep", false, "Keep the subscriptions, paused and unbound, instead of deleting them")
 }
 

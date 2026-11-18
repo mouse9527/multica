@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slice 1 (M-96), Router settings by instruction (M-105), and no rate pause (M-111).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slice 1 (M-96), Router settings by instruction (M-105), no rate pause (M-111), and the Super Agent name in help (M-148).
 
 package main
 
@@ -21,7 +21,7 @@ import (
 
 var routerUpdateCmd = &cobra.Command{
 	Use:   "update [<subscription-id> | --chat <current|chat-id>]",
-	Short: "Change a subscription's anchor issue or chat, event types or batching; with --chat, every subscription of a Router",
+	Short: "Change a subscription's anchor issue or chat, event types or batching; with --chat, every subscription of a Super Agent",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  runRouterUpdate,
 }
@@ -92,7 +92,7 @@ func init() {
 	}
 	routerUpdateCmd.Flags().StringSlice("events", nil, "Event types to capture from now on")
 	routerUpdateCmd.Flags().String("anchor-chat", "", "Chat that receives the batches instead of anchor runs: current (inside a chat run) or a chat session UUID; \"none\" goes back to anchor runs (needs router_chat)")
-	routerUpdateCmd.Flags().String("chat", "", "Change every subscription of the Router bound to this chat: current (inside a chat run) or a chat session UUID")
+	routerUpdateCmd.Flags().String("chat", "", "Change every subscription of the Super Agent bound to this chat: current (inside a chat run) or a chat session UUID")
 	routerUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	routerStateGetCmd.Flags().String("output", "json", "Output format: text (state only) or json")
