@@ -26,6 +26,7 @@ import ruSquads from "./ru/squads.json";
 import ruBilling from "./ru/billing.json";
 // Modified by the mouse9527/multica fork (M-105): the Router namespace.
 import ruRouter from "./ru/router.json";
+import ruEvolution from "./ru/evolution.json";
 
 const resources: LocaleResources = {
   common: ruCommon,
@@ -54,6 +55,7 @@ const resources: LocaleResources = {
   squads: ruSquads,
   billing: ruBilling,
   router: ruRouter,
+  evolution: ruEvolution,
 };
 
 export default resources;

@@ -55,6 +55,7 @@ import { McpTab } from "./mcp-tab";
 import { BillingTab } from "./billing-tab";
 // Modified by the mouse9527/multica fork (M-105): the Routers entry.
 import { useRouterSettingsTabs } from "../../router/use-router-settings-tabs";
+import { useEvolutionSettingsTabs } from "../../evolution/use-evolution-settings-tabs";
 import {
   SETTINGS_ANCHOR_ATTR,
   SettingsHeaderContext,
@@ -139,6 +140,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
   );
   const appsAvailable = useComposioAvailable();
   const routerTabs = useRouterSettingsTabs();
+  const evolutionTabs = useEvolutionSettingsTabs();
   const entry = (
     value: string,
     label: string,
@@ -210,6 +212,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
                   ),
                 ]
               : []),
+            ...evolutionTabs,
           ],
         },
         {

@@ -1,0 +1,11 @@
+{
+  "tab": "Evolución",
+  "description": "Un agente integrado que propone mejoras para los agentes, los flujos de trabajo y el equipo de este espacio de trabajo. Cada cambio espera la aprobación de un propietario o administrador.",
+  "enable_hint": "Elige el runtime en el que se ejecuta Evolución.",
+  "enable": "Activar Evolución",
+  "enabled_toast": "Evolución activado",
+  "enabled_title": "Evolución está activado",
+  "open_agent": "Abrir agente",
+  "not_enabled_member": "Evolución no está activado. Pide a un propietario o administrador del espacio de trabajo que lo active.",
+  "failed": "No se pudo activar Evolución"
+}
