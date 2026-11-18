@@ -370,7 +370,7 @@ func TestBulkCancelRollsBackWhenSettlementFails(t *testing.T) {
 	// attachable to comment by any later run.
 	t.Cleanup(func() {
 		cleanupCtx := context.Background()
-		_, _ = f.pool.Exec(cleanupCtx, `DROP TRIGGER IF EXISTS reject_recovery_settlement ON comment`)
+		_ = testutil.ExecDDL(cleanupCtx, f.pool, `DROP TRIGGER IF EXISTS reject_recovery_settlement ON comment`) // Modified by the mouse9527/multica fork: see testutil.ExecDDL.
 		_, _ = f.pool.Exec(cleanupCtx, `DROP FUNCTION IF EXISTS reject_recovery_settlement()`)
 	})
 

@@ -249,7 +249,7 @@ func (h *Handler) pluginIssueForUser(w http.ResponseWriter, r *http.Request, cal
 // pluginCaller, so this is exactly the reach the caller already has.
 func (h *Handler) resolvePluginIssue(r *http.Request, caller service.PluginActionCaller, issueID string) (db.Issue, bool) {
 	workspaceID := uuidToString(caller.WorkspaceID)
-	if issue, ok := h.resolveIssueByIdentifier(r.Context(), issueID, workspaceID); ok {
+	if issue, ok, _ := h.resolveIssueByIdentifier(r.Context(), issueID, workspaceID); ok {
 		return issue, true
 	}
 	parsed, err := util.ParseUUID(issueID)
@@ -541,7 +541,6 @@ func (h *Handler) pluginIssuePayload(r *http.Request, caller service.PluginActio
 		prefix = workspace.IssuePrefix
 	}
 	app := issueToResponse(issue, prefix)
-	h.fillIssueKeys(r.Context(), issue.WorkspaceID, &app) // GitHub-native issues (fork)
 	return publicapiv1.Issue{
 		ID:             app.ID,
 		WorkspaceID:    app.WorkspaceID,

@@ -21,7 +21,7 @@ func installAutopilotSubscriberInsertFailure(t *testing.T) {
 	functionName := fmt.Sprintf("autopilot_subscriber_fail_fn_%d", suffix)
 	triggerName := fmt.Sprintf("autopilot_subscriber_fail_%d", suffix)
 	t.Cleanup(func() {
-		testPool.Exec(ctx, fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON autopilot_subscriber`, triggerName))
+		_ = testutil.ExecDDL(ctx, testPool, fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON autopilot_subscriber`, triggerName)) // Modified by the mouse9527/multica fork: see testutil.ExecDDL.
 		testPool.Exec(ctx, fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, functionName))
 	})
 

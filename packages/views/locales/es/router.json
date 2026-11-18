@@ -1,0 +1,123 @@
+{
+  "menu": {
+    "setup": "Convertir en Super Agent",
+    "settings": "Ajustes del Super Agent"
+  },
+  "badge": "Super Agent",
+  "dialog": {
+    "title_setup": "Convertir en Super Agent",
+    "title_settings": "Ajustes del Super Agent",
+    "description": "La actividad de las tareas de estos ámbitos llega por lotes a este chat; {{agent}} la atiende y solo te avisa de lo que te necesita.",
+    "archived": "Restaura este chat para convertirlo en Super Agent."
+  },
+  "status": {
+    "running": "Activo",
+    "paused": "En pausa",
+    "reason": {
+      "manual": "Pausado manualmente",
+      "rate": "Se alcanzó el límite de ejecuciones por hora",
+      "agent_unavailable": "Agente, chat o proyecto no disponible"
+    }
+  },
+  "scopes": {
+    "title": "Ámbitos",
+    "project": "Proyecto",
+    "issue_tree": "Árbol de tareas",
+    "add_project": "Añadir proyecto",
+    "add_issue_tree": "Añadir árbol de tareas",
+    "project_placeholder": "Elige un proyecto",
+    "picker_title": "Elige la tarea raíz",
+    "picker_description": "El Super Agent sigue esta tarea y todas sus subtareas.",
+    "empty": "Añade un proyecto o un árbol de tareas.",
+    "board": "Tablero {{identifier}}",
+    "board_hint": "Cada proyecto recibe una tarea tablero que registra las ejecuciones del Super Agent.",
+    "remove": "Quitar ámbito",
+    "unknown": "No disponible"
+  },
+  "events": {
+    "title": "Eventos",
+    "issue_created": "Tarea creada",
+    "status_changed": "Estado cambiado",
+    "assignee_changed": "Responsable cambiado",
+    "comment_created": "Comentario nuevo",
+    "task_failed": "Ejecución fallida"
+  },
+  "batching": {
+    "title": "Agrupación",
+    "debounce": "Periodo de calma (segundos)",
+    "max_wait": "Espera máxima (segundos)",
+    "max_runs": "Avisar por encima de ejecuciones por hora",
+    "invalid": "Los segundos van de 10 a 86400, la espera máxima no puede ser menor que el periodo de calma y el aviso de ejecuciones por hora va de 1 a 60."
+  },
+  "health": {
+    "title": "Estado",
+    "capture_miss": "Capturas perdidas",
+    "reconciled": "Verificado hasta",
+    "never": "Aún no",
+    "last_run": "Última ejecución",
+    "no_runs": "Aún no hay ejecuciones",
+    "run_events": "Eventos: {{count}}",
+    "outcome": {
+      "running": "En curso",
+      "completed": "Completada",
+      "failed": "Fallida"
+    }
+  },
+  "held": {
+    "title": "Elementos que gestionó el Super Agent",
+    "empty": "Aparecerán aquí cuando el Super Agent filtre la bandeja de entrada."
+  },
+  "actions": {
+    "create": "Convertir en Super Agent",
+    "save": "Guardar",
+    "pause": "Pausar",
+    "resume": "Reanudar",
+    "release": "Quitar Super Agent",
+    "cancel": "Cancelar"
+  },
+  "release": {
+    "title": "¿Quitar este Super Agent?",
+    "description": "Este chat dejará de recibir la actividad de las tareas.",
+    "delete": "Eliminar sus suscripciones",
+    "keep": "Conservar sus suscripciones, en pausa",
+    "confirm": "Quitar",
+    "keep_hint": "Para volver a usarlas, convierte un chat en Super Agent con los mismos ámbitos: se recuperan y se reanudan."
+  },
+  "board": {
+    "title": "Tablero del Super Agent · {{chat}}",
+    "description": "Registra las ejecuciones del Super Agent del chat «{{chat}}». Creado desde los ajustes del Super Agent."
+  },
+  "toast": {
+    "created": "Super Agent configurado",
+    "scope_failed": "No se pudo añadir {{scope}}: {{error}}",
+    "saved": "Ajustes del Super Agent guardados",
+    "paused": "Super Agent en pausa",
+    "resumed": "Super Agent reanudado",
+    "released": "Super Agent quitado",
+    "failed": "No se pudo actualizar el Super Agent: {{error}}",
+    "scope_taken": "{{scope}} ya pertenece al Super Agent de otro chat. Quita primero ese Super Agent o quita allí este ámbito.",
+    "deleted": "Suscripción eliminada"
+  },
+  "list": {
+    "tab": "Super Agents",
+    "empty": "Aún no hay Super Agents. Abre el menú de un chat y elige «Convertir en Super Agent».",
+    "agent": "Agente",
+    "scopes": "Ámbitos",
+    "status": "Estado",
+    "last_run": "Última ejecución",
+    "untitled": "Chat sin título",
+    "unbound_title": "Suscripciones fuera de un Super Agent",
+    "unbound_hint": "Se conservaron al quitar un Super Agent. Convertir un chat en Super Agent con el mismo ámbito la recupera.",
+    "delete": "Eliminar",
+    "delete_title": "¿Eliminar esta suscripción?",
+    "delete_description": "También se eliminan sus eventos capturados."
+  },
+  "marker": {
+    "label": "Super Agent · Ámbitos: {{scopes}} · {{status}}",
+    "scope_project": "Proyecto {{name}}",
+    "scope_issue_tree": "{{identifier}} {{name}}",
+    "scope_paused": "{{scope}} (en pausa)",
+    "paused": "En pausa ({{reasons}})",
+    "separator": ", "
+  }
+}

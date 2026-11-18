@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -25,8 +26,8 @@ const maxPreviewTriggerIssues = 500
 func (h *Handler) issueTriggerWriteProbe(r *http.Request, actorType, actorID string, issue db.Issue) service.IssueTriggerProbe {
 	return service.IssueTriggerProbe{
 		CanAccessAgent: nil, // allow-all; gate lives at the write boundary
-		IsSelfLoop: func() bool {
-			return h.isAgentRunningOnIssue(r, actorType, issue)
+		IsSelfLoop: func(targetAgentID pgtype.UUID) bool {
+			return h.isAgentRunningOnIssue(r, actorType, issue, targetAgentID)
 		},
 		SuppressActiveSelfAssignment: func(agentID pgtype.UUID) bool {
 			suppress := h.shouldSuppressActiveSelfAssignment(r.Context(), actorType, actorID, issue.ID, agentID)
@@ -51,8 +52,8 @@ func (h *Handler) issueTriggerPreviewProbe(r *http.Request, actorType, actorID, 
 		CanAccessAgent: func(agent db.Agent) bool {
 			return h.canInvokeAgent(r.Context(), agent, actorType, actorID, originatorUserID, workspaceID)
 		},
-		IsSelfLoop: func() bool {
-			return h.isAgentRunningOnIssue(r, actorType, issue)
+		IsSelfLoop: func(targetAgentID pgtype.UUID) bool {
+			return h.isAgentRunningOnIssue(r, actorType, issue, targetAgentID)
 		},
 		SuppressActiveSelfAssignment: func(agentID pgtype.UUID) bool {
 			return h.shouldSuppressActiveSelfAssignment(r.Context(), actorType, actorID, issue.ID, agentID)
@@ -77,6 +78,26 @@ func (h *Handler) shouldSuppressActiveSelfAssignment(ctx context.Context, actorT
 	return active || err != nil
 }
 
+// logDeclinedIssueRun records why an issue write that could have started a run
+// did not (#10845). The precise cause goes to server logs, not the write
+// response (see admission.go). Parking an assignment in backlog is routine, so
+// it logs at debug.
+func logDeclinedIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger) {
+	if trigger.DeclineReason == "" {
+		return
+	}
+	level := slog.LevelInfo
+	if trigger.DeclineReason == ReasonDeferred {
+		level = slog.LevelDebug
+	}
+	slog.Log(ctx, level, "issue write did not start a run",
+		"issue_id", uuidToString(issue.ID),
+		"assignee_type", issue.AssigneeType.String,
+		"assignee_id", uuidToString(issue.AssigneeID),
+		"reason", trigger.DeclineReason,
+	)
+}
+
 // dispatchIssueRun executes the enqueue side effect for a decision produced by
 // WillEnqueueRun. handoffNote is a legacy API input retained for installed
 // clients and travels only with a run that actually starts. The squad path
@@ -88,7 +109,15 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 		// The member who performed this assign/promote is the accountable human
 		// for the run (MUL-4302 §4). An agent actor is not a human, so only a
 		// member actor is threaded; otherwise attribution falls back to the chain.
-		_, _ = h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID))
+		// A pending task that won the slot already covers this write; the
+		// service logs that coalesce at debug.
+		if _, err := h.TaskService.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, memberActorUserID(actorType, actorID)); err != nil && !errors.Is(err, service.ErrDuplicatePendingTask) {
+			slog.Warn("issue write: run enqueue failed",
+				"issue_id", uuidToString(issue.ID),
+				"agent_id", uuidToString(issue.AssigneeID),
+				"error", err,
+			)
+		}
 	case "squad":
 		h.enqueueSquadLeaderTask(ctx, issue, actorType, actorID, handoffNote, trigger.WorkflowHandoff)
 	}
@@ -167,6 +196,12 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "too many issue_ids")
 		return
 	}
+	// MUL-8472: an issue or project the caller cannot see previews like an
+	// unknown one.
+	hidden, ok := h.requestHiddenProjects(w, r, workspaceID)
+	if !ok {
+		return
+	}
 
 	// Resolve the prospective assignee once — a malformed id is a deterministic
 	// 400, never a silent miscount.
@@ -218,7 +253,7 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 		// Mirror CreateIssue's workflow handling: the starting column's
 		// handoff when no assignee was picked. (MUL-7420)
 		if req.ProjectID != nil && *req.ProjectID != "" {
-			if projectUUID, err := util.ParseUUID(*req.ProjectID); err == nil {
+			if projectUUID, err := util.ParseUUID(*req.ProjectID); err == nil && hidden.CanSeeProject(projectUUID) {
 				if def, project, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, projectUUID); err == nil && def != nil {
 					if step, ok := def.Step(candidate.Status); ok && step.HandsOff() && !hasNewAssignee {
 						if t, id, ok := issueworkflow.ResolveHandler(step, project, actorType, parseUUID(actorID)); ok {
@@ -244,8 +279,8 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 			ID:          issueUUID,
 			WorkspaceID: parseUUID(workspaceID),
 		})
-		if err != nil {
-			continue // cross-workspace / unknown id contributes no trigger
+		if err != nil || !hidden.CanSeeProject(loaded.ProjectID) {
+			continue // cross-workspace / unknown / hidden id contributes no trigger
 		}
 
 		post := loaded

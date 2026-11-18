@@ -1,0 +1,202 @@
+# Fork-only workflow (not present upstream). Publishes the `multica` CLI and
+# daemon binaries for this fork: pushing a vX.Y.Z-mouse.N tag that points at a
+# commit on main builds darwin/linux/windows × amd64/arm64 archives plus
+# checksums.txt with .goreleaser.fork.yml and attaches them to this
+# repository's GitHub Release. build-image.yml builds the backend and web
+# images for the same tag; for the newest release both the Release and the
+# images become `latest`, so server and runner share one version.
+#
+# The darwin binaries are signed with the CI code-signing certificate so every
+# release keeps one macOS identity (privacy grants survive upgrades). The key
+# lives only in the `release` environment, whose required reviewer approves
+# each run before the release job starts.
+#
+# Upstream's release.yml is limited to multica-ai: its Homebrew, Helm and
+# Desktop steps need secrets and services this fork does not have, and its
+# image jobs would race build-image.yml for the same GHCR tags.
+# See docs/fork-release.md.
+name: Release (fork)
+
+on:
+  push:
+    tags:
+      - "v*.*.*-mouse.*"
+
+permissions: {}
+
+# Deleting and recreating a tag can enqueue several runs for the same ref.
+concurrency:
+  group: release-fork-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository_owner != 'multica-ai'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      make_latest: ${{ steps.latest.outputs.make_latest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Validate tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-mouse\.[0-9]+$ ]]; then
+            echo "::error::Fork release tags must look like vX.Y.Z-mouse.N; got '$TAG'."
+            exit 1
+          fi
+          # Only reviewed code is released: "identical" or "behind" means the
+          # tagged commit is main or an ancestor of it.
+          status="$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)"
+          if [ "$status" != "identical" ] && [ "$status" != "behind" ]; then
+            echo "::error::$TAG points at $GITHUB_SHA, which is not on main ($status)."
+            exit 1
+          fi
+
+      # Only the newest release becomes the "latest" Release, matching the
+      # `latest` image rule in build-image.yml.
+      - name: Decide whether this is the newest release
+        id: latest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          bash scripts/fork-release-is-newest.test.sh
+          # Fails the job, and so the release, when the tag list cannot be read.
+          newest="$(bash scripts/fork-release-is-newest.sh "$TAG")"
+          if [ "$newest" != "true" ] && [ "$newest" != "false" ]; then
+            echo "::error::unexpected newest-release decision '$newest'"
+            exit 1
+          fi
+          echo "make_latest=$newest" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "~1.27.3"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+
+      # The full suite already ran on main for this commit; this re-checks the
+      # code that installs releases on runners.
+      - name: Test update and auto-update
+        working-directory: server
+        run: |
+          go test ./internal/cli/ ./cmd/multica/
+          go test -run 'AutoUpdate|SelfReload' ./internal/daemon/
+
+      - name: Scan Go vulnerabilities
+        working-directory: server
+        run: go tool govulncheck ./...
+
+      - name: Install rcodesign
+        run: |
+          bash scripts/fork-install-rcodesign.sh "$RUNNER_TEMP/rcodesign"
+          echo "RCODESIGN=$RUNNER_TEMP/rcodesign/rcodesign" >> "$GITHUB_ENV"
+
+      - name: Test macOS signing
+        run: bash scripts/fork-macos-sign.test.sh
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    # Holds the macOS signing key. Its required reviewer approves the run, and
+    # only `-mouse.N` tags may deploy to it. See docs/fork-release.md.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "~1.27.3"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+
+      - name: Install rcodesign
+        run: |
+          bash scripts/fork-install-rcodesign.sh "$RUNNER_TEMP/rcodesign"
+          echo "RCODESIGN=$RUNNER_TEMP/rcodesign/rcodesign" >> "$GITHUB_ENV"
+
+      # Only file paths go to later steps; the key and password stay in files
+      # readable by the runner user and are removed right after GoReleaser.
+      - name: Prepare macOS signing key
+        env:
+          P12_BASE64: ${{ secrets.MACOS_SIGN_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
+        run: |
+          if [ -z "$P12_BASE64" ] || [ -z "$P12_PASSWORD" ]; then
+            echo "::error::MACOS_SIGN_P12_BASE64 and MACOS_SIGN_P12_PASSWORD must be set in the release environment"
+            exit 1
+          fi
+          dir="$RUNNER_TEMP/macos-sign"
+          (umask 077 && mkdir -p "$dir" &&
+            printf '%s' "$P12_BASE64" | base64 -d > "$dir/key.p12" &&
+            printf '%s' "$P12_PASSWORD" > "$dir/password")
+          echo "MULTICA_MACOS_SIGN_P12=$dir/key.p12" >> "$GITHUB_ENV"
+          echo "MULTICA_MACOS_SIGN_P12_PASSWORD_FILE=$dir/password" >> "$GITHUB_ENV"
+
+      # The post-build hook signs and verifies each darwin binary before it is
+      # archived; any failure stops the release before anything is published.
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          version: "~> v2"
+          args: release --clean --config .goreleaser.fork.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAKE_LATEST: ${{ needs.verify.outputs.make_latest }}
+
+      - name: Remove macOS signing key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/macos-sign"
+
+      - name: Verify macOS signatures in the archives
+        run: bash scripts/fork-macos-sign.sh verify-archives dist
+
+      - name: Verify release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          MAKE_LATEST: ${{ needs.verify.outputs.make_latest }}
+        run: |
+          version="${TAG#v}"
+          assets="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          missing=0
+          for want in checksums.txt \
+            "multica-cli-${version}-darwin-arm64.tar.gz" \
+            "multica-cli-${version}-darwin-amd64.tar.gz" \
+            "multica-cli-${version}-linux-amd64.tar.gz" \
+            "multica-cli-${version}-linux-arm64.tar.gz" \
+            "multica-cli-${version}-windows-amd64.zip" \
+            "multica-cli-${version}-windows-arm64.zip"; do
+            if ! grep -qxF "$want" <<< "$assets"; then
+              echo "::error::release $TAG is missing $want"
+              missing=1
+            fi
+          done
+          prerelease="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)"
+          if [ "$prerelease" != "false" ]; then
+            echo "::error::release $TAG is marked as a pre-release; /releases/latest would skip it"
+            missing=1
+          fi
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          if [ "$MAKE_LATEST" = "true" ] && [ "$latest" != "$TAG" ]; then
+            echo "::error::releases/latest is $latest, not $TAG"
+            missing=1
+          fi
+          exit "$missing"

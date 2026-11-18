@@ -35,6 +35,31 @@ const (
 	// makes those endpoints answer 404, so clients stop syncing and search
 	// through the server again without a client release.
 	LocalSearchIndex = "local_search_index"
+	// RouterV1 gates the fork's Router capture (mouse9527/multica fork, M-85):
+	// router subscriptions and their API, the events.Bus listener and the
+	// reconcile job. Off by default; off means upstream behavior.
+	RouterV1 = "router_v1"
+	// RouterDispatch gates the fork's Router dispatch and outlet (M-86):
+	// anchor runs for captured events, subscription state, and notify
+	// owner. It only takes effect with RouterV1 on. Off by default.
+	RouterDispatch = "router_dispatch"
+	// RouterChat makes dispatch write a chat-bound subscription's batches
+	// into its chat session instead of starting anchor runs (mouse9527/multica
+	// fork, M-96). It only takes effect with RouterDispatch on. Off by
+	// default; off means dispatch as with RouterDispatch alone.
+	RouterChat = "router_chat"
+	// RouterHoldShadow runs the Router hold in shadow mode (mouse9527/multica
+	// fork, M-97): every inbox write is checked against chat-bound
+	// subscriptions, the items the hold would take are recorded and listed in
+	// the next chat batch, and every write still reaches the inbox unchanged.
+	// It only takes effect with RouterChat on. Off by default; off means no
+	// inbox interceptor is registered.
+	RouterHoldShadow = "router_hold_shadow"
+	// HandoffReplyWake makes a member comment on an issue in a handoff status
+	// also wake the issue's agent assignee, thread replies included
+	// (mouse9527/multica fork, M-89). Off by default; off means upstream
+	// behavior.
+	HandoffReplyWake = "handoff_reply_wake"
 	// agentBuilderCompat is no longer a release flag. Keep publishing the key
 	// as enabled so installed desktop clients that still gate the AI creation
 	// entry on this config decision receive the permanently enabled behavior.
@@ -81,6 +106,34 @@ func LocalSearchIndexEnabled(ctx context.Context, flags *featureflag.Service) bo
 	return flags.IsEnabled(ctx, LocalSearchIndex, true)
 }
 
+// RouterV1Enabled is added by the mouse9527/multica fork (M-85).
+func RouterV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
+	return flags.IsEnabled(ctx, RouterV1, false)
+}
+
+// HandoffReplyWakeEnabled is added by the mouse9527/multica fork (M-89).
+func HandoffReplyWakeEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return flags.IsEnabled(ctx, HandoffReplyWake, false)
+}
+
+// RouterDispatchEnabled is added by the mouse9527/multica fork (M-86). It
+// requires RouterV1: dispatch consumes what capture writes.
+func RouterDispatchEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return RouterV1Enabled(ctx, flags) && flags.IsEnabled(ctx, RouterDispatch, false)
+}
+
+// RouterChatEnabled is added by the mouse9527/multica fork (M-96). It requires
+// RouterDispatch: the chat is where dispatch delivers.
+func RouterChatEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return RouterDispatchEnabled(ctx, flags) && flags.IsEnabled(ctx, RouterChat, false)
+}
+
+// RouterHoldShadowEnabled is added by the mouse9527/multica fork (M-97). It
+// requires RouterChat: the hold routes through a subscription's chat.
+func RouterHoldShadowEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return RouterChatEnabled(ctx, flags) && flags.IsEnabled(ctx, RouterHoldShadow, false)
+}
+
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {
 	out := make(map[string]bool, len(frontendPublicFlags)+4)
 	for _, key := range frontendPublicFlags {
@@ -90,5 +143,8 @@ func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service
 	out[agentSkillTogglesCompat] = true
 	out[resourceLabelsCompat] = true
 	out[projectWorkflowsCompat] = true
+	// mouse9527/multica fork (M-105): the Router settings UI shows only when
+	// a chat binding would be accepted and used.
+	out[RouterChat] = RouterChatEnabled(ctx, flags)
 	return out
 }

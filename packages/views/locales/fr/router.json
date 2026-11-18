@@ -1,0 +1,123 @@
+{
+  "menu": {
+    "setup": "Définir comme Super Agent",
+    "settings": "Paramètres du Super Agent"
+  },
+  "badge": "Super Agent",
+  "dialog": {
+    "title_setup": "Définir comme Super Agent",
+    "title_settings": "Paramètres du Super Agent",
+    "description": "L’activité des tâches de ces périmètres arrive par lots dans cette discussion ; {{agent}} la traite et ne vous signale que ce qui vous concerne.",
+    "archived": "Restaurez cette discussion pour en faire un Super Agent."
+  },
+  "status": {
+    "running": "Actif",
+    "paused": "En pause",
+    "reason": {
+      "manual": "Mis en pause manuellement",
+      "rate": "Limite d’exécutions par heure atteinte",
+      "agent_unavailable": "Agent, discussion ou projet indisponible"
+    }
+  },
+  "scopes": {
+    "title": "Périmètres",
+    "project": "Projet",
+    "issue_tree": "Arbre de tâches",
+    "add_project": "Ajouter un projet",
+    "add_issue_tree": "Ajouter un arbre de tâches",
+    "project_placeholder": "Choisir un projet",
+    "picker_title": "Choisir la tâche racine",
+    "picker_description": "Le Super Agent suit cette tâche et toutes ses sous-tâches.",
+    "empty": "Ajoutez un projet ou un arbre de tâches.",
+    "board": "Tableau {{identifier}}",
+    "board_hint": "Chaque projet reçoit une tâche tableau qui enregistre les exécutions du Super Agent.",
+    "remove": "Retirer le périmètre",
+    "unknown": "Indisponible"
+  },
+  "events": {
+    "title": "Événements",
+    "issue_created": "Tâche créée",
+    "status_changed": "Statut modifié",
+    "assignee_changed": "Responsable modifié",
+    "comment_created": "Nouveau commentaire",
+    "task_failed": "Exécution échouée"
+  },
+  "batching": {
+    "title": "Regroupement",
+    "debounce": "Période de calme (secondes)",
+    "max_wait": "Attente maximale (secondes)",
+    "max_runs": "Alerte au-delà d’exécutions par heure",
+    "invalid": "Les secondes vont de 10 à 86400, l’attente maximale n’est pas plus courte que la période de calme, et l’alerte d’exécutions par heure va de 1 à 60."
+  },
+  "health": {
+    "title": "État",
+    "capture_miss": "Captures manquées",
+    "reconciled": "Vérifié jusqu’au",
+    "never": "Pas encore",
+    "last_run": "Dernière exécution",
+    "no_runs": "Aucune exécution",
+    "run_events": "Événements : {{count}}",
+    "outcome": {
+      "running": "En cours",
+      "completed": "Terminée",
+      "failed": "Échouée"
+    }
+  },
+  "held": {
+    "title": "Éléments traités par le Super Agent",
+    "empty": "Apparaîtront ici lorsque le Super Agent filtrera la boîte de réception."
+  },
+  "actions": {
+    "create": "Définir comme Super Agent",
+    "save": "Enregistrer",
+    "pause": "Mettre en pause",
+    "resume": "Reprendre",
+    "release": "Retirer le Super Agent",
+    "cancel": "Annuler"
+  },
+  "release": {
+    "title": "Retirer ce Super Agent ?",
+    "description": "Cette discussion ne recevra plus l’activité des tâches.",
+    "delete": "Supprimer ses abonnements",
+    "keep": "Garder ses abonnements, en pause",
+    "confirm": "Retirer",
+    "keep_hint": "Pour les réutiliser, définissez une discussion comme Super Agent avec les mêmes périmètres : ils seront repris et relancés."
+  },
+  "board": {
+    "title": "Tableau Super Agent · {{chat}}",
+    "description": "Enregistre les exécutions du Super Agent de la discussion « {{chat}} ». Créé par les paramètres du Super Agent."
+  },
+  "toast": {
+    "created": "Super Agent configuré",
+    "scope_failed": "Impossible d’ajouter {{scope}} : {{error}}",
+    "saved": "Paramètres du Super Agent enregistrés",
+    "paused": "Super Agent mis en pause",
+    "resumed": "Super Agent repris",
+    "released": "Super Agent retiré",
+    "failed": "Impossible de mettre à jour le Super Agent : {{error}}",
+    "scope_taken": "{{scope}} appartient déjà au Super Agent d’une autre discussion. Retirez d’abord ce Super Agent ou retirez-y ce périmètre.",
+    "deleted": "Abonnement supprimé"
+  },
+  "list": {
+    "tab": "Super Agents",
+    "empty": "Aucun Super Agent. Ouvrez le menu d’une discussion et choisissez « Définir comme Super Agent ».",
+    "agent": "Agent",
+    "scopes": "Périmètres",
+    "status": "État",
+    "last_run": "Dernière exécution",
+    "untitled": "Discussion sans titre",
+    "unbound_title": "Abonnements hors Super Agent",
+    "unbound_hint": "Conservés lors du retrait d’un Super Agent. Définir une discussion comme Super Agent avec le même périmètre le reprend.",
+    "delete": "Supprimer",
+    "delete_title": "Supprimer cet abonnement ?",
+    "delete_description": "Ses événements capturés sont aussi supprimés."
+  },
+  "marker": {
+    "label": "Super Agent · Périmètres : {{scopes}} · {{status}}",
+    "scope_project": "Projet {{name}}",
+    "scope_issue_tree": "{{identifier}} {{name}}",
+    "scope_paused": "{{scope}} (en pause)",
+    "paused": "En pause ({{reasons}})",
+    "separator": ", "
+  }
+}

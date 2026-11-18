@@ -34,6 +34,9 @@ import { BreadcrumbHeader } from "../../layout/breadcrumb-header";
 import { useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
+import { ChatWakeupHeaderButton, useChatWakeups } from "./chat-wakeups";
+// Modified by the mouse9527/multica fork (M-105): Router settings in the ⋯ menu.
+import { useRouterChatMenu } from "../../router/use-router-chat-menu";
 
 /**
  * Per-session header for the conversation pane, read as a breadcrumb: the
@@ -66,6 +69,8 @@ export function ChatSessionHeader({
   const deleteSession = useDeleteChatSession();
   const setArchived = useSetChatSessionArchived();
   const setActiveSession = useChatStore((s) => s.setActiveSession);
+  const wakeups = useChatWakeups(session.id);
+  const router = useRouterChatMenu(session, agent);
 
   const isArchived = session.status === "archived";
 
@@ -227,8 +232,11 @@ export function ChatSessionHeader({
               ]
             : []
         }
-        leaf={leaf}
+        // Modified by the mouse9527/multica fork (M-108): the Router marker beside the title.
+        leaf={<>{leaf}{router.marker}</>}
         actions={
+          <div className="flex items-center gap-0.5">
+          <ChatWakeupHeaderButton sessionId={session.id} wakeups={wakeups} />
           <DropdownMenu>
             <DropdownMenuTrigger
               render={
@@ -254,6 +262,7 @@ export function ChatSessionHeader({
                   {t(($) => $.header.agent_settings)}
                 </DropdownMenuItem>
               )}
+              {router.menuItem}
               <DropdownMenuSeparator />
               {isArchived ? (
                 <>
@@ -275,8 +284,11 @@ export function ChatSessionHeader({
               )}
             </DropdownMenuContent>
           </DropdownMenu>
+          </div>
         }
       />
+
+      {router.dialog}
 
       <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <AlertDialogContent>

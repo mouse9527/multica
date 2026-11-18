@@ -1,0 +1,211 @@
+# Fork-only workflow (not present upstream). Checks that reviewers and
+# acceptance used to repeat on a local machine and that upstream's ci.yml does
+# not make: the migration round trip with schema comparison, and proof that
+# the database-backed Go tests ran instead of skipping. Kept out of ci.yml so
+# upstream syncs never conflict with it. Every job runs on every pull request
+# and push so each HEAD has its own result; .github/rulesets/ makes them
+# required by name. See docs/fork-ci.md.
+name: CI (fork)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "migrations-roundtrip: base commit to upgrade from (default HEAD^1)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The fork's script and configuration tests, including the invariants that
+  # keep .github/rulesets/main-required-checks.json and these workflows in
+  # agreement. ci.yml runs them only when its own path filters select it.
+  fork-ci-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Test fork CI scripts and required-check invariants
+        run: node --test scripts/fork-*.test.mjs
+
+  migrations-roundtrip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: multica
+          POSTGRES_USER: multica
+          POSTGRES_PASSWORD: multica
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U multica -d multica"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      # Depth 2 reaches HEAD^1: the target branch tip for a pull request's
+      # merge commit, and the previous main commit for a push.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Setup Go
+        id: go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "~1.27.4"
+          check-latest: true
+          cache: false
+
+      # ci.yml's backend-tests owns this entry; restore only.
+      - name: Restore Go module cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/go.sum') }}
+
+      # A manual run can upgrade from an older commit, so the base-then-head
+      # path also runs with real new migrations when no pull request adds any.
+      - name: Check out the base tree
+        env:
+          BASE_INPUT: ${{ github.event.inputs.base }}
+        run: |
+          base=HEAD^1
+          if [ -n "$BASE_INPUT" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_INPUT"
+            base=FETCH_HEAD
+          fi
+          git worktree add --detach "$RUNNER_TEMP/base" "$base"
+          echo "base: $(git rev-parse "$base")  head: $(git rev-parse HEAD)"
+
+      # pg_dump must match the server's major version, so it runs inside the
+      # service container rather than from the runner's client packages.
+      - name: Compare schemas across upgrade and round trip
+        env:
+          PG_CLIENT: docker exec -i ${{ job.services.postgres.id }}
+        run: |
+          bash scripts/fork-migrations-roundtrip.sh \
+            --base "$RUNNER_TEMP/base" --head "$GITHUB_WORKSPACE" \
+            --out "$RUNNER_TEMP/roundtrip"
+
+      - name: Upload schema dumps
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: migrations-roundtrip
+          path: ${{ runner.temp }}/roundtrip
+          retention-days: 7
+
+  backend-db-no-skip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: multica
+          POSTGRES_USER: multica
+          POSTGRES_PASSWORD: multica
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U multica -d multica"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://multica:multica@localhost:5432/multica?sslmode=disable
+      REDIS_TEST_URL: redis://localhost:6379/1
+      GOFLAGS: -count=1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        id: go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "~1.27.4"
+          check-latest: true
+          cache: false
+
+      # Both entries are published by ci.yml's backend-tests; this job runs in
+      # race mode so it reuses that build cache, and never saves its own.
+      - name: Restore Go module cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/go.sum') }}
+
+      # Must match ci.yml's backend-tests key step exactly.
+      - name: Resolve Go build cache key
+        id: gocache
+        run: echo "prefix=go-build-race-${{ runner.os }}-${{ runner.arch }}-$ImageOS-${{ steps.go.outputs.go-version }}-" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Go build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
+          restore-keys: ${{ steps.gocache.outputs.prefix }}
+
+      - name: Run migrations
+        run: cd server && go run ./cmd/migrate up
+
+      # The same packages as `scripts/test-go.sh --only regular` (pkg/agent
+      # reads no database), as a JSON stream so every skip reason is visible.
+      - name: Test with race detector, failing on database skips
+        run: |
+          cd server
+          packages=$(go list ./... | grep -vE '/pkg/agent(/|$)')
+          status=0
+          # shellcheck disable=SC2086
+          bash ../scripts/go-test-with-agent-cli-guard.sh -- go test -race -json $packages \
+            >"$RUNNER_TEMP/go-test.json" || status=$?
+          node ../scripts/fork-go-test-skips.mjs "$RUNNER_TEMP/go-test.json" || status=1
+          exit "$status"
+
+      - name: Upload test stream
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-db-no-skip
+          path: ${{ runner.temp }}/go-test.json
+          retention-days: 7

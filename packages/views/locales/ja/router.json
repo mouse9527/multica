@@ -1,0 +1,123 @@
+{
+  "menu": {
+    "setup": "Super Agent に設定",
+    "settings": "Super Agent の設定"
+  },
+  "badge": "Super Agent",
+  "dialog": {
+    "title_setup": "Super Agent に設定",
+    "title_settings": "Super Agent の設定",
+    "description": "これらの範囲にあるタスクの動きをまとめてこのチャットに送り、{{agent}} が処理して、あなたが必要なときだけ知らせます。",
+    "archived": "Super Agent にするには、まずこのチャットを復元してください。"
+  },
+  "status": {
+    "running": "稼働中",
+    "paused": "一時停止中",
+    "reason": {
+      "manual": "手動で一時停止",
+      "rate": "1 時間あたりの実行上限に到達",
+      "agent_unavailable": "エージェント、チャット、またはプロジェクトを利用できません"
+    }
+  },
+  "scopes": {
+    "title": "範囲",
+    "project": "プロジェクト",
+    "issue_tree": "タスクツリー",
+    "add_project": "プロジェクトを追加",
+    "add_issue_tree": "タスクツリーを追加",
+    "project_placeholder": "プロジェクトを選択",
+    "picker_title": "ルートタスクを選択",
+    "picker_description": "Super Agent はこのタスクとすべてのサブタスクを追跡します。",
+    "empty": "プロジェクトかタスクツリーを追加してください。",
+    "board": "ボード {{identifier}}",
+    "board_hint": "プロジェクトごとに Super Agent の実行を記録するボードタスクを作成します。",
+    "remove": "範囲を削除",
+    "unknown": "利用不可"
+  },
+  "events": {
+    "title": "イベント",
+    "issue_created": "タスク作成",
+    "status_changed": "ステータス変更",
+    "assignee_changed": "担当者変更",
+    "comment_created": "新しいコメント",
+    "task_failed": "実行失敗"
+  },
+  "batching": {
+    "title": "まとめ送信",
+    "debounce": "待機時間（秒）",
+    "max_wait": "最大待機（秒）",
+    "max_runs": "通知する 1 時間あたりの実行数",
+    "invalid": "秒数は 10–86400、最大待機は待機時間以上、通知する 1 時間あたりの実行数は 1–60 にしてください。"
+  },
+  "health": {
+    "title": "状態",
+    "capture_miss": "取りこぼし",
+    "reconciled": "照合済み",
+    "never": "未完了",
+    "last_run": "最新の実行",
+    "no_runs": "実行はまだありません",
+    "run_events": "イベント：{{count}}",
+    "outcome": {
+      "running": "進行中",
+      "completed": "完了",
+      "failed": "失敗"
+    }
+  },
+  "held": {
+    "title": "Super Agent が処理した項目",
+    "empty": "Super Agent が受信トレイを選別し始めるとここに表示されます。"
+  },
+  "actions": {
+    "create": "Super Agent に設定",
+    "save": "保存",
+    "pause": "一時停止",
+    "resume": "再開",
+    "release": "Super Agent を解除",
+    "cancel": "キャンセル"
+  },
+  "release": {
+    "title": "この Super Agent を解除しますか？",
+    "description": "このチャットはタスクの動きを受け取らなくなります。",
+    "delete": "購読を削除",
+    "keep": "購読を残して一時停止",
+    "confirm": "解除",
+    "keep_hint": "あとでチャットを同じ範囲の Super Agent に設定すると、これらの購読を引き継いで再開します。"
+  },
+  "board": {
+    "title": "Super Agent ボード · {{chat}}",
+    "description": "チャット「{{chat}}」の Super Agent の実行を記録します。Super Agent の設定で作成されました。"
+  },
+  "toast": {
+    "created": "Super Agent に設定しました",
+    "scope_failed": "{{scope}} を追加できませんでした：{{error}}",
+    "saved": "Super Agent の設定を保存しました",
+    "paused": "Super Agent を一時停止しました",
+    "resumed": "Super Agent を再開しました",
+    "released": "Super Agent を解除しました",
+    "failed": "Super Agent を更新できませんでした：{{error}}",
+    "scope_taken": "{{scope}} は別のチャットの Super Agent に含まれています。先にその Super Agent を解除するか、そちらでこの範囲を削除してください。",
+    "deleted": "購読を削除しました"
+  },
+  "list": {
+    "tab": "Super Agent",
+    "empty": "Super Agent はまだありません。チャットのメニューから「Super Agent に設定」を選んでください。",
+    "agent": "エージェント",
+    "scopes": "範囲",
+    "status": "状態",
+    "last_run": "最新の実行",
+    "untitled": "無題のチャット",
+    "unbound_title": "Super Agent に属していない購読",
+    "unbound_hint": "Super Agent を解除したときに残した購読です。チャットを同じ範囲の Super Agent に設定すると引き継がれます。",
+    "delete": "削除",
+    "delete_title": "この購読を削除しますか？",
+    "delete_description": "取得済みのイベントも削除されます。"
+  },
+  "marker": {
+    "label": "Super Agent · 範囲：{{scopes}} · {{status}}",
+    "scope_project": "{{name}} プロジェクト",
+    "scope_issue_tree": "{{identifier}} {{name}}",
+    "scope_paused": "{{scope}}（一時停止中）",
+    "paused": "一時停止中（{{reasons}}）",
+    "separator": "、"
+  }
+}

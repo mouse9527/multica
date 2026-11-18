@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -768,7 +769,7 @@ func injectCancelFailureForTask(t *testing.T, ctx context.Context, taskID string
 		t.Fatalf("create fault trigger: %v", err)
 	}
 	t.Cleanup(func() {
-		testPool.Exec(ctx, `DROP TRIGGER IF EXISTS wtgate_fail_cancel_trg ON agent_task_queue`)
+		_ = testutil.ExecDDL(ctx, testPool, `DROP TRIGGER IF EXISTS wtgate_fail_cancel_trg ON agent_task_queue`) // Modified by the mouse9527/multica fork: see testutil.ExecDDL.
 		testPool.Exec(ctx, `DROP FUNCTION IF EXISTS wtgate_fail_cancel`)
 	})
 }

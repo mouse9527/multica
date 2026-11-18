@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -102,11 +103,6 @@ func (h *Handler) childDoneSystemWakeup(r *http.Request, parent db.Issue) (*syst
 		out.Stage = &stage.Int32
 	}
 	prefix := h.getIssuePrefix(ctx, parent.WorkspaceID)
-	openIDs := make([]pgtype.UUID, len(open)) // GitHub-native issues (fork)
-	for i, c := range open {
-		openIDs[i] = c.ID
-	}
-	openKeys := h.loadIssueKeys(ctx, parent.WorkspaceID, openIDs)
 	for _, c := range children {
 		if stage.Valid && (!c.Stage.Valid || c.Stage.Int32 != stage.Int32) {
 			continue
@@ -119,7 +115,7 @@ func (h *Handler) childDoneSystemWakeup(r *http.Request, parent db.Issue) (*syst
 		}
 		out.Remaining++
 		if len(out.Waiting) < 5 {
-			out.Waiting = append(out.Waiting, service.IssueKey(openKeys, c.ID, prefix, c.Number)) // GitHub-native issues (fork)
+			out.Waiting = append(out.Waiting, prefix+"-"+strconv.Itoa(int(c.Number)))
 		}
 	}
 	ws, err := h.Queries.GetWorkspace(ctx, parent.WorkspaceID)

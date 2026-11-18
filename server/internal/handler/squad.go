@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -12,7 +13,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
-	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -222,6 +222,33 @@ func (h *Handler) ListSquads(w http.ResponseWriter, r *http.Request) {
 		applySquadMemberSummary(&resp[i], summaries[uuidToString(s.ID)])
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// ListInvolvedSquadIDs returns the ids of the squads whose issues count as the
+// caller's agents' work, so clients can evaluate the "my agents" relation on
+// rows they filter themselves.
+func (h *Handler) ListInvolvedSquadIDs(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceIDFromURL(r, "workspaceId"), "workspace_id")
+	if !ok {
+		return
+	}
+	ids, err := h.Queries.ListInvolvedSquadIDs(r.Context(), db.ListInvolvedSquadIDsParams{
+		WorkspaceID: wsUUID,
+		UserID:      parseUUID(userID),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list involved squads")
+		return
+	}
+	squadIDs := make([]string, len(ids))
+	for i, id := range ids {
+		squadIDs[i] = uuidToString(id)
+	}
+	writeJSON(w, http.StatusOK, map[string][]string{"squad_ids": squadIDs})
 }
 
 func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
@@ -663,14 +690,25 @@ func (h *Handler) ListSquadMemberStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	prefix := h.getIssuePrefix(r.Context(), squad.WorkspaceID)
-	squadIssueIDs := make([]pgtype.UUID, 0, len(rows)) // GitHub-native issues (fork)
+	// Issues in private projects the caller cannot see (MUL-8472) are left
+	// out of active_issues; the member's working status stays.
+	hidden, ok := h.requestHiddenProjects(w, r, uuidToString(squad.WorkspaceID))
+	if !ok {
+		return
+	}
+	var taskIssueIDs []pgtype.UUID
 	for _, row := range rows {
 		if row.TaskIssueID.Valid {
-			squadIssueIDs = append(squadIssueIDs, row.TaskIssueID)
+			taskIssueIDs = append(taskIssueIDs, row.TaskIssueID)
 		}
 	}
-	squadKeys := h.loadIssueKeys(r.Context(), squad.WorkspaceID, squadIssueIDs)
+	hiddenIssues, err := h.hiddenIssueIDs(r, hidden, taskIssueIDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve project access")
+		return
+	}
+
+	prefix := h.getIssuePrefix(r.Context(), squad.WorkspaceID)
 	now := time.Now()
 
 	// Group rows by member_id while preserving the SQL ORDER BY (squad_member
@@ -719,10 +757,10 @@ func (h *Handler) ListSquadMemberStatus(w http.ResponseWriter, r *http.Request) 
 				entry.hasWorkingTask = true
 			}
 
-			if row.TaskIssueID.Valid {
+			if _, hide := hiddenIssues[row.TaskIssueID]; row.TaskIssueID.Valid && !hide {
 				brief := SquadActiveIssueBrief{
 					IssueID:    uuidToString(row.TaskIssueID),
-					Identifier: service.IssueKey(squadKeys, row.TaskIssueID, prefix, row.IssueNumber.Int32), // GitHub-native issues (fork)
+					Identifier: prefix + "-" + strconv.Itoa(int(row.IssueNumber.Int32)),
 					Title:      row.IssueTitle.String,
 					IssueStatus: func() string {
 						if row.IssueStatus.Valid {

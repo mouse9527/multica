@@ -1,0 +1,75 @@
+# Fork-only GoReleaser config (not present upstream), used by
+# .github/workflows/release-fork.yml. It publishes the `multica` CLI/daemon
+# archives and checksums.txt to this fork's GitHub Release. Compared with
+# upstream .goreleaser.yml it drops the Homebrew tap (needs a token for
+# multica-ai/homebrew-tap) and the legacy `multica_{os}_{arch}` archive name,
+# and publishes "-mouse.N" tags as regular releases. See docs/fork-release.md.
+version: 2
+
+project_name: multica
+
+release:
+  # Same-tag reruns replace only the matching assets.
+  replace_existing_artifacts: true
+  # "-mouse.N" tags are regular releases, not pre-releases: `multica update`
+  # and the daemon read /releases/latest, which skips pre-releases.
+  prerelease: "false"
+  # "true" only for the newest -mouse.N tag (release-fork.yml), so re-running
+  # an older release does not take "latest" back.
+  make_latest: "{{ .Env.MAKE_LATEST }}"
+
+builds:
+  - id: multica
+    main: ./cmd/multica
+    dir: server
+    binary: multica
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.buildCommit={{.FullCommit}}
+      - -X main.date={{.Date}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # Signs darwin binaries with the CI certificate before they are archived
+    # and checksummed; a missing key or a signature that does not match the
+    # pinned identity stops the release before anything is published. Other
+    # systems pass through. See docs/fork-release.md, "macOS 签名".
+    hooks:
+      post:
+        - cmd: bash scripts/fork-macos-sign.sh sign "{{ .Os }}" "{{ .Path }}"
+          output: true
+
+archives:
+  # The name `multica update` looks for first (cli.releaseAssetCandidates).
+  - id: versioned
+    files:
+      - LICENSE*
+      - README*
+      - NOTICE
+      - docs/github-issues-upstream-changes.md
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "{{ .ProjectName }}-cli-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
