@@ -71,6 +71,7 @@ func TestBuildNoteStatesRouterBoundary(t *testing.T) {
 			"a small task becomes a local Multica issue assigned to a fitting worker",
 			"also gets a GitHub issue, linked as `gh_issue` per the github-evidence skill",
 			"ops, environment and credential work stays a local issue only",
+			"`multica router guide`", // M-150: the full guide ships in the CLI
 		} {
 			if !strings.Contains(note, want) {
 				t.Errorf("chat=%v: note lacks %q", chat, want)

@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router settings by instruction (M-105), and Router inbox S3b (M-133).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router settings by instruction (M-105), Router inbox S3b (M-133), and live Super Agent settings (M-147).
 //
 // HTTP surface of Router dispatch: subscription updates, state, the audit
 // trail, anchor runs and owner notices. Like agent_router.go it only adapts
@@ -201,6 +201,7 @@ func (h *Handler) UpdateRouterSubscription(w http.ResponseWriter, r *http.Reques
 		h.routerFail(w, r, err)
 		return
 	}
+	h.publishRouterSubscriptionChanged(sub.WorkspaceID, sub.ID, routerChangeUpdated, change.ActorType, change.ActorID)
 	writeJSON(w, http.StatusOK, out)
 }
 

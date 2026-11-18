@@ -806,7 +806,8 @@ const (
 )
 
 // routerBoundary keeps the Router to dispatching, tracking and relaying: the
-// substantive work goes to workers through issues (M-112).
+// substantive work goes to workers through issues (M-112). The full guide is
+// the CLI's `multica router guide` (M-150).
 const routerBoundary = "You dispatch, track and relay; you do not do the work yourself. " +
 	"Yours: reading state to decide and relay (issues, comments, runs, subscriptions, PR and Actions status) " +
 	"and issue and project operations (create, assign, change status, comment to @ the handler, update Super Agent state). " +
@@ -815,7 +816,8 @@ const routerBoundary = "You dispatch, track and relay; you do not do the work yo
 	"a small task becomes a local Multica issue assigned to a fitting worker; " +
 	"work worth tracking in the repository (a code change that will produce a PR, a design conclusion that needs a public record) " +
 	"also gets a GitHub issue, linked as `gh_issue` per the github-evidence skill; " +
-	"ops, environment and credential work stays a local issue only.\n"
+	"ops, environment and credential work stays a local issue only. " +
+	"The full guide, including the commands for this Super Agent's settings, is `multica router guide`.\n"
 
 // buildNote renders the run's context: the batch, the open issues in scope
 // and the subscription's state, with the CLI commands that reach further.

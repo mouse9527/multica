@@ -335,7 +335,7 @@ Owner 不用 CLI，在页面上（或在 chat 里对智能体下指令，见下�
 - 暂停 / 恢复：暂停是手动暂停（停捕获）；恢复同时清掉自动暂停。
 - 解除 Super Agent（二次确认）：二选一，「删除它的订阅」，或「保留订阅并暂停」（先暂停、再解绑，所以中间不会退回锚点运行）。保留的订阅出现在设置页「Super Agent」的「不在 Super Agent 里的订阅」一节，可以在那里删除；把任一 chat 设为 Super Agent 并选同样的范围，就会按上一条接回。
 - 「经 Super Agent 处理的条目」：给切片 2、3 的暂扣层留的位置，现在只有一句说明。
-- Super Agent 状态没有实时事件，打开的设置对话框和列表每 30 秒刷新一次。
+- 实时刷新（M-147）：经 API 或 CLI 建、改、暂停、恢复、删除订阅后，服务端向工作区广播 `router:subscription_changed`（载荷只有 `subscription_id`、`action`），网页收到后让 Super Agent 的查询失效重拉，已经打开的设置对话框、列表和聊天标记不用刷新页面就能看到变化；打开设置对话框或列表时也总会重新读一次订阅列表，不用缓存里旧的那份。派发进度和自动暂停没有实时事件，打开时仍每 30 秒刷新一次。
 
 ### 在 chat 里用指令设置
 
@@ -349,12 +349,30 @@ Owner 也可以在 chat 里直接跟这个 chat 的智能体说「把这个 chat
   - `router get|pause|resume|delete|update --chat current|<会话>`：作用于这个 Super Agent 的每一条订阅（`get` 列出它们）。
   - `router update <订阅> --anchor-chat current`：把订阅绑到当前 chat。
   - `router release --chat current|<会话> [--keep]`：解除 Super Agent；默认删除订阅，`--keep` 先暂停再解绑。
-- 给智能体的说明：`docs/router-setup-skill/SKILL.md`（`router-setup` skill 草案：口令对应的命令、改动前先复述并等确认、失败时怎么告诉 Owner）。由 Mika 在 Owner 确认后挂到相关智能体上。
+- 给智能体的说明：`multica router guide`（口令对应的命令、改动前先复述并等确认、失败时怎么告诉 Owner、Super Agent 的边界），见下一节。
+
+### 使用说明随 CLI 发布（M-150）
+
+Super Agent 的使用说明不再作为 skill 维护（手工导入的 skill 不跟随发版，各工作区要逐个导入、挂载、更新），改成跟着 multica 一起发布：
+
+- **唯一来源**：`server/cmd/multica/router_guide.md`，编进 CLI，`multica router guide` 原样输出。改了这个文件、发新版 CLI，每个工作区读到的就是新内容，版本和它描述的命令一致。原来的 `docs/router-setup-skill/` 已删除。
+- **怎么找到它**：`multica --help` 把 `router` 列为 Super Agent 命令（M-148）；`multica router --help` 的 EXAMPLES 第一条就是 `multica router guide`，写明设置、修改、解除 Super Agent 之前和作为 Super Agent 运行时先读它。
+- **Mika 的提示词**：`router_v1` 打开时，领任务组装 Mika 的提示词，在随二进制发布的系统部分之后、工作区备注之前加一小段「## Super Agent」，只有一句话：遇到 Super Agent 相关的请求先跑 `multica router guide`。整份说明不进提示词，平常的运行不多花 token。`router_v1` 关闭时这段不出现，Mika 的提示词与上游一致。智能体设置页只读展示的系统提示词里不显示这一段。
+- **Super Agent 批次**：每个批次里的边界说明（M-112）末尾加一句，指向 `multica router guide`。批次只在 Router 开关打开时存在。
+
+上线步骤（运维或 Owner 执行；本任务不改线上数据）：
+
+1. 发布包含 M-150 的服务端和 CLI，确认 `router_v1` 已打开、Mika 所在机器的 CLI 已更新（`multica router guide` 能输出说明）。
+2. 在 Mika 的 chat 里说一句「这个 chat 现在是 Super Agent 吗」，确认它先跑了 `multica router guide`，再按说明执行。
+3. 每个手工导入过 `router-setup` skill 的工作区：先把它从 Mika（以及其他挂了它的智能体）上解除，再删除这个工作区 skill。`multica skill list` 找到名为 `router-setup` 的那条；`multica agent skills list <智能体>` 看挂载，用 `multica agent skills set` 去掉它、保留其他 skill，或在智能体设置页取消勾选；再 `multica skill delete <id>`。
+4. 再开一次 Mika 的任务，确认 skill 里已经没有 `router-setup`。
+
+先发布再删除：反过来会有一段时间 Mika 既没有 skill、CLI 里也还没有说明。两者并存的几分钟里内容相同，不冲突。
 
 ### 代码位置
 
 - 前端：`packages/core/router/`（API、zod 校验、查询与变更、分组）；`packages/views/router/`（对话框、范围选择、列表页、两个挂载钩子）；文案在 `packages/views/locales/*/router.json`。
-- 上游触点：`packages/core/package.json` 导出 `./router`（API 调用用上游 `cd969f848` 起提供的 `ApiClient.request`，原先 fork 加在 `client.ts` 的 `forkRequest` 已在 M-131 同步时去掉），`chat-session-header.tsx` 与 `settings-page.tsx` 各加一个挂载钩子，8 个语言入口和 `resources-types.ts` 登记 `router` 命名空间，`featureflags/keys.go` 公开 `router_chat`。见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。
+- 上游触点：`packages/core/package.json` 导出 `./router`（API 调用用上游 `cd969f848` 起提供的 `ApiClient.request`，原先 fork 加在 `client.ts` 的 `forkRequest` 已在 M-131 同步时去掉），`chat-session-header.tsx` 与 `settings-page.tsx` 各加一个挂载钩子，8 个语言入口和 `resources-types.ts` 登记 `router` 命名空间，`featureflags/keys.go` 公开 `router_chat`；`packages/core/realtime/use-realtime-sync.ts` 的前缀刷新表加一项 `router`（M-147）。见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。
 
 ## 聊天列表的 Super Agent 标记（M-108）
 
