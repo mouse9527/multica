@@ -144,11 +144,8 @@ func TestLaunchAgentPlistContent(t *testing.T) {
 			t.Errorf("plist missing %q:\n%s", want, content)
 		}
 	}
-	// No KeepAlive: it would restart a daemon the user (or launchd at
-	// logout) just stopped.
-	if strings.Contains(content, "KeepAlive") {
-		t.Errorf("plist must not set KeepAlive:\n%s", content)
-	}
+	// Modified by the mouse9527/multica fork: KeepAlive is pinned in
+	// cmd_daemon_launchd_handoff_test.go.
 
 	if !launchAgentManaged([]byte(content)) {
 		t.Errorf("launchAgentManaged() = false for a plist we just wrote")

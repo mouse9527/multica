@@ -957,6 +957,9 @@ func runDaemonForeground(cmd *cobra.Command) error {
 	util.EnsureHiddenConsole()
 
 	profile := resolveProfile(cmd)
+	// Modified by the mouse9527/multica fork: read (and clear) the
+	// LaunchAgent marker before any child inherits it.
+	underOwnLaunchAgent := takeLaunchAgentSupervision(profile)
 
 	// Keep an entry this process may itself have been launched from fresh:
 	// rewriting is idempotent, and it heals a stale executable path after a
@@ -1216,6 +1219,13 @@ func runDaemonForeground(cmd *cobra.Command) error {
 			logger.Info("handing off to systemd for the updated binary",
 				"path", restartBin, "exit_code", daemonSystemdHandoffExitStatus)
 			os.Exit(daemonSystemdHandoffExitStatus)
+		}
+		// Modified by the mouse9527/multica fork: the same exit handoff under
+		// our own LaunchAgent (see cmd_daemon_launchd_handoff.go).
+		if underOwnLaunchAgent {
+			logger.Info("handing off to launchd for the updated binary",
+				"path", restartBin, "exit_code", daemonLaunchdHandoffExitStatus)
+			os.Exit(daemonLaunchdHandoffExitStatus)
 		}
 
 		args := buildDaemonStartArgs(cmd)
