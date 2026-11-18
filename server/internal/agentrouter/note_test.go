@@ -33,7 +33,7 @@ func TestBuildNote(t *testing.T) {
 		inflightTotal: 41, now: now,
 	})
 	for _, want := range []string{
-		"Router batch for subscription sub-1 (issue tree RT-1, anchor RT-1): 199 new event(s).",
+		"Super Agent batch for subscription sub-1 (issue tree RT-1, anchor RT-1): 199 new event(s).",
 		"RT-3 status_changed todo -> in_review by member Mouse",
 		"RT-4 task_failed (timeout)",
 		"more: `multica router events --subscription sub-1 --state pending --output json`",

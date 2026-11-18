@@ -143,7 +143,7 @@ func TestDispatchBatchesEventsIntoOneAnchorRun(t *testing.T) {
 	if run.issue != root || run.agent != e.agentA {
 		t.Fatalf("run on %s for %s, want the anchor %s for agent A", run.issue, run.agent, root)
 	}
-	for _, want := range []string{"Router batch for subscription " + sub.ID, "2 new event(s)", "comment_created", "status_changed todo -> in_progress", "Open issues in scope", "State (revision 0)"} {
+	for _, want := range []string{"Super Agent batch for subscription " + sub.ID, "2 new event(s)", "comment_created", "status_changed todo -> in_progress", "Open issues in scope", "State (revision 0)"} {
 		if !strings.Contains(run.note, want) {
 			t.Fatalf("note lacks %q:\n%s", want, run.note)
 		}
@@ -303,7 +303,7 @@ func TestBusyRouterKeepsDispatchingAndTellsTheOwnerOnce(t *testing.T) {
 		t.Fatalf("notices = %+v (%v), want one", notices, err)
 	}
 	n := notices[0]
-	if !strings.Contains(n.Title, "Router busy") || !strings.Contains(n.Body, "started 2 runs in the last hour") ||
+	if !strings.Contains(n.Title, "Super Agent busy") || !strings.Contains(n.Body, "started 2 runs in the last hour") ||
 		!strings.Contains(n.Body, "nothing is paused") || n.Urgency != UrgencyNormal || n.RecipientUserID != e.user {
 		t.Fatalf("notice = %+v", n)
 	}
@@ -346,7 +346,7 @@ func TestBusyRouterAlertGoesToItsChat(t *testing.T) {
 		t.Fatalf("runs = %d, chat notices = %d; want 2 and 1", len(runs.calls), len(runs.notices))
 	}
 	if got := runs.notices[0]; got.chat != chat || got.agent != e.agentA ||
-		!strings.HasPrefix(got.note, RouterNoticeLabel+"\n") || !strings.Contains(got.note, "Router busy") {
+		!strings.HasPrefix(got.note, RouterNoticeLabel+"\n") || !strings.Contains(got.note, "Super Agent busy") {
 		t.Fatalf("chat notice = %+v", got)
 	}
 	notices, _ := d.Notices.ListNotices(e.ctx, NoticeFilter{WorkspaceID: e.ws, SubscriptionID: sub.ID})

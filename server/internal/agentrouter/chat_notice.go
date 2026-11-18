@@ -69,7 +69,7 @@ func usableChatOf(ctx context.Context, q Querier, subscriptionID, recipient stri
 
 // RouterNoticeLabel opens every notice written into a Router chat: the
 // message shows as the agent's, but the system wrote it.
-const RouterNoticeLabel = "[Router 系统通知 · 非 Router 回复]"
+const RouterNoticeLabel = "[Super Agent 系统通知 · 非 Super Agent 回复]"
 
 func chatNoticeText(n Notice) string {
 	return RouterNoticeLabel + "\n\n**" + n.Title + "**\n\n" + n.Body

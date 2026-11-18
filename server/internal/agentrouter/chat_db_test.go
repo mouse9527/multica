@@ -248,7 +248,7 @@ func TestPauseNoticeGoesToTheRouterChat(t *testing.T) {
 		t.Fatalf("runs = %d, chat notices = %d; want 0 and 1", len(runs.calls), len(runs.notices))
 	}
 	got := runs.notices[0]
-	if got.chat != chat || !strings.HasPrefix(got.note, RouterNoticeLabel+"\n") || !strings.Contains(got.note, "Router paused") ||
+	if got.chat != chat || !strings.HasPrefix(got.note, RouterNoticeLabel+"\n") || !strings.Contains(got.note, "Super Agent paused") ||
 		!strings.Contains(got.note, "no runtime") || !strings.Contains(got.note, "2 event(s) are waiting") ||
 		!strings.Contains(got.note, "multica router resume "+sub.ID) {
 		t.Fatalf("chat notice = %+v", got)
@@ -287,7 +287,7 @@ func TestPendingNoticesAreNotRedeliveredLate(t *testing.T) {
 	write := func(key string) Notice {
 		t.Helper()
 		n, _, err := insertNotice(e.ctx, pool, NoticeInput{
-			WorkspaceID: e.ws, RecipientUserID: e.user, Title: "Router paused " + key, Urgency: UrgencyHigh,
+			WorkspaceID: e.ws, RecipientUserID: e.user, Title: "Super Agent paused " + key, Urgency: UrgencyHigh,
 			DedupeKey: key, SenderType: "system", SourceSubscriptionID: sub.ID,
 		})
 		if err != nil {
