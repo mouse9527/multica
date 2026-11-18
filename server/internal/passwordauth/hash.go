@@ -190,18 +190,20 @@ func (h *Hasher) hash(password string) (string, error) {
 }
 
 // Verify reports whether password matches encoded. The key comparison takes
-// constant time. A password over MaxPasswordBytes never matches and is not
-// hashed. An error means encoded itself is unusable.
+// constant time. A password over MaxPasswordBytes never matches; only its
+// first MaxPasswordBytes are hashed, so it costs the same as any other wrong
+// password and as VerifyDummy. An error means encoded itself is unusable.
 func (h *Hasher) Verify(password, encoded string) (bool, error) {
 	p, salt, key, err := decode(encoded)
 	if err != nil {
 		return false, err
 	}
-	if len(password) > MaxPasswordBytes {
-		return false, nil
+	inLimit := len(password) <= MaxPasswordBytes
+	if !inLimit {
+		password = password[:MaxPasswordBytes]
 	}
 	got := argon2.IDKey([]byte(password), salt, p.Iterations, p.MemoryKiB, p.Parallelism, p.KeyLen)
-	return subtle.ConstantTimeCompare(got, key) == 1, nil
+	return subtle.ConstantTimeCompare(got, key) == 1 && inLimit, nil
 }
 
 // VerifyDummy spends the time of one verification and always fails. Callers

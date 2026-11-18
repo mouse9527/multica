@@ -36,7 +36,7 @@ func (q *Queries) GetUserCredential(ctx context.Context, userID pgtype.UUID) (Us
 	return i, err
 }
 
-const lockUserCredential = `-- name: LockUserCredential :exec
+const lockUserCredential = `-- name: LockUserCredential :execrows
 UPDATE user_credential SET
     locked_until = $1,
     updated_at   = now()
@@ -48,9 +48,12 @@ type LockUserCredentialParams struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 }
 
-func (q *Queries) LockUserCredential(ctx context.Context, arg LockUserCredentialParams) error {
-	_, err := q.db.Exec(ctx, lockUserCredential, arg.LockedUntil, arg.UserID)
-	return err
+func (q *Queries) LockUserCredential(ctx context.Context, arg LockUserCredentialParams) (int64, error) {
+	result, err := q.db.Exec(ctx, lockUserCredential, arg.LockedUntil, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const recordUserCredentialFailure = `-- name: RecordUserCredentialFailure :one

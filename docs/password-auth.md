@@ -43,11 +43,12 @@ argon2id（`golang.org/x/crypto/argon2`）。
 ## 密码规则
 
 - 最短 12 个字符（按 Unicode 字符计，不按字节）。
-- 最长 1024 字节：防止超大输入消耗 CPU；登录时超长输入直接判错，不做哈希。
+- 最长 1024 字节：防止超大输入消耗 CPU。登录时超长输入一定判错，但仍对前 1024 字节做一次哈希，耗时与普通错误密码、没设密码的账号相同。
 - 只在设置密码时校验（`ValidatePassword`、`Hasher.Hash`、`Store.SetPassword`）；登录时按存储的哈希原样比对。
 
 ## 不泄露密码与哈希
 
-- 本包返回的错误都是固定值，不含密码、哈希或其片段；数据库错误按 `%w` 包装，`pgconn.PgError.Error()` 不含 `Detail`（Postgres 会把失败行放在 `Detail` 里）。
+- 本包返回的错误都是固定值，不含密码、哈希或其片段；数据库错误按 `%w` 包装，`pgconn.PgError.Error()` 不含 `Detail`（Postgres 会把失败行放在 `Detail` 里），`%#v` 打印包装后的错误时内层只显示指针。调用方不要用 `errors.As` 取出 `*pgconn.PgError` 再整体打印或记日志。
+- sqlc 生成的 `db.UserCredential` 的 `PasswordHash` 带 `json:"password_hash"`。本包只对外返回 `Credential`；阶段 2 写接口时不要直接序列化生成的 model。
 - `Credential` 的哈希是未导出字段；`fmt`（所有动词，含 `%#v`）、`slog`、`encoding/json` 都不输出它。
 - 日志只记 `user_id` 和错误。测试见 `store_test.go`（伪造数据库返回带密码与哈希的 `Detail`，断言错误与日志都不含）。

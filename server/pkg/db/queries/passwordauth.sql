@@ -41,7 +41,7 @@ UPDATE user_credential SET
 WHERE user_id = $1
 RETURNING failed_count;
 
--- name: LockUserCredential :exec
+-- name: LockUserCredential :execrows
 UPDATE user_credential SET
     locked_until = @locked_until,
     updated_at   = now()

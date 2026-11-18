@@ -178,18 +178,24 @@ func (s *Store) RecordFailure(ctx context.Context, userID pgtype.UUID) (int32, e
 	return n, nil
 }
 
-// Lock locks the account until the given time.
+// Lock locks the account until the given time. A user without a credential
+// gets ErrNoCredential, so a caller never takes a lock for granted.
 func (s *Store) Lock(ctx context.Context, userID pgtype.UUID, until time.Time) error {
-	if err := s.q.LockUserCredential(ctx, db.LockUserCredentialParams{
+	n, err := s.q.LockUserCredential(ctx, db.LockUserCredentialParams{
 		UserID:      userID,
 		LockedUntil: pgtype.Timestamptz{Time: until, Valid: true},
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("passwordauth: lock: %w", err)
+	}
+	if n == 0 {
+		return ErrNoCredential
 	}
 	return nil
 }
 
-// ResetFailures clears the failure count and any lock.
+// ResetFailures clears the failure count and any lock. For a user without a
+// credential there is nothing to clear, so it returns nil.
 func (s *Store) ResetFailures(ctx context.Context, userID pgtype.UUID) error {
 	if err := s.q.ResetUserCredentialFailures(ctx, userID); err != nil {
 		return fmt.Errorf("passwordauth: reset failures: %w", err)

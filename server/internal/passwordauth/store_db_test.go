@@ -43,6 +43,12 @@ func TestStoreAgainstDatabase(t *testing.T) {
 	if _, err := s.RecordFailure(ctx, user); !errors.Is(err, ErrNoCredential) {
 		t.Fatalf("RecordFailure before SetPassword: %v", err)
 	}
+	if err := s.Lock(ctx, user, time.Now().Add(time.Minute)); !errors.Is(err, ErrNoCredential) {
+		t.Fatalf("Lock before SetPassword: %v", err)
+	}
+	if err := s.ResetFailures(ctx, user); err != nil {
+		t.Fatalf("ResetFailures before SetPassword: %v", err)
+	}
 
 	// A short password is refused and nothing is stored.
 	if err := s.SetPassword(ctx, user, "too short"); !errors.Is(err, ErrPasswordTooShort) {

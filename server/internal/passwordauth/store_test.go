@@ -96,7 +96,8 @@ func TestSetPasswordErrorHidesPasswordAndHash(t *testing.T) {
 	if !errors.As(err, &pgErr) {
 		t.Fatal("database error is not reachable with errors.As")
 	}
-	for _, text := range []string{err.Error(), fmt.Sprintf("%v", err), fmt.Sprintf("%+v", err)} {
+	// %#v prints the wrapped *pgconn.PgError as a pointer, not its Detail.
+	for _, text := range []string{err.Error(), fmt.Sprintf("%v", err), fmt.Sprintf("%+v", err), fmt.Sprintf("%#v", err)} {
 		assertNoSecret(t, "error", text, testPassword)
 	}
 	assertNoSecret(t, "log", logs.String(), testPassword)
