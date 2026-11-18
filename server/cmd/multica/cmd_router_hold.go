@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router v6, slice 2 (M-97).
+// Modified for the mouse9527/multica fork: Router v6, slice 2 (M-97), and Router inbox S3b (M-133).
 
 package main
 
@@ -31,7 +31,7 @@ func init() {
 	routerHoldsCmd.Flags().String("output", "table", "Output format: table or json")
 }
 
-var holdHeaders = []string{"ID", "CREATED", "STATUS", "ISSUE", "TYPE", "IN INBOX", "DECIDE µs", "TITLE"}
+var holdHeaders = []string{"ID", "CREATED", "STATUS", "ISSUE", "TYPE", "IN INBOX", "DECIDE µs", "VERDICT", "TITLE"}
 
 func holdRows(holds []map[string]any) [][]string {
 	rows := make([][]string, 0, len(holds))
@@ -52,10 +52,20 @@ func holdRows(holds []map[string]any) [][]string {
 			strVal(x, "item_type"),
 			inInbox,
 			decide,
+			holdVerdict(x),
 			strVal(x, "title"),
 		})
 	}
 	return rows
+}
+
+// holdVerdict is the rule verdict as "verdict (rule)", empty when the item
+// was not classified.
+func holdVerdict(x map[string]any) string {
+	if v := strVal(x, "verdict"); v != "" {
+		return v + " (" + strVal(x, "rule") + ")"
+	}
+	return ""
 }
 
 func runRouterHolds(cmd *cobra.Command, _ []string) error {
