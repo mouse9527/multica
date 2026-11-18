@@ -1,0 +1,11 @@
+{
+  "tab": "進化",
+  "description": "內建智能體，為本工作區的智能體、工作流程和團隊提出改進提案。每項變更都要等擁有者或管理員核准。",
+  "enable_hint": "選擇進化執行的執行環境。",
+  "enable": "啟用進化",
+  "enabled_toast": "已啟用進化",
+  "enabled_title": "進化已啟用",
+  "open_agent": "開啟智能體",
+  "not_enabled_member": "進化尚未啟用。請聯絡工作區擁有者或管理員啟用。",
+  "failed": "啟用進化失敗"
+}
