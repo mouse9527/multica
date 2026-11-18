@@ -296,7 +296,7 @@ func (s *Store) Pause(ctx context.Context, workspaceID, id string, c Change) (Su
 }
 
 // Resume restarts capture from now. A subscription whose dispatch was paused
-// automatically (rate, agent_unavailable) kept capturing; resuming it only
+// automatically (agent_unavailable) kept capturing; resuming it only
 // lets dispatch go on, with the events that arrived meanwhile.
 func (s *Store) Resume(ctx context.Context, workspaceID, id string, c Change) (Subscription, error) {
 	c.Action = ChangeResume

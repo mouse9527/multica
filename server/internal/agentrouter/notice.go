@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router notices in the Router chat (M-111), and no late redelivery of pending notices (M-116).
 
 package agentrouter
 
@@ -24,7 +24,9 @@ import (
 
 // The owner notice is the Router's one outlet to a person: the sender writes
 // one owner_notice row and never knows the channel; each Adapter delivers it
-// and records its result in channel_states. MVP has the inbox adapter only.
+// and records its result in channel_states. The dispatcher has the chat
+// adapter (chat_notice.go) and the inbox adapter as its fallback; everyone
+// else has the inbox adapter only.
 
 const (
 	UrgencyNormal = "normal"
@@ -129,6 +131,13 @@ type Adapter interface {
 	Deliver(ctx context.Context, n Notice) ChannelDelivery
 }
 
+// FallbackAdapter is an adapter that delivers a notice only when no channel
+// before it has sent it; otherwise its state is recorded as skipped.
+type FallbackAdapter interface {
+	Adapter
+	Fallback() bool
+}
+
 // Notifier stores notices and hands them to its adapters.
 type Notifier struct {
 	Store    *Store
@@ -223,6 +232,20 @@ func (nf *Notifier) Send(ctx context.Context, in NoticeInput) (Notice, bool, err
 // a delivery cut short stays unknown instead of being sent twice.
 func (nf *Notifier) Deliver(ctx context.Context, id string) Notice {
 	for _, a := range nf.Adapters {
+		if fb, ok := a.(FallbackAdapter); ok && fb.Fallback() {
+			skip, _ := json.Marshal(map[string]ChannelDelivery{a.Channel(): {
+				State: DeliverySkipped, Reason: "sent through another channel", At: time.Now().UTC().Format(time.RFC3339)}})
+			tag, err := nf.Store.DB.Exec(ctx, `
+				UPDATE owner_notice SET channel_states = channel_states || $2::jsonb
+				WHERE id = $1::uuid AND NOT channel_states ? $3
+				  AND EXISTS (SELECT 1 FROM jsonb_each(channel_states) c WHERE c.value->>'state' = 'sent')`,
+				id, skip, a.Channel())
+			if err != nil {
+				nf.Logger.Warn("router: check notice fallback failed", "notice_id", id, "channel", a.Channel(), "error", err)
+			} else if tag.RowsAffected() > 0 {
+				continue
+			}
+		}
 		claim, _ := json.Marshal(map[string]ChannelDelivery{a.Channel(): {State: DeliveryUnknown, At: time.Now().UTC().Format(time.RFC3339)}})
 		n, err := scanNotice(nf.Store.DB.QueryRow(ctx, `
 			UPDATE owner_notice SET channel_states = channel_states || $2::jsonb
@@ -255,10 +278,20 @@ func (nf *Notifier) Deliver(ctx context.Context, id string) Notice {
 	return last
 }
 
+// PendingNoticeWindow is how old a notice may be and still be delivered by
+// DeliverPending. A notice tells the state of a moment (a pause, a busy
+// Router); past this window that state may be over, so the notice is left
+// as it is rather than delivered late.
+const PendingNoticeWindow = 15 * time.Minute
+
 // DeliverPending delivers notices written inside another transaction (the
-// dispatcher's pause notices) that no adapter has claimed yet, for instance
-// because the process stopped right after the commit. It returns how many it
-// handed over. An empty workspaceID covers every workspace.
+// dispatcher's pause notices) that some adapter has not claimed yet, for
+// instance because the process stopped right after the commit. It returns how
+// many it handed over. An empty workspaceID covers every workspace.
+//
+// A notice some channel has already sent reached its recipient and is not
+// pending: a channel added by a later release (or turned on later) must not
+// deliver it a second time.
 func (nf *Notifier) DeliverPending(ctx context.Context, workspaceID string) (int, error) {
 	channels := make([]string, 0, len(nf.Adapters))
 	for _, a := range nf.Adapters {
@@ -269,10 +302,11 @@ func (nf *Notifier) DeliverPending(ctx context.Context, workspaceID string) (int
 	}
 	rows, err := nf.Store.DB.Query(ctx, `
 		SELECT id::text FROM owner_notice
-		WHERE created_at > now() - interval '1 day'
+		WHERE created_at > now() - make_interval(secs => $3)
 		  AND NOT (channel_states ?& $1::text[])
+		  AND NOT EXISTS (SELECT 1 FROM jsonb_each(channel_states) c WHERE c.value->>'state' = 'sent')
 		  AND ($2 = '' OR workspace_id = NULLIF($2, '')::uuid)
-		ORDER BY created_at LIMIT 50`, channels, workspaceID)
+		ORDER BY created_at LIMIT 50`, channels, workspaceID, PendingNoticeWindow.Seconds())
 	if err != nil {
 		return 0, err
 	}
@@ -354,6 +388,10 @@ type InboxAdapter struct {
 }
 
 func (InboxAdapter) Channel() string { return "inbox" }
+
+// Fallback: a notice already sent to the Router chat does not also go to the
+// inbox.
+func (InboxAdapter) Fallback() bool { return true }
 
 func (a InboxAdapter) Deliver(ctx context.Context, n Notice) ChannelDelivery {
 	recipient, err := util.ParseUUID(n.RecipientUserID)

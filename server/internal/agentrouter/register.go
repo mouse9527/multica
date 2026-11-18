@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router v6 slices 1 (M-96) and 2 (M-97).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router notices in the Router chat (M-111), and Router inbox S3a (M-118).
 
 package agentrouter
 
@@ -68,10 +68,26 @@ func Register(ctx context.Context, flags *featureflag.Service, bus *events.Bus, 
 		slog.Error("router: register reconcile job", "error", err)
 	}
 	slog.Info("router: capture enabled", "reconcile_interval", interval)
+	if flags.IsEnabled(ctx, FlagInboxResolve, false) {
+		ir := NewInboxResolver(db, bus)
+		ir.Subscribe(bus)
+		activeInboxResolver.Store(ir)
+		SetActivityAnnotation(true)
+		if err := jobs.Register(InboxResolveJob(ir, interval)); err != nil {
+			slog.Error("router: register inbox resolve job", "error", err)
+		}
+		slog.Info("router: inbox resolve enabled", "reconcile_interval", interval)
+	}
 	if featureflags.RouterDispatchEnabled(ctx, flags) && tasks != nil {
-		notices := NewNotifier(store, InboxAdapter{Queries: tasks.Queries, Bus: bus})
-		d := NewDispatcher(store, TaskRuns{Tasks: tasks}, notices)
-		d.Chat = featureflags.RouterChatEnabled(ctx, flags)
+		runs := TaskRuns{Tasks: tasks}
+		inboxAdapter := InboxAdapter{Queries: tasks.Queries, Bus: bus}
+		notices := NewNotifier(store, inboxAdapter)
+		chat := featureflags.RouterChatEnabled(ctx, flags)
+		if chat {
+			notices = NewNotifier(store, ChatAdapter{Store: store, Poster: runs}, inboxAdapter)
+		}
+		d := NewDispatcher(store, runs, notices)
+		d.Chat = chat
 		d.HoldShadow = featureflags.RouterHoldShadowEnabled(ctx, flags)
 		if err := jobs.Register(DispatchJob(d)); err != nil {
 			slog.Error("router: register dispatch job", "error", err)
@@ -160,6 +176,42 @@ func ReconcileJob(r *Reconciler, interval time.Duration) scheduler.JobSpec {
 					"workspaces":   res.Workspaces,
 					"capture_miss": res.Total(),
 					"by_kind":      missed,
+				},
+			}, err
+		},
+	}
+}
+
+// InboxResolveJob runs the inbox resolve reconcile on the DB-backed
+// scheduler, at the capture reconcile's interval. Archiving is conditional on
+// the row, so an overlapping run only repeats the reads.
+func InboxResolveJob(r *InboxResolver, interval time.Duration) scheduler.JobSpec {
+	runTimeout := min(interval, 4*time.Minute)
+	return scheduler.JobSpec{
+		Name:              JobNameInboxResolve,
+		Cadence:           interval,
+		CatchUpMode:       scheduler.CatchUpLatestOnly,
+		CatchUpWindow:     time.Hour,
+		RunTimeout:        runTimeout,
+		StaleTimeout:      runTimeout + time.Minute,
+		HeartbeatInterval: 15 * time.Second,
+		AllowStaleReentry: true,
+		MaxAttempts:       1,
+		Scopes:            scheduler.StaticScopes(scheduler.ScopeGlobal),
+		Handler: func(ctx context.Context, _ scheduler.HandlerInput) (scheduler.HandlerResult, error) {
+			res, err := r.Reconcile(ctx)
+			missing := map[string]any{}
+			for k, v := range res.Missing {
+				missing[k] = v
+			}
+			return scheduler.HandlerResult{
+				RowsAffected: res.Archived,
+				Result: map[string]any{
+					"workspaces":      res.Workspaces,
+					"archived":        res.Archived,
+					"archived_issues": res.ArchivedIssues,
+					"missing":         missing,
+					"outside_wait":    res.OutsideWait,
 				},
 			}, err
 		},

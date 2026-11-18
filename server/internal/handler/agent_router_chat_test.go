@@ -1,5 +1,5 @@
-// Modified for the mouse9527/multica fork: Router v6, slice 1 (M-96), and
-// Router page settings (M-105).
+// Modified for the mouse9527/multica fork: Router v6, slice 1 (M-96),
+// Router page settings (M-105), and Router notices in the Router chat (M-111).
 
 package handler
 
@@ -326,6 +326,95 @@ func TestRouterChatBatchThroughTheRealChat(t *testing.T) {
 	var outcome string
 	if err := testPool.QueryRow(ctx, `SELECT COALESCE(outcome, '') FROM router_dispatch WHERE task_id = $1`, batchTask).Scan(&outcome); err != nil || outcome != "completed" {
 		t.Fatalf("dispatch outcome = %q (%v), want completed", outcome, err)
+	}
+}
+
+// TestRouterPauseNoticeThroughTheRealChat: with the chat adapter, a pause
+// whose cause leaves the chat usable lands in the chat as an ordinary
+// assistant message without a task, raises the chat reply alert for the
+// owner, counts as unread, and does not also go to the inbox.
+func TestRouterPauseNoticeThroughTheRealChat(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	rc := newRouterChat(t, ctx)
+	runs := agentrouter.TaskRuns{Tasks: testHandler.TaskService}
+	rc.d.Notices = agentrouter.NewNotifier(rc.d.Store, agentrouter.ChatAdapter{Store: rc.d.Store, Poster: runs},
+		agentrouter.InboxAdapter{Queries: db.New(testPool), Bus: testHandler.Bus})
+	t.Cleanup(func() {
+		dbfx.Exec(t, `DELETE FROM inbox_item WHERE workspace_id = $1 AND type = $2`, testWorkspaceID, agentrouter.InboxNoticeType)
+	})
+
+	var mu sync.Mutex
+	var alerts []events.Event
+	var messages []protocol.ChatMessagePayload
+	testHandler.Bus.Subscribe(protocol.EventChatReplyNotification, func(e events.Event) {
+		if e.ChatSessionID == rc.sessionID {
+			mu.Lock()
+			alerts = append(alerts, e)
+			mu.Unlock()
+		}
+	})
+	testHandler.Bus.Subscribe(protocol.EventChatMessage, func(e events.Event) {
+		if p, ok := e.Payload.(protocol.ChatMessagePayload); ok && p.ChatSessionID == rc.sessionID {
+			mu.Lock()
+			messages = append(messages, p)
+			mu.Unlock()
+		}
+	})
+
+	dbfx.Exec(t, `UPDATE agent SET runtime_id = NULL WHERE id = $1`, rc.agentID)
+	if _, err := rc.d.TickWorkspace(ctx, testWorkspaceID); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	var msgID, role, kind, content string
+	var hasTask bool
+	if err := testPool.QueryRow(ctx, `
+		SELECT id::text, role, message_kind, content, task_id IS NOT NULL FROM chat_message WHERE chat_session_id = $1`, rc.sessionID,
+	).Scan(&msgID, &role, &kind, &content, &hasTask); err != nil {
+		t.Fatalf("chat notice: %v", err)
+	}
+	if role != "assistant" || kind != protocol.ChatMessageKindMessage || hasTask ||
+		!strings.HasPrefix(content, agentrouter.RouterNoticeLabel+"\n") || !strings.Contains(content, "Router paused") ||
+		!strings.Contains(content, "1 event(s) are waiting") {
+		t.Fatalf("chat notice: role %s kind %s task %v content:\n%s", role, kind, hasTask, content)
+	}
+	mu.Lock()
+	if len(messages) != 1 || messages[0].MessageID != msgID || messages[0].Role != "assistant" {
+		t.Fatalf("chat:message events = %+v", messages)
+	}
+	if len(alerts) != 1 || alerts[0].ChatSessionOwnerID != testUserID || alerts[0].WorkspaceID != testWorkspaceID {
+		t.Fatalf("chat reply alerts = %+v", alerts)
+	}
+	if p, ok := alerts[0].Payload.(protocol.ChatReplyNotificationPayload); !ok || p.MessageID != msgID || p.Title == "" ||
+		!strings.Contains(p.Body, "Router paused") {
+		t.Fatalf("alert payload = %+v", alerts[0].Payload)
+	}
+	mu.Unlock()
+
+	var chatState, inboxState string
+	if err := testPool.QueryRow(ctx, `
+		SELECT channel_states->'chat'->>'state', channel_states->'inbox'->>'state' FROM owner_notice
+		WHERE source_subscription_id = (SELECT subscription_id FROM router_chat_anchor WHERE chat_session_id = $1)`, rc.sessionID,
+	).Scan(&chatState, &inboxState); err != nil {
+		t.Fatal(err)
+	}
+	if chatState != agentrouter.DeliverySent || inboxState != agentrouter.DeliverySkipped {
+		t.Fatalf("channel states: chat %s inbox %s", chatState, inboxState)
+	}
+
+	rows, err := testHandler.Queries.ListChatSessionsByCreator(ctx, db.ListChatSessionsByCreatorParams{
+		WorkspaceID: parseUUID(testWorkspaceID), CreatorID: parseUUID(testUserID),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if uuidToString(r.ID) == rc.sessionID && (r.LastMessageContent != content || r.UnreadCount != 1) {
+			t.Fatalf("session row: last %q, unread %d; want the notice, unread", r.LastMessageContent, r.UnreadCount)
+		}
 	}
 }
 

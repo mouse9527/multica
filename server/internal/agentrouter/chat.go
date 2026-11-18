@@ -14,7 +14,7 @@ import (
 // that chat: with router_chat on, dispatch writes each batch into the chat as
 // a router_batch message and queues the chat turn that reads it, instead of
 // an anchor run. The Router then talks to the owner in the same conversation
-// the owner talks to it in. Batching, the hourly limit, pauses and state are
+// the owner talks to it in. Batching, the hourly alert, pauses and state are
 // the same as for anchor runs; the dispatch row still names the anchor issue,
 // and its task is the chat turn. The chat is the Router's unit of order: one
 // batch turn at a time per chat, from whichever subscriptions are bound to it,

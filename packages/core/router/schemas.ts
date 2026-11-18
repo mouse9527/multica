@@ -19,7 +19,7 @@ export const RouterSubscriptionSchema = z.object({
   paused_reason: nullableString,
   debounce_seconds: z.number().default(60),
   max_wait_seconds: z.number().default(600),
-  max_runs_per_hour: z.number().default(6),
+  max_runs_per_hour: z.number().default(20),
   reconciled_through: nullableString,
   created_by_type: z.string().default(""),
   created_by_id: z.string().default(""),

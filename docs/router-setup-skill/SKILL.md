@@ -1,15 +1,29 @@
 ---
 name: router-setup
-description: Owner 在 chat 里让你把这个 chat 设为 Router、改它的范围或设置、暂停/恢复、解除，或者问这个 Router 现在怎么样时使用。说明口令对应的 multica router 命令、改动前怎么跟 Owner 确认、失败时怎么说。
+description: Owner 在 chat 里让你把这个 chat 设为 Router、改它的范围或设置、暂停/恢复、解除，或者问这个 Router 现在怎么样时使用；你是 Router 时，也用它确认哪些事自己做、哪些开 issue 交给 worker。说明 Router 的边界、口令对应的 multica router 命令、改动前怎么跟 Owner 确认、失败时怎么说。
 ---
 
-<!-- 草案（mouse9527/multica fork，M-105）。由 Mika 在 Owner 确认后作为 workspace skill 挂到相关智能体上；本文件只是内容来源。 -->
+<!-- 草案（mouse9527/multica fork，M-105；Router 的边界：M-112）。由 Mika 在 Owner 确认后作为 workspace skill 挂到相关智能体上；本文件只是内容来源。 -->
 
 # 在 chat 里设置 Router
 
 Router = 一个 chat 会话 + 绑定到它的订阅。你就是这个 chat 的智能体；Owner 在这个 chat 里说「把这个 chat 设为 Router」时，「这个 chat」用 `current` 表示，CLI 会自己解析成本次运行所在的会话。
 
 页面上的「Router 设置」和这里的命令改的是同一份数据：在一边改了，另一边刷新就能看到（页面每 30 秒自动刷新一次）。
+
+## Router 的边界
+
+Router 只做分派、跟踪、转告，不自己干活。实质性工作交给 worker，通过 issue 交付。
+
+- **Router 可以做的**：为了分派和转告而读状态，包括读 issue、评论、运行状态、订阅状态，查 PR 或 Actions 运行的状态；以及 issue 和项目操作：创建、指派、改状态、评论里 @ 处理人、更新 Router `state`。
+- **Router 不做、要交出去的**：查询或分析业务数据（数据库、日志、指标）、调研、诊断根因、写方案或文档、改代码或配置，以及任何以「结果本身」为交付物的工作。
+- **怎么交**：
+  - 较小的事：开本地 Multica issue，指派给合适的 worker，在 chat 里告诉 Owner 开了哪个、交给了谁。
+  - 值得仓库跟踪的事（会产生 PR 的代码改动、需要公开留档的设计结论）：开本地 issue，并同步开 GitHub issue，按 skill `github-evidence` 在本地 issue 的 metadata 里关联 `gh_issue`。
+  - 运维、环境、凭据类：只开本地 issue，不上 GitHub。
+- **Owner 在 Router chat 里直接提问时**，规则相同：一句话就能答、而且答案就是现有状态的，直接答；需要动手查或分析的，开 issue 交出去，在 chat 里回一句「已交给 X：M-N」。
+
+每个事件批次里也有这段规则的简短版本。设置 Router 的口令（下一节）属于 Router 自己的操作，照常做。
 
 ## 什么时候能做
 
@@ -27,7 +41,7 @@ Router = 一个 chat 会话 + 绑定到它的订阅。你就是这个 chat 的�
 | 「再加一个范围：Y」 | 复述并等确认 | 同上，一个范围一条命令 |
 | 「去掉 Y 这个范围」 | 复述并等确认 | 先 `router get --chat current` 找到那条订阅的 id，再 `multica router delete <订阅ID>` |
 | 「只要状态变更和新评论」 | 复述并等确认 | `multica router update --chat current --events status_changed,comment_created` |
-| 「静默 2 分钟再合批 / 每小时最多 3 次」 | 复述并等确认 | `multica router update --chat current --debounce 120` / `--max-runs-per-hour 3` |
+| 「静默 2 分钟再合批 / 每小时超过 30 次再提醒我」 | 复述并等确认 | `multica router update --chat current --debounce 120` / `--max-runs-per-hour 30` |
 | 「暂停这个 Router」 | — | `multica router pause --chat current` |
 | 「恢复」 | — | `multica router resume --chat current` |
 | 「解除这个 Router」 | 复述并等确认；问清删掉订阅还是保留 | `multica router release --chat current`（删除）或 `--keep`（保留订阅、暂停并解绑） |
@@ -39,6 +53,8 @@ Router = 一个 chat 会话 + 绑定到它的订阅。你就是这个 chat 的�
 - 事件类型可选：`issue_created`、`status_changed`、`assignee_changed`、`comment_created`、`task_failed`；不传就是全部。
 - `--chat current` 作用于这个 Router 的**每一条**订阅。
 - `delete --chat current` 会删除这个 Router 的全部订阅，只在 Owner 明确要求「全部删掉」时用；平时用 `release`。
+- `--max-runs-per-hour` 不是上限，是**提醒阈值**（默认 20，范围 1–60）：一小时内启动的运行超过它，系统在这个 chat 里提醒 Owner 一次（每小时最多一次），派发照常继续。Router 不会因为运行次数多而暂停；只有 Owner 主动暂停，或智能体、锚点、chat 不可用时才停。Owner 说「每小时最多 N 次」时，要说明这只会提醒、不会限流，再问是否照这个数设提醒阈值。
+- chat 里以「[Router 系统通知 · 非 Router 回复]」开头的消息是系统写的（暂停、运行过多的提醒），不是你说的话。Owner 问起时照它的内容解释，需要恢复就按上表 `resume`。
 
 ## 范围覆盖哪些 issue
 
@@ -59,7 +75,7 @@ Owner 问「订阅父任务能不能收到子任务的事件」时，按上面�
 
 新建、改范围、改设置、解除之前，先用一两句话复述你要做的事，等 Owner 回答「好」「可以」再执行。例如：
 
-> 我会把这个对话设为 Router，订阅 multica 项目（会在项目里建一个看板任务）和 M-45 这棵任务树，事件全选，默认合批（静默 60 秒、最长等 10 分钟、每小时最多 6 次）。可以吗？
+> 我会把这个对话设为 Router，订阅 multica 项目（会在项目里建一个看板任务）和 M-45 这棵任务树，事件全选，默认合批（静默 60 秒、最长等 10 分钟，每小时运行超过 20 次时提醒一次）。可以吗？
 
 暂停、恢复、查看状态可以直接做，做完说一声。
 
