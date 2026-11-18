@@ -589,9 +589,12 @@ func launchAgentLabel(profile string) string {
 }
 
 // launchAgentPlistContent renders the LaunchAgent. RunAtLoad starts it at
-// login; there is deliberately no KeepAlive — `multica daemon stop` and
-// logout must stay authoritative, and launchd would otherwise fight them by
-// restarting the daemon forever.
+// login.
+// Modified by the mouse9527/multica fork: KeepAlive {SuccessfulExit=false}
+// restarts the daemon after a binary-update handoff. A graceful
+// `multica daemon stop` and logout exit 0 and stay final; any non-zero exit,
+// including a stop that falls back to SIGKILL, is restarted
+// (cmd_daemon_launchd_handoff.go).
 func launchAgentPlistContent(spec autostartSpec, label string) string {
 	var b strings.Builder
 	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
@@ -611,17 +614,19 @@ func launchAgentPlistContent(spec autostartSpec, label string) string {
 	// CLIs outside the system directories stay discoverable.
 	// Modified by the mouse9527/multica fork: a non-default ProcessType is
 	// recorded here too, so the launchd-started daemon's refresh keeps it.
-	if spec.PathEnv != "" || launchAgentProcessTypeOverridden(spec) {
-		b.WriteString("\t<key>EnvironmentVariables</key>\n\t<dict>\n")
-		if spec.PathEnv != "" {
-			writePlistEntry(&b, "PATH", spec.PathEnv)
-		}
-		if launchAgentProcessTypeOverridden(spec) {
-			writePlistEntry(&b, launchAgentProcessTypeEnv, launchAgentProcessType(spec))
-		}
-		b.WriteString("\t</dict>\n")
+	// Modified by the mouse9527/multica fork: the label marker is always
+	// recorded, so the dict is always written.
+	b.WriteString("\t<key>EnvironmentVariables</key>\n\t<dict>\n")
+	if spec.PathEnv != "" {
+		writePlistEntry(&b, "PATH", spec.PathEnv)
 	}
+	if launchAgentProcessTypeOverridden(spec) {
+		writePlistEntry(&b, launchAgentProcessTypeEnv, launchAgentProcessType(spec))
+	}
+	writePlistEntry(&b, launchAgentSupervisorEnv, label)
+	b.WriteString("\t</dict>\n")
 	b.WriteString("\t<key>RunAtLoad</key>\n\t<true/>\n")
+	writeLaunchAgentKeepAlive(&b)
 	// Modified by the mouse9527/multica fork: Standard by default instead of
 	// Background — the daemon parents every agent workload, and Background
 	// QoS throttles that whole process tree.
