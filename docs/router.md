@@ -1,6 +1,6 @@
-# Super Agent（技术名 router）：事件捕获（S1）、派发与出口（S2）、chat 载体（v6 切片 1）、暂扣影子模式（v6 切片 2）、收件箱自动归档（S3a）
+# Super Agent（技术名 router）：事件捕获（S1）、派发与出口（S2）、chat 载体（v6 切片 1）、暂扣影子模式（v6 切片 2）、收件箱自动归档（S3a）、收件箱规则分流（S3b，影子）
 
-本文件属于 `mouse9527/multica` fork（S1 是 M-85，S2 是 M-86，设计见 M-45 v5）。Super Agent（技术名 router，代码、CLI、接口、表名、开关都沿用 router）让一个智能体订阅一个范围（一棵 issue 树或一个项目），把范围内的事件写进持久的事件队列（S1）；再把攒下的事件合成一批，在锚点 issue 上给这个智能体起一次运行，并给它一个通知 Owner 的出口（S2，见后文「派发（S2）」）。v6 切片 1（M-96）让订阅可以绑定一个 chat 会话：批次写进这个会话，Super Agent 在会话里回话（见后文「chat 载体（v6 切片 1）」）。v6 切片 2（M-97）加上暂扣的影子模式：只记录「本来会扣」的收件箱条目，不真的扣（见后文「暂扣影子模式（v6 切片 2）」）。M-105 让 Owner 在页面上自己设置 Super Agent（见后文「页面设置（M-105）」）。Super Agent 只分派不干活（M-112，见后文「Super Agent 的边界」）。M-111 去掉了按每小时运行次数的自动暂停（`max_runs_per_hour` 只作提醒阈值），并把派发的系统通知直接写进 Super Agent chat、收件箱兜底（见后文「暂停（不静默）」和「出口：owner_notice」）。M-118（收件箱 S3a，设计见 M-117）在「等 Owner」的事结束后自动归档 Owner 的收件箱条目，并对账（见后文「收件箱自动归档（S3a）」）。
+本文件属于 `mouse9527/multica` fork（S1 是 M-85，S2 是 M-86，设计见 M-45 v5）。Super Agent（技术名 router，代码、CLI、接口、表名、开关都沿用 router）让一个智能体订阅一个范围（一棵 issue 树或一个项目），把范围内的事件写进持久的事件队列（S1）；再把攒下的事件合成一批，在锚点 issue 上给这个智能体起一次运行，并给它一个通知 Owner 的出口（S2，见后文「派发（S2）」）。v6 切片 1（M-96）让订阅可以绑定一个 chat 会话：批次写进这个会话，Super Agent 在会话里回话（见后文「chat 载体（v6 切片 1）」）。v6 切片 2（M-97）加上暂扣的影子模式：只记录「本来会扣」的收件箱条目，不真的扣（见后文「暂扣影子模式（v6 切片 2）」）。M-105 让 Owner 在页面上自己设置 Super Agent（见后文「页面设置（M-105）」）。Super Agent 只分派不干活（M-112，见后文「Super Agent 的边界」）。M-111 去掉了按每小时运行次数的自动暂停（`max_runs_per_hour` 只作提醒阈值），并把派发的系统通知直接写进 Super Agent chat、收件箱兜底（见后文「暂停（不静默）」和「出口：owner_notice」）。M-118（收件箱 S3a，设计见 M-117）在「等 Owner」的事结束后自动归档 Owner 的收件箱条目，并对账（见后文「收件箱自动归档（S3a）」）。M-133（收件箱 S3b）在影子行上记录规则判定，并按规则统计误扣率（见后文「收件箱规则分流（S3b，影子）」）。
 
 ## 开关
 
@@ -10,6 +10,7 @@
 - `router_chat`（v6 切片 1），默认关闭，`FF_ROUTER_CHAT=true` 打开，**只在 `router_dispatch` 也打开时生效**。注意两个读取时点不同：派发任务在**启动时**读一次（决定绑定了 chat 的订阅是否走 chat），`PATCH` 接口在**每次请求时**读（决定是否接受 `anchor_chat_session_id`）。所以不重启就在线打开开关的话，绑定能立刻存下来，但派发要等重启后才会写进会话。关闭时：`PATCH` 里的 `anchor_chat_session_id` 返回 400；已有的绑定保留但不用，所有订阅照旧走锚点运行，行为与 S2 一致。
 - `router_hold_shadow`（v6 切片 2），默认关闭，`FF_ROUTER_HOLD_SHADOW=true` 打开，**只在 `router_chat` 也打开时生效**，启动时读一次。关闭时不注册收件箱拦截器，`CreateIfEligible` 与上游完全一致；批次里也没有「Hold preview」一节。
 - `router_inbox_resolve`（S3a，M-118），默认关闭，`FF_ROUTER_INBOX_RESOLVE=true` 打开，**只在 `router_v1` 也打开时生效**，启动时读一次。另外只在工作区设置里有 `router_inbox_resolve`（指定了 Owner）的工作区生效。任一缺失时不注册监听器和对账任务、不归档任何条目，行为与上游一致。开关常量放在 `internal/agentrouter/inbox_resolve.go`，没有改 `featureflags/keys.go`。
+- `router_inbox_rules`（S3b，M-133），默认关闭，`FF_ROUTER_INBOX_RULES=true` 打开，**只在影子钩子注册时生效**（`router_hold_shadow` 及它依赖的开关都打开），启动时读一次。另外只在工作区设置里有 `router_inbox_rules`（规则清单）的工作区生效。任一缺失时影子行照旧写、不带判定，收件箱写入与关闭时完全一样。开关常量放在 `internal/agentrouter/inbox_rules.go`，没有改 `featureflags/keys.go`。
 - `MULTICA_ROUTER_RECONCILE_INTERVAL`：对账周期（Go duration，如 `5m`），默认 5 分钟，最小 30 秒。
 
 ## 数据（迁移 9004–9007，只新增表）
@@ -461,6 +462,71 @@ M-118，设计见 M-117（Owner 2026-11-17 选 D1–D4 全 A）。目标是收�
 - `cmd/server/activity_listeners.go` 写交接行时调用 `agentrouter.AnnotateHandoffActivity`，加 `handoff_from_type` / `handoff_from_id`；写指派行时调用 `agentrouter.AnnotateAssigneeActivity`，加 `router_from_type` / `router_from_id`（`from_*` 是时间线显示用的，保持上游的样子）。原指派人取自 `prev_assignee_*`，没有就取 fork 的两个键；没有指派人时写空字符串；负载两种都没有（说不清原指派人）时**什么都不写**，对账对这样的行保留原来的兜底判断。
 
 前端只读 `handoff_to_*`、`handoff_note`、`handoff_run` 和指派行的 `from_*` / `to_*`，新字段不显示。
+
+## 收件箱规则分流（S3b，影子）
+
+M-133，设计见 M-117 的 S3b（Owner 2026-11-18 放行，只做 mouse 工作区）。在切片 2 的影子钩子里加一层规则分类：影子钩子每记录一条「本来会扣」的条目，就按工作区的规则清单判一次，判定写进这条影子行。**不扣、不延迟、不改写任何收件箱条目，没有迁移，上游文件改动 0**；代码在 `internal/agentrouter/inbox_rules.go`（钩子接在 `hold.go`），API 在 `internal/handler/agent_router_rules.go`，CLI 在 `cmd/multica/cmd_router_rules.go`。
+
+### 判定
+
+三种：`handle`（规则处理，S3c 真扣时不进收件箱）、`owner`（交给 Owner）、`gray`（灰区，留给以后的 Router 判断，S3d）。
+
+- 规则按顺序匹配，第一条命中的决定。每条规则可以限定 `types`（条目类型）、`severities`、`to_statuses`（只用于 `status_changed`，比的是 details 里的 `to`）；不写的维度匹配任何值。
+- **灰区类型固定**：`mentioned`、`task_failed`、`agent_blocked`（M-117 D1）永远判 `gray`，只有 `gray` 规则能点名它们，用来给它们起规则名；没有 `gray` 规则点名时规则名是 `gray_default`。
+- 没有任何规则命中：判 `owner`，规则名 `unmatched`。清单漏了的类型只会多放行，不会算成规则处理。
+- `handle` 规则必须写明 `types`，不能当通配。
+- 每条判定都带规则名，写在影子行的 `decision_note`，格式 `rule:<判定>:<规则名>`（例如 `rule:handle:status_progress`），同时写 `decided_at`。`status` / `mode` 仍是 `shadow`，批次里的清单、30 天清理都照旧。
+- 分类失败（读设置出错、`status_changed` 的 details 读不出 `to`、panic）只记日志（第一次和每 100 次）和计数，影子行照写、不带判定；收件箱写入本来就不等这一步，不受影响。
+
+### 配置
+
+工作区设置键 `router_inbox_rules`：
+
+```json
+{"router_inbox_rules": {"rules": [
+  {"name": "enter_waiting_status", "types": ["status_changed"], "to_statuses": ["started_2"], "verdict": "owner"},
+  {"name": "comment", "types": ["new_comment"], "verdict": "handle"}
+]}}
+```
+
+- `multica router inbox-rules set --defaults --waiting-status started_2`：写入默认清单（M-117 Q1 的规则）；之后可以导出 `--output json` 的 `config` 修改，再用 `--file rules.json`（`{"rules": [...]}`）写回；`--off` 删除。只有工作区 owner/admin 能改，`to_statuses` 里的状态要在工作区状态目录里存在。
+- 默认清单（按顺序）：`mention`（`mentioned` → gray）、`failure`（`task_failed`、`agent_blocked` → gray）、`enter_waiting_status`（进入等待状态的 `status_changed` → owner）、`action_required`（`severity=action_required` → owner，例如指派给 Owner）、`status_progress`（其余 `status_changed` → handle）、`field_update`（优先级、开始/截止日期 → handle）、`assignment_churn`（`assignee_changed`、`unassigned` → handle）、`subscribed`（`issue_subscribed` → handle）、`comment`（`new_comment` → handle；评论里 @ 了 Owner 时另有一条 `mentioned`，由 `mention` 判）。
+- 设置改了，本进程立即生效；其他副本最多 30 秒。
+- 只在 mouse 工作区设置；BIPO 不设。
+
+### 「Owner 事后有动作」的口径（M-117 未知项 ④）
+
+条目到达后，在窗口（默认 24 小时）结束前、且在同一 issue 上给 Owner 的下一条收件箱条目到达前（取先到的），Owner 在这个 issue 上：
+
+- 发了评论（`comment`，作者是 Owner 本人）；或
+- 改了这个 issue（`activity_log` 里 Owner 本人为 actor 的任何一行：状态、指派、优先级、日期等）。
+
+不算：读了、归档了条目（M-82 里 Owner 已读 100%，归档是清理）；Owner 在 chat 里回复、由别人写回 issue 的（M-82：40 次交还里 39 次走 chat）。「下一条条目」的截止让一次动作只算给它之前最近的那一条，避免把对「待你决定」的回复算到前面的状态变化上。条目过了窗口才计入样本，窗口内的计为 pending；从没进收件箱的不计。
+
+### 报告
+
+`multica router inbox-rules report [--since 168h] [--window 24h] [--output json]`（API：`GET /api/router/inbox-rules/report`，需要 `router_dispatch`）：
+
+- 每条规则一行：判定、规则名、样本数、其中有动作的数、比例、pending；
+- 按判定汇总：`handle` 一行的比例就是**误扣率**（判成规则处理、Owner 事后仍有动作的比例），`owner` / `gray` 的比例作对照；
+- `unclassified`（期间没有判定的影子行，例如开关打开前、分类失败）和 `not_delivered`；
+- 输出里写明「有动作」的口径。
+
+成员看到发给自己的条目，智能体看到自己订阅的条目（与 `router holds` 相同）。`--window` 1 到 168 小时，`--since` 不小于窗口、不超过 30 天（影子行的保留期）。`multica router holds` 多了 `VERDICT` 列；`multica router inbox-rules` 显示规则清单和回答请求的进程自启动以来的判定计数、失败数（`router holds --stats` 的 `rules` 字段同样有）。
+
+## 已知局限（S3b）
+
+- 只判影子钩子会记录的条目：Owner 拥有、绑定了 chat 的订阅范围内的条目（mouse 是 multica 项目）。范围外的条目不判，S3c 真扣也只扣这些。
+- 误扣率只看 Owner 本人的动作：Owner 在 chat 里回、由智能体改状态的，不算 Owner 有动作，误扣率会被低估。读报告时要和 `owner` 判定的比例对照，也可以结合 chat 记录抽查。
+- 「有动作」只看同一个 issue；Owner 对父 issue 的动作不算到子 issue 的条目上。
+
+## 部署清单（S3b）
+
+1. 没有迁移。更新 daemon 用的 CLI（`router inbox-rules`）。
+2. 部署后先保持 `router_inbox_rules` 关闭，确认行为不变。
+3. 在 mouse 工作区执行 `multica router inbox-rules set --defaults --waiting-status started_2`（Owner 本人或 admin）；关闭开关时这一步不改变任何行为。
+4. 打开 `FF_ROUTER_INBOX_RULES=true`（需要重启，`router_hold_shadow` 已打开）。`multica router holds` 的新条目应带 `VERDICT`，`multica router inbox-rules` 的失败数为 0。
+5. 攒够样本后用 `multica router inbox-rules report` 给 Owner 报误扣率；达到 Owner 定的阈值才开 S3c。
 
 ## 已知局限（S3a）
 

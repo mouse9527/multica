@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router v6, slice 2 (M-97).
+// Modified for the mouse9527/multica fork: Router v6, slice 2 (M-97), and Router inbox S3b (M-133).
 
 package agentrouter
 
@@ -97,7 +97,14 @@ type HoldShadow struct {
 	retryAt        time.Time
 
 	stats holdStats
+
+	// rules, when set, judges every recorded item by the workspace's rule
+	// list (inbox_rules.go). Nil, the rows carry no verdict.
+	rules *inboxRules
 }
+
+// ClassifyByRules turns on rule verdicts for the items the hold records.
+func (h *HoldShadow) ClassifyByRules() { h.rules = newInboxRules() }
 
 func NewHoldShadow(store *Store) *HoldShadow {
 	h := &HoldShadow{Store: store, TTL: DefaultCacheTTL, Logger: slog.Default()}
@@ -126,7 +133,14 @@ func (h *HoldShadow) Intercept(ctx context.Context, p db.CreateInboxItemParams) 
 		return false, err
 	}
 	h.stats.wouldHold.Add(1)
-	return false, h.recordShadow(ctx, sub, p, time.Since(start))
+	var note *string
+	if h.rules != nil {
+		var ruleErr error
+		if note, ruleErr = h.rules.classify(ctx, h.Store.DB, p); ruleErr != nil {
+			h.logRuleFailure(p, ruleErr)
+		}
+	}
+	return false, h.recordShadow(ctx, sub, p, note, time.Since(start))
 }
 
 // decide returns the subscription the hold would route p through.
@@ -210,7 +224,8 @@ func issueScope(ctx context.Context, q Querier, workspaceID, issueID string) ([]
 
 // recordShadow writes the shadow row on the pool, never in the writer's
 // transaction: a failed insert there would abort the writer's work.
-func (h *HoldShadow) recordShadow(ctx context.Context, sub holdSub, p db.CreateInboxItemParams, took time.Duration) error {
+// note is the rule verdict, if any; decided_at is set with it.
+func (h *HoldShadow) recordShadow(ctx context.Context, sub holdSub, p db.CreateInboxItemParams, note *string, took time.Duration) error {
 	item, err := json.Marshal(inboxItemJSON(p))
 	if err != nil {
 		return err
@@ -218,15 +233,17 @@ func (h *HoldShadow) recordShadow(ctx context.Context, sub holdSub, p db.CreateI
 	_, err = h.Store.DB.Exec(ctx, `
 		INSERT INTO router_hold (
 		    workspace_id, subscription_id, agent_id, recipient_user_id, inbox_item_id, issue_id,
-		    item_type, severity, title, actor_type, actor_id, item, mode, status, decide_micros
+		    item_type, severity, title, actor_type, actor_id, item, mode, status, decide_micros,
+		    decision_note, decided_at
 		) VALUES (
 		    $1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6::uuid,
-		    $7, $8, $9, $10, $11::uuid, $12, $13, $14, $15
+		    $7, $8, $9, $10, $11::uuid, $12, $13, $14, $15,
+		    $16::text, CASE WHEN $16::text IS NULL THEN NULL ELSE now() END
 		)
 		ON CONFLICT (inbox_item_id) DO NOTHING`,
 		util.UUIDToString(p.WorkspaceID), sub.ID, sub.AgentID, sub.OwnerUserID, util.UUIDToString(p.ID),
 		util.UUIDToString(p.IssueID), p.Type, p.Severity, p.Title, util.TextToPtr(p.ActorType),
-		util.UUIDToPtr(p.ActorID), item, HoldModeShadow, HoldStatusShadow, took.Microseconds())
+		util.UUIDToPtr(p.ActorID), item, HoldModeShadow, HoldStatusShadow, took.Microseconds(), note)
 	return err
 }
 
@@ -315,6 +332,16 @@ func (h *HoldShadow) logFailure(p db.CreateInboxItemParams, err error) {
 	}
 }
 
+// logRuleFailure logs a failed classification the same way: the row is
+// recorded without a verdict and the inbox write is not affected.
+func (h *HoldShadow) logRuleFailure(p db.CreateInboxItemParams, err error) {
+	n := h.rules.failures.Load()
+	if n == 1 || n%100 == 0 {
+		h.Logger.Warn("router hold: inbox rules failed; recorded the item without a verdict",
+			"type", p.Type, "failures_total", n, "error", err)
+	}
+}
+
 // holdStats are this process's interceptor counters since it started.
 type holdStats struct {
 	since          time.Time
@@ -375,6 +402,9 @@ type HoldStats struct {
 	MaxMicros      int64                `json:"max_micros"`
 	Latency        map[string]int64     `json:"latency"`
 	Hook           inbox.InterceptStats `json:"hook"`
+	// Rules counts the rule verdicts and failures; nil while rule
+	// classification is off in this process.
+	Rules *InboxRulesStats `json:"rules"`
 }
 
 func (h *HoldShadow) Stats() HoldStats {
@@ -383,7 +413,7 @@ func (h *HoldShadow) Stats() HoldStats {
 		Since: s.since, Calls: s.calls.Load(), WouldHold: s.wouldHold.Load(), Errors: s.errors.Load(),
 		Timeouts: s.timeouts.Load(), Panics: s.panics.Load(), IssueMissing: s.issueMissing.Load(),
 		ReloadFailures: s.reloadFailures.Load(), MaxMicros: s.maxMicros.Load(), Latency: map[string]int64{},
-		Hook: inbox.CurrentInterceptStats(),
+		Hook: inbox.CurrentInterceptStats(), Rules: h.rules.stats(),
 	}
 	if out.Calls > 0 {
 		out.AvgMicros = s.totalMicros.Load() / out.Calls
@@ -424,6 +454,10 @@ type Hold struct {
 	DecideMicros    int       `json:"decide_micros"`
 	DispatchTaskID  *string   `json:"dispatch_task_id"`
 	CreatedAt       time.Time `json:"created_at"`
+	// Verdict and Rule are the rule verdict (inbox_rules.go); empty when the
+	// item was not classified.
+	Verdict string `json:"verdict"`
+	Rule    string `json:"rule"`
 }
 
 // HoldFilter selects hold rows. RecipientUserID and AgentID restrict them to
@@ -447,7 +481,7 @@ func (s *Store) ListHolds(ctx context.Context, f HoldFilter) ([]Hold, error) {
 		       h.inbox_item_id::text, EXISTS (SELECT 1 FROM inbox_item ii WHERE ii.id = h.inbox_item_id),
 		       h.issue_id::text, COALESCE(w.issue_prefix || '-' || i.number, ''),
 		       h.item_type, h.severity, h.title, h.actor_type, h.actor_id::text,
-		       h.mode, h.status, h.decide_micros, h.dispatch_task_id::text, h.created_at
+		       h.mode, h.status, h.decide_micros, h.dispatch_task_id::text, h.created_at, COALESCE(h.decision_note, '')
 		FROM router_hold h
 		LEFT JOIN issue i ON i.id = h.issue_id
 		LEFT JOIN workspace w ON w.id = i.workspace_id
@@ -462,9 +496,13 @@ func (s *Store) ListHolds(ctx context.Context, f HoldFilter) ([]Hold, error) {
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (Hold, error) {
 		var x Hold
+		var note string
 		err := r.Scan(&x.ID, &x.SubscriptionID, &x.AgentID, &x.RecipientUserID, &x.InboxItemID, &x.InInbox,
 			&x.IssueID, &x.IssueIdentifier, &x.ItemType, &x.Severity, &x.Title, &x.ActorType, &x.ActorID,
-			&x.Mode, &x.Status, &x.DecideMicros, &x.DispatchTaskID, &x.CreatedAt)
+			&x.Mode, &x.Status, &x.DecideMicros, &x.DispatchTaskID, &x.CreatedAt, &note)
+		if v, ok := ParseDecisionNote(note); ok {
+			x.Verdict, x.Rule = v.Verdict, v.Rule
+		}
 		return x, err
 	})
 }
