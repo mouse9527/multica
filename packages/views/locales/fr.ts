@@ -26,6 +26,7 @@ import frSquads from "./fr/squads.json";
 import frBilling from "./fr/billing.json";
 // Modified by the mouse9527/multica fork (M-105): the Router namespace.
 import frRouter from "./fr/router.json";
+import frEvolution from "./fr/evolution.json";
 
 const resources: LocaleResources = {
   common: frCommon,
@@ -54,6 +55,7 @@ const resources: LocaleResources = {
   squads: frSquads,
   billing: frBilling,
   router: frRouter,
+  evolution: frEvolution,
 };
 
 export default resources;
