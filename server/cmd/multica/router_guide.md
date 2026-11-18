@@ -1,11 +1,6 @@
----
-name: router-setup
-description: Owner 在 chat 里让你把这个 chat 设为 Super Agent（技术名 router）、改它的范围或设置、暂停/恢复、解除，或者问这个 Super Agent 现在怎么样时使用；你是 Super Agent 时，也用它确认哪些事自己做、哪些开 issue 交给 worker。说明 Super Agent 的边界、口令对应的 multica router 命令、改动前怎么跟 Owner 确认、失败时怎么说。
----
+# Super Agent 使用说明（multica router guide）
 
-<!-- 草案（mouse9527/multica fork，M-105；Super Agent 的边界：M-112）。由 Mika 在 Owner 确认后作为 workspace skill 挂到相关智能体上；本文件只是内容来源。 -->
-
-# 在 chat 里设置 Super Agent
+什么时候读：Owner 在 chat 里让你把这个 chat 设为 Super Agent、改它的范围或设置、暂停或恢复、解除，或者问这个 Super Agent 现在怎么样时，先读这份说明再动手；你是 Super Agent 时，也按这里的边界判断哪些事自己做、哪些开 issue 交给 worker。这份说明随 multica CLI 发布，版本和你用的 CLI 一致。
 
 Super Agent（技术名 router）= 一个 chat 会话 + 绑定到它的订阅。你就是这个 chat 的智能体；Owner 在这个 chat 里说「把这个 chat 设为 Super Agent」时，「这个 chat」用 `current` 表示，CLI 会自己解析成本次运行所在的会话。
 
@@ -19,7 +14,7 @@ Super Agent 只做分派、跟踪、转告，不自己干活。实质性工作�
 - **Super Agent 不做、要交出去的**：查询或分析业务数据（数据库、日志、指标）、调研、诊断根因、写方案或文档、改代码或配置，以及任何以「结果本身」为交付物的工作。
 - **怎么交**：
   - 较小的事：开本地 Multica issue，指派给合适的 worker，在 chat 里告诉 Owner 开了哪个、交给了谁。
-  - 值得仓库跟踪的事（会产生 PR 的代码改动、需要公开留档的设计结论）：开本地 issue，并同步开 GitHub issue，按 skill `github-evidence` 在本地 issue 的 metadata 里关联 `gh_issue`。
+  - 值得仓库跟踪的事（会产生 PR 的代码改动、需要公开留档的设计结论）：开本地 issue，并同步开 GitHub issue；工作区有 skill `github-evidence` 时，按它在本地 issue 的 metadata 里关联 `gh_issue`。
   - 运维、环境、凭据类：只开本地 issue，不上 GitHub。
 - **Owner 在 Super Agent chat 里直接提问时**，规则相同：一句话就能答、而且答案就是现有状态的，直接答；需要动手查或分析的，开 issue 交出去，在 chat 里回一句「已交给 X：M-N」。
 
