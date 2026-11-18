@@ -1,14 +1,14 @@
 {
   "menu": {
-    "setup": "設為 Router",
-    "settings": "Router 設定"
+    "setup": "設為 Super Agent",
+    "settings": "Super Agent 設定"
   },
-  "badge": "Router",
+  "badge": "Super Agent",
   "dialog": {
-    "title_setup": "設為 Router",
-    "title_settings": "Router 設定",
+    "title_setup": "設為 Super Agent",
+    "title_settings": "Super Agent 設定",
     "description": "這些範圍內任務的動態會合批送進這個對話，由 {{agent}} 處理，只在需要你時告訴你。",
-    "archived": "先還原這個對話，才能設為 Router。"
+    "archived": "先還原這個對話，才能設為 Super Agent。"
   },
   "status": {
     "running": "執行中",
@@ -27,10 +27,10 @@
     "add_issue_tree": "新增任務樹",
     "project_placeholder": "選擇專案",
     "picker_title": "選擇根任務",
-    "picker_description": "Router 會追蹤這個任務及其所有子任務。",
+    "picker_description": "Super Agent 會追蹤這個任務及其所有子任務。",
     "empty": "新增一個專案或一棵任務樹。",
     "board": "看板 {{identifier}}",
-    "board_hint": "每個專案會建立一個看板任務，記錄 Router 的執行。",
+    "board_hint": "每個專案會建立一個看板任務，記錄 Super Agent 的執行。",
     "remove": "移除範圍",
     "unknown": "無法使用"
   },
@@ -64,56 +64,56 @@
     }
   },
   "held": {
-    "title": "經 Router 處理的項目",
-    "empty": "Router 開始篩選收件匣後會顯示在這裡。"
+    "title": "經 Super Agent 處理的項目",
+    "empty": "Super Agent 開始篩選收件匣後會顯示在這裡。"
   },
   "actions": {
-    "create": "設為 Router",
+    "create": "設為 Super Agent",
     "save": "儲存",
     "pause": "暫停",
     "resume": "恢復",
-    "release": "解除 Router",
+    "release": "解除 Super Agent",
     "cancel": "取消"
   },
   "release": {
-    "title": "解除這個 Router？",
+    "title": "解除這個 Super Agent？",
     "description": "這個對話將不再收到任務動態。",
     "delete": "刪除它的訂閱",
     "keep": "保留訂閱並暫停",
     "confirm": "解除",
-    "keep_hint": "之後把一個對話設為 Router 並選同樣的範圍，就會接回這些訂閱並恢復。"
+    "keep_hint": "之後把一個對話設為 Super Agent 並選同樣的範圍，就會接回這些訂閱並恢復。"
   },
   "board": {
-    "title": "Router 看板 · {{chat}}",
-    "description": "記錄對話「{{chat}}」中 Router 的執行。由 Router 設定建立。"
+    "title": "Super Agent 看板 · {{chat}}",
+    "description": "記錄對話「{{chat}}」中 Super Agent 的執行。由 Super Agent 設定建立。"
   },
   "toast": {
-    "created": "已設為 Router",
+    "created": "已設為 Super Agent",
     "scope_failed": "無法新增 {{scope}}：{{error}}",
-    "saved": "Router 設定已儲存",
-    "paused": "Router 已暫停",
-    "resumed": "Router 已恢復",
-    "released": "Router 已解除",
-    "failed": "Router 更新失敗：{{error}}",
-    "scope_taken": "{{scope}} 已在另一個對話的 Router 裡。請先解除那個 Router，或在那裡移除這個範圍。",
+    "saved": "Super Agent 設定已儲存",
+    "paused": "Super Agent 已暫停",
+    "resumed": "Super Agent 已恢復",
+    "released": "Super Agent 已解除",
+    "failed": "Super Agent 更新失敗：{{error}}",
+    "scope_taken": "{{scope}} 已在另一個對話的 Super Agent 裡。請先解除那個 Super Agent，或在那裡移除這個範圍。",
     "deleted": "訂閱已刪除"
   },
   "list": {
-    "tab": "Router",
-    "empty": "還沒有 Router。打開一個對話的選單，選擇「設為 Router」。",
+    "tab": "Super Agent",
+    "empty": "還沒有 Super Agent。打開一個對話的選單，選擇「設為 Super Agent」。",
     "agent": "AI 代理",
     "scopes": "範圍",
     "status": "狀態",
     "last_run": "最近一次執行",
     "untitled": "未命名對話",
-    "unbound_title": "不在 Router 裡的訂閱",
-    "unbound_hint": "解除 Router 時保留下來的訂閱。把一個對話設為 Router 並選同樣的範圍，就會接回它。",
+    "unbound_title": "不在 Super Agent 裡的訂閱",
+    "unbound_hint": "解除 Super Agent 時保留下來的訂閱。把一個對話設為 Super Agent 並選同樣的範圍，就會接回它。",
     "delete": "刪除",
     "delete_title": "刪除這筆訂閱？",
     "delete_description": "它已擷取的事件也會一併刪除。"
   },
   "marker": {
-    "label": "Router · 範圍：{{scopes}} · {{status}}",
+    "label": "Super Agent · 範圍：{{scopes}} · {{status}}",
     "scope_project": "{{name}} 專案",
     "scope_issue_tree": "{{identifier}} {{name}}",
     "scope_paused": "{{scope}}（已暫停）",

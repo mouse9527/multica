@@ -29,7 +29,7 @@ func (h *Handler) GetCurrentRouterChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !featureflags.RouterChatEnabled(r.Context(), h.FeatureFlags) {
-		writeError(w, http.StatusBadRequest, "Router chats need the router_chat feature")
+		writeError(w, http.StatusBadRequest, "Super Agent chats need the router_chat feature")
 		return
 	}
 	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
@@ -79,7 +79,7 @@ func (h *Handler) agentMayBindChat(w http.ResponseWriter, r *http.Request, auth 
 		return false
 	}
 	if auth.userID == "" || uuidToString(chat.CreatorID) != auth.userID {
-		writeError(w, http.StatusForbidden, "an agent can bind a chat to a Router only in a run started by that chat's creator")
+		writeError(w, http.StatusForbidden, "an agent can bind a chat to a Super Agent only in a run started by that chat's creator")
 		return false
 	}
 	return true

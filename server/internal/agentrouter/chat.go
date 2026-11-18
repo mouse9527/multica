@@ -29,7 +29,7 @@ var ErrChatUnavailable = errors.New("router: the bound chat is unavailable")
 // RouterBatchLabel opens every batch written into a chat. The claim hands the
 // agent its chat inputs joined without authors, so the batch has to say on
 // its own that the owner did not write it.
-const RouterBatchLabel = "[Router 事件批次 · 非 Owner 发言]"
+const RouterBatchLabel = "[Super Agent 事件批次 · 非 Owner 发言]"
 
 // subscriptionOwnerSQL is the member a subscription answers to: its owner,
 // or the subscribed agent's owner for a subscription without one (an agent
@@ -183,6 +183,6 @@ func (d *Dispatcher) pauseForChat(ctx context.Context, c unusableChat) (string, 
 }
 
 func chatPauseWhy(subscriptionID, chatSessionID, what string) string {
-	return fmt.Sprintf("its Router chat %s %s. Bind an active chat with `multica router update %s --anchor-chat <session>`, "+
+	return fmt.Sprintf("its Super Agent chat %s %s. Bind an active chat with `multica router update %s --anchor-chat <session>`, "+
 		"or go back to anchor runs with `--anchor-chat none`, then resume", chatSessionID, what, subscriptionID)
 }

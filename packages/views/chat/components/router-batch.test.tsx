@@ -31,7 +31,7 @@ import { ChatMessageList } from "./chat-message-list";
 import { hideSilentRouterTurns, routerBatchHeadline } from "./router-batch";
 
 const BATCH =
-  "[Router 事件批次 · 非 Owner 发言]\nRouter batch for subscription s1 (issue tree RT-1, anchor RT-1): 2 new event(s).\nEvents, oldest first:\n- RT-2 comment_created";
+  "[Super Agent 事件批次 · 非 Owner 发言]\nSuper Agent batch for subscription s1 (issue tree RT-1, anchor RT-1): 2 new event(s).\nEvents, oldest first:\n- RT-2 comment_created";
 
 function msg(over: Partial<ChatMessage> & Pick<ChatMessage, "id">): ChatMessage {
   return {
@@ -70,8 +70,8 @@ describe("hideSilentRouterTurns", () => {
 
   it("reads the label and summary from the batch's first two lines", () => {
     expect(routerBatchHeadline(BATCH)).toEqual({
-      label: "[Router 事件批次 · 非 Owner 发言]",
-      summary: "Router batch for subscription s1 (issue tree RT-1, anchor RT-1): 2 new event(s).",
+      label: "[Super Agent 事件批次 · 非 Owner 发言]",
+      summary: "Super Agent batch for subscription s1 (issue tree RT-1, anchor RT-1): 2 new event(s).",
     });
   });
 });
@@ -95,12 +95,12 @@ describe("ChatMessageList Router batches", () => {
       </I18nProvider>,
     );
 
-    expect(screen.getAllByText("[Router 事件批次 · 非 Owner 发言]")).toHaveLength(2);
+    expect(screen.getAllByText("[Super Agent 事件批次 · 非 Owner 发言]")).toHaveLength(2);
     expect(screen.queryByText(/RT-2 comment_created/)).not.toBeInTheDocument();
     expect(screen.queryByText(enChat.message_list.no_response)).not.toBeInTheDocument();
     expect(screen.getByText("RT-2 needs your decision")).toBeInTheDocument();
 
-    fireEvent.click(screen.getAllByText("[Router 事件批次 · 非 Owner 发言]")[0]!);
+    fireEvent.click(screen.getAllByText("[Super Agent 事件批次 · 非 Owner 发言]")[0]!);
     expect(screen.getByText(/RT-2 comment_created/)).toBeInTheDocument();
   });
 });

@@ -485,8 +485,8 @@ func (d *Dispatcher) alertBusy(ctx context.Context, tx pgx.Tx, sub dispatchSub, 
 	n, created, err := insertNotice(ctx, tx, NoticeInput{
 		WorkspaceID:     sub.WorkspaceID,
 		RecipientUserID: recipient,
-		Title:           fmt.Sprintf("Router busy for %s", agentName),
-		Body: fmt.Sprintf("Router subscription %s started %d runs in the last hour, more than its alert threshold of %d "+
+		Title:           fmt.Sprintf("Super Agent busy for %s", agentName),
+		Body: fmt.Sprintf("Super Agent subscription %s started %d runs in the last hour, more than its alert threshold of %d "+
 			"(max_runs_per_hour). It keeps dispatching; nothing is paused. If this is more than the scope's activity explains, "+
 			"look at `multica router runs --subscription %s`; raise the threshold with `multica router update %s --max-runs-per-hour <n>`, "+
 			"or stop it with `multica router pause %s`.", sub.ID, recent, sub.MaxRunsPerHour, sub.ID, sub.ID, sub.ID),
@@ -577,8 +577,8 @@ func (d *Dispatcher) pauseDispatch(ctx context.Context, tx pgx.Tx, sub dispatchS
 	n, _, err := insertNotice(ctx, tx, NoticeInput{
 		WorkspaceID:     sub.WorkspaceID,
 		RecipientUserID: recipient,
-		Title:           fmt.Sprintf("Router paused for %s", agentName),
-		Body: fmt.Sprintf("Router subscription %s stopped starting runs for %s: %s. "+
+		Title:           fmt.Sprintf("Super Agent paused for %s", agentName),
+		Body: fmt.Sprintf("Super Agent subscription %s stopped starting runs for %s: %s. "+
 			"%d event(s) are waiting, and events are still captured. Resume with `multica router resume %s`.",
 			sub.ID, agentName, why, waiting, sub.ID),
 		Refs:                 anchorRefs(sub),
@@ -638,7 +638,7 @@ func (d *Dispatcher) liftRatePauses(ctx context.Context, workspaceID string) (in
 	for _, s := range subs {
 		if err := recordChange(ctx, tx, s.ws, s.id, Change{
 			Action: ChangeResume, ActorType: "system",
-			Detail: map[string]any{"reason": PausedRate, "why": "the Router no longer pauses for its hourly run count"},
+			Detail: map[string]any{"reason": PausedRate, "why": "the Super Agent no longer pauses for its hourly run count"},
 		}); err != nil {
 			return 0, err
 		}
@@ -809,7 +809,7 @@ const (
 // substantive work goes to workers through issues (M-112).
 const routerBoundary = "You dispatch, track and relay; you do not do the work yourself. " +
 	"Yours: reading state to decide and relay (issues, comments, runs, subscriptions, PR and Actions status) " +
-	"and issue and project operations (create, assign, change status, comment to @ the handler, update Router state). " +
+	"and issue and project operations (create, assign, change status, comment to @ the handler, update Super Agent state). " +
 	"Hand off everything else, including querying or analysing business data (databases, logs, metrics), research, root-cause diagnosis, " +
 	"writing plans or docs, changing code or config, and any work whose result is itself the deliverable: " +
 	"a small task becomes a local Multica issue assigned to a fitting worker; " +
@@ -832,10 +832,10 @@ func buildNote(in noteInput) string {
 	if in.chat {
 		b.WriteString(RouterBatchLabel + "\n")
 	}
-	fmt.Fprintf(&b, "Router batch for subscription %s (%s, anchor %s): %d new event(s).\n", id, in.scopeLabel, in.anchorKey, others)
+	fmt.Fprintf(&b, "Super Agent batch for subscription %s (%s, anchor %s): %d new event(s).\n", id, in.scopeLabel, in.anchorKey, others)
 	if in.chat {
-		b.WriteString("The Router dispatcher wrote this message into your chat with the owner; the owner did not. " +
-			"You are the Router for this scope. Read the events, check current state where it matters, and act. " +
+		b.WriteString("The Super Agent dispatcher wrote this message into your chat with the owner; the owner did not. " +
+			"You are the Super Agent for this scope. Read the events, check current state where it matters, and act. " +
 			"Your own actions are left out and never start a batch. " +
 			"Any text you reply here notifies the owner: reply only when they need to know, decide or act, and say so plainly. " +
 			"When nothing needs them, finish without any text reply; the turn stays silent.\n" +
@@ -843,7 +843,7 @@ func buildNote(in noteInput) string {
 			"When the owner asks you something here, answer directly only if one sentence from current state answers it; " +
 			"otherwise open an issue, hand it off and reply with one line naming the issue and who has it.\n\n")
 	} else {
-		b.WriteString("You are the Router for this scope. Read the events, check current state where it matters, and act. " +
+		b.WriteString("You are the Super Agent for this scope. Read the events, check current state where it matters, and act. " +
 			"Your own actions are left out and never start a run. " +
 			"When a person has to decide or act, tell them with `multica notify owner --subscription " + id + " --title ... --body ...`; do not rely on issue comments alone.\n" +
 			routerBoundary + "\n")
