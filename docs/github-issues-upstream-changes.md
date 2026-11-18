@@ -12,7 +12,8 @@
 | 文件 | 任务 | 改动 | 文件内说明 |
 |---|---|---|---|
 | `.github/workflows/release.yml` | M-58 | `verify` 只在 `multica-ai` 运行，整个上游发布在 fork 上不跑（fork 用 `release-fork.yml`） | 有 |
-| `server/cmd/multica/cmd_daemon_autostart.go` | M-101 | macOS LaunchAgent 的 `ProcessType` 默认 `Standard`（上游写死 `Background`），可用 `MULTICA_DAEMON_PROCESS_TYPE` 改；非默认值同时写进 plist 的 `EnvironmentVariables` | 有 |
+| `server/cmd/multica/cmd_daemon.go` | M-125 | `runDaemonForeground` 启动时读取并清除 LaunchAgent 标记（一行调用）；升级重启时，若是由我们自己的 LaunchAgent 启动的，以退出码 42 退出，交给 launchd 重新拉起，不再 spawn 后继进程（一个 `if`）。逻辑在 `cmd_daemon_launchd_handoff.go` | 有 |
+| `server/cmd/multica/cmd_daemon_autostart.go` | M-101、M-125 | macOS LaunchAgent 的 `ProcessType` 默认 `Standard`（上游写死 `Background`），可用 `MULTICA_DAEMON_PROCESS_TYPE` 改；非默认值同时写进 plist 的 `EnvironmentVariables`。M-125：plist 加 `KeepAlive {SuccessfulExit=false}`，`EnvironmentVariables` 固定写入标记 `MULTICA_DAEMON_LAUNCH_AGENT=<label>`（因此这个 dict 总会写出） | 有 |
 | `server/cmd/multica/cmd_update.go` | M-58 | Homebrew 安装且更新源不是上游时报错，不跑 `brew upgrade` | 有 |
 | `server/cmd/server/activity_listeners.go` | M-118 | 交接写状态活动行时调用 `agentrouter.AnnotateHandoffActivity`，写指派活动行时调用 `agentrouter.AnnotateAssigneeActivity`（各一行）：`router_inbox_resolve` 打开、且负载说明了原指派人时，分别在 details 里加 `handoff_from_type` / `handoff_from_id` 和 `router_from_type` / `router_from_id`，供收件箱对账判断是否从 Owner 手里移走；关闭时什么都不加，与上游一致 | 有 |
 | `server/internal/handler/issue.go` | M-118 | 批量更新发布 `issue:updated` 前调用 `agentrouter.AnnotateBatchUpdate`（一行加 import）：`router_inbox_resolve` 打开时在负载里加 fork 自己的 `router_prev_assignee_type` / `router_prev_assignee_id`（批量负载原本没有原指派人；不用上游的 `prev_assignee_*`，以免改变上游的「取消指派」通知）；关闭时什么都不加 | 有 |
@@ -47,6 +48,7 @@
 
 | 文件 | 任务 | 改动 | 文件内说明 |
 |---|---|---|---|
+| `server/cmd/multica/cmd_daemon_autostart_test.go` | M-125 | 去掉「plist 不得含 KeepAlive」的断言，改由 fork 的 `cmd_daemon_launchd_handoff_test.go` 覆盖 | 有 |
 | `server/internal/cli/update_source_test.go` | M-58 | 适配可配置的 Release 仓库 | 有 |
 | `server/internal/handler/workspace_delete_manifest_test.go` | M-20、M-85、M-86、M-96、M-97 | 登记迁移 9000 的 5 张表、迁移 9004 的 4 张表、迁移 9008 的 3 张表、迁移 9014 的 1 张表和迁移 9015 的 1 张表 | 有 |
 | `server/internal/handler/autopilot_subscriber_test.go` | M-24 | 删触发器的 DDL 改走 `testutil.ExecDDL` | 有 |
@@ -58,7 +60,7 @@
 | `server/internal/service/autopilot_quota_test.go` | M-24 | 同上 | 有 |
 | `server/internal/service/delegated_failure_recovery_settled_test.go` | M-24 | 同上 | 有 |
 
-合计：修改过的上游文件 47 个（含 10 个测试文件），其中 4 个（生成的 `models.go`、`glyphs.ts`、`icons/index.ts`，以及 `packages/core/package.json`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。M-105 新增的 13 个前端上游触点和 `keys.go` 的一行也集中在同一个提交里。M-97 只新增 1 个上游触点（`inbox/create.go`）。M-108 的 5 处（两个挂载点、图标绘制与两个生成文件）同样在一个提交里。
+合计：修改过的上游文件 51 个（含 11 个测试文件），其中 4 个（生成的 `models.go`、`glyphs.ts`、`icons/index.ts`，以及 `packages/core/package.json`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。M-105 新增的 13 个前端上游触点和 `keys.go` 的一行也集中在同一个提交里。M-97 只新增 1 个上游触点（`inbox/create.go`）。M-108 的 5 处（两个挂载点、图标绘制与两个生成文件）同样在一个提交里。M-125 新增 2 个上游触点（`cmd_daemon.go`、`cmd_daemon_autostart_test.go`），并在 `cmd_daemon_autostart.go` 上追加改动。
 
 ## fork 新增的文件
 
@@ -78,4 +80,5 @@
 - Router 会话标记（M-108，开关 `router_chat`，见 [router.md](router.md)「聊天列表的 Router 标记」）：`packages/views/router/router-chat-marker.tsx` 及测试；`server/internal/agentrouter/chat_summary.go`；`server/internal/handler/agent_router_chat_list.go` 及测试；`packages/core/router/` 与 `router.json` 的增量。
 - 回复叫醒修正（M-89，开关 `handoff_reply_wake`，默认关闭）：`server/internal/handler/handoff_reply_wake.go` 及测试；`server/internal/issuestatus/handoff_fork.go`；`server/cmd/server/handoff_reply_wake_parity_test.go`。开关打开时，issue 处于「交还给人」的状态（`issueStatusIsHandoff` 为真，例如自定义的 started 状态、`in_review`、`blocked`、`done`）时，成员的任何评论（含讨论串里的回复，不含 note）在上游路由之外再叫醒处理人；智能体的评论不走这条路。
 - daemon LaunchAgent 的 ProcessType（M-101）：`server/cmd/multica/cmd_daemon_autostart_process_type.go` 及测试。
+- daemon 在 LaunchAgent 下的升级重启交给 launchd（M-125）：`server/cmd/multica/cmd_daemon_launchd_handoff.go` 及测试。
 - `docs/github-issues*.md`。

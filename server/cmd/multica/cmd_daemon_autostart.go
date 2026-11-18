@@ -591,8 +591,10 @@ func launchAgentLabel(profile string) string {
 // launchAgentPlistContent renders the LaunchAgent. RunAtLoad starts it at
 // login.
 // Modified by the mouse9527/multica fork: KeepAlive {SuccessfulExit=false}
-// restarts the daemon after a binary-update handoff; `multica daemon stop`
-// and logout exit 0 and stay authoritative (cmd_daemon_launchd_handoff.go).
+// restarts the daemon after a binary-update handoff. A graceful
+// `multica daemon stop` and logout exit 0 and stay final; any non-zero exit,
+// including a stop that falls back to SIGKILL, is restarted
+// (cmd_daemon_launchd_handoff.go).
 func launchAgentPlistContent(spec autostartSpec, label string) string {
 	var b strings.Builder
 	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")

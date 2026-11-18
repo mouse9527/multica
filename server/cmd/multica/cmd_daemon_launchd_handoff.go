@@ -13,9 +13,12 @@ package main
 // same executable path, now holding the new binary.
 //
 // KeepAlive restarts on any non-zero exit, not only the handoff status:
-// launchd has no per-status filter. `multica daemon stop` and logout end the
-// daemon with exit 0, so both stay final; a failing start is retried at
-// launchd's ThrottleInterval (10s by default).
+// launchd has no per-status filter, and no start limit like systemd's
+// StartLimitBurst. A graceful `multica daemon stop` and logout end the
+// daemon with exit 0, so both stay final. A stop that falls back to SIGKILL
+// after its timeout is a non-zero exit, and launchd restarts the daemon. A
+// failing start is retried at launchd's ThrottleInterval (10s by default)
+// for as long as it keeps failing.
 //
 // Detection relies on the environment of the job launchd actually loaded,
 // not on the plist file: a refreshed plist only takes effect when launchd
