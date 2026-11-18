@@ -55,7 +55,7 @@ vi.mock("../modals/issue-picker-modal", () => ({
 vi.mock("@multica/core/api", async (original) => ({
   ...(await original<typeof import("@multica/core/api")>()),
   api: {
-    forkRequest: vi.fn(),
+    request: vi.fn(),
     listProjects: vi.fn(async () => ({ projects: [{ id: "proj-1", title: "Platform" }], total: 1 })),
     getIssue: vi.fn(async (id: string) => ({ id, identifier: id === "issue-root" ? "M-1" : "M-9", title: "Root" })),
     listAgents: vi.fn(async () => [{ id: "agent-1", name: "Mika", owner_id: "user-1" }]),
@@ -65,7 +65,7 @@ vi.mock("@multica/core/api", async (original) => ({
   },
 }));
 
-const forkRequest = vi.mocked(api.forkRequest);
+const request = vi.mocked(api.request);
 
 function sub(over: Record<string, unknown> = {}) {
   return {
@@ -107,7 +107,7 @@ const session = {
 const agent = { id: "agent-1", name: "Mika" } as Agent;
 
 function routeForkRequest() {
-  forkRequest.mockImplementation(async (path: string, init?: RequestInit) => {
+  request.mockImplementation(async (path: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     if (method === "GET" && path === "/api/router/subscriptions") return { subscriptions: state.subscriptions };
     if (method === "GET" && path.startsWith("/api/router/dispatches")) return { dispatches: state.dispatches };
@@ -145,7 +145,7 @@ function openMenu() {
 }
 
 function calls(method: string) {
-  return forkRequest.mock.calls
+  return request.mock.calls
     .filter(([, init]) => ((init as RequestInit | undefined)?.method ?? "GET") === method)
     .map(([path, init]) => ({ path, body: (init as RequestInit).body ? JSON.parse(String((init as RequestInit).body)) : undefined }));
 }
@@ -167,7 +167,7 @@ describe("Router in the chat menu", () => {
     show(<Harness chat={session} />);
     openMenu();
     expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
-    expect(forkRequest).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("shows nothing on someone else's chat", async () => {
@@ -291,7 +291,7 @@ describe("Router in the chat menu", () => {
     const dialog = await screen.findByRole("dialog", { name: en.dialog.title_settings });
     fireEvent.click(within(dialog).getByRole("button", { name: en.actions.release }));
     const confirm = await screen.findByRole("alertdialog", { name: en.release.title });
-    expect(forkRequest.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method)).toEqual([]);
+    expect(request.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method)).toEqual([]);
     fireEvent.click(within(confirm).getByRole("radio", { name: en.release.keep }));
     fireEvent.click(within(confirm).getByRole("button", { name: en.release.confirm }));
     await waitFor(() => expect(calls("PATCH")).toHaveLength(1));

@@ -25,13 +25,13 @@ vi.mock("../navigation", () => ({
 vi.mock("@multica/core/api", async (original) => ({
   ...(await original<typeof import("@multica/core/api")>()),
   api: {
-    forkRequest: vi.fn(),
+    request: vi.fn(),
     listProjects: vi.fn(async () => ({ projects: [], total: 0 })),
     getIssue: vi.fn(async (id: string) => ({ id, identifier: "M-1", title: "Root" })),
   },
 }));
 
-const forkRequest = vi.mocked(api.forkRequest);
+const request = vi.mocked(api.request);
 
 function scope(over: Record<string, unknown> = {}) {
   return {
@@ -52,7 +52,7 @@ function show(ui: React.ReactElement) {
 }
 
 function chatsRequests() {
-  return forkRequest.mock.calls.filter(([path]) => path === "/api/router/chats");
+  return request.mock.calls.filter(([path]) => path === "/api/router/chats");
 }
 
 beforeEach(() => {
@@ -60,7 +60,7 @@ beforeEach(() => {
   state.flag = true;
   state.chats = [];
   state.subscriptions = [];
-  forkRequest.mockImplementation(async (path: string) => {
+  request.mockImplementation(async (path: string) => {
     if (path === "/api/router/chats") return { chats: state.chats };
     if (path === "/api/router/subscriptions") return { subscriptions: state.subscriptions };
     if (path.startsWith("/api/router/dispatches")) return { dispatches: [] };
@@ -74,7 +74,7 @@ describe("Router marker in the chat list", () => {
     state.flag = false;
     show(<RouterChatListMarker sessionId="chat-1" />);
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
-    expect(forkRequest).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("marks only Router chats, with one request for the whole list", async () => {

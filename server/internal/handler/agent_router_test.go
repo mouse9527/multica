@@ -3,6 +3,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"testing"
@@ -217,12 +218,21 @@ func TestRouterHidesEventsOfPrivateProjects(t *testing.T) {
 		routerCall(t, req).Want(http.StatusOK).JSON(&evs)
 		return len(evs.Events)
 	}
-	// The workspace owner manages every project and sees both.
-	if n := count(newRequest("GET", "/api/router/events?subscription_id="+id, nil)); n != 2 {
-		t.Fatalf("owner sees %d events, want 2", n)
+	// A private project opens to its members only (upstream MUL-9284), so
+	// the workspace owner and a plain member outside it see the public one.
+	if n := count(newRequest("GET", "/api/router/events?subscription_id="+id, nil)); n != 1 {
+		t.Fatalf("owner outside the project sees %d events, want 1", n)
 	}
-	// A plain member outside the private project sees only the public one.
 	if n := count(newRequestAs(f.member, "GET", "/api/router/events?subscription_id="+id, nil)); n != 1 {
 		t.Fatalf("plain member sees %d events, want 1", n)
+	}
+	// A project member sees both.
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM project_member WHERE project_id = $1`, private)
+	})
+	dbfx.Exec(t, `INSERT INTO project_member (workspace_id, project_id, user_id, added_by) VALUES ($1, $2, $3, $3)`,
+		testWorkspaceID, private, testUserID)
+	if n := count(newRequest("GET", "/api/router/events?subscription_id="+id, nil)); n != 2 {
+		t.Fatalf("project member sees %d events, want 2", n)
 	}
 }

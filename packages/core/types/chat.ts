@@ -16,6 +16,8 @@ export interface ChatPinnedAgent {
  *   Mika but never rendered as a member message.
  * - "onboarding_opening" — Mika's reply to the kickoff; chat renders the
  *   onboarding starter cards under it instead of quick-action chips.
+ * - "wakeup" — the input of a turn a chat wakeup started. Its content is
+ *   withheld; chat renders a divider naming the wakeup (`wakeup_id`).
  * - "router_batch" — issue events the server wrote into a Router chat; input
  *   for the agent, not the member's words (mouse9527/multica fork, M-96).
  */
@@ -24,6 +26,7 @@ export type ChatMessageKind =
   | "no_response"
   | "onboarding_kickoff"
   | "onboarding_opening"
+  | "wakeup"
   | "router_batch";
 
 /**
@@ -175,6 +178,8 @@ export interface ChatMessage {
   message_kind?: ChatMessageKind;
   /** Up to three server-validated follow-ups generated with this reply. */
   quick_actions?: ChatQuickAction[];
+  /** Set on a wakeup turn's input (message_kind "wakeup"). */
+  wakeup_id?: string | null;
 }
 
 export interface ChatMessagesCursor {
@@ -190,6 +195,11 @@ export interface ChatMessagesPage {
 }
 
 export interface SendChatMessageResponse {
+  /** Accepted into the running reply without creating another turn. */
+  steered?: boolean;
+  message_created_at?: string;
+  /** Input owner of the user message; may differ from the active retry. */
+  message_task_id?: string;
   message_id: string;
   task_id: string;
   /** True when the server supports queued follow-up sends. */
@@ -284,6 +294,8 @@ export interface ChatQueuedTask {
   created_at: string;
   message_id?: string;
   content?: string;
+  /** Set when a chat wakeup started this turn; `content` is then empty. */
+  wakeup_id?: string;
 }
 
 export interface PrioritizeQueuedChatTaskResponse {
@@ -306,9 +318,56 @@ export interface ChatPendingTask {
   wait_reason?: string;
   /** Explicit capability gate; absent on servers predating follow-up queues. */
   supports_queue?: boolean;
+  /** This caller can add text to the exact running turn; absent on older servers. */
+  can_supplement?: boolean;
   /**
    * Ordered follow-ups behind the root task. The root may itself still have
    * database status `queued` before claim, but is never duplicated here.
    */
   queued_tasks?: ChatQueuedTask[];
+}
+
+export type ChatWakeupKind = "condition" | "at" | "check";
+export type ChatWakeupStatus =
+  | "active"
+  | "fired"
+  | "expired"
+  | "cancelled"
+  | "failed";
+
+/**
+ * A promise an agent made in a chat to come back and report: when a condition
+ * holds ("condition"), at a time ("at"), or on periodic checks ("check"). Every
+ * wakeup ends; `expires_at` is its deadline, and the agent comes back once more
+ * when the deadline passes first.
+ */
+export interface ChatWakeup {
+  id: string;
+  chat_session_id: string;
+  /** Only on the cross-conversation list. */
+  chat_session_title?: string;
+  agent_id: string;
+  title: string;
+  instruction: string;
+  kind: ChatWakeupKind;
+  condition?: Record<string, unknown> | null;
+  interval_seconds: number | null;
+  fire_at: string | null;
+  next_eval_at: string;
+  expires_at: string;
+  status: ChatWakeupStatus;
+  end_reason: string | null;
+  ended_at: string | null;
+  check_count: number;
+  last_check_note: string | null;
+  last_checked_at: string | null;
+  last_task_id: string | null;
+  last_task_status?: string;
+  last_fired_at: string | null;
+  last_error: string | null;
+  source_message_id: string | null;
+  /** The turn that created it; its reply shows the wakeup card. */
+  source_task_id: string | null;
+  created_at: string;
+  updated_at: string;
 }

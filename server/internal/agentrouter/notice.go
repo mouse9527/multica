@@ -19,7 +19,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // The owner notice is the Router's one outlet to a person: the sender writes
@@ -419,30 +418,19 @@ func (a InboxAdapter) Deliver(ctx context.Context, n Notice) ChannelDelivery {
 		"notice_id": n.ID, "refs": n.Refs, "urgency": n.Urgency,
 		"subscription_id": n.SourceSubscriptionID, "task_id": n.SourceTaskID,
 	})
-	item, inserted, err := inboxwriter.CreateIfEligible(ctx, a.Queries, db.CreateInboxItemParams{
+	// Announced like every other inbox row: a row that joins the recipient's
+	// snooze on the issue goes out as inbox:snoozed, so no banner or push.
+	item, inserted, err := inboxwriter.CreateAndAnnounce(ctx, a.Queries, a.Bus, db.CreateInboxItemParams{
 		ID: dbid.NewV7(), WorkspaceID: util.MustParseUUID(n.WorkspaceID), RecipientType: "member", RecipientID: recipient,
 		Type: InboxNoticeType, Severity: severity, IssueID: issueID, Title: n.Title,
 		Body:      pgtype.Text{String: n.Body, Valid: n.Body != ""},
 		ActorType: pgtype.Text{String: n.SenderType, Valid: true}, ActorID: actorID, Details: details,
-	})
+	}, &issueStatus)
 	if err != nil {
 		return ChannelDelivery{State: DeliveryFailed, Reason: err.Error()}
 	}
 	if !inserted {
 		return ChannelDelivery{State: DeliverySkipped, Reason: "recipient is not eligible for this inbox item"}
-	}
-	if a.Bus != nil {
-		a.Bus.Publish(events.Event{
-			Type: protocol.EventInboxNew, WorkspaceID: n.WorkspaceID, ActorType: n.SenderType,
-			Payload: map[string]any{"item": map[string]any{
-				"id": util.UUIDToString(item.ID), "workspace_id": util.UUIDToString(item.WorkspaceID),
-				"recipient_type": item.RecipientType, "recipient_id": util.UUIDToString(item.RecipientID),
-				"type": item.Type, "severity": item.Severity, "issue_id": util.UUIDToPtr(item.IssueID),
-				"title": item.Title, "body": util.TextToPtr(item.Body), "read": item.Read, "archived": item.Archived,
-				"created_at": util.TimestampToString(item.CreatedAt), "actor_type": util.TextToPtr(item.ActorType),
-				"actor_id": util.UUIDToPtr(item.ActorID), "details": json.RawMessage(item.Details), "issue_status": issueStatus,
-			}},
-		})
 	}
 	return ChannelDelivery{State: DeliverySent, Ref: util.UUIDToString(item.ID)}
 }

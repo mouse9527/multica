@@ -344,12 +344,13 @@ const PROBLEM_LIMIT = 3;
 type VerdictTone = "red" | "amber" | "green" | "violet" | "muted";
 
 // Pills reuse the state icons' palette. Their text sits one shade darker so
-// 11px copy on a 10% tint keeps AA contrast.
+// 11px copy on a 10% tint keeps AA contrast. Merged is a pull request state,
+// so it follows the theme's --pr-merged.
 const TONE_CLASS: Record<VerdictTone, string> = {
   red: "bg-rose-600/10 text-rose-700 dark:bg-rose-400/15 dark:text-rose-400",
   amber: "bg-amber-600/10 text-amber-700 dark:bg-amber-400/15 dark:text-amber-400",
   green: "bg-emerald-600/10 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-400",
-  violet: "bg-violet-600/10 text-violet-700 dark:bg-violet-400/15 dark:text-violet-400",
+  violet: "bg-pr-merged/10 text-pr-merged-text dark:bg-pr-merged-dark/15 dark:text-pr-merged-dark",
   muted: "bg-muted text-muted-foreground",
 };
 
@@ -483,7 +484,9 @@ function PullRequestRow({
 /**
  * One PR on a single line — state icon, `#number`, verdict pill — for
  * surfaces with no room for PullRequestRow, such as the issue hover card.
- * Not a link: the hover card that hosts it is read-only.
+ * A plain link to the PR on GitHub, like PullRequestRow, so the browser owns
+ * Enter, modifier and middle clicks. The hover card stops click bubbling, so
+ * opening the PR never also follows the mention it hangs off.
  */
 export function PullRequestInlineSummary({ pr }: { pr: GitHubPullRequest }) {
   const { t } = useT("issues");
@@ -493,11 +496,18 @@ export function PullRequestInlineSummary({ pr }: { pr: GitHubPullRequest }) {
   const isTerminal = pr.state === "merged" || pr.state === "closed";
   const stale = !isTerminal && pr.snapshot_stale === true;
   return (
-    <span className="flex min-w-0 items-center gap-1.5" title={pr.title}>
+    <a
+      data-testid="pull-request-inline-summary"
+      href={pr.html_url}
+      target="_blank"
+      rel="noreferrer noopener"
+      title={pr.title}
+      className="-mx-1 flex min-w-0 items-center gap-1.5 rounded-sm px-1 transition-colors hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring"
+    >
       <StateIcon className={cn("size-3.5 shrink-0", cfg.className)} />
       <span className="shrink-0 font-medium tabular-nums">{prLabel(pr)}</span>
       {pill ? <VerdictPill pill={pill} stale={stale} inline /> : null}
-    </span>
+    </a>
   );
 }
 
