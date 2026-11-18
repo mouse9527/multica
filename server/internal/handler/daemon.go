@@ -3156,6 +3156,8 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	if composed, ok := service.ComposeForkSystemInstructions(agent.SystemKey.String, agent.Name, agent.Instructions); ok {
 		resp.Agent.Instructions = composed
 	}
+	// mouse9527/multica fork (M-150): Mika's one-line pointer to `multica router guide`, only with router_v1 on.
+	resp.Agent.Instructions = h.TaskService.WithMikaRouterGuide(r.Context(), agent.SystemKey.String, agent.Name, resp.Agent.Instructions)
 	if useSkillRefs {
 		_, skillRefs, err := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.SystemKey.String, legacySkillRedirects)
 		if err != nil {

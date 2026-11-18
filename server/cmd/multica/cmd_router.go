@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router settings by instruction (M-105), and the Super Agent name in help (M-148).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router settings by instruction (M-105), the Super Agent name in help (M-148), and the guide pointer (M-150).
 
 package main
 
@@ -27,7 +27,11 @@ import (
 var routerCmd = &cobra.Command{
 	Use:   "router",
 	Short: "Super Agent (technical name: router): a chat that runs on events from subscribed issue trees or projects",
-	Example: `  # Make the current chat a Super Agent for an issue tree (inside a chat run)
+	Example: `  # Read first, before setting up, changing or releasing a Super Agent, and when you run as one:
+  # owner requests mapped to commands, what to confirm, how to report failures, the boundary
+  $ multica router guide
+
+  # Make the current chat a Super Agent for an issue tree (inside a chat run)
   $ multica router subscribe --issue M-12 --anchor-chat current
 
   # Is this chat a Super Agent, and what does it cover?
