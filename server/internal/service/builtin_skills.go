@@ -44,6 +44,9 @@ var builtinSkillSystemKey = map[string]string{
 	"multica-onboarding": MikaSystemKey,
 	// mouse9527/multica fork (M-135): the Evolution agent's proposal skill.
 	"multica-evolution": EvolutionSystemKey,
+	// mouse9527/multica fork (M-150): Super Agent setup, Mika only; also gated
+	// on router_v1, see builtin_skills_fork.go.
+	RouterSetupSkillName: MikaSystemKey,
 }
 
 // BuiltinSkills returns the platform's built-in skills for an agent with the
@@ -65,6 +68,8 @@ var builtinSkillSystemKey = map[string]string{
 // location. Callers decide by capability, never by version string.
 func (s *TaskService) BuiltinSkills(agentSystemKey string, legacyRedirects bool) []AgentSkillData {
 	skills := loadBuiltinSkills(agentSystemKey)
+	// mouse9527/multica fork (M-150): fork built-ins ship only with their feature on.
+	skills = s.withoutGatedForkSkills(skills)
 	if legacyRedirects {
 		skills = append(skills, legacyRedirectSkills()...)
 	}

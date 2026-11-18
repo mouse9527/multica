@@ -349,7 +349,23 @@ Owner 也可以在 chat 里直接跟这个 chat 的智能体说「把这个 chat
   - `router get|pause|resume|delete|update --chat current|<会话>`：作用于这个 Super Agent 的每一条订阅（`get` 列出它们）。
   - `router update <订阅> --anchor-chat current`：把订阅绑到当前 chat。
   - `router release --chat current|<会话> [--keep]`：解除 Super Agent；默认删除订阅，`--keep` 先暂停再解绑。
-- 给智能体的说明：`docs/router-setup-skill/SKILL.md`（`router-setup` skill 草案：口令对应的命令、改动前先复述并等确认、失败时怎么告诉 Owner）。由 Mika 在 Owner 确认后挂到相关智能体上。
+- 给智能体的说明：内置 skill `multica-router-setup`（口令对应的命令、改动前先复述并等确认、失败时怎么告诉 Owner、Super Agent 的边界），见下一节。
+
+### 内置 skill `multica-router-setup`（M-150）
+
+- **随二进制发布**：唯一来源是 `server/internal/service/builtin_skills/multica-router-setup/SKILL.md`，和 `multica-platform`、`multica-onboarding` 一样编进服务端。每个工作区的 Mika 领任务时自动带上，不用导入、不用挂载；改了这个文件、发新版，下发的就是新内容，工作区里改不了。
+- **只给 Mika**：`builtinSkillSystemKey` 把它限定在系统键 `mika` 上。内置 skill 的描述会进每个拿到它的智能体的常驻 skill 列表、文件会写进每次任务的工作目录，而设置 Super Agent 的口令是 Owner 在 Mika 的 chat 里说的；原先手工导入的也只挂在 Mika 上。没有按「绑定了 Super Agent 的 chat 所属智能体」下发：领任务时要多查一次订阅，而还没设成 Super Agent 的 chat 恰恰最需要这份说明。
+- **开关**：`router_v1` 关闭时不下发（领任务的完整负载和 skill 引用列表都没有它），智能体拿到的内置 skill 与上游一致。按 id 解析内置 skill 的接口不看开关，和其他内置 skill 一样以领任务时的下发为准。
+- **和手工导入的 `router-setup` 的关系**：名字不同（内置的带 `multica-` 前缀），不会同名覆盖，也没有「内置优先」：两份都挂着时 Mika 会同时看到两份。所以上线后要删掉工作区里手工导入的那份，见下面的上线步骤。
+
+上线步骤（运维或 Owner 执行；本任务不改线上数据）：
+
+1. 部署包含 M-150 的服务端版本，确认 `router_v1` 已打开。
+2. 在 Mika 的一次新任务里确认工作目录的 skill 里有 `multica-router-setup`（例如在 Mika 的 chat 里问一句「这个 chat 现在是 Super Agent 吗」，看运行日志里加载的 skill）。
+3. 每个手工导入过 `router-setup` 的工作区：先把它从 Mika（以及其他挂了它的智能体）上解除，再删除这个工作区 skill（`multica skill list` 找到名为 `router-setup` 的那条；`multica agent skills list <智能体>` 看挂载，用 `multica agent skills set` 去掉它、保留其他 skill，或在智能体设置页取消勾选；再 `multica skill delete <id>`）。
+4. 再开一次 Mika 的任务，确认只剩 `multica-router-setup`。
+
+第 1 步到第 3 步之间 Mika 会同时看到两份，内容相同或接近；这个窗口只有几分钟，所以先部署再删除，不反过来（反过来会有一段时间一份都没有）。
 
 ### 代码位置
 
