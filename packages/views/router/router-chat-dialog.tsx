@@ -78,7 +78,7 @@ export function RouterChatDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[90dvh] flex-col gap-0 p-0 sm:max-w-xl">
+      <DialogContent className="flex max-h-[90%] flex-col gap-0 p-0 sm:max-w-xl">
         <DialogHeader className="border-b px-5 py-4">
           <DialogTitle>{isRouter ? t(($) => $.dialog.title_settings) : t(($) => $.dialog.title_setup)}</DialogTitle>
           <DialogDescription>{t(($) => $.dialog.description, { agent: agentName })}</DialogDescription>

@@ -21,9 +21,11 @@ import {
 } from "./daemon-manager";
 import { setupLocalDirectory } from "./local-directory";
 import { setupThemeFolder } from "./theme-folder";
+import { setupVoiceInput } from "./voice";
 import { configureLinuxFileDialogs } from "./linux-file-dialog";
 import { openExternalSafely, downloadURLSafely } from "./external-url";
 import { installContextMenu } from "./context-menu";
+import { devToolbarPreferencesPath, installDevToolbarToggle } from "./dev-toolbar-toggle";
 import { handleAppShortcut } from "./keyboard-shortcuts";
 import { installNavigationGestures } from "./navigation-gestures";
 import { installNavigationGuard } from "./navigation-guard";
@@ -43,6 +45,7 @@ import {
   type RendererRecoveryWindow,
 } from "./renderer-recovery";
 import { createBestEffortDevLog } from "./dev-log";
+import { ignoreBrokenStdio } from "./stdio-guard";
 import { appendMissingPathDirs } from "./path-fallback";
 import {
   writeFreezeBreadcrumb,
@@ -151,6 +154,9 @@ if (process.platform !== "win32") {
     join(homedir(), ".local/bin"),
   ]);
 }
+
+// Before anything can log: release builds write to stdout/stderr too.
+ignoreBrokenStdio();
 
 const PROTOCOL = "multica";
 const devLog = is.dev ? createBestEffortDevLog() : undefined;
@@ -777,6 +783,7 @@ if (!gotTheLock) {
       readonly VITE_API_URL?: string;
       readonly VITE_WS_URL?: string;
       readonly VITE_APP_URL?: string;
+      readonly VITE_DEV_TOOLBAR?: string;
     };
 
     runtimeConfigResult = await loadRuntimeConfig({
@@ -875,6 +882,11 @@ if (!gotTheLock) {
     // blocking error and must not silently fall back to the cloud defaults.
     ipcMain.on("runtime-config:get", (event) => {
       event.returnValue = runtimeConfigResult;
+    });
+
+    installDevToolbarToggle({
+      enabled: is.dev && Boolean(viteEnv.VITE_DEV_TOOLBAR),
+      preferencesPath: devToolbarPreferencesPath(app.getPath("userData")),
     });
 
     ipcMain.on(RENDERER_ROUTE_CONTEXT_CHANNEL, (event, context: unknown) => {
@@ -1087,6 +1099,7 @@ if (!gotTheLock) {
     );
     setupLocalDirectory(() => mainWindows.mostRecent());
     setupThemeFolder();
+    setupVoiceInput();
 
     // Registered after the updater and daemon gates, so a quit they hold
     // (busy daemon, pending install) leaves the session writable; only the

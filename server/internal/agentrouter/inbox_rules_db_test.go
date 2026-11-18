@@ -29,7 +29,7 @@ func (e *env) writeRuleItem(recipient string, w ruleWrite) string {
 	}
 	p.ActorType.String, p.ActorType.Valid = "agent", true
 	p.ActorID = util.MustParseUUID(e.agentB)
-	item, inserted, err := inbox.CreateIfEligible(e.ctx, db.New(pool), p)
+	item, inserted, err := inbox.CreateAndAnnounce(e.ctx, db.New(pool), nil, p, nil)
 	if err != nil || !inserted {
 		e.t.Fatalf("inbox write %s: inserted=%v err=%v; shadow mode must not keep items out", w.typ, inserted, err)
 	}

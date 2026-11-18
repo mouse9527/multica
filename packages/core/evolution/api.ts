@@ -14,7 +14,7 @@ function scoped(wsId: string, init: RequestInit = {}): RequestInit {
 export async function getEvolution(wsId: string): Promise<EvolutionStatus> {
   let raw: unknown;
   try {
-    raw = await api.forkRequest("/api/evolution", scoped(wsId));
+    raw = await api.request("/api/evolution", scoped(wsId));
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) return { available: false, agent: null };
     throw err;
@@ -26,7 +26,7 @@ export async function getEvolution(wsId: string): Promise<EvolutionStatus> {
 }
 
 export async function enableEvolution(wsId: string, input: EnableEvolutionInput): Promise<EvolutionAgent> {
-  const raw = await api.forkRequest(
+  const raw = await api.request(
     "/api/evolution/enable",
     scoped(wsId, {
       method: "POST",

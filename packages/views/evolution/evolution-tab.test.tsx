@@ -48,17 +48,17 @@ vi.mock("../runtimes/components/mika-runtime-choice", () => ({
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock("@multica/core/api", async (original) => ({
   ...(await original<typeof import("@multica/core/api")>()),
-  api: { forkRequest: vi.fn() },
+  api: { request: vi.fn() },
 }));
 
-const forkRequest = vi.mocked(api.forkRequest);
+const apiRequest = vi.mocked(api.request);
 
 beforeEach(() => {
   state.role = "owner";
   state.status = { agent: null };
   state.flag = true;
-  forkRequest.mockReset();
-  forkRequest.mockImplementation(async (path: string, init?: RequestInit) => {
+  apiRequest.mockReset();
+  apiRequest.mockImplementation(async (path: string, init?: RequestInit) => {
     if ((init?.method ?? "GET") === "POST" && path === "/api/evolution/enable") {
       state.status = { agent: { id: "agent-evo", name: "Evolution" } };
       return state.status;
@@ -87,7 +87,7 @@ describe("useEvolutionSettingsTabs", () => {
     state.flag = false;
     show(<TabsProbe />);
     expect(screen.getByTestId("tabs").textContent).toBe("");
-    expect(forkRequest).not.toHaveBeenCalled();
+    expect(apiRequest).not.toHaveBeenCalled();
   });
 });
 
@@ -100,12 +100,12 @@ describe("EvolutionTab", () => {
     fireEvent.click(enable);
 
     await waitFor(() =>
-      expect(forkRequest).toHaveBeenCalledWith(
+      expect(apiRequest).toHaveBeenCalledWith(
         "/api/evolution/enable",
         expect.objectContaining({ method: "POST" }),
       ),
     );
-    const post = forkRequest.mock.calls.find(([path]) => path === "/api/evolution/enable");
+    const post = apiRequest.mock.calls.find(([path]) => path === "/api/evolution/enable");
     expect(JSON.parse(String(post?.[1]?.body))).toEqual({ runtime_id: "rt-1", language: "en", model: "" });
     expect(await screen.findByText(en.enabled_title)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: en.open_agent })).toHaveAttribute("href", "/acme/agents/agent-evo");
