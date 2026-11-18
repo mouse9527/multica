@@ -1,14 +1,14 @@
 {
   "menu": {
-    "setup": "Définir comme Router",
-    "settings": "Paramètres du Router"
+    "setup": "Définir comme Super Agent",
+    "settings": "Paramètres du Super Agent"
   },
-  "badge": "Router",
+  "badge": "Super Agent",
   "dialog": {
-    "title_setup": "Définir comme Router",
-    "title_settings": "Paramètres du Router",
+    "title_setup": "Définir comme Super Agent",
+    "title_settings": "Paramètres du Super Agent",
     "description": "L’activité des tâches de ces périmètres arrive par lots dans cette discussion ; {{agent}} la traite et ne vous signale que ce qui vous concerne.",
-    "archived": "Restaurez cette discussion pour en faire un Router."
+    "archived": "Restaurez cette discussion pour en faire un Super Agent."
   },
   "status": {
     "running": "Actif",
@@ -27,10 +27,10 @@
     "add_issue_tree": "Ajouter un arbre de tâches",
     "project_placeholder": "Choisir un projet",
     "picker_title": "Choisir la tâche racine",
-    "picker_description": "Le Router suit cette tâche et toutes ses sous-tâches.",
+    "picker_description": "Le Super Agent suit cette tâche et toutes ses sous-tâches.",
     "empty": "Ajoutez un projet ou un arbre de tâches.",
     "board": "Tableau {{identifier}}",
-    "board_hint": "Chaque projet reçoit une tâche tableau qui enregistre les exécutions du Router.",
+    "board_hint": "Chaque projet reçoit une tâche tableau qui enregistre les exécutions du Super Agent.",
     "remove": "Retirer le périmètre",
     "unknown": "Indisponible"
   },
@@ -64,56 +64,56 @@
     }
   },
   "held": {
-    "title": "Éléments traités par le Router",
-    "empty": "Apparaîtront ici lorsque le Router filtrera la boîte de réception."
+    "title": "Éléments traités par le Super Agent",
+    "empty": "Apparaîtront ici lorsque le Super Agent filtrera la boîte de réception."
   },
   "actions": {
-    "create": "Définir comme Router",
+    "create": "Définir comme Super Agent",
     "save": "Enregistrer",
     "pause": "Mettre en pause",
     "resume": "Reprendre",
-    "release": "Retirer le Router",
+    "release": "Retirer le Super Agent",
     "cancel": "Annuler"
   },
   "release": {
-    "title": "Retirer ce Router ?",
+    "title": "Retirer ce Super Agent ?",
     "description": "Cette discussion ne recevra plus l’activité des tâches.",
     "delete": "Supprimer ses abonnements",
     "keep": "Garder ses abonnements, en pause",
     "confirm": "Retirer",
-    "keep_hint": "Pour les réutiliser, définissez une discussion comme Router avec les mêmes périmètres : ils seront repris et relancés."
+    "keep_hint": "Pour les réutiliser, définissez une discussion comme Super Agent avec les mêmes périmètres : ils seront repris et relancés."
   },
   "board": {
-    "title": "Tableau Router · {{chat}}",
-    "description": "Enregistre les exécutions du Router de la discussion « {{chat}} ». Créé par les paramètres du Router."
+    "title": "Tableau Super Agent · {{chat}}",
+    "description": "Enregistre les exécutions du Super Agent de la discussion « {{chat}} ». Créé par les paramètres du Super Agent."
   },
   "toast": {
-    "created": "Router configuré",
+    "created": "Super Agent configuré",
     "scope_failed": "Impossible d’ajouter {{scope}} : {{error}}",
-    "saved": "Paramètres du Router enregistrés",
-    "paused": "Router mis en pause",
-    "resumed": "Router repris",
-    "released": "Router retiré",
-    "failed": "Impossible de mettre à jour le Router : {{error}}",
-    "scope_taken": "{{scope}} appartient déjà au Router d’une autre discussion. Retirez d’abord ce Router ou retirez-y ce périmètre.",
+    "saved": "Paramètres du Super Agent enregistrés",
+    "paused": "Super Agent mis en pause",
+    "resumed": "Super Agent repris",
+    "released": "Super Agent retiré",
+    "failed": "Impossible de mettre à jour le Super Agent : {{error}}",
+    "scope_taken": "{{scope}} appartient déjà au Super Agent d’une autre discussion. Retirez d’abord ce Super Agent ou retirez-y ce périmètre.",
     "deleted": "Abonnement supprimé"
   },
   "list": {
-    "tab": "Routers",
-    "empty": "Aucun Router. Ouvrez le menu d’une discussion et choisissez « Définir comme Router ».",
+    "tab": "Super Agents",
+    "empty": "Aucun Super Agent. Ouvrez le menu d’une discussion et choisissez « Définir comme Super Agent ».",
     "agent": "Agent",
     "scopes": "Périmètres",
     "status": "État",
     "last_run": "Dernière exécution",
     "untitled": "Discussion sans titre",
-    "unbound_title": "Abonnements hors Router",
-    "unbound_hint": "Conservés lors du retrait d’un Router. Définir une discussion comme Router avec le même périmètre le reprend.",
+    "unbound_title": "Abonnements hors Super Agent",
+    "unbound_hint": "Conservés lors du retrait d’un Super Agent. Définir une discussion comme Super Agent avec le même périmètre le reprend.",
     "delete": "Supprimer",
     "delete_title": "Supprimer cet abonnement ?",
     "delete_description": "Ses événements capturés sont aussi supprimés."
   },
   "marker": {
-    "label": "Router · Périmètres : {{scopes}} · {{status}}",
+    "label": "Super Agent · Périmètres : {{scopes}} · {{status}}",
     "scope_project": "Projet {{name}}",
     "scope_issue_tree": "{{identifier}} {{name}}",
     "scope_paused": "{{scope}} (en pause)",

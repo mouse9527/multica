@@ -1,14 +1,14 @@
 {
   "menu": {
-    "setup": "Set as Router",
-    "settings": "Router settings"
+    "setup": "Set as Super Agent",
+    "settings": "Super Agent settings"
   },
-  "badge": "Router",
+  "badge": "Super Agent",
   "dialog": {
-    "title_setup": "Set as Router",
-    "title_settings": "Router settings",
+    "title_setup": "Set as Super Agent",
+    "title_settings": "Super Agent settings",
     "description": "Activity on issues in these scopes is batched into this chat for {{agent}}, who tells you only what needs you.",
-    "archived": "Restore this chat to make it a Router."
+    "archived": "Restore this chat to make it a Super Agent."
   },
   "status": {
     "running": "Running",
@@ -27,10 +27,10 @@
     "add_issue_tree": "Add issue tree",
     "project_placeholder": "Choose a project",
     "picker_title": "Choose the root issue",
-    "picker_description": "The Router follows this issue and all its sub-issues.",
+    "picker_description": "The Super Agent follows this issue and all its sub-issues.",
     "empty": "Add a project or an issue tree.",
     "board": "Board {{identifier}}",
-    "board_hint": "Each project gets a board issue that records the Router's runs.",
+    "board_hint": "Each project gets a board issue that records the Super Agent's runs.",
     "remove": "Remove scope",
     "unknown": "Unavailable"
   },
@@ -64,56 +64,56 @@
     }
   },
   "held": {
-    "title": "Items the Router handled",
-    "empty": "Appears once the Router screens inbox items."
+    "title": "Items the Super Agent handled",
+    "empty": "Appears once the Super Agent screens inbox items."
   },
   "actions": {
-    "create": "Set as Router",
+    "create": "Set as Super Agent",
     "save": "Save",
     "pause": "Pause",
     "resume": "Resume",
-    "release": "Release Router",
+    "release": "Release Super Agent",
     "cancel": "Cancel"
   },
   "release": {
-    "title": "Release this Router?",
+    "title": "Release this Super Agent?",
     "description": "The chat stops receiving issue activity.",
     "delete": "Delete its subscriptions",
     "keep": "Keep its subscriptions, paused",
     "confirm": "Release",
-    "keep_hint": "To use them again, set a chat up as a Router with the same scopes; they are picked up and resumed."
+    "keep_hint": "To use them again, set a chat up as a Super Agent with the same scopes; they are picked up and resumed."
   },
   "board": {
-    "title": "Router board · {{chat}}",
-    "description": "Records the runs of the Router in the chat \"{{chat}}\". Created by Router settings."
+    "title": "Super Agent board · {{chat}}",
+    "description": "Records the runs of the Super Agent in the chat \"{{chat}}\". Created by Super Agent settings."
   },
   "toast": {
-    "created": "Router set up",
+    "created": "Super Agent set up",
     "scope_failed": "Couldn't add {{scope}}: {{error}}",
-    "saved": "Router settings saved",
-    "paused": "Router paused",
-    "resumed": "Router resumed",
-    "released": "Router released",
-    "failed": "Couldn't update the Router: {{error}}",
-    "scope_taken": "{{scope}} already belongs to another chat's Router. Release that Router or remove the scope there first.",
+    "saved": "Super Agent settings saved",
+    "paused": "Super Agent paused",
+    "resumed": "Super Agent resumed",
+    "released": "Super Agent released",
+    "failed": "Couldn't update the Super Agent: {{error}}",
+    "scope_taken": "{{scope}} already belongs to another chat's Super Agent. Release that Super Agent or remove the scope there first.",
     "deleted": "Subscription deleted"
   },
   "list": {
-    "tab": "Routers",
-    "empty": "No Routers yet. To make one, open a chat's menu and choose Set as Router.",
+    "tab": "Super Agents",
+    "empty": "No Super Agents yet. To make one, open a chat's menu and choose Set as Super Agent.",
     "agent": "Agent",
     "scopes": "Scopes",
     "status": "Status",
     "last_run": "Last run",
     "untitled": "Untitled chat",
-    "unbound_title": "Subscriptions not in a Router",
-    "unbound_hint": "Kept when a Router was released. Setting a chat up as a Router with the same scope picks one up again.",
+    "unbound_title": "Subscriptions not in a Super Agent",
+    "unbound_hint": "Kept when a Super Agent was released. Setting a chat up as a Super Agent with the same scope picks one up again.",
     "delete": "Delete",
     "delete_title": "Delete this subscription?",
     "delete_description": "Its captured events are deleted too."
   },
   "marker": {
-    "label": "Router · Scopes: {{scopes}} · {{status}}",
+    "label": "Super Agent · Scopes: {{scopes}} · {{status}}",
     "scope_project": "{{name}} project",
     "scope_issue_tree": "{{identifier}} {{name}}",
     "scope_paused": "{{scope}} (paused)",

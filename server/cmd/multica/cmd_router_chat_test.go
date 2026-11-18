@@ -126,7 +126,7 @@ func TestRouterSubscribeProjectToChatMakesABoard(t *testing.T) {
 		t.Fatalf("writes = %v", got)
 	}
 	for _, c := range *calls {
-		if c.Path == "/api/issues" && (c.Body["project_id"] != testProjectID || c.Body["title"] != "Router 看板 · Feature lead") {
+		if c.Path == "/api/issues" && (c.Body["project_id"] != testProjectID || c.Body["title"] != "Super Agent 看板 · Feature lead") {
 			t.Fatalf("board issue = %v", c.Body)
 		}
 		if c.Method == http.MethodPost && c.Path == "/api/router/subscriptions" && c.Body["anchor_issue_id"] != "board-1" {

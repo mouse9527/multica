@@ -123,7 +123,7 @@ func TestRouterDispatchesRealAnchorRun(t *testing.T) {
 		WHERE agent_id = $1 AND issue_id = $2`, agent, rootID).Scan(&taskID, &status, &note); err != nil {
 		t.Fatalf("anchor run: %v", err)
 	}
-	if status != "queued" || !strings.Contains(note, "Router batch for subscription "+subID) || !strings.Contains(note, "comment_created") {
+	if status != "queued" || !strings.Contains(note, "Super Agent batch for subscription "+subID) || !strings.Contains(note, "comment_created") {
 		t.Fatalf("anchor run status %s, note:\n%s", status, note)
 	}
 	var runs struct {

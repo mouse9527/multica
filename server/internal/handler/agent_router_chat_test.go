@@ -377,7 +377,7 @@ func TestRouterPauseNoticeThroughTheRealChat(t *testing.T) {
 		t.Fatalf("chat notice: %v", err)
 	}
 	if role != "assistant" || kind != protocol.ChatMessageKindMessage || hasTask ||
-		!strings.HasPrefix(content, agentrouter.RouterNoticeLabel+"\n") || !strings.Contains(content, "Router paused") ||
+		!strings.HasPrefix(content, agentrouter.RouterNoticeLabel+"\n") || !strings.Contains(content, "Super Agent paused") ||
 		!strings.Contains(content, "1 event(s) are waiting") {
 		t.Fatalf("chat notice: role %s kind %s task %v content:\n%s", role, kind, hasTask, content)
 	}
@@ -389,7 +389,7 @@ func TestRouterPauseNoticeThroughTheRealChat(t *testing.T) {
 		t.Fatalf("chat reply alerts = %+v", alerts)
 	}
 	if p, ok := alerts[0].Payload.(protocol.ChatReplyNotificationPayload); !ok || p.MessageID != msgID || p.Title == "" ||
-		!strings.Contains(p.Body, "Router paused") {
+		!strings.Contains(p.Body, "Super Agent paused") {
 		t.Fatalf("alert payload = %+v", alerts[0].Payload)
 	}
 	mu.Unlock()
@@ -566,7 +566,7 @@ func TestRouterChatKeepsThePrivateProjectFence(t *testing.T) {
 			d.Chat = true
 			refused("chat")
 
-			_, err = agentrouter.TaskRuns{Tasks: testHandler.TaskService}.EnqueueRouterChatRun(ctx, chat, agent, root, "[Router 事件批次 · 非 Owner 发言]\nprobe")
+			_, err = agentrouter.TaskRuns{Tasks: testHandler.TaskService}.EnqueueRouterChatRun(ctx, chat, agent, root, "[Super Agent 事件批次 · 非 Owner 发言]\nprobe")
 			if !errors.Is(err, agentrouter.ErrRunRefused) || !strings.Contains(err.Error(), service.ErrProjectAccessDenied.Error()) {
 				t.Fatalf("direct enqueue err = %v, want ErrRunRefused for the private project", err)
 			}

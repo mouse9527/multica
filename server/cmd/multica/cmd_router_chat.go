@@ -125,8 +125,8 @@ func routerChatBoard(ctx context.Context, client *cli.APIClient, projectID strin
 	}
 	var issue map[string]any
 	if err := client.PostJSON(ctx, "/api/issues", map[string]any{
-		"title":       "Router 看板 · " + name,
-		"description": "Records the runs of the Router in the chat \"" + name + "\". Created by `multica router subscribe`.",
+		"title":       "Super Agent 看板 · " + name,
+		"description": "Records the runs of the Super Agent in the chat \"" + name + "\". Created by `multica router subscribe`.",
 		"project_id":  projectID,
 	}, &issue); err != nil {
 		return "", fmt.Errorf("create the board issue: %w", err)

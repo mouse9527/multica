@@ -275,12 +275,12 @@ describe("Router in the chat menu", () => {
     state.subscriptions = [sub({ paused_reason: "agent_unavailable" })];
     state.changes = [
       { id: "c1", action: "create", detail: {} },
-      { id: "c2", action: "auto_pause", detail: { reason: "agent_unavailable", why: "its Router chat chat-1 was archived." } },
+      { id: "c2", action: "auto_pause", detail: { reason: "agent_unavailable", why: "its Super Agent chat chat-1 was archived." } },
     ];
     show(<Harness chat={session} />);
     openMenu();
     fireEvent.click(await screen.findByRole("menuitem", { name: en.menu.settings }));
-    expect(await screen.findByText("its Router chat chat-1 was archived.")).toBeInTheDocument();
+    expect(await screen.findByText("its Super Agent chat chat-1 was archived.")).toBeInTheDocument();
   });
 
   it("releases a Router after confirmation, keeping its subscriptions paused", async () => {
