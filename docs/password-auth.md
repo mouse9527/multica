@@ -6,7 +6,7 @@
 
 ## 数据表
 
-迁移 `9004_passwordauth_user_credential` 新建 `user_credential`，不改现有表（包括 `user`）。号段规则见 `docs/github-issues.md`「迁移号段规则」。
+迁移 `9018_passwordauth_user_credential` 新建 `user_credential`，不改现有表（包括 `user`）。fork 的迁移编号从 9000 起，取当时最大号加一；CI 的 `migrations-roundtrip` 会对所有 fork 迁移做 up/down 往返，见 [fork-ci.md](fork-ci.md)。
 
 | 列 | 说明 |
 |---|---|
@@ -18,7 +18,7 @@
 
 - 无外键（`AGENTS.md`）。上游目前没有删除用户的代码；以后若有，删除方要一并删这张表的行。
 - 唯一性由主键保证，没有其他索引，所以没有 `CONCURRENTLY` 索引迁移，也不需要在 `server/cmd/migrate/main.go` 登记钩子。
-- 回滚：`9004_…down.sql` 只 `DROP TABLE user_credential`，会删除所有已设密码；回滚后用户仍可用验证码登录。
+- 回滚：`9018_…down.sql` 只 `DROP TABLE user_credential`，会删除所有已设密码；回滚后用户仍可用验证码登录。
 
 ## 哈希
 

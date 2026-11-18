@@ -25,7 +25,8 @@
 | `server/internal/featureflags/keys.go` | M-85、M-89、M-86、M-96、M-97、M-105 | 新开关 `router_v1` 与 `RouterV1Enabled`；`handoff_reply_wake` 与 `HandoffReplyWakeEnabled`；`router_dispatch` 与 `RouterDispatchEnabled`；`router_chat` 与 `RouterChatEnabled`；`router_hold_shadow` 与 `RouterHoldShadowEnabled`；`EvaluateFrontendPublicFlags` 把 `router_chat` 的组合结果发给前端（一行） | 有 |
 | `server/internal/handler/comment.go` | M-89 | `computeCommentAgentTriggers` 改名为 `computeUpstreamCommentAgentTriggers`（一行），由 fork 的同名包装函数调用，见 `handoff_reply_wake.go` | 有 |
 | `server/internal/handler/workspace.go` | M-20、M-85 | 删除工作区时清理迁移 9000 建的 5 张表（功能撤回后表仍在，见 [github-issues.md](github-issues.md)），以及 Router 的表（迁移 9004、9008，由 `agentrouter.DeleteWorkspaceData` 删除；M-86 新增的 3 张表不再改这个文件） | 有 |
-| `server/pkg/db/generated/models.go` | M-20 | sqlc 按迁移 9000 的表生成的模型（生成文件，不手改） | 无（生成） |
+| `server/pkg/db/generated/models.go` | M-20、M-40 | sqlc 按迁移 9000 和 9018 的表生成的模型（生成文件，不手改） | 无（生成） |
+| `server/go.mod`、`server/go.sum` | M-40 | 新增直接依赖 `golang.org/x/crypto`（argon2id，密码登录用） | `go.mod` 有；`go.sum` 无（不能写注释） |
 | `server/internal/inbox/create.go` | M-97 | `createIfEligible` 在写入前调用 fork 的拦截钩子（一个 `if`，钩子在 fork 新文件 `intercept.go`）；没有注册拦截器时行为不变。上游自 `cd969f848` 起把它改为包内函数、所有写入经 `Deliver`；fork 的 Router 通知用 `intercept.go` 里导出的 `CreateAndAnnounce`（写入并像 `Deliver` 一样广播 `inbox:new` / `inbox:snoozed`，M-131） | 有 |
 | `server/pkg/protocol/messages.go` | M-96 | 新常量 `ChatMessageKindRouterBatch`（`router_batch`） | 有 |
 | `server/internal/handler/chat.go` | M-96 | `normalizeMessageKind` 原样透出 `router_batch`（一个 case） | 有 |
@@ -49,7 +50,7 @@
 |---|---|---|---|
 | `server/cmd/multica/cmd_daemon_autostart_test.go` | M-125 | 去掉「plist 不得含 KeepAlive」的断言，改由 fork 的 `cmd_daemon_launchd_handoff_test.go` 覆盖 | 有 |
 | `server/internal/cli/update_source_test.go` | M-58 | 适配可配置的 Release 仓库 | 有 |
-| `server/internal/handler/workspace_delete_manifest_test.go` | M-20、M-85、M-86、M-96、M-97 | 登记迁移 9000 的 5 张表、迁移 9004 的 4 张表、迁移 9008 的 3 张表、迁移 9014 的 1 张表和迁移 9015 的 1 张表 | 有 |
+| `server/internal/handler/workspace_delete_manifest_test.go` | M-20、M-85、M-86、M-96、M-97、M-40 | 登记迁移 9000 的 5 张表、迁移 9004 的 4 张表、迁移 9008 的 3 张表、迁移 9014 的 1 张表、迁移 9015 的 1 张表，以及迁移 9018 的 `user_credential`（`keep`：密码属于账号，删工作区不动它） | 有 |
 | `server/internal/handler/autopilot_subscriber_test.go` | M-24 | 删触发器的 DDL 改走 `testutil.ExecDDL` | 有 |
 | `server/internal/handler/daemon_runtime_access_test.go` | M-24 | 同上 | 有 |
 | `server/internal/handler/task_supplement_test.go` | M-24 | 同上 | 有 |
@@ -59,7 +60,7 @@
 | `server/internal/service/autopilot_quota_test.go` | M-24 | 同上 | 有 |
 | `server/internal/service/delegated_failure_recovery_settled_test.go` | M-24 | 同上 | 有 |
 
-合计：修改过的上游文件 50 个（含 11 个测试文件），其中 4 个（生成的 `models.go`、`glyphs.ts`、`icons/index.ts`，以及 `packages/core/package.json`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。M-105 新增的 13 个前端上游触点（M-131 同步后剩 12 个，`client.ts` 已还原为上游版本）和 `keys.go` 的一行也集中在同一个提交里。M-97 只新增 1 个上游触点（`inbox/create.go`）。M-108 的 5 处（两个挂载点、图标绘制与两个生成文件）同样在一个提交里。M-125 新增 2 个上游触点（`cmd_daemon.go`、`cmd_daemon_autostart_test.go`），并在 `cmd_daemon_autostart.go` 上追加改动。
+合计：修改过的上游文件 52 个（含 11 个测试文件），其中 5 个（生成的 `models.go`、`glyphs.ts`、`icons/index.ts`，以及 `packages/core/package.json`、`server/go.sum`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。M-105 新增的 13 个前端上游触点（M-131 同步后剩 12 个，`client.ts` 已还原为上游版本）和 `keys.go` 的一行也集中在同一个提交里。M-97 只新增 1 个上游触点（`inbox/create.go`）。M-108 的 5 处（两个挂载点、图标绘制与两个生成文件）同样在一个提交里。M-125 新增 2 个上游触点（`cmd_daemon.go`、`cmd_daemon_autostart_test.go`），并在 `cmd_daemon_autostart.go` 上追加改动。
 
 ## fork 新增的文件
 
@@ -82,3 +83,4 @@
 - daemon LaunchAgent 的 ProcessType（M-101）：`server/cmd/multica/cmd_daemon_autostart_process_type.go` 及测试。
 - daemon 在 LaunchAgent 下的升级重启交给 launchd（M-125）：`server/cmd/multica/cmd_daemon_launchd_handoff.go` 及测试。
 - `docs/github-issues*.md`。
+- 密码登录 P1（M-40，见 [password-auth.md](password-auth.md)；还没有接口和开关，不改运行时行为）：`server/internal/passwordauth/`；`server/migrations/9018_*`；`server/pkg/db/queries/passwordauth.sql` 与 `server/pkg/db/generated/passwordauth.sql.go`；`docs/password-auth.md`。
