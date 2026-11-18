@@ -36,6 +36,7 @@
 | `packages/views/chat/components/chat-message-list.tsx` | M-96 | 引入 `router-batch.tsx`：批次消息折叠显示，批次轮次的 `no_response` 不显示（一个 import、一个过滤、一个分支） | 有 |
 | `packages/core/api/client.ts` | M-105 | 新增公开方法 `forkRequest`：fork 模块（`packages/core/router`）借用共享的请求路径，不再往这个文件加方法 | 有 |
 | `packages/core/package.json` | M-105 | 导出 `./router` | 无（JSON） |
+| `packages/core/realtime/use-realtime-sync.ts` | M-147 | 前缀刷新表加一项 `router`：收到 `router:subscription_changed` 时让 Super Agent 的查询（`routerKeys.all`）失效（一个 import、一个条目）；`router_v1` 关闭时服务端不发这个事件，与上游一致 | 有 |
 | `packages/views/chat/components/chat-session-header.tsx` | M-105、M-108 | ⋯ 菜单挂 Router 设置：一个 import、一个钩子调用、菜单项和对话框各一处；M-108 在标题后挂 Router 标记（`leaf` 一处） | 有 |
 | `packages/views/chat/components/chat-thread-list.tsx` | M-108 | 聊天列表行的标题前挂 Router 标记：一个 import、一行组件 | 有 |
 | `packages/ui/icons/drawings/drawings.mjs` | M-108 | 新图标 `Radar`（一行绘制） | 有 |
@@ -60,7 +61,7 @@
 | `server/internal/service/autopilot_quota_test.go` | M-24 | 同上 | 有 |
 | `server/internal/service/delegated_failure_recovery_settled_test.go` | M-24 | 同上 | 有 |
 
-合计：修改过的上游文件 51 个（含 11 个测试文件），其中 4 个（生成的 `models.go`、`glyphs.ts`、`icons/index.ts`，以及 `packages/core/package.json`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。M-105 新增的 13 个前端上游触点和 `keys.go` 的一行也集中在同一个提交里。M-97 只新增 1 个上游触点（`inbox/create.go`）。M-108 的 5 处（两个挂载点、图标绘制与两个生成文件）同样在一个提交里。M-125 新增 2 个上游触点（`cmd_daemon.go`、`cmd_daemon_autostart_test.go`），并在 `cmd_daemon_autostart.go` 上追加改动。
+合计：修改过的上游文件 52 个（含 11 个测试文件），其中 4 个（生成的 `models.go`、`glyphs.ts`、`icons/index.ts`，以及 `packages/core/package.json`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。M-105 新增的 13 个前端上游触点和 `keys.go` 的一行也集中在同一个提交里。M-97 只新增 1 个上游触点（`inbox/create.go`）。M-108 的 5 处（两个挂载点、图标绘制与两个生成文件）同样在一个提交里。M-125 新增 2 个上游触点（`cmd_daemon.go`、`cmd_daemon_autostart_test.go`），并在 `cmd_daemon_autostart.go` 上追加改动。M-147 新增 1 个上游触点（`use-realtime-sync.ts`）。
 
 ## fork 新增的文件
 
@@ -79,6 +80,7 @@
 - Router 页面设置与指令设置（M-105，开关 `router_chat`，见 [router.md](router.md)「页面设置」）：`packages/core/router/`；`packages/views/router/`；`packages/views/locales/*/router.json`；`server/internal/featureflags/router_fork_test.go`；`server/internal/handler/agent_router_chat_setup.go` 及测试；`server/cmd/multica/cmd_router_chat.go` 及测试；`docs/router-setup-skill/SKILL.md`（skill 草案）。
 - Router 会话标记（M-108，开关 `router_chat`，见 [router.md](router.md)「聊天列表的 Router 标记」）：`packages/views/router/router-chat-marker.tsx` 及测试；`server/internal/agentrouter/chat_summary.go`；`server/internal/handler/agent_router_chat_list.go` 及测试；`packages/core/router/` 与 `router.json` 的增量。
 - Router 收件箱规则分流（M-133，S3b，开关 `router_inbox_rules`，默认关闭，见 [router.md](router.md)「收件箱规则分流（S3b，影子）」）：`server/internal/agentrouter/inbox_rules.go` 及测试（钩子接在 `hold.go`）；`server/internal/handler/agent_router_rules.go` 及测试；`server/cmd/multica/cmd_router_rules.go`。没有改上游文件。
+- Super Agent 设置实时刷新（M-147，见 [router.md](router.md)「Super Agent 设置」）：`server/internal/handler/agent_router_realtime.go` 及测试；`packages/core/realtime/use-realtime-sync-router.test.tsx`；`packages/core/router/queries.ts`、`agent_router.go`、`agent_router_dispatch.go`、`router-settings.test.tsx` 的增量。
 - 回复叫醒修正（M-89，开关 `handoff_reply_wake`，默认关闭）：`server/internal/handler/handoff_reply_wake.go` 及测试；`server/internal/issuestatus/handoff_fork.go`；`server/cmd/server/handoff_reply_wake_parity_test.go`。开关打开时，issue 处于「交还给人」的状态（`issueStatusIsHandoff` 为真，例如自定义的 started 状态、`in_review`、`blocked`、`done`）时，成员的任何评论（含讨论串里的回复，不含 note）在上游路由之外再叫醒处理人；智能体的评论不走这条路。
 - daemon LaunchAgent 的 ProcessType（M-101）：`server/cmd/multica/cmd_daemon_autostart_process_type.go` 及测试。
 - daemon 在 LaunchAgent 下的升级重启交给 launchd（M-125）：`server/cmd/multica/cmd_daemon_launchd_handoff.go` 及测试。
