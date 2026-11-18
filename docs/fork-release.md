@@ -94,7 +94,8 @@ identifier "ai.multica.cli" and certificate leaf = H"<证书 SHA-1>"
 
 ### 本机过渡
 
-- 现在（第一个签名版本发布前）：本机 runner 的二进制是本机编译、用本机证书 `multica-local` 签名的，靠本机的签名脚本 `bin/sign.sh`（在 runner 机器上，不在仓库里）。这些二进制都没有构建记录。
+- 现在（第一个签名版本发布前）：本机 runner 的二进制是本机编译、用本机证书 `multica-local` 签名的，靠本机的签名脚本 `sign.sh`（在 runner 机器上，不在仓库里）。这些二进制都没有构建记录。
+- 本机 runner 的二进制装在 `~/.local/bin/multica`（和 `scripts/install.sh` 无 sudo 时的位置一致），签名脚本在 `~/.local/share/multica/sign.sh`，默认目标就是这个二进制（M-107）。`~/.local/bin/multica` 必须是真实文件：`scripts/fork-install-macos.sh` 和 `multica daemon autostart enable` 都会先解析软链，目标是软链时，替换和登记的都是它指向的旧文件。daemon 每次启动都会把 LaunchAgent 的程序路径改成自己的路径，所以换安装位置要先改 plist，再在没有任务时 `launchctl bootout` + `launchctl bootstrap`。
 - 第一个签名版本发布后，**本机只用 fork Release 里的 darwin 产物，不再在本机编译 multica**。证书从 `multica-local` 换成 `multica-ci`，DR 变了，**会再弹一次窗**；按意愿选「允许」或「不允许」后会被记住，以后升级不再弹。
 - **怎么拿二进制：由运维用 `scripts/fork-install-macos.sh` 下载并替换**，不用 daemon 自动更新。自动更新只校验 `checksums.txt`，不检查签名身份；这台机器上保持关闭（不设 `MULTICA_DAEMON_AUTO_UPDATE=true`）。
 
@@ -110,7 +111,7 @@ identifier "ai.multica.cli" and certificate leaf = H"<证书 SHA-1>"
   4. 这个 tag、这个提交有一次成功的 Release (fork) 运行。
 
   通过后原子替换，旧二进制留在 `<target>.prev`，并打印提交和 Release 运行链接：**每个版本都能对应到具体提交和 CI 运行记录**。daemon 在空闲时 re-exec 进新二进制（auto-reload），也可以在没有任务时手动 `multica daemon restart`。装回旧版本：同样的命令换成旧 tag，或把 `.prev` 移回去。
-- `bin/sign.sh` 只留作应急（比如必须在本机临时编译一个版本）。本机编译、用 `multica-local` 签名的版本是**另一个身份**：切过去按 `multica-local` 的授权走（没有记录就弹窗），切回 CI 版本也一样，而且它没有构建记录。不要来回换。
+- `sign.sh` 只留作应急（比如必须在本机临时编译一个版本）。本机编译、用 `multica-local` 签名的版本是**另一个身份**：切过去按 `multica-local` 的授权走（没有记录就弹窗），切回 CI 版本也一样，而且它没有构建记录。不要来回换。
 - 自动更新（`multica update` 和 daemon）下载的也是 Release 里签过名的包：校验 `checksums.txt`、解压出 `multica`、原样写入临时文件、改权限、改名覆盖，不改动二进制内容，签名和身份保持不变。别的 runner 可以照常用它；只是它不额外核对签名身份。
 
 ## runner 怎么更新
