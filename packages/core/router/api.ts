@@ -33,7 +33,7 @@ function parseWrite(raw: unknown, endpoint: string): RouterSubscription {
 }
 
 export async function listRouterSubscriptions(wsId: string): Promise<RouterSubscription[]> {
-  const raw = await api.forkRequest("/api/router/subscriptions", scoped(wsId));
+  const raw = await api.request("/api/router/subscriptions", scoped(wsId));
   return parseWithFallback(raw, RouterSubscriptionListSchema, { subscriptions: [] as RouterSubscription[] }, {
     endpoint: "GET /api/router/subscriptions",
   }).subscriptions;
@@ -41,7 +41,7 @@ export async function listRouterSubscriptions(wsId: string): Promise<RouterSubsc
 
 /** The Routers among the member's own chats, with scope names; needs router_chat. */
 export async function listRouterChats(wsId: string): Promise<RouterChatSummary[]> {
-  const raw = await api.forkRequest("/api/router/chats", scoped(wsId));
+  const raw = await api.request("/api/router/chats", scoped(wsId));
   return parseWithFallback(raw, RouterChatSummaryListSchema, { chats: [] as RouterChatSummary[] }, {
     endpoint: "GET /api/router/chats",
   }).chats;
@@ -53,7 +53,7 @@ export async function listRouterDispatches(
 ): Promise<RouterDispatch[]> {
   const params = new URLSearchParams({ limit: String(limit) });
   if (subscriptionId) params.set("subscription_id", subscriptionId);
-  const raw = await api.forkRequest(`/api/router/dispatches?${params}`, scoped(wsId));
+  const raw = await api.request(`/api/router/dispatches?${params}`, scoped(wsId));
   return parseWithFallback(raw, RouterDispatchListSchema, { dispatches: [] as RouterDispatch[] }, {
     endpoint: "GET /api/router/dispatches",
   }).dispatches;
@@ -63,7 +63,7 @@ export async function listRouterSubscriptionChanges(
   wsId: string,
   subscriptionId: string,
 ): Promise<RouterSubscriptionChange[]> {
-  const raw = await api.forkRequest(
+  const raw = await api.request(
     `/api/router/subscriptions/${encodeURIComponent(subscriptionId)}/changes`,
     scoped(wsId),
   );
@@ -77,7 +77,7 @@ export async function createRouterSubscription(
   input: RouterScopeInput &
     RouterSettingsInput & { agent_id: string; anchor_chat_session_id: string; anchor_issue_id?: string },
 ): Promise<RouterSubscription> {
-  const raw = await api.forkRequest(
+  const raw = await api.request(
     "/api/router/subscriptions",
     scoped(wsId, { method: "POST", body: JSON.stringify(input) }),
   );
@@ -89,7 +89,7 @@ export async function updateRouterSubscription(
   id: string,
   patch: Partial<RouterSettingsInput> & { anchor_chat_session_id?: string },
 ): Promise<RouterSubscription> {
-  const raw = await api.forkRequest(
+  const raw = await api.request(
     `/api/router/subscriptions/${encodeURIComponent(id)}`,
     scoped(wsId, { method: "PATCH", body: JSON.stringify(patch) }),
   );
@@ -102,7 +102,7 @@ export async function setRouterSubscriptionPaused(
   paused: boolean,
 ): Promise<RouterSubscription> {
   const action = paused ? "pause" : "resume";
-  const raw = await api.forkRequest(
+  const raw = await api.request(
     `/api/router/subscriptions/${encodeURIComponent(id)}/${action}`,
     scoped(wsId, { method: "POST" }),
   );
@@ -110,7 +110,7 @@ export async function setRouterSubscriptionPaused(
 }
 
 export async function deleteRouterSubscription(wsId: string, id: string): Promise<void> {
-  await api.forkRequest(
+  await api.request(
     `/api/router/subscriptions/${encodeURIComponent(id)}`,
     scoped(wsId, { method: "DELETE" }),
   );

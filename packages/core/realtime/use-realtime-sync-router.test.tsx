@@ -54,8 +54,8 @@ const subscription = {
 it("refetches the Super Agent subscriptions when one changes elsewhere (M-147)", async () => {
   const qc = createQueryClient();
   let rows: unknown[] = [];
-  const forkRequest = vi.fn(async () => ({ subscriptions: rows }));
-  setApiInstance({ forkRequest } as unknown as ApiClient);
+  const request = vi.fn(async () => ({ subscriptions: rows }));
+  setApiInstance({ request } as unknown as ApiClient);
 
   let emit: ((msg: WSMessage) => void) | undefined;
   const ws = {
@@ -91,7 +91,7 @@ it("refetches the Super Agent subscriptions when one changes elsewhere (M-147)",
       emit!({ type: "router:subscription_changed", payload: { subscription_id: "sub-1", action: "created" } } as unknown as WSMessage);
     });
     await waitFor(() => expect(view.result.current.data?.map((s) => s.id)).toEqual(["sub-1"]));
-    expect(forkRequest).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledTimes(2);
   } finally {
     view.unmount();
     qc.clear();

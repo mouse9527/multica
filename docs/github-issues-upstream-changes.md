@@ -2,9 +2,9 @@
 
 本文件属于 `mouse9527/multica` fork。上游 `multica-ai/multica` 的许可证（`LICENSE`，Apache 2.0 加附加条件）要求：被修改的文件要带有显著的修改说明。分发 fork 的源码或镜像时，请把本清单和 `LICENSE`、`NOTICE` 一起附上。
 
-- **基线**：上游 `5b8a15082`（#73 同步进 fork 的上游 `main`）。下表是 fork `main` 相对这个基线**修改过的上游文件**。fork 新增的文件不在表里，见文末。
+- **基线**：上游 `cd969f848`（M-131 同步进 fork 的上游 `main`；上一次是 #73 的 `5b8a15082`）。下表是 fork `main` 相对这个基线**修改过的上游文件**。fork 新增的文件不在表里，见文末。
 - **「文件内说明」** 一列：「有」表示文件里有 fork 的修改说明（形如 `Modified by the mouse9527/multica fork` 或 `mouse9527/multica fork` 的注释）；「无」表示文件里没有，**以本清单作为它的修改说明**。
-- **重新生成**：`git diff --name-status 5b8a15082 origin/main | grep '^M'`（两个提交之间用空格、不用 `..`：基线已并入 `main`，要比较两棵树，不是取提交区间）。同步上游之后，基线改为那次同步的上游提交。fork 改动又碰到上游文件时，在同一个 PR 里更新本表。
+- **重新生成**：`git diff --name-status cd969f848 origin/main | grep '^M'`（两个提交之间用空格、不用 `..`：基线已并入 `main`，要比较两棵树，不是取提交区间）。同步上游之后，基线改为那次同步的上游提交。fork 改动又碰到上游文件时，在同一个 PR 里更新本表。
 - **GitHub 原生 issue 已撤回**（M-70，代码改动见 M-72）：它在上游文件里的钩子已全部还原成上游版本，fork 对上游文件的修改从 77 个降到 17 个。说明见 [github-issues.md](github-issues.md)。
 
 ## 修改过的上游文件
@@ -26,7 +26,7 @@
 | `server/internal/handler/comment.go` | M-89 | `computeCommentAgentTriggers` 改名为 `computeUpstreamCommentAgentTriggers`（一行），由 fork 的同名包装函数调用，见 `handoff_reply_wake.go` | 有 |
 | `server/internal/handler/workspace.go` | M-20、M-85 | 删除工作区时清理迁移 9000 建的 5 张表（功能撤回后表仍在，见 [github-issues.md](github-issues.md)），以及 Router 的表（迁移 9004、9008，由 `agentrouter.DeleteWorkspaceData` 删除；M-86 新增的 3 张表不再改这个文件） | 有 |
 | `server/pkg/db/generated/models.go` | M-20 | sqlc 按迁移 9000 的表生成的模型（生成文件，不手改） | 无（生成） |
-| `server/internal/inbox/create.go` | M-97 | `CreateIfEligible` 在写入前调用 fork 的拦截钩子（一个 `if`，钩子在 fork 新文件 `intercept.go`）；没有注册拦截器时行为不变 | 有 |
+| `server/internal/inbox/create.go` | M-97 | `createIfEligible` 在写入前调用 fork 的拦截钩子（一个 `if`，钩子在 fork 新文件 `intercept.go`）；没有注册拦截器时行为不变。上游自 `cd969f848` 起把它改为包内函数、所有写入经 `Deliver`；fork 的 Router 通知用 `intercept.go` 里导出的 `CreateAndAnnounce`（写入并像 `Deliver` 一样广播 `inbox:new` / `inbox:snoozed`，M-131） | 有 |
 | `server/pkg/protocol/messages.go` | M-96 | 新常量 `ChatMessageKindRouterBatch`（`router_batch`） | 有 |
 | `server/internal/handler/chat.go` | M-96 | `normalizeMessageKind` 原样透出 `router_batch`（一个 case） | 有 |
 | `server/pkg/db/queries/chat.sql` | M-96 | `ListChatSessionsByCreator`、`ListAllChatSessionsByCreator`：预览排除 Router 批次和批次轮次的 `no_response`，未读数不计后者 | 有 |
@@ -34,7 +34,6 @@
 | `packages/core/api/schemas.ts` | M-96 | 两处 `message_kind` 枚举加 `router_batch` | 有 |
 | `packages/core/types/chat.ts` | M-96 | `ChatMessageKind` 加 `router_batch` | 有 |
 | `packages/views/chat/components/chat-message-list.tsx` | M-96 | 引入 `router-batch.tsx`：批次消息折叠显示，批次轮次的 `no_response` 不显示（一个 import、一个过滤、一个分支） | 有 |
-| `packages/core/api/client.ts` | M-105 | 新增公开方法 `forkRequest`：fork 模块（`packages/core/router`）借用共享的请求路径，不再往这个文件加方法 | 有 |
 | `packages/core/package.json` | M-105 | 导出 `./router` | 无（JSON） |
 | `packages/core/realtime/use-realtime-sync.ts` | M-147 | 前缀刷新表加一项 `router`：收到 `router:subscription_changed` 时让 Super Agent 的查询（`routerKeys.all`）失效（一个 import、一个条目）；`router_v1` 关闭时服务端不发这个事件，与上游一致 | 有 |
 | `packages/views/chat/components/chat-session-header.tsx` | M-105、M-108 | ⋯ 菜单挂 Router 设置：一个 import、一个钩子调用、菜单项和对话框各一处；M-108 在标题后挂 Router 标记（`leaf` 一处） | 有 |
@@ -61,7 +60,7 @@
 | `server/internal/service/autopilot_quota_test.go` | M-24 | 同上 | 有 |
 | `server/internal/service/delegated_failure_recovery_settled_test.go` | M-24 | 同上 | 有 |
 
-合计：修改过的上游文件 52 个（含 11 个测试文件），其中 4 个（生成的 `models.go`、`glyphs.ts`、`icons/index.ts`，以及 `packages/core/package.json`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。M-105 新增的 13 个前端上游触点和 `keys.go` 的一行也集中在同一个提交里。M-97 只新增 1 个上游触点（`inbox/create.go`）。M-108 的 5 处（两个挂载点、图标绘制与两个生成文件）同样在一个提交里。M-125 新增 2 个上游触点（`cmd_daemon.go`、`cmd_daemon_autostart_test.go`），并在 `cmd_daemon_autostart.go` 上追加改动。M-147 新增 1 个上游触点（`use-realtime-sync.ts`）。
+合计：修改过的上游文件 51 个（含 11 个测试文件），其中 4 个（生成的 `models.go`、`glyphs.ts`、`icons/index.ts`，以及 `packages/core/package.json`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。M-105 新增的 13 个前端上游触点（M-131 同步后剩 12 个，`client.ts` 已还原为上游版本）和 `keys.go` 的一行也集中在同一个提交里。M-97 只新增 1 个上游触点（`inbox/create.go`）。M-108 的 5 处（两个挂载点、图标绘制与两个生成文件）同样在一个提交里。M-125 新增 2 个上游触点（`cmd_daemon.go`、`cmd_daemon_autostart_test.go`），并在 `cmd_daemon_autostart.go` 上追加改动。M-147 新增 1 个上游触点（`use-realtime-sync.ts`）。
 
 ## fork 新增的文件
 

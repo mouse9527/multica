@@ -17,7 +17,7 @@ import (
 )
 
 // errWritten is what the fake database answers every insert with, so a test
-// sees whether CreateIfEligible went on to write.
+// sees whether createIfEligible went on to write.
 var errWritten = errors.New("insert reached the database")
 
 type fakeDB struct{ inserts int }
@@ -44,9 +44,9 @@ func (f interceptorFunc) Intercept(ctx context.Context, p db.CreateInboxItemPara
 func create(t *testing.T, p db.CreateInboxItemParams) (inserted bool, wrote bool) {
 	t.Helper()
 	fake := &fakeDB{}
-	_, inserted, err := CreateIfEligible(context.Background(), db.New(fake), p)
+	_, inserted, err := createIfEligible(context.Background(), db.New(fake), p)
 	if err != nil && !errors.Is(err, errWritten) {
-		t.Fatalf("CreateIfEligible: %v", err)
+		t.Fatalf("createIfEligible: %v", err)
 	}
 	return inserted, fake.inserts == 1
 }
