@@ -8,7 +8,7 @@
 - 关闭时：`/api/router/*` 返回 404，`events.Bus` 监听器和对账任务都不注册，行为与上游一致。开关在启动时读一次，改了要重启服务。
 - `router_dispatch`（S2），默认关闭，`FF_ROUTER_DISPATCH=true` 打开，**只在 `router_v1` 也打开时生效**。关闭时不注册派发任务，`/api/router/subscriptions/{id}/state` 和 `/api/router/notices` 返回 404，行为与 S1 一致。订阅的修改（`PATCH`）、审计记录和运行列表只要 `router_v1`。
 - `router_chat`（v6 切片 1），默认关闭，`FF_ROUTER_CHAT=true` 打开，**只在 `router_dispatch` 也打开时生效**。注意两个读取时点不同：派发任务在**启动时**读一次（决定绑定了 chat 的订阅是否走 chat），`PATCH` 接口在**每次请求时**读（决定是否接受 `anchor_chat_session_id`）。所以不重启就在线打开开关的话，绑定能立刻存下来，但派发要等重启后才会写进会话。关闭时：`PATCH` 里的 `anchor_chat_session_id` 返回 400；已有的绑定保留但不用，所有订阅照旧走锚点运行，行为与 S2 一致。
-- `router_hold_shadow`（v6 切片 2），默认关闭，`FF_ROUTER_HOLD_SHADOW=true` 打开，**只在 `router_chat` 也打开时生效**，启动时读一次。关闭时不注册收件箱拦截器，`CreateIfEligible` 与上游完全一致；批次里也没有「Hold preview」一节。
+- `router_hold_shadow`（v6 切片 2），默认关闭，`FF_ROUTER_HOLD_SHADOW=true` 打开，**只在 `router_chat` 也打开时生效**，启动时读一次。关闭时不注册收件箱拦截器，收件箱写入与上游完全一致；批次里也没有「Hold preview」一节。
 - `router_inbox_resolve`（S3a，M-118），默认关闭，`FF_ROUTER_INBOX_RESOLVE=true` 打开，**只在 `router_v1` 也打开时生效**，启动时读一次。另外只在工作区设置里有 `router_inbox_resolve`（指定了 Owner）的工作区生效。任一缺失时不注册监听器和对账任务、不归档任何条目，行为与上游一致。开关常量放在 `internal/agentrouter/inbox_resolve.go`，没有改 `featureflags/keys.go`。
 - `MULTICA_ROUTER_RECONCILE_INTERVAL`：对账周期（Go duration，如 `5m`），默认 5 分钟，最小 30 秒。
 
@@ -245,7 +245,7 @@ Super Agent 只做分派、跟踪、转告，不自己干活。实质性工作�
 
 ### 钩子
 
-- 上游只改一处：`inbox.CreateIfEligible` 在写入前调用 `intercept`（fork 新文件 `server/internal/inbox/intercept.go`）。注册方式是 `inbox.SetInterceptor(i, budget)`；没有注册时直接写入，与上游一致。
+- 上游只改一处：`inbox` 包的 `createIfEligible` 在写入前调用 `intercept`（fork 新文件 `server/internal/inbox/intercept.go`）。上游自 `cd969f848`（M-131 同步）起所有收件箱写入都经 `inbox.Deliver` 走到 `createIfEligible`；Router 通知用 fork 在 `intercept.go` 里导出的 `CreateAndAnnounce`，同样经过它，并像 `Deliver` 一样按返回行广播 `inbox:new`，或在条目并入该 issue 的稍后提醒（snooze）时广播 `inbox:snoozed`。注册方式是 `inbox.SetInterceptor(i, budget)`；没有注册时直接写入，与上游一致。
 - **fail-open**：拦截函数返回错误、panic，或超过预算（`DefaultHoldBudget`，250 毫秒），都照常写入。只有在预算内干净地返回 `hold=true` 才会不写（切片 3 才会用到；影子模式永远返回 `false`）。
 - 拦截函数在**独立的 goroutine** 里跑，写入方最多等预算这么久，拦截函数不响应 context（例如卡在不受 context 控制的调用里）也一样；超时后才返回的结果一律作废。同时在跑的调用最多 `inbox.InterceptorSlots`（64）个，超时未返回的调用继续占着名额；名额用完时后续写入直接跳过拦截，不等待。这两种情况分别计入 `hook.abandoned`、`hook.saturated`（见「观测」），日志第一次和之后每 100 次各打一条。
 - 注册了拦截器时，没有 id 的条目在钩子里先生成 id（UUIDv7），拦截器和写入看到的是同一个 id。现有 12 个调用点都已自带 id。
@@ -280,6 +280,8 @@ Super Agent 只做分派、跟踪、转告，不自己干活。实质性工作�
 
 ### 调用点核对（切片 3 前提）
 
+> 下表是 M-131 同步前（上游 `5b8a15082`）的核对。上游 `cd969f848` 起这些调用点改走 `inbox.Deliver`，切片 3 动手前要按新代码重新核对。
+
 `CreateIfEligible` 共 12 个调用点。影子模式下钩子永远不扣，所以都不受影响；下表看的是切片 3 真扣时（返回 `inserted=false`）是否安全：
 
 | 调用点 | 条目 | `inserted=false` 时 | 切片 3 |
@@ -297,7 +299,7 @@ Super Agent 只做分派、跟踪、转告，不自己干活。实质性工作�
 | `internal/service/autopilot_quota_notifications.go` | `autopilot_quota_exceeded` | 跳过 | 不扣（不扣名单，且没有 issue） |
 | `internal/agentrouter/notice.go` `InboxAdapter` | `router_notice` | 会把投递记成 `skipped` | 不扣（不扣名单） |
 
-全仓库写 `inbox_item` 只有 `CreateIfEligible` 这一条路（`CreateInboxItem` 没有其他调用方，也没有手写 `INSERT INTO inbox_item`），所以钩子覆盖了全部收件箱写入。
+同步前全仓库写 `inbox_item` 只有 `CreateIfEligible` 这一条路（同步后是 `createIfEligible`）（`CreateInboxItem` 没有其他调用方，也没有手写 `INSERT INTO inbox_item`），所以钩子覆盖了全部收件箱写入。
 
 ## 已知局限（v6 切片 2）
 

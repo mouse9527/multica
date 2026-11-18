@@ -118,10 +118,16 @@ func intercept(ctx context.Context, params *db.CreateInboxItemParams) bool {
 	}
 }
 
-// CreateIfEligible writes one inbox row through createIfEligible, the
-// interceptor included, without Deliver's type registry, preferences or
-// announcement. The fork's Router notices use it and announce the row
-// themselves; upstream writes go through Deliver.
-func CreateIfEligible(ctx context.Context, queries *db.Queries, params db.CreateInboxItemParams) (item db.InboxItem, inserted bool, err error) {
-	return createIfEligible(ctx, queries, params)
+// CreateAndAnnounce writes one inbox row through createIfEligible, the
+// interceptor included, and announces it on pub the way Deliver does:
+// inbox:new, or inbox:snoozed for a row that joined a snooze on its issue.
+// It skips Deliver's type registry and preferences. The fork's Router
+// notices use it; upstream writes go through Deliver.
+func CreateAndAnnounce(ctx context.Context, queries *db.Queries, pub Publisher, params db.CreateInboxItemParams, issueStatus *string) (item db.InboxItem, inserted bool, err error) {
+	item, inserted, err = createIfEligible(ctx, queries, params)
+	if err != nil || !inserted {
+		return item, inserted, err
+	}
+	publish(pub, newEvent(item, issueStatus))
+	return item, true, nil
 }

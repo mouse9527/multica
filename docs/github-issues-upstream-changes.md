@@ -26,7 +26,7 @@
 | `server/internal/handler/comment.go` | M-89 | `computeCommentAgentTriggers` 改名为 `computeUpstreamCommentAgentTriggers`（一行），由 fork 的同名包装函数调用，见 `handoff_reply_wake.go` | 有 |
 | `server/internal/handler/workspace.go` | M-20、M-85 | 删除工作区时清理迁移 9000 建的 5 张表（功能撤回后表仍在，见 [github-issues.md](github-issues.md)），以及 Router 的表（迁移 9004、9008，由 `agentrouter.DeleteWorkspaceData` 删除；M-86 新增的 3 张表不再改这个文件） | 有 |
 | `server/pkg/db/generated/models.go` | M-20 | sqlc 按迁移 9000 的表生成的模型（生成文件，不手改） | 无（生成） |
-| `server/internal/inbox/create.go` | M-97 | `createIfEligible` 在写入前调用 fork 的拦截钩子（一个 `if`，钩子在 fork 新文件 `intercept.go`）；没有注册拦截器时行为不变。上游自 `cd969f848` 起把它改为包内函数、所有写入经 `Deliver`；fork 的 Router 通知用的导出包装 `CreateIfEligible` 放在 `intercept.go`（M-131） | 有 |
+| `server/internal/inbox/create.go` | M-97 | `createIfEligible` 在写入前调用 fork 的拦截钩子（一个 `if`，钩子在 fork 新文件 `intercept.go`）；没有注册拦截器时行为不变。上游自 `cd969f848` 起把它改为包内函数、所有写入经 `Deliver`；fork 的 Router 通知用 `intercept.go` 里导出的 `CreateAndAnnounce`（写入并像 `Deliver` 一样广播 `inbox:new` / `inbox:snoozed`，M-131） | 有 |
 | `server/pkg/protocol/messages.go` | M-96 | 新常量 `ChatMessageKindRouterBatch`（`router_batch`） | 有 |
 | `server/internal/handler/chat.go` | M-96 | `normalizeMessageKind` 原样透出 `router_batch`（一个 case） | 有 |
 | `server/pkg/db/queries/chat.sql` | M-96 | `ListChatSessionsByCreator`、`ListAllChatSessionsByCreator`：预览排除 Router 批次和批次轮次的 `no_response`，未读数不计后者 | 有 |

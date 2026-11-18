@@ -36,7 +36,7 @@ type inboxWrite struct {
 	recipient, issue, typ, actorType, actorID string
 }
 
-// writeInbox writes one inbox item through CreateIfEligible and returns its
+// writeInbox writes one inbox item through CreateAndAnnounce and returns its
 // id. The write must land: the hold is in shadow mode.
 func (e *env) writeInbox(w inboxWrite) string {
 	e.t.Helper()
@@ -52,7 +52,7 @@ func (e *env) writeInbox(w inboxWrite) string {
 		p.ActorType.String, p.ActorType.Valid = w.actorType, true
 		p.ActorID = util.MustParseUUID(w.actorID)
 	}
-	item, inserted, err := inbox.CreateIfEligible(e.ctx, db.New(pool), p)
+	item, inserted, err := inbox.CreateAndAnnounce(e.ctx, db.New(pool), nil, p, nil)
 	if err != nil || !inserted {
 		e.t.Fatalf("inbox write: inserted=%v err=%v; shadow mode must not keep items out", inserted, err)
 	}
