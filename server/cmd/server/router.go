@@ -2125,6 +2125,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Modified for the mouse9527/multica fork: Router subscriptions
 			// and captured events (M-85), 404 unless router_v1 is on.
 			r.Route("/api/router", h.MountAgentRouter)
+			// mouse9527/multica fork: the built-in Evolution agent (M-135),
+			// 404 unless evolution_v1 is on.
+			r.Route("/api/evolution", h.MountEvolution)
 
 			// Issues
 			r.Route("/api/issues", func(r chi.Router) {

@@ -344,5 +344,9 @@ func systemInstructionsFor(a db.Agent) string {
 	if a.SystemKey.String == service.MikaSystemKey {
 		return service.MikaSystemInstructions(a.Name)
 	}
+	// mouse9527/multica fork (M-135): the fork's own system agents (Evolution).
+	if s, ok := service.ForkSystemInstructions(a.SystemKey.String, a.Name); ok {
+		return s
+	}
 	return ""
 }
