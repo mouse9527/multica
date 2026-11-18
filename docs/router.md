@@ -335,7 +335,7 @@ Owner 不用 CLI，在页面上（或在 chat 里对智能体下指令，见下�
 - 暂停 / 恢复：暂停是手动暂停（停捕获）；恢复同时清掉自动暂停。
 - 解除 Super Agent（二次确认）：二选一，「删除它的订阅」，或「保留订阅并暂停」（先暂停、再解绑，所以中间不会退回锚点运行）。保留的订阅出现在设置页「Super Agent」的「不在 Super Agent 里的订阅」一节，可以在那里删除；把任一 chat 设为 Super Agent 并选同样的范围，就会按上一条接回。
 - 「经 Super Agent 处理的条目」：给切片 2、3 的暂扣层留的位置，现在只有一句说明。
-- Super Agent 状态没有实时事件，打开的设置对话框和列表每 30 秒刷新一次。
+- 实时刷新（M-147）：经 API 或 CLI 建、改、暂停、恢复、删除订阅后，服务端向工作区广播 `router:subscription_changed`（载荷只有 `subscription_id`、`action`），网页收到后让 Super Agent 的查询失效重拉，已经打开的设置对话框、列表和聊天标记不用刷新页面就能看到变化；打开设置对话框或列表时也总会重新读一次订阅列表，不用缓存里旧的那份。派发进度和自动暂停没有实时事件，打开时仍每 30 秒刷新一次。
 
 ### 在 chat 里用指令设置
 
@@ -372,7 +372,7 @@ Super Agent 的使用说明不再作为 skill 维护（手工导入的 skill 不
 ### 代码位置
 
 - 前端：`packages/core/router/`（API、zod 校验、查询与变更、分组）；`packages/views/router/`（对话框、范围选择、列表页、两个挂载钩子）；文案在 `packages/views/locales/*/router.json`。
-- 上游触点：`packages/core/package.json` 导出 `./router`（API 调用用上游 `cd969f848` 起提供的 `ApiClient.request`，原先 fork 加在 `client.ts` 的 `forkRequest` 已在 M-131 同步时去掉），`chat-session-header.tsx` 与 `settings-page.tsx` 各加一个挂载钩子，8 个语言入口和 `resources-types.ts` 登记 `router` 命名空间，`featureflags/keys.go` 公开 `router_chat`。见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。
+- 上游触点：`packages/core/package.json` 导出 `./router`（API 调用用上游 `cd969f848` 起提供的 `ApiClient.request`，原先 fork 加在 `client.ts` 的 `forkRequest` 已在 M-131 同步时去掉），`chat-session-header.tsx` 与 `settings-page.tsx` 各加一个挂载钩子，8 个语言入口和 `resources-types.ts` 登记 `router` 命名空间，`featureflags/keys.go` 公开 `router_chat`；`packages/core/realtime/use-realtime-sync.ts` 的前缀刷新表加一项 `router`（M-147）。见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。
 
 ## 聊天列表的 Super Agent 标记（M-108）
 

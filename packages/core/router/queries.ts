@@ -1,12 +1,16 @@
-// Added by the mouse9527/multica fork: Router page settings (M-105) and the
-// chat list's Router marker (M-108).
+// Added by the mouse9527/multica fork: Router page settings (M-105), the
+// chat list's Router marker (M-108), and live Super Agent settings (M-147).
 
 import { queryOptions, useQueries } from "@tanstack/react-query";
 import { listRouterChats, listRouterDispatches, listRouterSubscriptionChanges, listRouterSubscriptions } from "./api";
 import { latestDispatch } from "./group";
 import type { RouterDispatch, RouterSubscription } from "./types";
 
-/** Router state changes without realtime events, so open views poll. */
+/**
+ * Subscription writes through the API announce themselves
+ * (router:subscription_changed, handled by the realtime sync), but dispatch
+ * progress and automatic pauses do not, so open views also poll.
+ */
 export const ROUTER_POLL_MS = 30_000;
 
 export const routerKeys = {
@@ -20,10 +24,16 @@ export const routerKeys = {
     [...routerKeys.all(wsId), "changes", subscriptionId] as const,
 };
 
+/**
+ * Always stale, so a settings view that opens reads the list again rather
+ * than the copy an earlier view left in the cache, which may predate a change
+ * made while the socket was down.
+ */
 export function routerSubscriptionsOptions(wsId: string) {
   return queryOptions({
     queryKey: routerKeys.subscriptions(wsId),
     queryFn: () => listRouterSubscriptions(wsId),
+    staleTime: 0,
     refetchInterval: ROUTER_POLL_MS,
   });
 }
