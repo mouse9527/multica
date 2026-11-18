@@ -1,0 +1,11 @@
+{
+  "tab": "进化",
+  "description": "内置智能体，为本工作区的智能体、工作流和团队提出改进提案。每项改动都要等所有者或管理员批准。",
+  "enable_hint": "选择进化运行的运行时。",
+  "enable": "启用进化",
+  "enabled_toast": "已启用进化",
+  "enabled_title": "进化已启用",
+  "open_agent": "打开智能体",
+  "not_enabled_member": "进化尚未启用。请联系工作区所有者或管理员启用。",
+  "failed": "启用进化失败"
+}

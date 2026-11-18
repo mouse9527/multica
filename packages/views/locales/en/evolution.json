@@ -1,0 +1,11 @@
+{
+  "tab": "Evolution",
+  "description": "A built-in agent that proposes improvements to this workspace's agents, workflows, and team. Every change waits for an owner's or admin's approval.",
+  "enable_hint": "Choose the runtime Evolution runs on.",
+  "enable": "Enable Evolution",
+  "enabled_toast": "Evolution enabled",
+  "enabled_title": "Evolution is enabled",
+  "open_agent": "Open agent",
+  "not_enabled_member": "Evolution is not enabled. Ask a workspace owner or admin to enable it.",
+  "failed": "Couldn't enable Evolution"
+}

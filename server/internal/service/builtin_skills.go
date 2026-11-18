@@ -42,6 +42,8 @@ const PlatformSkillName = "multica-platform"
 // spent that budget on nine agents out of ten that can never use it.
 var builtinSkillSystemKey = map[string]string{
 	"multica-onboarding": MikaSystemKey,
+	// mouse9527/multica fork (M-135): the Evolution agent's proposal skill.
+	"multica-evolution": EvolutionSystemKey,
 }
 
 // BuiltinSkills returns the platform's built-in skills for an agent with the
