@@ -3152,6 +3152,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	if agent.SystemKey.String == service.MikaSystemKey {
 		resp.Agent.Instructions = service.ComposeMikaInstructions(agent.Name, agent.Instructions)
 	}
+	// mouse9527/multica fork (M-135): the fork's own system agents (Evolution).
+	if composed, ok := service.ComposeForkSystemInstructions(agent.SystemKey.String, agent.Name, agent.Instructions); ok {
+		resp.Agent.Instructions = composed
+	}
 	if useSkillRefs {
 		_, skillRefs, err := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.SystemKey.String, legacySkillRedirects)
 		if err != nil {
