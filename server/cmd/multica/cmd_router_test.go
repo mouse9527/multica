@@ -1,10 +1,14 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slice 2 (M-97), and Router inbox S3b (M-133).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slice 2 (M-97), Router inbox S3b (M-133), and the Super Agent name in help (M-148).
 
 package main
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 func TestParseRouterSince(t *testing.T) {
@@ -62,5 +66,70 @@ func TestRouterInboxRulesOutput(t *testing.T) {
 	}
 	if totals := ruleReportRows([]any{map[string]any{"verdict": "handle", "rule": ""}}, true); totals[0][1] != "(all)" {
 		t.Fatalf("totals = %v", totals)
+	}
+}
+
+// renderHelp returns what `multica <path...> --help` prints.
+func renderHelp(t *testing.T, path ...string) string {
+	t.Helper()
+	cmd := rootCmd
+	if len(path) > 0 {
+		var err error
+		if cmd, _, err = rootCmd.Find(path); err != nil {
+			t.Fatalf("multica %v: %v", path, err)
+		}
+	}
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	t.Cleanup(func() { rootCmd.SetOut(nil) })
+	if err := cmd.Help(); err != nil {
+		t.Fatalf("multica %v --help: %v", path, err)
+	}
+	return out.String()
+}
+
+// M-148: an agent asked to "make this chat a Super Agent" searched the CLI help
+// for that phrase, found nothing (router was not even listed), and fell back to
+// `issue subscriber add`. The phrase and the way to router must be reachable
+// from the help an agent actually reads.
+func TestHelpLeadsFromSuperAgentToRouter(t *testing.T) {
+	root := renderHelp(t)
+	var routerLine string
+	for _, line := range strings.Split(root, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "router:") {
+			routerLine = line
+		}
+	}
+	if !strings.Contains(routerLine, "Super Agent") {
+		t.Errorf("`multica --help` must list router as the Super Agent command, got line %q in:\n%s", routerLine, root)
+	}
+
+	if got := renderHelp(t, "router"); !strings.Contains(got, "router subscribe --issue M-12 --anchor-chat current") ||
+		!strings.Contains(got, "not an issue subscription") {
+		t.Errorf("`multica router --help` must show how to make a chat a Super Agent and how it differs from issue subscribers:\n%s", got)
+	}
+
+	for _, path := range [][]string{{"issue"}, {"issue", "subscriber", "add"}} {
+		if got := renderHelp(t, path...); !strings.Contains(got, "multica router subscribe") {
+			t.Errorf("`multica %s --help` must point a Super Agent subscription at router:\n%s", strings.Join(path, " "), got)
+		}
+	}
+}
+
+// The help rename must not touch what scripts and skills already call.
+func TestRouterKeepsItsTechnicalName(t *testing.T) {
+	cmd, _, err := rootCmd.Find([]string{"router", "subscribe"})
+	if err != nil || cmd.Parent().Name() != "router" {
+		t.Fatalf("multica router subscribe: %v", err)
+	}
+	for _, flag := range []string{"agent", "issue", "project", "events", "anchor-chat", "output"} {
+		if cmd.Flags().Lookup(flag) == nil {
+			t.Errorf("multica router subscribe lost --%s", flag)
+		}
+	}
+	for _, c := range []*cobra.Command{routerGetCmd, routerPauseCmd, routerResumeCmd, routerDeleteCmd, routerUpdateCmd, routerReleaseCmd} {
+		if c.Flags().Lookup("chat") == nil {
+			t.Errorf("multica router %s lost --chat", c.Name())
+		}
 	}
 }
