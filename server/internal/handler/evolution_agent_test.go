@@ -170,7 +170,9 @@ func TestEnableEvolution_ConcurrentEnablesCreateOne(t *testing.T) {
 	cleanupEvolution(t)
 	withEvolutionFlag(t, true)
 
-	const n = 8
+	// More requests than pooled connections: a request that holds the lock
+	// must not need a second connection to finish, or the rest starve it.
+	n := int(testPool.Config().MaxConns) * 2
 	runtimeID := handlerTestRuntimeID(t)
 	codes := make([]int, n)
 	var wg sync.WaitGroup

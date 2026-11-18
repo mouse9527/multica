@@ -189,6 +189,11 @@ func (h *Handler) EnableEvolution(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: wsUUID,
 		SystemKey:   pgtype.Text{String: service.EvolutionSystemKey, Valid: true},
 	}); err == nil {
+		// End the transaction, and with it the lock, before building the
+		// response: that reads through the pool, and holding a pooled
+		// connection while waiting for another one deadlocks once concurrent
+		// enables fill the pool.
+		tx.Rollback(r.Context())
 		h.writeEvolutionAgent(w, r, existing, http.StatusOK)
 		return
 	} else if !errors.Is(err, pgx.ErrNoRows) {

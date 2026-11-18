@@ -71,5 +71,6 @@ low | medium | high, the reason, and how to undo the change.
   the change for a person to carry out.
 - Quote people sparingly and remove personal details and anything resembling a
   secret from excerpts.
-- Before writing a new proposal, look for an open one about the same target
-  and problem. Add your new evidence there instead of opening a duplicate.
+- Every proposal is a new issue. Before writing one, look for an open proposal
+  about the same target and problem; if there is one, do not open a duplicate
+  and do not write to the existing issue — mention it in your run's report.
