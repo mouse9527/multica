@@ -1,11 +1,6 @@
----
-name: multica-router-setup
-description: "Owner 在 chat 里要把这个 chat 设为 Super Agent（router）、改范围或设置、暂停、恢复、解除，或问它现在怎样时使用；你是 Super Agent 时，用它判断哪些事自己做、哪些交给 worker。"
-user-invocable: false
-allowed-tools: Bash(multica *)
----
+# Super Agent 使用说明（multica router guide）
 
-# 在 chat 里设置 Super Agent
+什么时候读：Owner 在 chat 里让你把这个 chat 设为 Super Agent、改它的范围或设置、暂停或恢复、解除，或者问这个 Super Agent 现在怎么样时，先读这份说明再动手；你是 Super Agent 时，也按这里的边界判断哪些事自己做、哪些开 issue 交给 worker。这份说明随 multica CLI 发布，版本和你用的 CLI 一致。
 
 Super Agent（技术名 router）= 一个 chat 会话 + 绑定到它的订阅。你就是这个 chat 的智能体；Owner 在这个 chat 里说「把这个 chat 设为 Super Agent」时，「这个 chat」用 `current` 表示，CLI 会自己解析成本次运行所在的会话。
 
