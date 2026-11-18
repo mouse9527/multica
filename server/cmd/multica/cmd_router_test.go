@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), and Router v6 slice 2 (M-97).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slice 2 (M-97), and Router inbox S3b (M-133).
 
 package main
 
@@ -43,5 +43,24 @@ func TestRouterCommandsAreRegistered(t *testing.T) {
 		if routerSubscribeCmd.Flags().Lookup(flag) == nil || routerUpdateCmd.Flags().Lookup(flag) == nil {
 			t.Errorf("--%s missing on subscribe or update", flag)
 		}
+	}
+}
+
+func TestRouterInboxRulesOutput(t *testing.T) {
+	if got := holdVerdict(map[string]any{"verdict": "handle", "rule": "comment"}); got != "handle (comment)" {
+		t.Fatalf("holdVerdict = %q", got)
+	}
+	if got := holdVerdict(map[string]any{"verdict": ""}); got != "" {
+		t.Fatalf("unclassified holdVerdict = %q", got)
+	}
+	rows := ruleReportRows([]any{
+		map[string]any{"verdict": "handle", "rule": "comment", "samples": float64(4), "acted": float64(1), "rate": 0.25, "pending": float64(2)},
+		map[string]any{"verdict": "gray", "rule": "mention", "samples": float64(0), "acted": float64(0), "rate": nil, "pending": float64(1)},
+	}, false)
+	if len(rows) != 2 || rows[0][4] != "25.0%" || rows[0][2] != "4" || rows[1][4] != "-" || rows[1][5] != "1" {
+		t.Fatalf("rows = %v", rows)
+	}
+	if totals := ruleReportRows([]any{map[string]any{"verdict": "handle", "rule": ""}}, true); totals[0][1] != "(all)" {
+		t.Fatalf("totals = %v", totals)
 	}
 }
