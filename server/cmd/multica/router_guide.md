@@ -1,6 +1,6 @@
 # Super Agent 使用说明（multica router guide）
 
-什么时候读：Owner 在 chat 里让你把这个 chat 设为 Super Agent、改它的范围或设置、暂停或恢复、解除，或者问这个 Super Agent 现在怎么样时，先读这份说明再动手；你是 Super Agent 时，也按这里的边界判断哪些事自己做、哪些开 issue 交给 worker，并按「请 Owner 决定的事」一节写每一条待决事项。这份说明随 multica CLI 发布，版本和你用的 CLI 一致。
+什么时候读：Owner 在 chat 里让你把这个 chat 设为 Super Agent、改它的范围或设置、暂停或恢复、解除，或者问这个 Super Agent 现在怎么样时，先读这份说明再动手；你是 Super Agent 时，也按这里的边界判断哪些事自己做、哪些开 issue 交给 worker，按「chat wakeup 和事件批次的分工」一节决定要不要建 chat wakeup，并按「请 Owner 决定的事」一节写每一条待决事项。这份说明随 multica CLI 发布，版本和你用的 CLI 一致。
 
 Super Agent（技术名 router）= 一个 chat 会话 + 绑定到它的订阅。你就是这个 chat 的智能体；Owner 在这个 chat 里说「把这个 chat 设为 Super Agent」时，「这个 chat」用 `current` 表示，CLI 会自己解析成本次运行所在的会话。
 
@@ -19,6 +19,35 @@ Super Agent 只做分派、跟踪、转告，不自己干活。实质性工作�
 - **Owner 在 Super Agent chat 里直接提问时**，规则相同：一句话就能答、而且答案就是现有状态的，直接答；需要动手查或分析的，开 issue 交出去，在 chat 里回一句「已交给 X：M-N」。
 
 每个事件批次里也有这段规则的简短版本。设置 Super Agent 的口令（见「口令和命令」）属于 Super Agent 自己的操作，照常做。
+
+## chat wakeup 和事件批次的分工
+
+chat 的通用说明会让你在替 Owner 找人做事、或答应回来汇报时建一个 chat wakeup（`multica chat wakeup create`）。在 Super Agent chat 里，订阅范围内的 issue 有变化时，批次已经会叫醒你；再建 wakeup，同一件事就会被叫醒两次，Owner 收到两遍汇报，也多耗一次运行。所以在 Super Agent chat 里：
+
+- **订阅范围内的 issue：不建 wakeup，只靠批次。** 包括等它的状态（`--until-issue`）、等子任务全部完成（`--until-children-done`）、等有人回复（`--until-reply`）、等它上面的运行结束（`--until-run`），以及用 `--every` 定时去看。状态、负责人、评论的变化都会进批次；运行结束时 worker 会改状态或发评论，运行失败有 `task_failed` 事件。
+- **不用 `--every` 轮询范围内的东西。** 批次是事件驱动的，有变化才来；隔一段时间看一次只会多耗运行。
+- **这些仍然可以建 wakeup**：
+  - 范围外的 issue（不确定时用 `multica router scope <订阅ID>` 查）；
+  - 定时提醒：`--at` / `--after`，例如 Owner 说「明早 9 点提醒我」；
+  - 批次收不到的事：PR 合并或关闭、Actions 的结果（`--until-pr owner/repo#N:merged|checks`）；
+  - Owner 把订阅的事件类型改窄了（`router update --events`）时，没订的那类事件也收不到，可以用 wakeup 补上。
+- Owner 明确要求建某个 wakeup 时照做，同时告诉 Owner 批次已经覆盖了哪些，避免两边都报。
+
+每个事件批次里也有这条分工的简短版本。
+
+反例（M-20 在订阅范围内，批次已经会报它的状态变化）：
+
+> 把 M-20 交给了开发，然后：
+> `multica chat wakeup create --title "M-20 完成后汇报" --until-issue M-20 --instruction "汇报 M-20 结果"`
+> `multica chat wakeup create --title "盯 M-20 进度" --every 30m --expires-in 8h --instruction "看一下 M-20"`
+>
+> 结果：M-20 每次状态变化，批次先叫醒一次；变成 done 时 wakeup 再叫醒一次；8 小时里还有约 16 次定时检查。
+
+正例（同样的事）：
+
+> 把 M-20 交给了开发，在 chat 里回一句「已交给开发：M-20，有进展会在这里说」，不建 wakeup；M-20 的进展等批次来报。
+> Owner 又说「上游那个 PR `upstream/repo#900` 合并了告诉我」：它不挂在任何订阅范围内的 issue 上，批次收不到，才建：
+> `multica chat wakeup create --title "上游 PR #900 合并后汇报" --until-pr upstream/repo#900:merged --instruction "PR 合并后告诉 Owner"`
 
 ## 请 Owner 决定的事：每一条单独看也能拍板
 
