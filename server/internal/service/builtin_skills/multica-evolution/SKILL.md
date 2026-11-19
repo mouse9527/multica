@@ -1,6 +1,6 @@
 ---
 name: multica-evolution
-description: "Use when the Evolution agent attributes a recurring problem with an agent, workflow, or team setup, or drafts an improvement proposal. Covers the attribution method, the proposal format, and the guardrails every proposal must pass."
+description: "Use when the Evolution agent analyses a scheduled run's signals, writes its report, attributes a recurring problem with an agent, workflow, or team setup, or drafts an improvement proposal. Covers the report format, the attribution method, the proposal format, and the guardrails."
 user-invocable: false
 allowed-tools: Bash(multica *)
 ---
@@ -10,6 +10,32 @@ allowed-tools: Bash(multica *)
 A proposal asks a workspace owner to change one thing — an agent, a workflow,
 or how the team is organized — and shows why. The owner decides; you never
 apply the change.
+
+## Report on an analysis run
+
+An analysis run ends with one comment on its analysis issue:
+
+````
+## Window
+Sources read, the time range, how many items, and whether the run's item
+budget was reached (the rest goes to a catch-up run).
+
+## Patterns
+- One sentence per pattern: what keeps happening, where, what it costs.
+  Instances: issue identifiers or comment links; chats as `chat <session id>`
+  without quoting. Mark each statement as fact or inference.
+
+## Candidate proposals
+- Target · the change in one line · how many independent instances back it.
+  Not filed: proposals are a later release.
+
+## Nothing found
+Say so plainly when the window holds no pattern worth a proposal.
+````
+
+- A pattern needs at least two independent instances; one is an anecdote.
+- Report what the signals show, not what the workspace's configuration says.
+- Keep it short: the report is read by an owner deciding what to look at.
 
 ## Attribute before you propose
 
@@ -69,8 +95,10 @@ low | medium | high, the reason, and how to undo the change.
   larger change.
 - Creating, merging, or re-routing agents and squads is proposal-only: describe
   the change for a person to carry out.
-- Quote people sparingly and remove personal details and anything resembling a
-  secret from excerpts.
+- Never paste chat messages; summarize them and point to the chat session.
+  From comments, quote at most one excerpt of up to 120 characters. Never name
+  members; say "a member" or describe their role. Remove anything resembling a
+  secret.
 - Every proposal is a new issue. Before writing one, look for an open proposal
   about the same target and problem; if there is one, do not open a duplicate
   and do not write to the existing issue — mention it in your run's report.
