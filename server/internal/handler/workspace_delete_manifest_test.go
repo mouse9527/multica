@@ -198,6 +198,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// Modified for the mouse9527/multica fork: Router hold (M-97), deleted
 	// by agentrouter.DeleteWorkspaceData.
 	"router_hold": workspaceDelete,
+	// Modified for the mouse9527/multica fork: password login. A password
+	// belongs to the account, like "user", not to a workspace.
+	"user_credential": workspaceDeleteKeep,
 }
 
 func TestWorkspaceDeletionManifestCoversPublicSchema(t *testing.T) {
