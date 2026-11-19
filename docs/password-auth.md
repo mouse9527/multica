@@ -2,7 +2,7 @@
 
 本文件属于 `mouse9527/multica` fork，上游 `multica-ai/multica` 没有这部分功能。代码在 `server/internal/passwordauth/`。实施跟踪见 #42。
 
-本文件随实施阶段补充；当前内容对应阶段 1（#37：数据表、凭据存取、哈希封装）和阶段 2（#38：开关、接口、失败锁定、限流）。
+本文件随实施阶段补充；当前内容对应阶段 1（#37：数据表、凭据存取、哈希封装）和阶段 2（#38：开关、接口、失败锁定、限流；#39：管理员重置命令）。
 
 ## 数据表
 
@@ -109,3 +109,23 @@ argon2id（`golang.org/x/crypto/argon2`）。
 - 设置或修改：`password set`、`password change: wrong current password`，带 `user_id`。
 
 测试对响应体、响应头和日志断言不含测试用的密码与库里的任何哈希（`server/internal/passwordauth/service_db_test.go`、`server/internal/handler/passwordauth_test.go`）。
+
+## 管理员重置密码
+
+忘记密码、又没有邮件服务可发验证码时，由管理员在服务端给**已存在的用户**设置或重置密码。命令是镜像里的独立二进制 `reset_password`（源码 `server/cmd/reset_password/`），与 `server`、`migrate` 在同一目录 `/app`。
+
+```bash
+# 交互输入（推荐）：提示输入两次，不回显
+kubectl exec -it deploy/<后端> -- ./reset_password --email user@example.com
+
+# 非交互：stdin 只放密码一行（可带一个换行）
+kubectl exec -i deploy/<后端> -- ./reset_password --email user@example.com < password.txt
+```
+
+- 密码**只从 stdin 读**，没有 `--password` 之类的参数，不会进 shell 历史和进程列表。stdin 是终端时关闭回显、输入两次核对（Linux、macOS）；不是终端时整个 stdin 就是密码，只允许末尾一个换行，多行报错。
+- 先按邮箱找用户（与登录相同：去首尾空白、转小写），找不到就报错退出，**不创建用户**；找到后才提示输入密码。
+- 密码规则与用户自己设置时相同（最短 12 个字符、最长 1024 字节）。成功后失败计数清零、解除锁定（`UpsertUserCredential` 一条语句完成）。
+- 读环境变量 `DATABASE_URL`（必需）和 `MULTICA_PASSWORD_ARGON2_*`，在容器里与服务端一致；参数不同也不要紧，用户下次登录时会自动重哈希。
+- 输出只有用户 ID，不回显密码。审计：在 stderr 写一行 JSON，`msg` 为 `passwordauth: audit: password reset by admin command`，含 `user_id`、`email`、`at`（UTC 时间），不含密码和哈希。这一行不走业务日志，`LOG_LEVEL` 设成 `warn` 或 `error` 也照样输出；写不出去时命令报错、退出码 1（此时密码已经改了，按报错提示另行留档）。注意 `kubectl exec` 的输出只回到执行人的终端，不进容器日志；需要留档时由执行人保存这条输出。
+- 退出码：0 成功；1 失败（用户不存在、密码不合规、数据库错误、审计记录写不出去）；2 用法错误。
+- 这个命令不看功能开关：开关只控制登录接口；关闭时设置的密码在打开后生效。

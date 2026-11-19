@@ -31,6 +31,7 @@
 | `server/internal/handler/daemon.go` | M-135、M-150 | 领取任务组装 agent 时，在 Mika 的提示词拼接之后调用 `service.ComposeForkSystemInstructions`（一个 `if`）：fork 的系统 agent（「进化」）拼上随二进制发布的系统提示词；其他 agent 不变。M-150 紧接着一行调用 `TaskService.WithMikaRouterGuide`：`router_v1` 打开时给 Mika 的提示词加一句指向 `multica router guide` 的话；关闭时、其他 agent 不变 | 有 |
 | `server/internal/handler/mika_agent.go` | M-135 | `systemInstructionsFor` 在返回空串前调用 `service.ForkSystemInstructions`（一个 `if`），界面只读展示「进化」的系统提示词 | 有 |
 | `server/internal/service/builtin_skills.go` | M-135 | `builtinSkillSystemKey` 加一行：`multica-evolution` 只发给「进化」 | 有 |
+| `Dockerfile` | M-42 | 多构建一个 fork 的二进制 `reset_password`（管理员重置密码）并复制进镜像（两行，紧挨上游最后一个二进制） | 有 |
 | `server/go.mod`、`server/go.sum` | M-40 | 新增直接依赖 `golang.org/x/crypto`（argon2id，密码登录用） | `go.mod` 有；`go.sum` 无（不能写注释） |
 | `server/internal/inbox/create.go` | M-97 | `createIfEligible` 在写入前调用 fork 的拦截钩子（一个 `if`，钩子在 fork 新文件 `intercept.go`）；没有注册拦截器时行为不变。上游自 `cd969f848` 起把它改为包内函数、所有写入经 `Deliver`；fork 的 Router 通知用 `intercept.go` 里导出的 `CreateAndAnnounce`（写入并像 `Deliver` 一样广播 `inbox:new` / `inbox:snoozed`，M-131） | 有 |
 | `server/pkg/protocol/messages.go` | M-96 | 新常量 `ChatMessageKindRouterBatch`（`router_batch`） | 有 |
@@ -66,7 +67,7 @@
 | `server/internal/service/autopilot_quota_test.go` | M-24 | 同上 | 有 |
 | `server/internal/service/delegated_failure_recovery_settled_test.go` | M-24 | 同上 | 有 |
 
-合计：修改过的上游文件 58 个（含 11 个测试文件），其中 5 个（生成的 `models.go`、`glyphs.ts`、`icons/index.ts`，以及 `packages/core/package.json`、`server/go.sum`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。M-105 新增的 13 个前端上游触点（M-131 同步后剩 12 个，`client.ts` 已还原为上游版本）和 `keys.go` 的一行也集中在同一个提交里。M-97 只新增 1 个上游触点（`inbox/create.go`）。M-108 的 5 处（两个挂载点、图标绘制与两个生成文件）同样在一个提交里。M-125 新增 2 个上游触点（`cmd_daemon.go`、`cmd_daemon_autostart_test.go`），并在 `cmd_daemon_autostart.go` 上追加改动。 M-135（「进化」P1）新增 3 个上游触点（`daemon.go`、`mika_agent.go`、`builtin_skills.go`，各一块），并在 13 个已有触点上追加：`router.go`、`keys.go`、`package.json` 各一块，设置页三块，i18n 类型与 8 个语言入口各两块，共 27 块，全部在同一个提交里；除设置页「工作区」组那一处和 3 个新触点外，都紧挨着已有的 fork 行。同步估算：新增的独立冲突点只有 3 个新触点和设置页那一处，按 M-132 的统计，前 3 处所在位置近 6 个月被上游改动过 0–2 次（推断，未做同步演练），预计每次同步多 0–1 处手工冲突。M-147 新增 1 个上游触点（`use-realtime-sync.ts`）。 M-40（密码登录 P1）新增 2 个上游触点（`go.mod`、`go.sum`），并在清单测试和生成的 `models.go` 上各追加一处。 M-41（密码登录 P2）新增 2 个上游触点（`handler.go` 一个字段、`config.go` 一个字段和一行），并在 `router.go` 追加一行；三处都只是挂接，逻辑在 fork 新文件里。
+合计：修改过的上游文件 59 个（含 11 个测试文件），其中 5 个（生成的 `models.go`、`glyphs.ts`、`icons/index.ts`，以及 `packages/core/package.json`、`server/go.sum`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。M-105 新增的 13 个前端上游触点（M-131 同步后剩 12 个，`client.ts` 已还原为上游版本）和 `keys.go` 的一行也集中在同一个提交里。M-97 只新增 1 个上游触点（`inbox/create.go`）。M-108 的 5 处（两个挂载点、图标绘制与两个生成文件）同样在一个提交里。M-125 新增 2 个上游触点（`cmd_daemon.go`、`cmd_daemon_autostart_test.go`），并在 `cmd_daemon_autostart.go` 上追加改动。 M-135（「进化」P1）新增 3 个上游触点（`daemon.go`、`mika_agent.go`、`builtin_skills.go`，各一块），并在 13 个已有触点上追加：`router.go`、`keys.go`、`package.json` 各一块，设置页三块，i18n 类型与 8 个语言入口各两块，共 27 块，全部在同一个提交里；除设置页「工作区」组那一处和 3 个新触点外，都紧挨着已有的 fork 行。同步估算：新增的独立冲突点只有 3 个新触点和设置页那一处，按 M-132 的统计，前 3 处所在位置近 6 个月被上游改动过 0–2 次（推断，未做同步演练），预计每次同步多 0–1 处手工冲突。M-147 新增 1 个上游触点（`use-realtime-sync.ts`）。 M-40（密码登录 P1）新增 2 个上游触点（`go.mod`、`go.sum`），并在清单测试和生成的 `models.go` 上各追加一处。 M-42（密码登录 P3）新增 1 个上游触点（`Dockerfile`，两行）。 M-41（密码登录 P2）新增 2 个上游触点（`handler.go` 一个字段、`config.go` 一个字段和一行），并在 `router.go` 追加一行；三处都只是挂接，逻辑在 fork 新文件里。
 
 ## fork 新增的文件
 
@@ -94,3 +95,4 @@
 - `docs/github-issues*.md`。
 - 密码登录 P1（M-40，见 [password-auth.md](password-auth.md)；还没有接口和开关，不改运行时行为）：`server/internal/passwordauth/`；`server/migrations/9018_*`；`server/pkg/db/queries/passwordauth.sql` 与 `server/pkg/db/generated/passwordauth.sql.go`；`docs/password-auth.md`。
 - 密码登录 P2（M-41，开关 `MULTICA_PASSWORD_AUTH_ENABLED`，默认关闭，见 [password-auth.md](password-auth.md)）：`server/internal/passwordauth/` 下的 `flag.go`、`service.go`、`throttle.go` 及测试；`server/internal/handler/passwordauth.go` 及测试；`server/internal/middleware/client_ip_fork.go`、`session_credential_fork.go` 及测试（上游包里的新文件，只导出 `ClientIP`、`AuthenticatedBySession`）；`server/cmd/server/passwordauth_router_test.go`。
+- 密码登录 P3 管理员重置（M-42，见 [password-auth.md](password-auth.md)「管理员重置密码」）：`server/cmd/reset_password/`；`server/internal/passwordauth/reset.go` 及测试。
