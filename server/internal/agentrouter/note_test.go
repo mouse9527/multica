@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), and the Router's boundary (M-112).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), the Router's boundary (M-112), and self-contained owner decisions (M-162).
 
 package agentrouter
 
@@ -72,6 +72,7 @@ func TestBuildNoteStatesRouterBoundary(t *testing.T) {
 			"also gets a GitHub issue, linked as `gh_issue` per the github-evidence skill",
 			"ops, environment and credential work stays a local issue only",
 			"`multica router guide`", // M-150: the full guide ships in the CLI
+			"Every decision you ask of the owner must stand on its own", // M-162
 		} {
 			if !strings.Contains(note, want) {
 				t.Errorf("chat=%v: note lacks %q", chat, want)

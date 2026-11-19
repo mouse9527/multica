@@ -38,6 +38,27 @@ func TestHelpLeadsToTheSuperAgentGuide(t *testing.T) {
 	}
 }
 
+// The owner often reads only the "需要你处理" list at the end of a reply, so
+// the guide makes every decision item stand on its own and shows a bare
+// "A, B or C?" list as the wrong way (M-162).
+func TestRouterGuideMakesOwnerDecisionsSelfContained(t *testing.T) {
+	guide := runRouterGuide(t)
+	for _, want := range []string{
+		"## 请 Owner 决定的事：每一条单独看也能拍板",
+		"为什么要 Owner 定",
+		"每个选项的内容和后果",
+		"推荐哪个",
+		"批准范围不含什么",
+		"**全部未结**的事项，不多也不少",
+		"反例",
+		"正例",
+	} {
+		if !strings.Contains(guide, want) {
+			t.Errorf("`multica router guide` lacks %q", want)
+		}
+	}
+}
+
 // The guide prints the embedded file verbatim: editing it and releasing the
 // CLI is the whole update, and there is no second copy to keep in step.
 func TestRouterGuidePrintsTheEmbeddedFile(t *testing.T) {
