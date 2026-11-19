@@ -1,4 +1,4 @@
-// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135).
+// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136).
 
 package handler
 
@@ -41,11 +41,14 @@ var evolutionAgentNames = map[string]string{
 	"ja": "進化",
 }
 
+// The descriptions also tell every member what Evolution reads once its
+// scheduled analysis is on (M-136); they stay within the agent description
+// limit so an owner can still edit them.
 var evolutionAgentDescriptions = map[string]string{
-	"en": "Proposes improvements to this workspace's agents, workflows, and team. Every change waits for an owner's approval.",
-	"zh": "为本工作区的智能体、工作流和团队提出改进提案。每项改动都要等 Owner 批准。",
-	"ko": "이 워크스페이스의 에이전트, 워크플로, 팀에 대한 개선안을 제안합니다. 모든 변경은 오너의 승인을 기다립니다.",
-	"ja": "このワークスペースのエージェント、ワークフロー、チームの改善案を提案します。すべての変更はオーナーの承認を待ちます。",
+	"en": "Proposes improvements to this workspace's agents, workflows, and team. With scheduled analysis on, it reads comments and members' chats daily (not private projects, private agents, or run logs). Every change waits for an owner's approval.",
+	"zh": "为本工作区的智能体、工作流和团队提出改进提案。开启定时分析后，每天读取工作区的评论和成员的对话（不含私有项目、私有智能体和运行日志）。每项改动都要等 Owner 批准。",
+	"ko": "이 워크스페이스의 에이전트, 워크플로, 팀에 대한 개선안을 제안합니다. 정기 분석을 켜면 매일 댓글과 멤버의 채팅을 읽습니다(비공개 프로젝트, 비공개 에이전트, 실행 로그 제외). 모든 변경은 오너의 승인을 기다립니다.",
+	"ja": "このワークスペースのエージェント、ワークフロー、チームの改善案を提案します。定期分析をオンにすると、毎日コメントとメンバーのチャットを読みます（非公開プロジェクト、非公開エージェント、実行ログは除く）。すべての変更はオーナーの承認を待ちます。",
 }
 
 type enableEvolutionRequest struct {
@@ -67,6 +70,10 @@ func (h *Handler) MountEvolution(r chi.Router) {
 	r.Use(h.requireEvolutionV1)
 	r.Get("/", h.GetEvolution)
 	r.With(RequireHumanActor).Post("/enable", h.EnableEvolution)
+	// P2 (M-136): configuration, and the analysis run's signal channel.
+	r.Get("/config", h.GetEvolutionConfig)
+	r.With(RequireHumanActor).Put("/config", h.PutEvolutionConfig)
+	r.Get("/signals", h.GetEvolutionSignals)
 }
 
 func (h *Handler) requireEvolutionV1(next http.Handler) http.Handler {

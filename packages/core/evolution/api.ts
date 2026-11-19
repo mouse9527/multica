@@ -1,11 +1,18 @@
-// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135).
+// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136).
 //
 // Evolution endpoints (`/api/evolution/*`, see docs/evolution.md). They answer
 // 404 while `evolution_v1` is off.
 
 import { api, ApiError, parseWithFallback } from "../api";
-import { EvolutionStatusSchema } from "./schemas";
-import type { EnableEvolutionInput, EvolutionAgent, EvolutionStatus } from "./types";
+import { EvolutionConfigStateSchema, EvolutionStatusSchema } from "./schemas";
+import type {
+  EnableEvolutionInput,
+  EvolutionAgent,
+  EvolutionConfig,
+  EvolutionConfigState,
+  EvolutionStatus,
+  SaveEvolutionConfigInput,
+} from "./types";
 
 function scoped(wsId: string, init: RequestInit = {}): RequestInit {
   return { ...init, headers: { "X-Workspace-Slug": "", "X-Workspace-ID": wsId } };
@@ -40,4 +47,44 @@ export async function enableEvolution(wsId: string, input: EnableEvolutionInput)
   const parsed = EvolutionStatusSchema.safeParse(raw);
   if (!parsed.success || !parsed.data.agent) throw new Error("POST /api/evolution/enable: unexpected response");
   return parsed.data.agent;
+}
+
+const CONFIG_FALLBACK: EvolutionConfigState = EvolutionConfigStateSchema.parse({});
+
+export async function getEvolutionConfig(wsId: string): Promise<EvolutionConfigState> {
+  const raw = await api.request("/api/evolution/config", scoped(wsId));
+  return parseWithFallback(raw, EvolutionConfigStateSchema, CONFIG_FALLBACK, {
+    endpoint: "GET /api/evolution/config",
+  });
+}
+
+/**
+ * Replaces the configuration. The server answers 409 when the change would
+ * start reading chats without `acknowledgeMemberNotice`.
+ */
+export async function saveEvolutionConfig(
+  wsId: string,
+  input: SaveEvolutionConfigInput,
+): Promise<EvolutionConfigState> {
+  const raw = await api.request(
+    "/api/evolution/config",
+    scoped(wsId, {
+      method: "PUT",
+      body: JSON.stringify({
+        config: input.config,
+        acknowledge_member_notice: input.acknowledgeMemberNotice ?? false,
+      }),
+    }),
+  );
+  const parsed = EvolutionConfigStateSchema.safeParse(raw);
+  if (!parsed.success) throw new Error("PUT /api/evolution/config: unexpected response");
+  return parsed.data;
+}
+
+/**
+ * Whether saving `next` over `current` turns chat reading on, which notifies
+ * every member and so needs their confirmation first.
+ */
+export function startsChatReading(current: EvolutionConfigState, next: EvolutionConfig): boolean {
+  return next.enabled && next.sources.chat && !current.chat_active;
 }

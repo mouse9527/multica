@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/agentrouter"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/evolution"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -1423,6 +1424,11 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			// Modified for the mouse9527/multica fork: Router tables (M-85).
 			name: "delete router data",
 			run:  func() error { return agentrouter.DeleteWorkspaceData(ctx, tx, requester.WorkspaceID) },
+		},
+		{
+			// mouse9527/multica fork: Evolution tables (M-136).
+			name: "delete evolution data",
+			run:  func() error { return evolution.DeleteWorkspaceData(ctx, tx, requester.WorkspaceID) },
 		},
 		{
 			name: "delete squads and skills",
