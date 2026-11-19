@@ -101,3 +101,4 @@
 - 密码登录 P2（M-41，开关 `MULTICA_PASSWORD_AUTH_ENABLED`，默认关闭，见 [password-auth.md](password-auth.md)）：`server/internal/passwordauth/` 下的 `flag.go`、`service.go`、`throttle.go` 及测试；`server/internal/handler/passwordauth.go` 及测试；`server/internal/middleware/client_ip_fork.go`、`session_credential_fork.go` 及测试（上游包里的新文件，只导出 `ClientIP`、`AuthenticatedBySession`）；`server/cmd/server/passwordauth_router_test.go`。
 - daemon 仓库缓存重建（M-161）：`server/internal/daemon/repocache/rebuild.go` 及测试（上游包里的新文件：后台构建、临时目录 clone 后改名、ref 大小写冲突识别、blobless 开关与默认分支文件预取）；`server/internal/daemon/repo_cache_build.go` 及测试（上游包里的新文件：检出请求等待构建的上限）。
 - 密码登录 P3 管理员重置（M-42，见 [password-auth.md](password-auth.md)「管理员重置密码」）：`server/cmd/reset_password/`；`server/internal/passwordauth/reset.go` 及测试。
+- 密码登录 P6 收尾（M-44，见 [password-login.md](password-login.md)）：`docs/password-login.md`；`server/internal/passwordauth/timing_db_test.go`；`server/cmd/server/passwordauth_router_test.go` 的增量（管理员重置后登录的端到端测试）。没有改上游文件。
