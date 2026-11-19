@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -70,8 +71,28 @@ type passwordTestServer struct {
 	t      *testing.T
 	router chi.Router
 	svc    *passwordauth.Service
-	logs   *bytes.Buffer
+	logs   *syncBuffer
 	ip     atomic.Int32
+}
+
+// syncBuffer is a bytes.Buffer safe for concurrent use. The password tests
+// make it the default logger's output, and goroutines other tests in this
+// package leave running log through the default logger too.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // pwCheapParams keeps hashing fast in tests.
@@ -88,7 +109,7 @@ func newPasswordTestServer(t *testing.T) *passwordTestServer {
 
 func newPasswordTestServerWith(t *testing.T, hasher *passwordauth.Hasher) *passwordTestServer {
 	t.Helper()
-	logs := &bytes.Buffer{}
+	logs := &syncBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	prev := slog.Default()
 	slog.SetDefault(logger)
