@@ -1,4 +1,5 @@
-// Added by the mouse9527/multica fork: Evolution P2, configuration (M-136).
+// Added by the mouse9527/multica fork: Evolution P2, configuration (M-136);
+// P3 proposal bounds (M-137).
 
 package evolution
 
@@ -37,6 +38,19 @@ const (
 
 	MaxExcluded = 200
 
+	// P3 (M-137): proposals.
+	MinProposalsPerRun     = 1
+	MaxProposalsPerRun     = 20
+	DefaultProposalsPerRun = 5
+
+	MinEvidenceLowerBound = 1
+	MaxEvidenceLowerBound = 10
+	DefaultMinEvidence    = 2
+
+	MinRejectedCooldownDays     = 1
+	MaxRejectedCooldownDays     = 365
+	DefaultRejectedCooldownDays = 30
+
 	DefaultScheduleTime     = "03:00"
 	DefaultScheduleTimezone = "Asia/Shanghai"
 )
@@ -61,6 +75,18 @@ type Config struct {
 	MaxWindowDays int `json:"max_window_days"`
 	// MaxRunsPerDay caps scheduled plus catch-up runs per local day.
 	MaxRunsPerDay int `json:"max_runs_per_day"`
+
+	// P3 (M-137). A client that predates these fields sends none of them; a
+	// missing or zero value means the default.
+
+	// MaxProposalsPerRun caps the new proposal issues one run may open.
+	MaxProposalsPerRun int `json:"max_proposals_per_run"`
+	// MinEvidenceCount is how many independent pieces of evidence (distinct
+	// issues or chat sessions) a proposal needs.
+	MinEvidenceCount int `json:"min_evidence_count"`
+	// RejectedCooldownDays: a proposal like one an owner cancelled within
+	// this many days is not filed again.
+	RejectedCooldownDays int `json:"rejected_cooldown_days"`
 }
 
 // Schedule is when the daily analysis starts: at Time in Timezone, every
@@ -93,6 +119,10 @@ func DefaultConfig() Config {
 		MaxItemsPerWindow: DefaultItemsPerWindow,
 		MaxWindowDays:     DefaultWindowDays,
 		MaxRunsPerDay:     DefaultRunsPerDay,
+
+		MaxProposalsPerRun:   DefaultProposalsPerRun,
+		MinEvidenceCount:     DefaultMinEvidence,
+		RejectedCooldownDays: DefaultRejectedCooldownDays,
 	}
 }
 
@@ -103,6 +133,10 @@ type Limits struct {
 	RunsPerDay     [2]int `json:"runs_per_day"`
 	IntervalDays   [2]int `json:"interval_days"`
 	MaxExcluded    int    `json:"max_excluded"`
+
+	ProposalsPerRun      [2]int `json:"proposals_per_run"`
+	MinEvidenceCount     [2]int `json:"min_evidence_count"`
+	RejectedCooldownDays [2]int `json:"rejected_cooldown_days"`
 }
 
 func CurrentLimits() Limits {
@@ -112,6 +146,10 @@ func CurrentLimits() Limits {
 		RunsPerDay:     [2]int{MinRunsPerDay, MaxRunsPerDay},
 		IntervalDays:   [2]int{MinIntervalDays, MaxIntervalDays},
 		MaxExcluded:    MaxExcluded,
+
+		ProposalsPerRun:      [2]int{MinProposalsPerRun, MaxProposalsPerRun},
+		MinEvidenceCount:     [2]int{MinEvidenceLowerBound, MaxEvidenceLowerBound},
+		RejectedCooldownDays: [2]int{MinRejectedCooldownDays, MaxRejectedCooldownDays},
 	}
 }
 
@@ -144,6 +182,10 @@ func (c Config) clamped() Config {
 	c.MaxWindowDays = clampInt(c.MaxWindowDays, MinWindowDays, MaxWindowDays)
 	c.MaxRunsPerDay = clampInt(c.MaxRunsPerDay, MinRunsPerDay, MaxRunsPerDay)
 	c.Schedule.IntervalDays = clampInt(c.Schedule.IntervalDays, MinIntervalDays, MaxIntervalDays)
+	c = c.withProposalDefaults()
+	c.MaxProposalsPerRun = clampInt(c.MaxProposalsPerRun, MinProposalsPerRun, MaxProposalsPerRun)
+	c.MinEvidenceCount = clampInt(c.MinEvidenceCount, MinEvidenceLowerBound, MaxEvidenceLowerBound)
+	c.RejectedCooldownDays = clampInt(c.RejectedCooldownDays, MinRejectedCooldownDays, MaxRejectedCooldownDays)
 	if !scheduleTimePattern.MatchString(c.Schedule.Time) {
 		c.Schedule.Time = d.Schedule.Time
 	}
@@ -171,9 +213,34 @@ func invalidf(format string, args ...any) error {
 	return &InvalidConfigError{Message: fmt.Sprintf(format, args...)}
 }
 
+// withProposalDefaults fills the P3 fields a client left out (zero) with
+// their defaults, so a settings page that predates them keeps working.
+func (c Config) withProposalDefaults() Config {
+	if c.MaxProposalsPerRun == 0 {
+		c.MaxProposalsPerRun = DefaultProposalsPerRun
+	}
+	if c.MinEvidenceCount == 0 {
+		c.MinEvidenceCount = DefaultMinEvidence
+	}
+	if c.RejectedCooldownDays == 0 {
+		c.RejectedCooldownDays = DefaultRejectedCooldownDays
+	}
+	return c
+}
+
 // Validate rejects a configuration a client sent that is outside the bounds.
-// It returns a client-facing message.
+// It returns a client-facing message. Zero P3 fields mean their defaults.
 func (c Config) Validate() error {
+	c = c.withProposalDefaults()
+	if c.MaxProposalsPerRun < MinProposalsPerRun || c.MaxProposalsPerRun > MaxProposalsPerRun {
+		return invalidf("max_proposals_per_run must be between %d and %d", MinProposalsPerRun, MaxProposalsPerRun)
+	}
+	if c.MinEvidenceCount < MinEvidenceLowerBound || c.MinEvidenceCount > MaxEvidenceLowerBound {
+		return invalidf("min_evidence_count must be between %d and %d", MinEvidenceLowerBound, MaxEvidenceLowerBound)
+	}
+	if c.RejectedCooldownDays < MinRejectedCooldownDays || c.RejectedCooldownDays > MaxRejectedCooldownDays {
+		return invalidf("rejected_cooldown_days must be between %d and %d", MinRejectedCooldownDays, MaxRejectedCooldownDays)
+	}
 	if c.MaxItemsPerWindow < MinItemsPerWindow || c.MaxItemsPerWindow > MaxItemsPerWindow {
 		return invalidf("max_items_per_window must be between %d and %d", MinItemsPerWindow, MaxItemsPerWindow)
 	}
@@ -211,6 +278,7 @@ func (c Config) Validate() error {
 // normalized de-duplicates and lower-cases the id lists so a stored config
 // compares and reads predictably.
 func (c Config) normalized() Config {
+	c = c.withProposalDefaults()
 	c.ExcludeProjects = validUUIDs(c.ExcludeProjects)
 	c.ExcludeAgents = validUUIDs(c.ExcludeAgents)
 	return c

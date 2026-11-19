@@ -25,9 +25,9 @@ budget was reached (the rest goes to a catch-up run).
   Instances: issue identifiers or comment links; chats as `chat <session id>`
   without quoting. Mark each statement as fact or inference.
 
-## Candidate proposals
-- Target · the change in one line · how many independent instances back it.
-  Not filed: proposals are a later release.
+## Proposals
+- Issue identifier · target · the change in one line · created, merged into
+  an open proposal, or refused (with the server's reason).
 
 ## Nothing found
 Say so plainly when the window holds no pattern worth a proposal.
@@ -53,39 +53,62 @@ Say so plainly when the window holds no pattern worth a proposal.
 4. Keep facts and inferences apart. A fact links to its evidence; an
    inference says what it is drawn from.
 
-## Proposal format
+## File a proposal
 
-Write each proposal with these sections, in this order:
+Write the proposal as JSON and file it with
+`multica evolution propose --file proposal.json`:
 
-````
-## Target
-agent | workflow | squad · <name> · <id>
-
-## Problem and cause
-One paragraph. Facts cite evidence; inferences are marked as such.
-
-## Change
-```diff
-- current text
-+ proposed text
+```json
+{
+  "target": {"type": "agent", "id": "<agent uuid>"},
+  "field": "instructions",
+  "topic": "handoff after review",
+  "title": "Say who acts after a review is rejected",
+  "problem": "Facts cite evidence; inferences are marked as such.",
+  "change": {"before": "current text, copied exactly", "after": "proposed text"},
+  "evidence": [
+    {"type": "comment", "id": "<comment uuid>", "note": "what it shows", "quote": "optional excerpt"},
+    {"type": "chat", "id": "<chat message uuid>", "note": "a summary, never the message itself"},
+    {"type": "issue", "id": "<issue uuid>", "note": "what it shows"}
+  ],
+  "expected_effect": "Which signal should move, in which direction, over how long.",
+  "risk": "low",
+  "risk_reason": "Why this tier.",
+  "rollback": "How to undo it."
+}
 ```
 
-## Evidence
-- <link> · <date> · one short excerpt
+The server writes the proposal issue (sections: target, problem and cause,
+change as a diff, evidence, expected effect, risk) and labels it
+`evolution`. It refuses, with a `code` and a reason, when:
 
-## Expected effect
-Which signal should move, in which direction, and over how long.
+- `field` is not on the target's whitelist — agent: `instructions`,
+  `description`, `skills`; workflow: `steps`, `name`, `description`; squad:
+  `instructions`, `description`, `members`, `leader`;
+- the target is you, an archived or internal agent, or an excluded agent;
+- `change.before` is not in the target's current text (copy it from the
+  target as it is now; leave it empty for a pure addition). For `skills`
+  the current text is the enabled skill names, one per line; for `steps`,
+  the workflow's steps as indented JSON;
+- the evidence comes from fewer independent sources (different issues or
+  chat sessions) than the workspace requires, or cites something you may
+  not read;
+- a quote is on a chat or an issue, is longer than 120 characters, or is not
+  an exact excerpt of the comment;
+- any text repeats a cited chat message word for word, names a workspace
+  member, or contains what looks like a secret, credential, email, phone
+  number, internal host, or URL query string;
+- this run already opened its maximum number of proposals;
+- the same proposal was declined recently.
 
-## Risk
-low | medium | high, the reason, and how to undo the change.
-````
+The same target, field, and topic is the same proposal. When one is still
+open, the server adds the evidence it does not cite yet as a comment
+(`"outcome": "merged"`, or `"duplicate"` when there is nothing new) instead
+of opening another issue. Keep the topic stable across runs so this works.
 
-- Show the exact current text in the diff, copied from the target as it is
-  now. A diff against text you remember rather than read is not reviewable.
-- Change only what the problem needs. For agents that is instructions,
-  description, or skill bindings; for workflows, steps, names, or
-  descriptions.
-- Prefer deleting or merging lines over adding them.
+- Change only what the problem needs. Prefer deleting or merging lines over
+  adding them.
+- One proposal per change. Do not bundle unrelated changes.
 
 ## Guardrails
 
@@ -99,6 +122,6 @@ low | medium | high, the reason, and how to undo the change.
   From comments, quote at most one excerpt of up to 120 characters. Never name
   members; say "a member" or describe their role. Remove anything resembling a
   secret.
-- Every proposal is a new issue. Before writing one, look for an open proposal
-  about the same target and problem; if there is one, do not open a duplicate
-  and do not write to the existing issue — mention it in your run's report.
+- File proposals only with `multica evolution propose`; never create proposal
+  issues or comment on them yourself. Mention every proposal in your run's
+  report.
