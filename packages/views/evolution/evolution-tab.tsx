@@ -1,8 +1,8 @@
-// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135).
+// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136).
 //
 // Settings → Evolution: a workspace owner or admin enables the built-in
 // Evolution agent by picking the runtime it runs on. Once enabled, the page
-// links to the agent; there is nothing else to configure yet.
+// links to the agent and shows the scheduled analysis settings (M-136).
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -17,6 +17,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Loader2 } from "@multica/ui/icons";
 import { AppLink } from "../navigation";
+import { EvolutionConfigSection } from "./evolution-config";
 import { useT } from "../i18n";
 import { pickContentLang } from "../onboarding/templates";
 import { SettingsTab } from "../settings/components/settings-layout";
@@ -56,15 +57,18 @@ export function EvolutionTab() {
       {status.isLoading ? (
         <Skeleton className="h-16 w-full" />
       ) : agent ? (
-        <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
-          <div className="min-w-0">
-            <p className="text-body font-medium">{t(($) => $.enabled_title)}</p>
-            <p className="truncate text-caption text-muted-foreground">{agent.name}</p>
+        <>
+          <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
+            <div className="min-w-0">
+              <p className="text-body font-medium">{t(($) => $.enabled_title)}</p>
+              <p className="truncate text-caption text-muted-foreground">{agent.name}</p>
+            </div>
+            <AppLink href={paths.agentDetail(agent.id)} className="shrink-0 text-body text-primary hover:underline">
+              {t(($) => $.open_agent)}
+            </AppLink>
           </div>
-          <AppLink href={paths.agentDetail(agent.id)} className="shrink-0 text-body text-primary hover:underline">
-            {t(($) => $.open_agent)}
-          </AppLink>
-        </div>
+          <EvolutionConfigSection wsId={wsId} agentId={agent.id} canEdit={canEnable} />
+        </>
       ) : canEnable ? (
         <div className="flex flex-col gap-4 rounded-lg border p-4">
           <p className="text-body">{t(($) => $.enable_hint)}</p>

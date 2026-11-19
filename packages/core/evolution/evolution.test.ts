@@ -1,8 +1,8 @@
 // @vitest-environment node
-// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135).
+// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClient, setApiInstance } from "../api";
-import { enableEvolution, getEvolution } from ".";
+import { enableEvolution, getEvolution, getEvolutionConfig, saveEvolutionConfig, startsChatReading } from ".";
 
 let calls: { method: string; url: string; body: unknown; headers: unknown }[] = [];
 
@@ -74,5 +74,92 @@ describe("enableEvolution", () => {
   it("fails on a response without an agent", async () => {
     serve(() => Response.json({ agent: null }));
     await expect(enableEvolution("ws", { runtimeId: "rt", language: "en" })).rejects.toThrow(/unexpected response/);
+  });
+});
+
+describe("getEvolutionConfig", () => {
+  it("parses the state", async () => {
+    serve(() =>
+      Response.json({
+        config: {
+          enabled: true,
+          schedule: { time: "04:30", timezone: "UTC", interval_days: 2 },
+          sources: { comments: true, chat: true },
+          exclude_projects: ["p1"],
+          exclude_agents: null,
+          max_items_per_window: 500,
+          max_window_days: 3,
+          max_runs_per_day: 2,
+        },
+        chat_active: true,
+        comments_active: true,
+        limits: { items_per_window: [50, 5000], window_days: [1, 30], runs_per_day: [1, 10], interval_days: [1, 7], max_excluded: 200 },
+        runs: [{ id: "r1", kind: "scheduled", status: "succeeded", issue_id: "i1", created_at: "2026-11-19T03:00:00Z" }],
+      }),
+    );
+    const state = await getEvolutionConfig("ws-1");
+    expect(calls[0]).toMatchObject({ url: "https://api.example.test/api/evolution/config", headers: { "X-Workspace-ID": "ws-1" } });
+    expect(state.config.schedule).toEqual({ time: "04:30", timezone: "UTC", interval_days: 2 });
+    expect(state.config.exclude_agents).toEqual([]);
+    expect(state.chat_active).toBe(true);
+    expect(state.runs[0]).toMatchObject({ id: "r1", status: "succeeded", finished_at: null, served_items: 0 });
+  });
+
+  it.each([
+    ["a null body", null],
+    ["a wrong shape", { config: "nope", runs: "nope" }],
+  ])("falls back to the defaults on %s", async (_name, body) => {
+    serve(() => Response.json(body));
+    const state = await getEvolutionConfig("ws");
+    expect(state.config).toMatchObject({
+      enabled: false,
+      sources: { comments: true, chat: false },
+      schedule: { time: "03:00", timezone: "Asia/Shanghai", interval_days: 1 },
+      max_items_per_window: 2000,
+    });
+    expect(state.chat_active).toBe(false);
+    expect(state.runs).toEqual([]);
+  });
+});
+
+describe("saveEvolutionConfig", () => {
+  const config = {
+    enabled: true,
+    schedule: { time: "03:00", timezone: "Asia/Shanghai", interval_days: 1 },
+    sources: { comments: true, chat: true },
+    exclude_projects: [],
+    exclude_agents: [],
+    max_items_per_window: 2000,
+    max_window_days: 7,
+    max_runs_per_day: 3,
+  };
+
+  it("puts the whole config and the member-notice confirmation", async () => {
+    serve(() => Response.json({ config, chat_active: true }));
+    const state = await saveEvolutionConfig("ws-1", { config, acknowledgeMemberNotice: true });
+    expect(state.chat_active).toBe(true);
+    expect(calls[0]).toMatchObject({
+      method: "PUT",
+      url: "https://api.example.test/api/evolution/config",
+      body: { config, acknowledge_member_notice: true },
+    });
+  });
+
+  it("rejects when the server refuses (chat without the confirmation)", async () => {
+    serve(() => Response.json({ error: "confirm with acknowledge_member_notice" }, { status: 409 }));
+    await expect(saveEvolutionConfig("ws", { config })).rejects.toThrow();
+    expect(calls[0]?.body).toMatchObject({ acknowledge_member_notice: false });
+  });
+});
+
+describe("startsChatReading", () => {
+  it("is true only when the change starts reading chats", async () => {
+    serve(() => Response.json(null));
+    const current = await getEvolutionConfig("ws");
+    const on = { ...current.config, enabled: true, sources: { comments: true, chat: true } };
+    expect(startsChatReading(current, on)).toBe(true);
+    expect(startsChatReading({ ...current, chat_active: true }, on)).toBe(false);
+    expect(startsChatReading(current, { ...on, enabled: false })).toBe(false);
+    expect(startsChatReading(current, { ...on, sources: { comments: true, chat: false } })).toBe(false);
   });
 });
