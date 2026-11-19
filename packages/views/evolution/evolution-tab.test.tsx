@@ -1,6 +1,6 @@
 // Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136).
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
@@ -35,7 +35,8 @@ vi.mock("@multica/core/projects", () => ({
     queryFn: async () => [{ id: "p-1", title: "Website", archived_at: null }],
   }),
 }));
-vi.mock("@multica/core/workspace/queries", () => ({
+vi.mock("@multica/core/workspace/queries", async (original) => ({
+  ...(await original<typeof import("@multica/core/workspace/queries")>()),
   agentListOptions: (wsId: string) => ({
     queryKey: ["agents", wsId],
     queryFn: async () => [
@@ -217,9 +218,11 @@ describe("EvolutionConfigSection", () => {
 
   it("offers other agents, not Evolution itself, as exclusions", async () => {
     show(<EvolutionTab />);
-    expect(await screen.findByText("Builder")).toBeInTheDocument();
-    expect(screen.getByText("Website")).toBeInTheDocument();
-    expect(screen.getAllByText("Evolution")).toHaveLength(1);
+    const agents = within(await screen.findByRole("group", { name: en.exclude_agents }));
+    expect(await agents.findByText("Builder")).toBeInTheDocument();
+    expect(agents.queryByText("Evolution")).not.toBeInTheDocument();
+    const projects = within(screen.getByRole("group", { name: en.exclude_projects }));
+    expect(await projects.findByText("Website")).toBeInTheDocument();
   });
 
   it("shows members the settings read-only", async () => {

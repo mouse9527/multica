@@ -236,11 +236,17 @@ func TestEvolutionSignalsOnlyForTheRunTask(t *testing.T) {
 	member := newRequest("GET", "/api/evolution/signals?source=comment", nil)
 	evolutionCall(t, testUserID, member).Want(http.StatusForbidden)
 
-	other := dbfx.Agent(t, "evolution signals other agent", handlerTestRuntimeID(t))
-	otherTask := dbfx.Task(t, other, testutil.Cols{"status": "running", "issue_id": dbfx.Issue(t, "evolution other")})
+	// Active tasks need a runtime (agent_task_queue_active_requires_runtime).
+	runtimeID := handlerTestRuntimeID(t)
+	other := dbfx.Agent(t, "evolution signals other agent", runtimeID)
+	otherTask := dbfx.Task(t, other, testutil.Cols{
+		"status": "running", "runtime_id": runtimeID, "issue_id": dbfx.Issue(t, "evolution other"),
+	})
 	signalsPage(t, other, otherTask, evolution.SourceComment, "", 0).Want(http.StatusForbidden)
 
-	looseTask := dbfx.Task(t, evo, testutil.Cols{"status": "running", "issue_id": dbfx.Issue(t, "evolution loose")})
+	looseTask := dbfx.Task(t, evo, testutil.Cols{
+		"status": "running", "runtime_id": runtimeID, "issue_id": dbfx.Issue(t, "evolution loose"),
+	})
 	signalsPage(t, evo, looseTask, evolution.SourceComment, "", 0).Want(http.StatusConflict)
 }
 
