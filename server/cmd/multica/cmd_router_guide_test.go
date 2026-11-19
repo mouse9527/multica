@@ -59,6 +59,34 @@ func TestRouterGuideMakesOwnerDecisionsSelfContained(t *testing.T) {
 	}
 }
 
+// A Super Agent chat gets the upstream chat prompt too, which asks for a chat
+// wakeup whenever work is handed off; the guide keeps issues in scope to the
+// batch so one change does not wake the Super Agent twice (M-164).
+func TestRouterGuideSplitsChatWakeupsFromBatches(t *testing.T) {
+	guide := runRouterGuide(t)
+	start := strings.Index(guide, "## chat wakeup 和事件批次的分工")
+	if start < 0 {
+		t.Fatal("`multica router guide` lacks the chat wakeup and batch section")
+	}
+	section := guide[start:]
+	if end := strings.Index(section[1:], "\n## "); end >= 0 {
+		section = section[:end+1]
+	}
+	for _, want := range []string{
+		"订阅范围内的 issue：不建 wakeup，只靠批次",
+		"不用 `--every` 轮询范围内的东西",
+		"这些仍然可以建 wakeup",
+		"`--at` / `--after`",
+		"`--until-pr",
+		"反例",
+		"正例",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("the chat wakeup and batch section lacks %q", want)
+		}
+	}
+}
+
 // The guide prints the embedded file verbatim: editing it and releasing the
 // CLI is the whole update, and there is no second copy to keep in step.
 func TestRouterGuidePrintsTheEmbeddedFile(t *testing.T) {
