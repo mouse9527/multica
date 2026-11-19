@@ -1,6 +1,6 @@
 # Super Agent 使用说明（multica router guide）
 
-什么时候读：Owner 在 chat 里让你把这个 chat 设为 Super Agent、改它的范围或设置、暂停或恢复、解除，或者问这个 Super Agent 现在怎么样时，先读这份说明再动手；你是 Super Agent 时，也按这里的边界判断哪些事自己做、哪些开 issue 交给 worker，按「chat wakeup 和事件批次的分工」一节决定要不要建 chat wakeup，并按「请 Owner 决定的事」一节写每一条待决事项。这份说明随 multica CLI 发布，版本和你用的 CLI 一致。
+什么时候读：Owner 在 chat 里让你把这个 chat 设为 Super Agent、改它的范围或设置、暂停或恢复、解除，或者问这个 Super Agent 现在怎么样时，先读这份说明再动手；你是 Super Agent 时，也按这里的边界判断哪些事自己做、哪些开 issue 交给 worker，按「chat wakeup 和事件批次的分工」一节决定要不要建 chat wakeup，按「自己新建的 issue 在不在范围里」一节说清新 issue 有没有人跟进，并按「请 Owner 决定的事」一节写每一条待决事项。这份说明随 multica CLI 发布，版本和你用的 CLI 一致。
 
 Super Agent（技术名 router）= 一个 chat 会话 + 绑定到它的订阅。你就是这个 chat 的智能体；Owner 在这个 chat 里说「把这个 chat 设为 Super Agent」时，「这个 chat」用 `current` 表示，CLI 会自己解析成本次运行所在的会话。
 
@@ -140,6 +140,37 @@ Owner 问「订阅父任务能不能收到子任务的事件」时，按上面�
 - `multica router get --chat current --output table`（或 `multica router list`）：看这个 Super Agent 有哪些范围、是否在运行。
 - `multica router scope <订阅ID>`：列出这条订阅现在覆盖的 issue（已完成、已取消的要加 `--all`）。子任务在列表里就在范围里。
 - `multica router events --subscription <订阅ID> --since 10m`：看最近有没有收到事件。
+
+## 自己新建的 issue 在不在范围里
+
+在 Super Agent chat 里，**「订阅」只指这个 Super Agent 的范围**。下面两样都不是订阅，不要说成「我订阅了」：
+
+- **issue 订阅者**：谁建的 issue，谁就自动成为它的订阅者（原因 `creator`），智能体也一样；`multica issue subscriber add` 加的也是这种。它只发收件箱通知，批次不会因此报这个 issue。
+- **chat wakeup**：一次性的等待或提醒，不是范围。
+
+你新建 issue 并交给 worker 之后：
+
+1. **能挂进范围的，优先挂进去**：这件事属于某个订阅的任务树，就用 `--parent` 建成那棵树里的子任务；属于订阅的项目，就建在那个项目里。这样不用改范围，批次自动会报。
+2. **建完核对**：`multica router get --chat current --output table` 找到订阅，`multica router scope <订阅ID>` 看新 issue 在不在列表里。
+3. **不在范围里，照实说**，并把「要不要加进范围」列进「需要你处理」，例如：「M-30 不在这个 Super Agent 的范围里，它的进展批次不会报。要加进来吗？加进来以后它的评论、状态和负责人变化都会在这里报给你；不加，我就不会主动跟进它。」
+4. **Owner 同意后再加**：`multica router subscribe --issue M-30 --anchor-chat current`（改范围要先确认，见「确认方式」）。加完再用 `router scope` 核对一次，然后才能说「已订阅」。
+
+反例：
+
+> 已建 M-30，派给开发。我也订阅了 M-30。
+>
+> 实际：M-30 建在另一个项目里，没有父任务，不在任何订阅范围内；「订阅」只是建 issue 时自动成为的 `creator` 订阅者。Owner 以为会有人跟进，其实批次永远不会报它。
+
+正例：
+
+> 已建 M-30，派给开发。M-30 不在这个 Super Agent 的范围里（范围是 M-45 任务树），它的进展批次不会报。
+>
+> **需要你处理（1 件）**
+> 1. **要不要把 M-30 加进这个 Super Agent 的范围**：不加的话，我不会主动跟进它，要你自己去看。
+>    - 加 → 我执行 `router subscribe --issue M-30 --anchor-chat current`，以后它的评论、状态和负责人变化都会在这里报给你。
+>    - 不加 → 范围不变，M-30 只在你的收件箱里有通知。
+>    - 推荐加：你刚报的 bug，需要跟进结果。
+>    - 批准范围：只加 M-30 这一棵任务树，不改其他范围和设置。
 
 ## 确认方式
 

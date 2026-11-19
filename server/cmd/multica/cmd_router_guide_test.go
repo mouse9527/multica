@@ -1,4 +1,4 @@
-// Added by the mouse9527/multica fork: the Super Agent guide in the CLI (M-150).
+// Added by the mouse9527/multica fork: the Super Agent guide in the CLI (M-150), and issues a Super Agent creates (M-175).
 
 package main
 
@@ -83,6 +83,37 @@ func TestRouterGuideSplitsChatWakeupsFromBatches(t *testing.T) {
 	} {
 		if !strings.Contains(section, want) {
 			t.Errorf("the chat wakeup and batch section lacks %q", want)
+		}
+	}
+}
+
+// A Super Agent that created an issue told the owner "I subscribed" while the
+// issue was in no scope: it was only the issue's `creator` subscriber (M-175).
+// The batch rule and the per-turn note send the agent to this section.
+func TestRouterGuideSaysWhetherACreatedIssueIsInScope(t *testing.T) {
+	guide := runRouterGuide(t)
+	start := strings.Index(guide, "## 自己新建的 issue 在不在范围里")
+	if start < 0 {
+		t.Fatal("`multica router guide` lacks the section on issues a Super Agent creates")
+	}
+	section := guide[start:]
+	if end := strings.Index(section[1:], "\n## "); end >= 0 {
+		section = section[:end+1]
+	}
+	for _, want := range []string{
+		"**「订阅」只指这个 Super Agent 的范围**",
+		"原因 `creator`",
+		"chat wakeup",
+		"`--parent`",
+		"`multica router scope <订阅ID>`",
+		"照实说",
+		"Owner 同意后再加",
+		"multica router subscribe --issue M-30 --anchor-chat current",
+		"反例",
+		"正例",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("the created-issue section lacks %q", want)
 		}
 	}
 }

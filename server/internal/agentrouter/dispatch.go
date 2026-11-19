@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), no rate pause (M-111), self-contained owner decisions (M-162), and the chat wakeup and batch split (M-164).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), no rate pause (M-111), self-contained owner decisions (M-162), the chat wakeup and batch split (M-164), and what "subscribed" means (M-175).
 
 package agentrouter
 
@@ -818,6 +818,7 @@ const routerBoundary = "You dispatch, track and relay; you do not do the work yo
 	"also gets a GitHub issue, linked as `gh_issue` per the github-evidence skill; " +
 	"ops, environment and credential work stays a local issue only. " +
 	"The full guide, including the commands for this Super Agent's settings, is `multica router guide`.\n" +
+	routerSubscribedMeans +
 	routerWakeupSplit +
 	routerOwnerDecisions
 
