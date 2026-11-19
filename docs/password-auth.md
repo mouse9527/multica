@@ -2,7 +2,7 @@
 
 本文件属于 `mouse9527/multica` fork，上游 `multica-ai/multica` 没有这部分功能。代码在 `server/internal/passwordauth/`。实施跟踪见 #42。
 
-本文件随实施阶段补充；当前内容对应阶段 1（#37）：数据表、凭据存取、哈希封装。阶段 1 不含 HTTP 接口，不改任何上游行为。
+本文件随实施阶段补充；当前内容对应阶段 1（#37：数据表、凭据存取、哈希封装）和阶段 2（#38：开关、接口、失败锁定、限流）。
 
 ## 数据表
 
@@ -14,7 +14,7 @@
 | `password_hash` | PHC 字符串 `$argon2id$v=19$m=..,t=..,p=..$<salt>$<hash>`，自带盐和参数，校验只读它 |
 | `algo` | 目前只允许 `argon2id`（CHECK 约束） |
 | `params` | 生成该哈希时的参数（JSON），便于运维统计还有多少哈希停在旧参数，不必解析哈希 |
-| `failed_count`、`locked_until` | 按账号的失败计数与锁定，策略在阶段 2 实现；`locked_until` 为 NULL 表示未锁 |
+| `failed_count`、`locked_until` | 按账号的失败计数与锁定，策略见下文「失败锁定与限流」；`locked_until` 为 NULL 表示未锁 |
 
 - 无外键（`AGENTS.md`）。上游目前没有删除用户的代码；以后若有，删除方要一并删这张表的行。
 - 唯一性由主键保证，没有其他索引，所以没有 `CONCURRENTLY` 索引迁移，也不需要在 `server/cmd/migrate/main.go` 登记钩子。
@@ -52,3 +52,57 @@ argon2id（`golang.org/x/crypto/argon2`）。
 - sqlc 生成的 `db.UserCredential` 的 `PasswordHash` 带 `json:"password_hash"`。本包只对外返回 `Credential`；阶段 2 写接口时不要直接序列化生成的 model。
 - `Credential` 的哈希是未导出字段；`fmt`（所有动词，含 `%#v`）、`slog`、`encoding/json` 都不输出它。
 - 日志只记 `user_id` 和错误。测试见 `store_test.go`（伪造数据库返回带密码与哈希的 `Detail`，断言错误与日志都不含）。
+
+## 开关
+
+环境变量 `MULTICA_PASSWORD_AUTH_ENABLED`，`true` 或 `1` 为开，默认关。
+
+- 关：不注册任何密码路由（请求得到 404），`/api/config` 不含 `password_login_enabled`，行为与上游一致。
+- 开：注册下面三个路由，`/api/config` 返回 `"password_login_enabled": true`。
+- 开但 argon2id 环境变量不合规：服务照常启动，记一条 error 日志，密码登录保持关闭（同上「关」），不会用弱参数存哈希。
+
+上游文件里的钩子：`server/cmd/server/router.go` 一行 `h.MountPasswordAuth(...)`，`server/internal/handler/handler.go` 的 `PasswordAuth` 字段，`server/internal/handler/config.go` 的 `PasswordLoginEnabled` 字段和一行赋值。其余在 `server/internal/handler/passwordauth.go`、`server/internal/middleware/client_ip_fork.go` 和本包。
+
+## 接口
+
+| 路由 | 鉴权 | 说明 |
+|---|---|---|
+| `POST /auth/password-login` | 无 | 请求 `{"email","password"}`。成功返回与验证码登录相同的 `{"token","user"}`，并设置相同的 Cookie（`issueJWT`、`SetAuthCookies`、CloudFront Cookie）。不创建用户。CLI 的 `cli_callback` 流程不变：网页登录后照旧换 CLI token |
+| `GET /api/me/password` | 登录会话 | `{"has_password": bool}`，设置页据此决定要不要填当前密码 |
+| `POST /api/me/password` | 登录会话 | 请求 `{"current_password","new_password"}`。第一次设置只需会话；已有密码时必须给对当前密码。新密码最短 12 个字符。只作用于会话里的现有用户，用户不存在返回 401，不建用户、不建凭据 |
+
+`/api/me/password` 只接受本人的登录会话（Cookie 或 JWT）：任务令牌（`mat_`）、云节点令牌和个人访问令牌（`mul_`）都返回 403，避免一个交给脚本的令牌变成密码。
+
+错误响应（`code` 供前端翻译）：
+
+| 情况 | 状态码 | `code` |
+|---|---|---|
+| 邮箱不存在、账号没设密码、密码错误 | 401 | `invalid_credentials`（三者响应体逐字节相同） |
+| 账号锁定中、按 IP 限流 | 429 | `too_many_attempts`（两者相同） |
+| 新密码太短或太长 | 400 | `invalid_password` |
+| 修改时没给当前密码 | 400 | `current_password_required` |
+| 修改时当前密码错误 | 403 | `current_password_incorrect` |
+
+上游临时停用名单（`server/internal/auth/temporary_disabled_users.go`）里的用户，密码正确时也返回与验证码登录相同的 403，签发不了会话。
+
+## 失败锁定与限流
+
+不依赖 Redis（现网没有 Redis，上游按 IP 的限流在没有 Redis 时关闭，`router.go` 那段不动）。
+
+- **按账号锁定**（存 `user_credential`）：连续失败 5 次后锁 1 分钟，此后每多失败一次时长翻倍，最长 1 小时。失败次数只在登录成功或设置新密码时清零，所以等锁过期后再猜一次就会锁更久。锁定期间不校验密码，正确密码也返回 429。修改密码时当前密码输错同样计数。
+- **没有密码的邮箱也"锁"**：不存在的邮箱和没设密码的账号在进程内按同样规则计数并返回同样的 429，否则"猜 5 次后会不会锁"就能判断某个邮箱有没有密码。这张表只存邮箱的 SHA-256，最多 1 万条；24 小时没有新失败就忘掉（真实账号的计数不会自己清零，因此停一天后两者可能再次不同，探测一次要等一天）；服务重启后清空。
+- **按 IP 限流**（进程内）：每个地址每分钟 10 次登录尝试，IPv6 按 /64 计。客户端地址的取法与上游 `RateLimit` 相同（`RATE_LIMIT_TRUSTED_PROXIES` 里的代理才看 `X-Forwarded-For`）。表最多 1 万个地址，满了且都未过期时新地址不计数直接放行（不因地址洪水挡住所有人；按账号锁定仍然有效）。
+- **多副本的局限**：IP 限流和"无密码邮箱"的计数都在单个进程内。现网单副本；N 个副本时每个地址最多可得 N 倍配额，同一个无密码邮箱也要在每个副本上分别累计才会"锁"，不再与真实账号完全一致。按账号锁定存在数据库里，不受影响。
+- **哈希并发上限**：同时进行的 argon2id 计算占用的内存合计不超过 256 MiB（默认参数下 4 个并发，其余排队），一次校验约 50 ms、64 MiB。
+
+所有失败路径耗时一致：返回 401 的路径都恰好做一次 argon2id 校验（不存在的账号用 `VerifyDummy`），返回 429 的路径都不做。
+
+## 日志
+
+记录事件，不记密码、哈希，也不记尝试的邮箱（攻击者输入，甚至可能是填错位置的密码）：
+
+- 登录成功：`user logged in with password`，带 `user_id`。
+- 失败：`password login: wrong password`（带 `user_id`）、`password login: no password for this email`（只带 IP）、`password login: account locked`、`password login: account locked after failures`（带次数和时长）、`password login: rate limited`（带 IP）。
+- 设置或修改：`password set`、`password change: wrong current password`，带 `user_id`。
+
+测试对响应体、响应头和日志断言不含测试用的密码与库里的任何哈希（`server/internal/passwordauth/service_db_test.go`、`server/internal/handler/passwordauth_test.go`）。
