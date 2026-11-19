@@ -1623,6 +1623,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.With(authVerifyRL).Post("/auth/verify-code", h.VerifyCode)
 	r.With(authRL).Post("/auth/google", h.GoogleLogin)
 	r.Post("/auth/logout", h.Logout)
+	// Modified for the mouse9527/multica fork: password login (M-41).
+	// Registers nothing unless MULTICA_PASSWORD_AUTH_ENABLED is on.
+	h.MountPasswordAuth(r, middleware.Auth(queries, patCache, cloudPATVerifier, cfSigner), trustedProxies)
 
 	// Public API
 	r.Get("/api/config", h.GetConfig)

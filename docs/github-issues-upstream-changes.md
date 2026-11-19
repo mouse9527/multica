@@ -21,7 +21,9 @@
 | `server/internal/daemon/auto_update.go` | M-58 | 版本判断接受 `-mouse.N`（两行） | 有 |
 | `server/internal/daemon/daemon.go` | M-58 | `runUpdate` 前的 Homebrew 检查 | 有 |
 | `server/cmd/server/main.go` | M-85、M-86 | 调用 `agentrouter.Register`（M-86 起多传 `taskSvc`）：`router_v1` 打开时注册 Router 监听器和对账任务，`router_dispatch` 也打开时再注册派发任务；关闭时什么都不注册 | 有 |
-| `server/cmd/server/router.go` | M-85、M-135 | 挂载 `/api/router`（开关关闭时返回 404）；M-135 在旁边挂载 `/api/evolution`（`evolution_v1` 关闭时返回 404，一块） | 有 |
+| `server/cmd/server/router.go` | M-85、M-135、M-41 | 挂载 `/api/router`（开关关闭时返回 404）；M-135 在旁边挂载 `/api/evolution`（`evolution_v1` 关闭时返回 404，一块）；M-41 在 `/auth/logout` 之后一行调用 `h.MountPasswordAuth`（`MULTICA_PASSWORD_AUTH_ENABLED` 关闭时什么都不注册） | 有 |
+| `server/internal/handler/handler.go` | M-41 | `Handler` 加字段 `PasswordAuth`（密码登录服务，未挂载时为 nil）和一个 import | 有 |
+| `server/internal/handler/config.go` | M-41 | `AppConfig` 加 `password_login_enabled`（`omitempty`，未挂载时不出现）和一行赋值 | 有 |
 | `server/internal/featureflags/keys.go` | M-85、M-89、M-86、M-96、M-97、M-105、M-135 | 新开关 `router_v1` 与 `RouterV1Enabled`；`handoff_reply_wake` 与 `HandoffReplyWakeEnabled`；`router_dispatch` 与 `RouterDispatchEnabled`；`router_chat` 与 `RouterChatEnabled`；`router_hold_shadow` 与 `RouterHoldShadowEnabled`；`EvaluateFrontendPublicFlags` 把 `router_chat` 的组合结果发给前端（一行）；M-135 再发布 `evolution_v1`（一行，常量和判断函数在 fork 文件 `evolution_fork.go`） | 有 |
 | `server/internal/handler/comment.go` | M-89 | `computeCommentAgentTriggers` 改名为 `computeUpstreamCommentAgentTriggers`（一行），由 fork 的同名包装函数调用，见 `handoff_reply_wake.go` | 有 |
 | `server/internal/handler/workspace.go` | M-20、M-85 | 删除工作区时清理迁移 9000 建的 5 张表（功能撤回后表仍在，见 [github-issues.md](github-issues.md)），以及 Router 的表（迁移 9004、9008，由 `agentrouter.DeleteWorkspaceData` 删除；M-86 新增的 3 张表不再改这个文件） | 有 |
@@ -65,7 +67,7 @@
 | `server/internal/service/autopilot_quota_test.go` | M-24 | 同上 | 有 |
 | `server/internal/service/delegated_failure_recovery_settled_test.go` | M-24 | 同上 | 有 |
 
-合计：修改过的上游文件 57 个（含 11 个测试文件），其中 5 个（生成的 `models.go`、`glyphs.ts`、`icons/index.ts`，以及 `packages/core/package.json`、`server/go.sum`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。M-105 新增的 13 个前端上游触点（M-131 同步后剩 12 个，`client.ts` 已还原为上游版本）和 `keys.go` 的一行也集中在同一个提交里。M-97 只新增 1 个上游触点（`inbox/create.go`）。M-108 的 5 处（两个挂载点、图标绘制与两个生成文件）同样在一个提交里。M-125 新增 2 个上游触点（`cmd_daemon.go`、`cmd_daemon_autostart_test.go`），并在 `cmd_daemon_autostart.go` 上追加改动。 M-135（「进化」P1）新增 3 个上游触点（`daemon.go`、`mika_agent.go`、`builtin_skills.go`，各一块），并在 13 个已有触点上追加：`router.go`、`keys.go`、`package.json` 各一块，设置页三块，i18n 类型与 8 个语言入口各两块，共 27 块，全部在同一个提交里；除设置页「工作区」组那一处和 3 个新触点外，都紧挨着已有的 fork 行。同步估算：新增的独立冲突点只有 3 个新触点和设置页那一处，按 M-132 的统计，前 3 处所在位置近 6 个月被上游改动过 0–2 次（推断，未做同步演练），预计每次同步多 0–1 处手工冲突。M-147 新增 1 个上游触点（`use-realtime-sync.ts`）。 M-40（密码登录 P1）新增 2 个上游触点（`go.mod`、`go.sum`），并在清单测试和生成的 `models.go` 上各追加一处。 M-42（密码登录 P3）新增 1 个上游触点（`Dockerfile`，两行）。
+合计：修改过的上游文件 59 个（含 11 个测试文件），其中 5 个（生成的 `models.go`、`glyphs.ts`、`icons/index.ts`，以及 `packages/core/package.json`、`server/go.sum`）文件内没有修改说明，以本清单为准。M-96 新增的 7 个上游触点（前端 3 个、`chat.sql` 与生成文件 2 个、`messages.go`、`chat.go`）集中在同一个提交里，同步上游时可以整块重放。M-105 新增的 13 个前端上游触点（M-131 同步后剩 12 个，`client.ts` 已还原为上游版本）和 `keys.go` 的一行也集中在同一个提交里。M-97 只新增 1 个上游触点（`inbox/create.go`）。M-108 的 5 处（两个挂载点、图标绘制与两个生成文件）同样在一个提交里。M-125 新增 2 个上游触点（`cmd_daemon.go`、`cmd_daemon_autostart_test.go`），并在 `cmd_daemon_autostart.go` 上追加改动。 M-135（「进化」P1）新增 3 个上游触点（`daemon.go`、`mika_agent.go`、`builtin_skills.go`，各一块），并在 13 个已有触点上追加：`router.go`、`keys.go`、`package.json` 各一块，设置页三块，i18n 类型与 8 个语言入口各两块，共 27 块，全部在同一个提交里；除设置页「工作区」组那一处和 3 个新触点外，都紧挨着已有的 fork 行。同步估算：新增的独立冲突点只有 3 个新触点和设置页那一处，按 M-132 的统计，前 3 处所在位置近 6 个月被上游改动过 0–2 次（推断，未做同步演练），预计每次同步多 0–1 处手工冲突。M-147 新增 1 个上游触点（`use-realtime-sync.ts`）。 M-40（密码登录 P1）新增 2 个上游触点（`go.mod`、`go.sum`），并在清单测试和生成的 `models.go` 上各追加一处。 M-42（密码登录 P3）新增 1 个上游触点（`Dockerfile`，两行）。 M-41（密码登录 P2）新增 2 个上游触点（`handler.go` 一个字段、`config.go` 一个字段和一行），并在 `router.go` 追加一行；三处都只是挂接，逻辑在 fork 新文件里。
 
 ## fork 新增的文件
 
@@ -92,4 +94,5 @@
 - daemon 在 LaunchAgent 下的升级重启交给 launchd（M-125）：`server/cmd/multica/cmd_daemon_launchd_handoff.go` 及测试。
 - `docs/github-issues*.md`。
 - 密码登录 P1（M-40，见 [password-auth.md](password-auth.md)；还没有接口和开关，不改运行时行为）：`server/internal/passwordauth/`；`server/migrations/9018_*`；`server/pkg/db/queries/passwordauth.sql` 与 `server/pkg/db/generated/passwordauth.sql.go`；`docs/password-auth.md`。
+- 密码登录 P2（M-41，开关 `MULTICA_PASSWORD_AUTH_ENABLED`，默认关闭，见 [password-auth.md](password-auth.md)）：`server/internal/passwordauth/` 下的 `flag.go`、`service.go`、`throttle.go` 及测试；`server/internal/handler/passwordauth.go` 及测试；`server/internal/middleware/client_ip_fork.go`、`session_credential_fork.go` 及测试（上游包里的新文件，只导出 `ClientIP`、`AuthenticatedBySession`）；`server/cmd/server/passwordauth_router_test.go`。
 - 密码登录 P3 管理员重置（M-42，见 [password-auth.md](password-auth.md)「管理员重置密码」）：`server/cmd/reset_password/`；`server/internal/passwordauth/reset.go` 及测试。
