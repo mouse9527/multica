@@ -1,8 +1,8 @@
 # 进化（Evolution）：内置系统 agent
 
-本文件属于 `mouse9527/multica` fork（M-135、M-136，设计见 M-132）。「进化」是和上游 Mika 同一机制的内置系统 agent：定期分析工作区里的对话和评论，针对 agent、工作流、团队提出改进提案，由所有者或管理员批准后再执行。
+本文件属于 `mouse9527/multica` fork（M-135、M-136、M-137，设计见 M-132）。「进化」是和上游 Mika 同一机制的内置系统 agent：定期分析工作区里的对话和评论，针对 agent、工作流、团队提出改进提案，由所有者或管理员批准后再执行。
 
-**当前阶段是 P2**：P1 的身份与一键启用之上，加了配置、游标、每日调度和数据通道。分析运行**只出报告、不开提案**。提案（P3）、apply 与回滚（P4）、效果度量（P5）在后续任务里做。
+**当前阶段是 P3**：P1 的身份与一键启用、P2 的配置、游标、每日调度和数据通道之上，分析运行可以通过提案接口开提案 issue。提案**只是 issue，不会改动任何配置**；apply 与回滚（P4）、效果度量（P5）在后续任务里做。
 
 ## 开关
 
@@ -42,6 +42,7 @@
 | `GET` | `/api/evolution/config` | 任何成员 | 配置、实际在读什么（`comments_active`、`chat_active`）、服务端上限、最近 10 次运行 |
 | `PUT` | `/api/evolution/config` | 所有者、管理员（人类账号） | 请求 `{"config": {...}, "acknowledge_member_notice": bool}`，整块替换配置，拒绝未知字段；超出上限返回 400；要开始读 chat 却没带确认返回 409 |
 | `GET` | `/api/evolution/signals` | 只限进化 agent 的分析运行（见下） | `?source=comment\|chat&after=<next_after>&limit=1..200`，返回一页数据 |
+| `POST` | `/api/evolution/proposals` | 只限进化 agent 的分析运行（同数据通道的授权） | 提交一条结构化提案，见下文「提案（P3）」 |
 
 启用的并发安全与 Mika 相同：先按 `system_key` 快速查重，再在事务里取工作区级 advisory lock（`evolution:<workspace_id>`）后复查，所以并发启用只会建一个。runtime 权限沿用 `canUseRuntimeForAgent`，并在锁内复核。工作区里已有同名 agent 时返回 409，提示先改名。
 
@@ -58,6 +59,11 @@
 | `max_items_per_window`（一次运行最多读多少条，两个数据源合计） | 2000 | 50–5000 |
 | `max_window_days`（一次运行从游标往后最多读几天） | 7 | 1–30 |
 | `max_runs_per_day`（含补跑） | 3 | 1–10 |
+| `max_proposals_per_run`（一次运行最多新开几条提案；合并到已有提案不计） | 5 | 1–20 |
+| `min_evidence_count`（一条提案至少要几个独立来源：不同 issue 或不同会话） | 2 | 1–10 |
+| `rejected_cooldown_days`（同一提案被取消后多少天内不再提） | 30 | 1–365 |
+
+P3 的三项设置页暂不展示，用 `PUT /api/evolution/config` 修改；设置页保存时原样带回这三项；请求里不带或为 0 时取默认值。
 
 `workspace.settings` 也能经上游的工作区更新接口整块写入，所以读取时一律按上限夹紧，写入时超限直接拒绝。
 
@@ -112,6 +118,37 @@ chat 游标是「已告知」的唯一凭证：只有上面第 2 步会建它。
 
 运行的窗口上界是创建时刻减 5 分钟，避免漏掉晚提交的行。
 
+## 提案（P3）
+
+分析运行用 `multica evolution propose --file <proposal.json>` 调 `POST /api/evolution/proposals`。agent 不直接建 issue，由服务端校验后建，所以下面的规则都由服务端强制，不靠提示词自觉。
+
+**请求**（拒绝未知字段）：`target{type,id}`、`field`、`topic`、`title`、`problem`、`change{before,after}`、`evidence[{type,id,note,quote}]`、`expected_effect`、`risk`（low/medium/high）、`risk_reason`、`rollback`。
+
+**拒绝**（返回 `{"code","error"}`，`error` 是给 agent 看的原因；内容类 422，配额与冷却 409，请求体不合法 400）：
+
+| code | 什么时候 |
+|---|---|
+| `target_not_allowed` | 目标类型不是 agent / workflow / squad；目标不存在、已归档、是内部系统 agent（`kind=system`）、被排除；**目标是进化自己** |
+| `field_not_allowed` | 字段不在白名单：agent 只限 `instructions`、`description`、`skills`；workflow 只限 `steps`、`name`、`description`；squad 只限 `instructions`、`description`、`members`、`leader`（squad 提案只出文本）。`custom_env`、`custom_args`、`mcp_config`、runtime、权限、可见性、密钥类字段单独给出原因 |
+| `change_does_not_match_target` | `change.before` 不在目标当前的文本里（比较时忽略空白排版）；`before` 为空时，`after` 已经在目标里 |
+| `insufficient_evidence` | 没有证据；独立来源数低于 `min_evidence_count`（同一 issue 下的多条评论算一个来源）；证据指向进化读不到的内容（私有项目、私有 agent 的会话、被排除的项目和 agent、进化自己的评论和会话、进化自己的分析和提案 issue） |
+| `quote_not_allowed` | 在 chat 或 issue 证据上带 `quote`；`quote` 超过 120 字；`quote` 不是那条评论的原文摘录；任何文本里出现所引 chat 消息中连续 20 个字符（或整条短消息） |
+| `sensitive_content` | 任何文本经脱敏规则（与数据通道同一套）会被替换；任何文本含工作区成员的姓名（与目标同名的除外） |
+| `run_limit_reached` | 本次运行新开的提案已达 `max_proposals_per_run` |
+| `recently_rejected` | 同一提案在 `rejected_cooldown_days` 内被取消过 |
+
+「chat 原文」只能和所引的 chat 消息做子串比对，改写过的原话拦不住，所以提示词要求只写归纳。
+
+**查重**：`fingerprint = sha256(target_type, target_id, field, 归一化 topic)` 的前 32 位（topic 忽略大小写、标点和空白）。在工作区级 advisory lock 下：
+
+1. 有同 fingerprint 且状态属于未开始 / 进行中分类的提案：**不新建**，把它还没引用的证据以进化的评论追加到原 issue（`outcome: merged`）；没有新证据就什么都不写（`outcome: duplicate`）。原 issue 的 metadata 不动。
+2. 否则若同 fingerprint 的提案在冷却期内被取消（状态分类为 closed，以 `updated_at` 计）：拒绝。
+3. 否则检查本次运行的配额后新建。
+
+**新建的提案 issue**：标题「进化提案 · …」（按 agent 启用时的语言）；不指派、状态 `backlog`（工作流不含 backlog 时由上游改为 todo），所以不会触发任何运行；标签 `evolution`（首次自动创建）；正文按模板：对象（含基线哈希）、问题与归因、改动（diff）、证据（链接、日期、评论摘录；不写作者）、预期效果、风险档位和回滚、来源分析运行。metadata 写扁平字符串键（只写在这个新 issue 上）：`evolution_fingerprint`、`evolution_target_type`、`evolution_target_id`、`evolution_field`、`evolution_base_hash`（目标白名单字段的内容哈希，P4 apply 时据此判断目标是否被改过）、`evolution_risk`、`evolution_run_id`。
+
+**不自动 apply**：提案接口不写任何 agent、工作流、squad；apply 与回滚是 P4，只有人类管理员能调用。
+
 ## 前端
 
 设置 → 工作区 →「进化」（只在 `evolution_v1` 打开时出现，标记为管理员页）。所有者和管理员选 runtime（和可选的模型）后点「启用进化」；已启用时显示 agent 并链接到它的详情页；普通成员只看到「请联系所有者或管理员启用」。
@@ -122,10 +159,10 @@ P2 在已启用的 agent 下面加「定时分析」：范围说明、开关、�
 
 ## CLI
 
-`multica evolution signals --source comment|chat [--after <next_after>] [--limit N]`：分析运行读数据用，fork 新文件 `server/cmd/multica/cmd_evolution.go`。
+`multica evolution signals --source comment|chat [--after <next_after>] [--limit N]`：分析运行读数据用；`multica evolution propose --file <path|->`：分析运行提交提案用。都在 fork 新文件 `server/cmd/multica/cmd_evolution.go`。
 
 ## 上游触点
 
-见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。P2 没有新的上游文件，在已有 fork 改动的 3 个上游文件上各追加一块：`main.go` 一行注册定时任务（紧挨 `agentrouter.Register`）；`workspace.go` 的删除步骤（紧挨 Router 那块）；`workspace_delete_manifest_test.go` 登记两张新表。前端没有新的上游触点（只改 fork 自己的文件）。
+见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。P3 没有新的上游触点：路由加在 fork 文件 `evolution_agent.go` 的 `MountEvolution` 里，其余都是 fork 新文件。P2 没有新的上游文件，在已有 fork 改动的 3 个上游文件上各追加一块：`main.go` 一行注册定时任务（紧挨 `agentrouter.Register`）；`workspace.go` 的删除步骤（紧挨 Router 那块）；`workspace_delete_manifest_test.go` 登记两张新表。前端没有新的上游触点（只改 fork 自己的文件）。
 
 P1：后端 5 个上游文件各 1 块：`daemon.go` 拼接提示词、`mika_agent.go` 的 `systemInstructionsFor` 展示提示词（两处都调用 fork 的 `service.ComposeForkSystemInstructions` / `ForkSystemInstructions`，以后新增 fork 系统 agent 不用再改这两个文件）、`builtin_skills.go` 的技能映射、`router.go` 挂载路由、`keys.go` 发布开关。前端 11 个上游文件：`package.json` 导出、设置页 3 块、i18n 类型和 8 个语言入口各 2 块，除设置页工作区分组那一处外都紧挨着 Router 已有的 fork 行。
