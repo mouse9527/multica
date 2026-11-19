@@ -80,11 +80,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdin *
 	if dsn == "" {
 		return fail(errors.New("DATABASE_URL is not set"))
 	}
-	params, err := passwordauth.ParamsFromEnv(getenv)
-	if err != nil {
-		return fail(err)
-	}
-	hasher, err := passwordauth.NewHasher(params)
+	hasher, err := passwordauth.HasherFromEnv(getenv)
 	if err != nil {
 		return fail(err)
 	}
