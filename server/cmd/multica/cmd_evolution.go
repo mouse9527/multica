@@ -1,10 +1,13 @@
-// Added by the mouse9527/multica fork: Evolution P2, the signal channel (M-136).
+// Added by the mouse9527/multica fork: Evolution P2, the signal channel (M-136);
+// P3 proposals (M-137).
 
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strconv"
@@ -38,10 +41,44 @@ returned.`,
 	RunE: runEvolutionSignals,
 }
 
+var evolutionProposeCmd = &cobra.Command{
+	Use:   "propose",
+	Short: "File an improvement proposal from the current Evolution analysis run",
+	Long: `File an improvement proposal from the current Evolution analysis run.
+
+Only the Evolution agent can call this, from the task of a scheduled analysis
+issue. The proposal is a JSON object (see the multica-evolution skill):
+
+  {
+    "target": {"type": "agent|workflow|squad", "id": "<uuid>"},
+    "field": "instructions",
+    "topic": "a few words naming the problem",
+    "title": "one line",
+    "problem": "problem and cause; facts cite evidence, inferences are marked",
+    "change": {"before": "current text, copied exactly", "after": "proposed text"},
+    "evidence": [{"type": "comment|chat|issue", "id": "<uuid>", "note": "summary", "quote": "comments only, <= 120 characters"}],
+    "expected_effect": "which signal moves, which way, over how long",
+    "risk": "low|medium|high",
+    "risk_reason": "why",
+    "rollback": "how to undo"
+  }
+
+The server checks the rules and refuses with a reason (code and error) when one
+is broken. The same proposal already open gets the new evidence as a comment
+instead of a new issue ("outcome": "merged" or "duplicate"). Nothing is applied.`,
+	Example: `  $ multica evolution propose --file proposal.json
+  $ multica evolution propose --file - < proposal.json`,
+	Args: exactArgs(0),
+	RunE: runEvolutionPropose,
+}
+
 func init() {
 	evolutionCmd.GroupID = groupCore
 	rootCmd.AddCommand(evolutionCmd)
 	evolutionCmd.AddCommand(evolutionSignalsCmd)
+	evolutionCmd.AddCommand(evolutionProposeCmd)
+	evolutionProposeCmd.Flags().String("file", "", "Path to the proposal JSON, or - for stdin (required)")
+	evolutionProposeCmd.Flags().String("output", "json", "Output format: json")
 	evolutionSignalsCmd.Flags().String("source", "", "Source to read: comment or chat (required)")
 	evolutionSignalsCmd.Flags().String("after", "", "Continue after this page token (next_after of a previous page)")
 	evolutionSignalsCmd.Flags().Int("limit", 0, "Items per page, 1-200 (default 100)")
@@ -72,4 +109,38 @@ func runEvolutionSignals(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("read signals: %w", err)
 	}
 	return cli.PrintJSON(os.Stdout, page)
+}
+
+func runEvolutionPropose(cmd *cobra.Command, _ []string) error {
+	path, _ := cmd.Flags().GetString("file")
+	if path == "" {
+		return fmt.Errorf("--file is required (a path, or - for stdin)")
+	}
+	var raw []byte
+	var err error
+	if path == "-" {
+		raw, err = io.ReadAll(cmd.InOrStdin())
+	} else {
+		raw, err = os.ReadFile(path)
+	}
+	if err != nil {
+		return fmt.Errorf("read proposal: %w", err)
+	}
+	var body json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return fmt.Errorf("proposal is not valid JSON: %w", err)
+	}
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	var result map[string]any
+	if err := client.PostJSON(ctx, "/api/evolution/proposals", body, &result); err != nil {
+		// A refusal carries the server's code and reason in its body.
+		return fmt.Errorf("file proposal: %w", err)
+	}
+	return cli.PrintJSON(os.Stdout, result)
 }
