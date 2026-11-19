@@ -1,4 +1,5 @@
-// Added by the mouse9527/multica fork: Evolution P2, the daily schedule (M-136).
+// Added by the mouse9527/multica fork: Evolution P2, the daily schedule (M-136);
+// P3 proposals in the run description (M-137).
 
 package evolution
 
@@ -433,7 +434,7 @@ func runTitle(agentName string, plan runPlan, now time.Time, cfg Config) string 
 // to read it. The Evolution system prompt carries the rest.
 func runDescription(run Run, cursors map[string]Position) string {
 	var b strings.Builder
-	b.WriteString("Scheduled Evolution analysis. Report only: post one report comment on this issue; do not open proposal issues yet.\n\n")
+	b.WriteString("Scheduled Evolution analysis. File each proposal with `multica evolution propose`, then post one report comment on this issue. Nothing is applied.\n\n")
 	b.WriteString("## Window\n\n")
 	for _, source := range []string{SourceComment, SourceChat} {
 		p, ok := cursors[source]
@@ -446,6 +447,9 @@ func runDescription(run Run, cursors map[string]Position) string {
 	}
 	b.WriteString("\n## Read\n\n")
 	b.WriteString("```\nmultica evolution signals --source comment --output json\nmultica evolution signals --source chat --output json\n```\n\n")
-	b.WriteString("Repeat each with `--after <next_after>` until `has_more` is false. `limit_reached` means this run's item budget is used up; the rest goes to a catch-up run.\n")
+	b.WriteString("Repeat each with `--after <next_after>` until `has_more` is false. `limit_reached` means this run's item budget is used up; the rest goes to a catch-up run.\n\n")
+	b.WriteString("## Propose\n\n")
+	b.WriteString("```\nmultica evolution propose --file proposal.json\n```\n\n")
+	b.WriteString("The proposal format and rules are in the `multica-evolution` skill. A refusal says why; fix it or drop the proposal.\n")
 	return b.String()
 }
