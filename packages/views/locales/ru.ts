@@ -1,4 +1,5 @@
 import type { LocaleResources } from "@multica/core/i18n";
+import ruDocs from "./ru/docs.json";
 import ruCommon from "./ru/common.json";
 import ruAuth from "./ru/auth.json";
 import ruSettings from "./ru/settings.json";
@@ -31,6 +32,7 @@ import ruPasswordauth from "./ru/passwordauth.json";
 import ruEvolution from "./ru/evolution.json";
 
 const resources: LocaleResources = {
+  docs: ruDocs,
   common: ruCommon,
   auth: ruAuth,
   settings: ruSettings,

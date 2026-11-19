@@ -3,6 +3,7 @@
 -- identical to ListArchivedInboxItems: the handler converts one row type into
 -- the other.
 SELECT i.*,
+       iss.number AS issue_number,
        iss.status AS issue_status,
        iss.priority AS issue_priority,
        iss.project_id AS issue_project_id,
@@ -95,6 +96,7 @@ WITH eligible_archived AS MATERIALIZED (
     SELECT id FROM comment_anchors
 )
 SELECT i.*,
+       iss.number AS issue_number,
        iss.status AS issue_status,
        iss.priority AS issue_priority,
        iss.project_id AS issue_project_id,
@@ -166,7 +168,7 @@ RETURNING *;
 -- opened outside the inbox. The item itself is read whether or not it is
 -- archived; its siblings only while active, as in MarkInboxReadByIssue, which
 -- keeps the probe on the partial index idx_inbox_active_by_issue. Items without
--- an issue are their own group.
+-- an issue are their own group. siblings_read is how many other rows it read.
 WITH target AS (
     SELECT t.workspace_id, t.recipient_type, t.recipient_id, t.issue_id
     FROM inbox_item t
@@ -180,10 +182,11 @@ WITH target AS (
       AND s.issue_id = target.issue_id
       AND s.archived = false AND s.read = false
       AND s.id <> $1
+    RETURNING s.id
 )
 UPDATE inbox_item AS item SET read = true
 WHERE item.id = $1
-RETURNING item.*;
+RETURNING sqlc.embed(item), (SELECT count(*) FROM siblings)::bigint AS siblings_read;
 
 -- name: MarkInboxUnread :one
 -- Item-level, unlike MarkInboxRead: the inbox renders one row per issue

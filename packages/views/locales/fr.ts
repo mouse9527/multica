@@ -1,4 +1,5 @@
 import type { LocaleResources } from "@multica/core/i18n";
+import frDocs from "./fr/docs.json";
 import frCommon from "./fr/common.json";
 import frAuth from "./fr/auth.json";
 import frSettings from "./fr/settings.json";
@@ -31,6 +32,7 @@ import frPasswordauth from "./fr/passwordauth.json";
 import frEvolution from "./fr/evolution.json";
 
 const resources: LocaleResources = {
+  docs: frDocs,
   common: frCommon,
   auth: frAuth,
   settings: frSettings,

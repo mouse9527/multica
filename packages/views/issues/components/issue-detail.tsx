@@ -213,8 +213,9 @@ import { IssueSidebarSections, letSidebarSettingsDragKeysThrough } from "./issue
 import { useT } from "../../i18n";
 import { useIssueDetailScrollRestore } from "../hooks/use-issue-detail-scroll-restore";
 import { useIssueTimelineAnchor } from "../hooks/use-issue-timeline-anchor";
-import { scrollToTimelineComment } from "../utils/scroll-to-timeline-comment";
+import { revealTimelineList, scrollToTimelineComment } from "../utils/scroll-to-timeline-comment";
 import { buildTimelineFindUnits, type TimelineFindUnit } from "../utils/timeline-find-units";
+import { estimateTimelineItemHeights, timelineCharsPerLine } from "../utils/timeline-height-estimates";
 import { useJumpToLatest } from "../hooks/use-jump-to-latest";
 import { useNewCommentsWhileAway } from "../hooks/use-new-comments-while-away";
 import { useInPageFind } from "../hooks/use-in-page-find";
@@ -233,7 +234,8 @@ import {
  * issue already landed on the current route (value: the consumed comment
  * id). Lets a remount that merely restores the view (tab switch back) skip
  * the jump-and-highlight, while a fresh selection — which clears the entry
- * (see InboxPage.handleSelect) — runs it again.
+ * (see InboxPage.handleSelect) — or a pending landing request (a Work panel
+ * notification click) runs it again.
  */
 export function issueHighlightMementoKey(issueId: string): string {
   return `highlight:${issueId}`;
@@ -728,6 +730,14 @@ function TimelineSkeleton() {
 // as badly as N blocks of 1 would. Older entries fold behind a "Show N more
 // activities" line that expands in place.
 const LAST_ACTIVITY_BLOCK_VISIBLE_LIMIT = 8;
+/** Rows Virtuoso keeps mounted beyond the viewport, in px each way. */
+const TIMELINE_OVERSCAN = { top: 800, bottom: 800 };
+/** Upper bound on a deep link holding the overscan back (see landingOverscanStep). */
+const LANDING_OVERSCAN_HOLD_MAX_MS = 3000;
+/** Upper bound on a deep link holding the sidebar, composer and thread rail back. */
+const LANDING_CHROME_HOLD_MAX_MS = 500;
+/** Overscan while a deep link lands, then on each idle step after it, before TIMELINE_OVERSCAN. */
+const LANDING_OVERSCAN_STEPS = [0, 200, 400];
 
 // Collapsible wrapper for an activity block. Older blocks default to a single
 // "N activities" summary line so the timeline isn't dominated by status /
@@ -1246,6 +1256,13 @@ interface IssueDetailProps {
    * forces the render that re-reads the cleared memento entry.
    */
   highlightRequestToken?: number;
+  /**
+   * The host asked for this landing and has not seen it land (a notification
+   * clicked on another page). It runs even where this route records the
+   * comment as already landed; `onHighlightLanded` reports when it did.
+   */
+  highlightRequestPending?: boolean;
+  onHighlightLanded?: () => void;
   /** The app confirmation an Inbox notification points at; its card scrolls
    * into view and flashes, replayed by `highlightRequestToken`. */
   highlightAppRequestId?: string;
@@ -1486,7 +1503,7 @@ export function IssueDetailSkeleton({
 
 // IssueDetail
 
-export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, defaultSidebarOpen = true, layoutId = ISSUE_DETAIL_LAYOUT_ID, highlightCommentId: linkedCommentId, highlightRequestToken: linkedRequestToken, highlightAppRequestId, leadingAction, variant = "page", trailingActions, notice, readsInbox = true, skipInitialRefetch = false, openDeliverable, onDeliverableLinkDone }: IssueDetailProps) {
+export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, defaultSidebarOpen = true, layoutId = ISSUE_DETAIL_LAYOUT_ID, highlightCommentId: linkedCommentId, highlightRequestToken: linkedRequestToken, highlightRequestPending = false, onHighlightLanded, highlightAppRequestId, leadingAction, variant = "page", trailingActions, notice, readsInbox = true, skipInitialRefetch = false, openDeliverable, onDeliverableLinkDone }: IssueDetailProps) {
   const isPeek = variant === "peek";
   const { t } = useT("issues");
   const { t: tCommon } = useT("common");
@@ -1596,6 +1613,9 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
   // Virtuoso prop would never receive the element. Callback ref + state fixes
   // that: setState triggers the re-render that hands Virtuoso the element.
   const [scrollContainerEl, setScrollContainerEl] = useState<HTMLDivElement | null>(null);
+  // Read once when the container attaches, for the timeline's row height
+  // estimates; 0 while it is not laid out (a hidden desktop tab).
+  const [scrollContainerWidth, setScrollContainerWidth] = useState(0);
   // Bottom comment composer. Measured when scrolling a freshly posted comment
   // into view so its bottom lands above the composer rather than behind it.
   const composerRef = useRef<HTMLDivElement | null>(null);
@@ -1627,9 +1647,72 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
   // landing already re-runs the effect through another dependency (mount,
   // items arriving, token bump), and the render that precedes it refreshes
   // this ref.
+  //
+  // A pending request ignores the entry: the host has not seen it land.
   const consumedHighlightId = useRestoredViewState(issueHighlightMementoKey(id));
-  const consumedHighlightRef = useRef(consumedHighlightId);
-  consumedHighlightRef.current = consumedHighlightId;
+  const highlightConsumed =
+    !!highlightCommentId && !highlightRequestPending && consumedHighlightId === highlightCommentId;
+  const highlightConsumedRef = useRef(highlightConsumed);
+  highlightConsumedRef.current = highlightConsumed;
+  // While a deep link lands, the timeline mounts only the rows the viewport
+  // shows; its overscan (800px each way, several comment bodies) waits until
+  // the target is on screen, so the landing frame renders the target thread
+  // and little else. Afterwards the overscan grows back one step per idle
+  // period, so the neighbours mount a few at a time instead of in one long
+  // task. The hold is bounded in case the landing never runs (a target that
+  // is gone). `null`: the full overscan.
+  //
+  // An Inbox click marks its landing pending before the page mounts; the
+  // comment it names arrives a render later on web, with the URL's fragment.
+  const landingAtMount = highlightRequestPending || (!!highlightCommentId && !highlightConsumed);
+  const [landingOverscanStep, setLandingOverscanStep] = useState<number | null>(
+    () => (landingAtMount ? 0 : null),
+  );
+  const [landingSettled, setLandingSettled] = useState(false);
+  const releaseLandingOverscan = useCallback(() => setLandingSettled(true), []);
+  // The landing frame also leaves out what is off the reading path: the
+  // properties sidebar, the composer and the thread rail. They mount once the
+  // target has painted, a frame or two after it.
+  const [landingChromeHeld, setLandingChromeHeld] = useState(() => landingAtMount);
+  const releaseLandingChrome = useCallback(() => setLandingChromeHeld(false), []);
+  // A landing request whose link names no comment has nothing to land on.
+  // The fragment is in by the next frame, so a hold still without a target
+  // then is let go.
+  const holdingWithoutTarget = (landingChromeHeld || landingOverscanStep !== null) && !landingSettled && !highlightCommentId;
+  useEffect(() => {
+    if (!holdingWithoutTarget) return;
+    const frame = requestAnimationFrame(() => {
+      releaseLandingChrome();
+      releaseLandingOverscan();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [holdingWithoutTarget, releaseLandingChrome, releaseLandingOverscan]);
+  useEffect(() => {
+    if (!landingChromeHeld) return;
+    if (landingSettled) return releaseLandingChrome();
+    const timer = window.setTimeout(releaseLandingChrome, LANDING_CHROME_HOLD_MAX_MS);
+    return () => window.clearTimeout(timer);
+  }, [landingChromeHeld, landingSettled, releaseLandingChrome]);
+  useEffect(() => {
+    if (landingOverscanStep === null) return;
+    if (!landingSettled) {
+      const timer = window.setTimeout(releaseLandingOverscan, LANDING_OVERSCAN_HOLD_MAX_MS);
+      return () => window.clearTimeout(timer);
+    }
+    const grow = () => setLandingOverscanStep((step) =>
+      step === null || step + 1 >= LANDING_OVERSCAN_STEPS.length ? null : step + 1);
+    if (typeof window.requestIdleCallback === "function") {
+      const idle = window.requestIdleCallback(grow, { timeout: 250 });
+      return () => window.cancelIdleCallback(idle);
+    }
+    const timer = window.setTimeout(grow, 16);
+    return () => window.clearTimeout(timer);
+  }, [landingOverscanStep, landingSettled, releaseLandingOverscan]);
+  const timelineOverscan = landingOverscanStep === null
+    ? TIMELINE_OVERSCAN
+    : LANDING_OVERSCAN_STEPS[landingOverscanStep]!;
+  const onHighlightLandedRef = useRef(onHighlightLanded);
+  onHighlightLandedRef.current = onHighlightLanded;
   const writeViewState = useViewStateWriter();
   const rightSidebarShortcutTargetRef = useRef<HTMLDivElement | null>(null);
   const attachScrollContainer = useCallback(
@@ -1637,6 +1720,7 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
       // The peek has no sidebar, so it must not claim the toggle shortcut.
       rightSidebarShortcutTargetRef.current = isPeek ? null : el;
       setScrollContainerEl(el);
+      setScrollContainerWidth(el?.clientWidth ?? 0);
       restoreScrollRef(el);
     },
     [isPeek, restoreScrollRef],
@@ -1830,6 +1914,11 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
   } = useIssueTimeline(id, user?.id, activeDeliverableJump?.commentId);
 
   const { data: commentTasks, isLoading: commentTasksLoading } = useQuery(issueTasksOptions(id));
+  // Only a landing on data already in hand is worth holding the chrome for;
+  // while the timeline is still on its way, the chrome renders in the wait.
+  useEffect(() => {
+    if (timelineLoading || commentTasksLoading) releaseLandingChrome();
+  }, [timelineLoading, commentTasksLoading, releaseLandingChrome]);
   const enteringRunIds = useNewRunIds(id, commentTasks);
   const previousCommentRuns = useRef(new Map<string, CommentRun[]>());
   const { runs: commentRuns, timeline: displayTimeline, standaloneRuns } = useMemo(() => {
@@ -2108,6 +2197,41 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
   const handleTimelineHeightChange = useCallback((height: number) => {
     if (height > 0) setMeasuredTimelineId(id);
   }, [id]);
+  // Row heights estimated from content, so Virtuoso's first layout of a long
+  // history is roughly right: a deep link then lands on its target by mounting
+  // only the rows around it (see estimateTimelineItemHeights). Virtuoso reads
+  // estimates only until it has measured a row, so they stop being computed
+  // once the list has a height.
+  const timelineMeasured = measuredTimelineId === id;
+  const timelineHeightEstimates = useMemo(() => {
+    if (timelineMeasured || scrollContainerWidth <= 0) return undefined;
+    const activityCounts = new Map<string, number>();
+    for (const item of items) if (item.kind === "activity-group") activityCounts.set(item.id, item.entries.length);
+    return estimateTimelineItemHeights(
+      items,
+      timelineView.threadReplies,
+      commentRuns,
+      { expandedResolved, collapsed: new Set(collapsedThreadIds) },
+      {
+        charsPerLine: timelineCharsPerLine(scrollContainerWidth),
+        // Mirrors renderItem: only the trailing block opens by default, and it
+        // shows its latest entries until the reader asks for older ones.
+        activityLines: (itemId) => {
+          const expanded = expandedActivityIds.has(itemId) || (!collapsedActivityIds.has(itemId) && itemId === lastActivityGroupId);
+          if (!expanded) return 0;
+          const count = activityCounts.get(itemId) ?? 0;
+          return itemId === lastActivityGroupId && !showOlderActivityIds.has(itemId)
+            ? Math.min(count, LAST_ACTIVITY_BLOCK_VISIBLE_LIMIT) : count;
+        },
+      },
+    );
+  }, [timelineMeasured, scrollContainerWidth, items, timelineView.threadReplies, commentRuns, expandedResolved,
+    collapsedThreadIds, expandedActivityIds, collapsedActivityIds, showOlderActivityIds, lastActivityGroupId]);
+  // Whether Virtuoso can place a row by index. Without estimates it needs one
+  // measured row first: the timeline is scrolled into view to get it. With
+  // estimates it already can, and that detour would mount the top of the
+  // history before a deep link jumps away from it.
+  const timelineSized = timelineMeasured || timelineHeightEstimates !== undefined;
   // Whether Virtuoso's rendered rows (overscan included) stop short of the
   // last one; rows past them are only estimated. Settled from Virtuoso's own
   // range report, not `items.length`: a comment appended at the bottom is
@@ -2139,8 +2263,7 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
   // to land on, so the issue opens where the reader left off instead of at
   // the top. If it arrives later, the landing still runs.
   const highlightMissing = timelineReady && targetIdx < 0;
-  const pendingHighlight =
-    !!highlightCommentId && consumedHighlightId !== highlightCommentId && !highlightMissing;
+  const pendingHighlight = !!highlightCommentId && !highlightConsumed && !highlightMissing;
   const { pending: readingAnchor, complete: completeAnchorRestore } = useIssueTimelineAnchor({
     containerKey: scrollContainerKey,
     container: scrollContainerEl,
@@ -2156,17 +2279,16 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
     }
     const index = items.findIndex((item) => item.id === rootId);
     if (index < 0) { completeAnchorRestore(); return; }
-    if (measuredTimelineId !== id) {
+    if (!timelineSized) {
       const list = virtualTimelineRef.current;
-      if (list) container.scrollTop += list.getBoundingClientRect().top - container.getBoundingClientRect().top;
-      return;
+      return list ? revealTimelineList(container, list) : undefined;
     }
     return scrollToTimelineComment({
       container, virtualizer: virtuosoRef.current, index,
       commentId: commentLandingTarget(readingAnchor.commentId, rootId, timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES),
       offset: readingAnchor.offset, onComplete: completeAnchorRestore,
     });
-  }, [readingAnchor, scrollContainerEl, issueLoading, timelineLoading, commentTasksLoading, replyToRoot, commentRuns, items, measuredTimelineId, id, timelineView.threadReplies, completeAnchorRestore]);
+  }, [readingAnchor, scrollContainerEl, issueLoading, timelineLoading, commentTasksLoading, replyToRoot, commentRuns, items, timelineSized, timelineView.threadReplies, completeAnchorRestore]);
   // Scroll a freshly posted comment into view, aligned so its bottom sits just
   // above the sticky composer (never behind it). A reply lives inside its root
   // CommentCard, so the containing top-level row is the scroll target.
@@ -2576,7 +2698,7 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
     // switch back or an in-tab return). The restored scroll offset is the
     // state the user left, and the jump must not fight it. A fresh selection
     // clears the entry, so this only ever suppresses a *repeat* landing.
-    if (!resuming && !activeDeliverableJump && consumedHighlightRef.current === highlightCommentId) {
+    if (!resuming && !activeDeliverableJump && highlightConsumedRef.current) {
       didHighlightRef.current = highlightCommentId;
       return;
     }
@@ -2619,12 +2741,11 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
     const container = scrollContainerEl;
     if (!container) return;
     if (targetIdx < 0) return;
-    if (measuredTimelineId !== id) {
-      // A long description can put the whole list below the scroll viewport.
-      // Bring its probe row into view so Virtuoso can measure before jumping.
+    if (!timelineSized) {
+      // Virtuoso measures nothing while the list is below the viewport, and
+      // without height estimates it cannot place the target until it does.
       const list = virtualTimelineRef.current;
-      if (list) container.scrollTop += list.getBoundingClientRect().top - container.getBoundingClientRect().top;
-      return;
+      return list ? revealTimelineList(container, list) : undefined;
     }
 
     interruptedLandingRef.current = null;
@@ -2633,13 +2754,20 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
       container, virtualizer: virtuosoRef.current,
       index: targetIdx, commentId: landingId,
       onMounted: () => {
+        // After the frame that paints the target, not inside it.
+        requestAnimationFrame(() => window.setTimeout(releaseLandingChrome, 0));
         didHighlightRef.current = highlightCommentId;
         writeViewState(issueHighlightMementoKey(id), highlightCommentId);
+        onHighlightLandedRef.current?.();
         // Timer owned outside this effect, so a re-run cannot leave the
         // highlight on.
         flashJumpTarget(landingId, 2500);
       },
-      onComplete: () => { completed = true; },
+      onComplete: () => {
+        completed = true;
+        // After the aligned frame paints, not inside it.
+        window.setTimeout(releaseLandingOverscan, 0);
+      },
     });
     return () => {
       cancel();
@@ -2653,7 +2781,7 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
         interruptedLandingRef.current = highlightCommentId;
       }
     };
-  }, [highlightCommentId, highlightTargetId, highlightRequestToken, activeDeliverableJump, id, writeViewState, items, targetIdx, scrollContainerEl, highlightRootId, expandedResolved, timelineView, toggleResolvedExpand, measuredTimelineId, timelineLoading, commentTasksLoading, flashJumpTarget]);
+  }, [highlightCommentId, highlightTargetId, highlightRequestToken, activeDeliverableJump, id, writeViewState, items, targetIdx, scrollContainerEl, highlightRootId, expandedResolved, timelineView, toggleResolvedExpand, timelineSized, timelineLoading, commentTasksLoading, flashJumpTarget, releaseLandingOverscan, releaseLandingChrome]);
 
   // Land on the comment in-page find stepped to, the way a deep link lands.
   useEffect(() => {
@@ -3487,7 +3615,7 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
     metadata: <MetadataSection metadata={issue.metadata ?? {}} />,
   };
 
-  const sidebarContent = (
+  const sidebarContent = landingChromeHeld ? null : (
     <IssueSidebarSections
       sections={sidebarSections}
       available={ISSUE_SIDEBAR_SECTIONS.filter(
@@ -3619,6 +3747,10 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
 
   const titleSizeClass = isPeek ? "text-title-lg font-semibold" : "text-display-sm font-semibold";
 
+  // What the header names the issue: the identifier only in a peek, where the
+  // title is right below it; identifier and title on the page.
+  const headerLeafLabel = isPeek ? issue.identifier : `${issue.identifier} ${issue.title}`;
+
   const detailContent = (
     <CurrentIssueRenderContextProvider value={currentIssueRenderContext}>
     <div
@@ -3647,14 +3779,19 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
           leading={leadingAction}
           segments={breadcrumbSegments}
           leaf={
-            <AppLink
-              href={paths.issueDetail(issue.id)}
-              className="flex min-w-0 transition-opacity hover:opacity-80"
-            >
-              <span className="truncate font-medium text-foreground">
-                {isPeek ? issue.identifier : `${issue.identifier} ${issue.title}`}
-              </span>
-            </AppLink>
+            // The header shares its line with the actions, so a long title is
+            // cut off; hover (or focus) reveals it for the whole header width.
+            // Below the trigger, since the header sits at the top of the page.
+            <TruncatedTooltip content={headerLeafLabel} side="bottom">
+              <AppLink
+                href={paths.issueDetail(issue.id)}
+                className="flex min-w-0 transition-opacity hover:opacity-80"
+              >
+                <span className="truncate font-medium text-foreground">
+                  {headerLeafLabel}
+                </span>
+              </AppLink>
+            </TruncatedTooltip>
           }
           actions={
             <>
@@ -4332,7 +4469,8 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
                     customScrollParent={scrollContainerEl}
                     data={items}
                     initialScrollTop={readingAnchor ? undefined : restoredScrollTop}
-                    increaseViewportBy={{ top: 800, bottom: 800 }}
+                    heightEstimates={timelineHeightEstimates}
+                    increaseViewportBy={timelineOverscan}
                     totalListHeightChanged={handleTimelineHeightChange}
                     rangeChanged={handleTimelineRangeChanged}
                     computeItemKey={(_i, item) => `${item.kind}:${item.kind === "run" ? item.run.task.id : item.id}`}
@@ -4391,14 +4529,16 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
             {stickyComposer && jumpToLatest.visible && (
               <JumpToLatestButton onClick={onJumpToLatest} label={jumpToLatestLabel} hasNew={!!firstNewCommentId} />
             )}
-            <CommentInput
-              key={id}
-              issueId={id}
-              onSubmit={submitComment}
-              annotationComposer={descriptionAnnotations.composer}
-              onAccepted={scrollToTimelineBottom}
-              onEditAnnotation={(annotationId) => descriptionAnnotations.editAnnotation(annotationId, true)}
-            />
+            {!landingChromeHeld && (
+              <CommentInput
+                key={id}
+                issueId={id}
+                onSubmit={submitComment}
+                annotationComposer={descriptionAnnotations.composer}
+                onAccepted={scrollToTimelineBottom}
+                onEditAnnotation={(annotationId) => descriptionAnnotations.editAnnotation(annotationId, true)}
+              />
+            )}
           </div>
         </div>
         </div>
@@ -4413,7 +4553,7 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
             the resize handle's 4px drag strip at the panel edge. Hover
             opens the outline; clicking jumps to a section or comment. Hidden on mobile: no
             hover, and the gutter is too tight. */}
-        {!isMobile && !isPeek && (
+        {!isMobile && !isPeek && !landingChromeHeld && (
           <ThreadMinimap
             threads={minimapThreads}
             description={{

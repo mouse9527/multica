@@ -1,4 +1,5 @@
 import type { LocaleResources } from "@multica/core/i18n";
+import koDocs from "./ko/docs.json";
 import koCommon from "./ko/common.json";
 import koAuth from "./ko/auth.json";
 import koSettings from "./ko/settings.json";
@@ -31,6 +32,7 @@ import koPasswordauth from "./ko/passwordauth.json";
 import koEvolution from "./ko/evolution.json";
 
 const resources: LocaleResources = {
+  docs: koDocs,
   common: koCommon,
   auth: koAuth,
   settings: koSettings,

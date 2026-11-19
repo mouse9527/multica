@@ -1,3 +1,4 @@
+import type docs from "../locales/en/docs.json";
 import "i18next";
 // Pulls in the `ui` namespace augmentation owned by packages/ui — see
 // packages/ui/types/i18next.ts. Side-effect import is required for views'
@@ -49,6 +50,7 @@ import type evolution from "../locales/en/evolution.json";
 // selector form standalone without depending on @multica/views.
 declare global {
   interface I18nResources {
+    docs: typeof docs;
     common: typeof common;
     auth: typeof auth;
     settings: typeof settings;
