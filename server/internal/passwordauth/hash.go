@@ -182,9 +182,12 @@ type Hasher struct {
 	params    Params
 	budgetKiB uint32
 	memory    *semaphore.Weighted
-	// inUseKiB and peakKiB track reserved memory, for tests.
-	inUseKiB atomic.Int64
-	peakKiB  atomic.Int64
+	// Counters for tests: reserved memory now and at peak, reservations
+	// being waited for, and argon2id computations run.
+	inUseKiB     atomic.Int64
+	peakKiB      atomic.Int64
+	waiting      atomic.Int64
+	computations atomic.Int64
 	// dummy is a hash of a random password, verified when the account has no
 	// credential so that case costs the same time as a wrong password.
 	dummy string
@@ -236,34 +239,45 @@ func (h *Hasher) hash(password string) (string, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("passwordauth: read random: %w", err)
 	}
-	key, err := h.idKey([]byte(password), salt, h.params)
+	release, err := h.reserve(context.Background(), h.params.MemoryKiB)
 	if err != nil {
 		return "", err
 	}
-	return encode(h.params, salt, key), nil
+	defer release()
+	return encode(h.params, salt, h.idKey([]byte(password), salt, h.params)), nil
 }
 
-// idKey runs argon2id with p once its memory is reserved from the budget.
-func (h *Hasher) idKey(password, salt []byte, p Params) ([]byte, error) {
-	if p.MemoryKiB > h.budgetKiB {
+// reserve waits until memKiB of the budget is free, or ctx is done, and
+// returns the function that gives it back. Memory larger than the whole
+// budget is never reserved.
+func (h *Hasher) reserve(ctx context.Context, memKiB uint32) (func(), error) {
+	if memKiB > h.budgetKiB {
 		return nil, ErrHashOverBudget
 	}
-	n := int64(p.MemoryKiB)
-	// Background: a request that gives up still holds nothing, and the
-	// wait is bounded by the hashes ahead of it.
-	if err := h.memory.Acquire(context.Background(), n); err != nil {
+	n := int64(memKiB)
+	h.waiting.Add(1)
+	err := h.memory.Acquire(ctx, n)
+	h.waiting.Add(-1)
+	if err != nil {
 		return nil, err
 	}
-	defer h.memory.Release(n)
 	inUse := h.inUseKiB.Add(n)
-	defer h.inUseKiB.Add(-n)
 	for {
 		peak := h.peakKiB.Load()
 		if inUse <= peak || h.peakKiB.CompareAndSwap(peak, inUse) {
 			break
 		}
 	}
-	return argon2.IDKey(password, salt, p.Iterations, p.MemoryKiB, p.Parallelism, p.KeyLen), nil
+	return func() {
+		h.inUseKiB.Add(-n)
+		h.memory.Release(n)
+	}, nil
+}
+
+// idKey runs argon2id with p. The caller has reserved p's memory.
+func (h *Hasher) idKey(password, salt []byte, p Params) []byte {
+	h.computations.Add(1)
+	return argon2.IDKey(password, salt, p.Iterations, p.MemoryKiB, p.Parallelism, p.KeyLen)
 }
 
 // Verify reports whether password matches encoded. The key comparison takes
@@ -272,6 +286,27 @@ func (h *Hasher) idKey(password, salt []byte, p Params) ([]byte, error) {
 // password and as VerifyDummy. An error means encoded itself is unusable,
 // or (ErrHashOverBudget) needs more memory than the whole budget.
 func (h *Hasher) Verify(password, encoded string) (bool, error) {
+	p, _, _, err := decode(encoded)
+	if err != nil {
+		return false, err
+	}
+	release, err := h.reserve(context.Background(), p.MemoryKiB)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	return h.verifyReserved(password, encoded)
+}
+
+// hashMemory returns the memory verifying encoded takes, for reserve.
+func hashMemory(encoded string) (uint32, error) {
+	p, _, _, err := decode(encoded)
+	return p.MemoryKiB, err
+}
+
+// verifyReserved is Verify for a caller that has already reserved encoded's
+// memory.
+func (h *Hasher) verifyReserved(password, encoded string) (bool, error) {
 	p, salt, key, err := decode(encoded)
 	if err != nil {
 		return false, err
@@ -280,10 +315,7 @@ func (h *Hasher) Verify(password, encoded string) (bool, error) {
 	if !inLimit {
 		password = password[:MaxPasswordBytes]
 	}
-	got, err := h.idKey([]byte(password), salt, p)
-	if err != nil {
-		return false, err
-	}
+	got := h.idKey([]byte(password), salt, p)
 	return subtle.ConstantTimeCompare(got, key) == 1 && inLimit, nil
 }
 

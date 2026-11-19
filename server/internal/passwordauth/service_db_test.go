@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -257,4 +258,156 @@ func TestLoginRefusesHashOverBudget(t *testing.T) {
 		t.Fatalf("operator not told: %s", logs)
 	}
 	assertNoSecrets(t, pool, logs.String(), testPassword)
+}
+
+// waitFor polls cond until it holds or a few seconds pass.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// oneAtATime returns a Service whose hashing budget fits exactly one
+// computation, so the test can fill it and line requests up behind it.
+func oneAtATime(t *testing.T, pool *pgxpool.Pool) (*Service, *Hasher) {
+	t.Helper()
+	h, err := NewHasherWithBudget(cheapParams, cheapParams.MemoryKiB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.DiscardHandler)
+	return NewService(NewStore(pool, h, logger), logger), h
+}
+
+// Guesses queued for the hashing budget see a lock taken while they waited:
+// with the budget full, many concurrent wrong guesses pass the first lock
+// check, but once it frees up only LockThreshold of them are computed and
+// the rest are refused without hashing. Unknown emails behave the same.
+func TestQueuedGuessesStopAtTheLock(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	f := testutil.New(pool, "", "")
+	user := util.MustParseUUID(f.User(t, "Ada", "ada@example.test"))
+	if err := NewStore(pool, newTestHasher(t, cheapParams), nil).SetPassword(ctx, user, testPassword); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, email := range []string{"ada@example.test", "nobody@example.test"} {
+		t.Run(email, func(t *testing.T) {
+			s, h := oneAtATime(t, pool)
+			hold, err := h.reserve(ctx, h.budgetKiB)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := h.computations.Load()
+			const guesses = 3 * LockThreshold
+			results := make(chan error, guesses)
+			for i := 0; i < guesses; i++ {
+				go func(i int) {
+					_, err := s.Login(ctx, email, wrongPassword, fmt.Sprintf("203.0.113.%d", i+1))
+					results <- err
+				}(i)
+			}
+			waitFor(t, "all guesses to queue", func() bool { return h.waiting.Load() == guesses })
+			hold()
+
+			var invalid, throttled int
+			for i := 0; i < guesses; i++ {
+				switch err := <-results; {
+				case errors.Is(err, ErrInvalidCredentials):
+					invalid++
+				case errors.Is(err, ErrThrottled):
+					throttled++
+				default:
+					t.Fatalf("guess: %v", err)
+				}
+			}
+			if invalid != LockThreshold || throttled != guesses-LockThreshold {
+				t.Fatalf("invalid=%d throttled=%d, want %d and %d", invalid, throttled, LockThreshold, guesses-LockThreshold)
+			}
+			if n := h.computations.Load() - before; n != LockThreshold {
+				t.Fatalf("%d guesses hashed after the budget freed, want %d", n, LockThreshold)
+			}
+		})
+	}
+}
+
+// A right password queued for the budget does not sign in once the account
+// was locked while it waited, and is not even hashed.
+func TestQueuedLoginRefusedAfterLock(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	f := testutil.New(pool, "", "")
+	user := util.MustParseUUID(f.User(t, "Ada", "ada@example.test"))
+	s, h := oneAtATime(t, pool)
+	if err := s.SetPassword(ctx, user, "", testPassword); err != nil {
+		t.Fatal(err)
+	}
+	hold, err := h.reserve(ctx, h.budgetKiB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := h.computations.Load()
+	const logins = 4
+	results := make(chan error, logins)
+	for i := 0; i < logins; i++ {
+		go func(i int) {
+			_, err := s.Login(ctx, "ada@example.test", testPassword, fmt.Sprintf("198.51.100.%d", i+1))
+			results <- err
+		}(i)
+	}
+	waitFor(t, "logins to queue", func() bool { return h.waiting.Load() == logins })
+	if err := s.store.Lock(ctx, user, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	hold()
+	for i := 0; i < logins; i++ {
+		if err := <-results; !errors.Is(err, ErrThrottled) {
+			t.Fatalf("queued login after lock: %v", err)
+		}
+	}
+	if n := h.computations.Load() - before; n != 0 {
+		t.Fatalf("%d queued logins hashed after the lock", n)
+	}
+}
+
+// A client that goes away while its request waits for the budget leaves
+// nothing behind: no hashing, no failure counted.
+func TestQueuedLoginCancelled(t *testing.T) {
+	pool := testPool(t)
+	f := testutil.New(pool, "", "")
+	user := util.MustParseUUID(f.User(t, "Ada", "ada@example.test"))
+	s, h := oneAtATime(t, pool)
+	if err := s.SetPassword(context.Background(), user, "", testPassword); err != nil {
+		t.Fatal(err)
+	}
+	hold, err := h.reserve(context.Background(), h.budgetKiB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold()
+	before := h.computations.Load()
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := s.Login(ctx, "ada@example.test", wrongPassword, "192.0.2.10")
+		result <- err
+	}()
+	waitFor(t, "the login to queue", func() bool { return h.waiting.Load() == 1 })
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled login: %v", err)
+	}
+	if n := h.computations.Load() - before; n != 0 {
+		t.Fatalf("cancelled login hashed %d times", n)
+	}
+	cred, err := s.store.Get(context.Background(), user)
+	if err != nil || cred.FailedCount != 0 {
+		t.Fatalf("cancelled login counted: %v %v", cred, err)
+	}
 }
