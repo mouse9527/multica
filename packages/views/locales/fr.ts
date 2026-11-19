@@ -26,6 +26,8 @@ import frSquads from "./fr/squads.json";
 import frBilling from "./fr/billing.json";
 // Modified by the mouse9527/multica fork (M-105): the Router namespace.
 import frRouter from "./fr/router.json";
+// Modified by the mouse9527/multica fork (M-43): the password login namespace.
+import frPasswordauth from "./fr/passwordauth.json";
 import frEvolution from "./fr/evolution.json";
 
 const resources: LocaleResources = {
@@ -55,6 +57,7 @@ const resources: LocaleResources = {
   squads: frSquads,
   billing: frBilling,
   router: frRouter,
+  passwordauth: frPasswordauth,
   evolution: frEvolution,
 };
 

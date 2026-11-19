@@ -1058,6 +1058,8 @@ export interface AppConfigResponse {
    * Settings → Integrations "Git providers" section. */
   vcs_integration_available?: boolean;
   feature_flags?: Record<string, boolean>;
+  // Modified by the mouse9527/multica fork (M-43): sent only while password login is on.
+  password_login_enabled?: boolean;
   /** Whether this server understands local_directory `execution_mode` and
    * gates worktree mode at save time. Absent on every server that predates this
    * capability signal, which includes the ones that silently DROPPED an unknown
@@ -1374,6 +1376,8 @@ export const AppConfigSchema = z.object({
   comment_delete_keep_replies_supported: BooleanWithDefaultSchema(false),
   theme_store_enabled: BooleanWithDefaultSchema(false),
   server_version: OptionalStringSchema,
+  // Modified by the mouse9527/multica fork (M-43).
+  password_login_enabled: BooleanWithDefaultSchema(false),
 }).loose();
 
 export const EMPTY_APP_CONFIG: AppConfigResponse = {

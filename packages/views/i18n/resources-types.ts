@@ -29,6 +29,8 @@ import type squads from "../locales/en/squads.json";
 import type billing from "../locales/en/billing.json";
 // Modified by the mouse9527/multica fork (M-105): the Router namespace.
 import type router from "../locales/en/router.json";
+// Modified by the mouse9527/multica fork (M-43): the password login namespace.
+import type passwordauth from "../locales/en/passwordauth.json";
 import type evolution from "../locales/en/evolution.json";
 
 // Module augmentation enables i18next v26 selector API across the monorepo:
@@ -72,6 +74,7 @@ declare global {
     squads: typeof squads;
     billing: typeof billing;
     router: typeof router;
+    passwordauth: typeof passwordauth;
     evolution: typeof evolution;
   }
 }

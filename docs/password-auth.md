@@ -2,7 +2,7 @@
 
 本文件属于 `mouse9527/multica` fork，上游 `multica-ai/multica` 没有这部分功能。代码在 `server/internal/passwordauth/`。实施跟踪见 #42。
 
-本文件随实施阶段补充；当前内容对应阶段 1（#37：数据表、凭据存取、哈希封装）和阶段 2（#38：开关、接口、失败锁定、限流；#39：管理员重置命令）。
+本文件随实施阶段补充；当前内容对应阶段 1（#37：数据表、凭据存取、哈希封装）、阶段 2（#38：开关、接口、失败锁定、限流；#39：管理员重置命令）和阶段 3（#40：网页端登录表单与设置密码）。
 
 ## 数据表
 
@@ -103,6 +103,17 @@ argon2id（`golang.org/x/crypto/argon2`）。
   - **单次超预算**：库里某个哈希的内存大于整个预算（运维把预算调到旧参数以下）时不计算它。登录按密码错误处理：返回 401、做一次 `VerifyDummy` 拉平耗时、不计失败次数。在设置页修改密码时返回 409 `password_reset_required`（当前密码无法核对）。两种情况都记一条 error 日志，提示调大预算或用管理员重置命令重置该账号的密码。所以**调低参数时**，预算要先保持不低于旧参数的内存，等活跃账号登录后自动重哈希，再调低预算。
 
 所有失败路径耗时一致：返回 401 的路径都恰好做一次 argon2id 校验（不存在的账号用 `VerifyDummy`），返回 429 的路径都不做（唯一例外是上面说的「排队期间密码被改掉」）。没有密码的邮箱同样在拿到预算后再查一次"锁"，再在释放预算前记下失败，与真实账号的顺序一致。
+
+## 网页端
+
+开关关闭（`/api/config` 不含 `password_login_enabled`，或上游服务端）时，登录页与设置页与上游完全一致：前端只认显式的 `true`。
+
+- **登录页**（`packages/views/auth/login-page.tsx` 里的薄钩子，逻辑在 `packages/views/auth/password-login.tsx`）：开关打开时，第一步默认是邮箱加密码表单，「改用邮箱验证码」切回上游的验证码流程，Google 登录按钮照旧显示。邮箱框 `autocomplete="username"`、密码框 `type="password"` `autocomplete="current-password"`，密码管理器可自动填充。
+- **错误提示**：`invalid_credentials` 统一显示「邮箱或密码不正确」，`too_many_attempts`（锁定与限流）统一显示「尝试次数过多」，都不显示服务端原文，不区分账号是否存在；临时停用账号（403）沿用验证码登录的提示；其他失败显示通用的「登录失败」。失败后清空密码框。
+- **CLI 授权**（`?cli_callback=`）：密码登录与验证码登录一样，拿到 token 后直接交给 CLI 的本地回调。
+- **设置密码**：设置 → 个人资料页底部的「密码」区块（`packages/views/settings/components/password-section.tsx`），开关关闭时不渲染、也不请求接口。先读 `GET /api/me/password`：没有密码时只填新密码和确认（第一次设置），已有密码时还要填当前密码。新密码在前端先按服务端规则检查（至少 12 个字符、按 Unicode 字符计，不超过 1024 字节，两次一致），服务端仍是最终判断。服务端错误码按上文「错误响应」逐一翻译，`password_reset_required` 提示联系管理员重置。表单带一个隐藏的 `autocomplete="username"` 字段（当前邮箱），新密码框为 `new-password`。
+- **状态与接口**：开关状态在 `packages/core/passwordauth/config.ts`，由 `AuthInitializer` 读 `/api/config` 时写入；接口调用、查询与校验规则在 `packages/core/passwordauth/`；会话建立在 auth store 的 `loginWithPassword`，与验证码登录相同（Cookie 模式不在本地存 token）。文案在独立的 `passwordauth` 命名空间（`packages/views/locales/*/passwordauth.json`）。
+- **桌面端**与网页共用登录组件，开关打开时同样可用，但不专门适配也不测试；原生 mobile app 不包含。
 
 ## 日志
 

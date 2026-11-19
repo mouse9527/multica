@@ -16,6 +16,8 @@ import {
   SettingsTab,
 } from "./settings-layout";
 import { useAutoSave } from "./use-auto-save";
+// Modified by the mouse9527/multica fork (M-43): the password section.
+import { PasswordSettingsSection } from "./password-section";
 
 // Mirror server/internal/handler/auth.go:MaxProfileDescriptionLen. Counted in
 // JS String.length (UTF-16 code units) here while the server counts runes,
@@ -186,6 +188,7 @@ export function AccountTab() {
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>
+      <PasswordSettingsSection />
     </SettingsTab>
   );
 }

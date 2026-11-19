@@ -26,6 +26,8 @@ import jaSquads from "./ja/squads.json";
 import jaBilling from "./ja/billing.json";
 // Modified by the mouse9527/multica fork (M-105): the Router namespace.
 import jaRouter from "./ja/router.json";
+// Modified by the mouse9527/multica fork (M-43): the password login namespace.
+import jaPasswordauth from "./ja/passwordauth.json";
 import jaEvolution from "./ja/evolution.json";
 
 const resources: LocaleResources = {
@@ -55,6 +57,7 @@ const resources: LocaleResources = {
   squads: jaSquads,
   billing: jaBilling,
   router: jaRouter,
+  passwordauth: jaPasswordauth,
   evolution: jaEvolution,
 };
 
