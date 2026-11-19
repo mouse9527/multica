@@ -3,6 +3,8 @@ import type { User, StorageAdapter } from "../types";
 import { identify as identifyAnalytics, resetAnalytics } from "../analytics";
 import type { ApiClient } from "../api/client";
 import { setCurrentWorkspace } from "../platform/workspace-storage";
+// Modified by the mouse9527/multica fork (M-43): password login.
+import { passwordLogin } from "../passwordauth/api";
 
 export interface AuthStoreOptions {
   api: ApiClient;
@@ -43,6 +45,7 @@ export interface AuthState {
   verifyCode: (email: string, code: string) => Promise<User>;
   loginWithGoogle: (code: string, redirectUri: string) => Promise<User>;
   loginWithToken: (token: string) => Promise<User>;
+  loginWithPassword: (email: string, password: string) => Promise<User>;
   logout: () => void;
   sessionExpired: () => void;
   setUser: (user: User) => void;
@@ -101,6 +104,19 @@ export function createAuthStore(options: AuthStoreOptions) {
       storage.setItem("multica_token", token);
       api.setToken(token);
       const user = await api.getMe();
+      onLogin?.();
+      identifyAnalytics(user.id, { email: user.email, name: user.name });
+      set({ user, isLoading: false, status: "authenticated", expired: false });
+      return user;
+    },
+
+    // Modified by the mouse9527/multica fork (M-43): same session setup as verifyCode.
+    loginWithPassword: async (email: string, password: string) => {
+      const { token, user } = await passwordLogin(api, email, password);
+      if (!cookieAuth) {
+        storage.setItem("multica_token", token);
+        api.setToken(token);
+      }
       onLogin?.();
       identifyAnalytics(user.id, { email: user.email, name: user.name });
       set({ user, isLoading: false, status: "authenticated", expired: false });
