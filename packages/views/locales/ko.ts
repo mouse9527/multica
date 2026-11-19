@@ -26,6 +26,8 @@ import koSquads from "./ko/squads.json";
 import koBilling from "./ko/billing.json";
 // Modified by the mouse9527/multica fork (M-105): the Router namespace.
 import koRouter from "./ko/router.json";
+// Modified by the mouse9527/multica fork (M-43): the password login namespace.
+import koPasswordauth from "./ko/passwordauth.json";
 import koEvolution from "./ko/evolution.json";
 
 const resources: LocaleResources = {
@@ -55,6 +57,7 @@ const resources: LocaleResources = {
   squads: koSquads,
   billing: koBilling,
   router: koRouter,
+  passwordauth: koPasswordauth,
   evolution: koEvolution,
 };
 

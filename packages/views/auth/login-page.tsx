@@ -24,6 +24,9 @@ import { workspaceKeys } from "@multica/core/workspace/queries";
 import { api } from "@multica/core/api";
 import type { User } from "@multica/core/types";
 import { useT } from "../i18n";
+// Modified by the mouse9527/multica fork (M-43): password login.
+import { usePasswordLoginEnabled } from "@multica/core/passwordauth";
+import { PasswordLoginField, usePasswordLogin } from "./password-login";
 
 // Types
 
@@ -118,6 +121,13 @@ export function LoginPage({
   // because the user asked to leave. Without saying so, landing here reads as
   // the app having lost their work for no reason.
   const sessionExpired = useAuthStore((state) => state.expired);
+  // Modified by the mouse9527/multica fork (M-43): with the server switch on,
+  // the email step signs in with a password; code and Google stay as fallbacks.
+  const { t: tp } = useT("passwordauth");
+  const passwordLoginEnabled = usePasswordLoginEnabled();
+  const [preferCode, setPreferCode] = useState(false);
+  const passwordMode = passwordLoginEnabled && !preferCode;
+  const pw = usePasswordLogin({ email, cliCallback, onTokenObtained, onSuccess, setError, setLoading });
 
   // Check for existing session when CLI callback is present.
   // Prioritises cookie auth (= current browser session) to avoid authorising
@@ -416,7 +426,7 @@ export function LoginPage({
             {t(($) => $.signin.title)}
           </CardTitle>
           <CardDescription>
-            {t(($) => $.signin.description)}
+            {passwordMode ? tp(($) => $.login.description) : t(($) => $.signin.description)}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -427,7 +437,7 @@ export function LoginPage({
               </AlertDescription>
             </Alert>
           )}
-          <form id="login-form" onSubmit={handleSendCode} className="space-y-4">
+          <form id="login-form" onSubmit={passwordMode ? pw.submit : handleSendCode} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="login-email">{t(($) => $.common.email)}</Label>
               <Input
@@ -436,10 +446,12 @@ export function LoginPage({
                 placeholder={t(($) => $.common.email_placeholder)}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                autoComplete={passwordMode ? "username" : undefined}
                 autoFocus
                 required
               />
             </div>
+            {passwordMode && <PasswordLoginField value={pw.password} onChange={pw.setPassword} />}
             {error && (
               <p className="text-body text-destructive">{error}</p>
             )}
@@ -451,12 +463,30 @@ export function LoginPage({
             form="login-form"
             className="w-full"
             size="lg"
-            disabled={!email || loading}
+            disabled={!email || loading || (passwordMode && !pw.password)}
           >
-            {loading
-              ? t(($) => $.signin.sending)
-              : t(($) => $.signin.continue)}
+            {passwordMode
+              ? loading
+                ? tp(($) => $.login.submitting)
+                : tp(($) => $.login.submit)
+              : loading
+                ? t(($) => $.signin.sending)
+                : t(($) => $.signin.continue)}
           </Button>
+          {passwordLoginEnabled && (
+            <Button
+              type="button"
+              variant="ghost"
+              className="w-full"
+              disabled={loading}
+              onClick={() => {
+                setPreferCode(passwordMode);
+                setError("");
+              }}
+            >
+              {passwordMode ? tp(($) => $.login.use_code) : tp(($) => $.login.use_password)}
+            </Button>
+          )}
           {(google || onGoogleLogin) && (
             <Button
               type="button"
