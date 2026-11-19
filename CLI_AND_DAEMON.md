@@ -392,6 +392,8 @@ Daemon behavior is configured via flags or environment variables:
 | Device name | `--device-name` | `MULTICA_DAEMON_DEVICE_NAME` | hostname |
 | Runtime name | `--runtime-name` | `MULTICA_AGENT_RUNTIME_NAME` | `Local Agent` |
 | Workspaces root | — | `MULTICA_WORKSPACES_ROOT` | `~/multica_workspaces` |
+| Blobless repo caches | — | `MULTICA_REPO_CACHE_BLOBLESS` | unset (full clones). Comma-separated repository URLs, or `*`: new caches for them are cloned without file contents (`--filter=blob:none`). A blobless cache downloads the files a checkout needs (and the default branch's after each sync) in the background; a checkout waits up to 3 minutes for them, then gets a "still being downloaded" error and can retry. Existing caches keep their kind |
+| Repo cache build limit | — | `MULTICA_REPO_CACHE_CLONE_TIMEOUT` | `2h`. Total time a cache clone may take; it runs in the background, so a `multica repo checkout` that waits longer than 4 minutes gets a "still being built" error and can retry. A transfer below 1 KB/s for 5 minutes is aborted as stalled |
 | GC enabled | — | `MULTICA_GC_ENABLED` | `true` (set `false`/`0` to disable) |
 | GC scan interval | — | `MULTICA_GC_INTERVAL` | `2h` |
 | GC TTL (done/cancelled issues) | — | `MULTICA_GC_TTL` | `24h` |

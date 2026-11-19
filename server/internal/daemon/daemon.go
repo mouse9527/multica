@@ -4128,7 +4128,9 @@ func (d *Daemon) ensureRepoReady(ctx context.Context, workspaceID, repoURL strin
 		return registeredURL, nil
 	}
 
-	syncErr := d.syncWorkspaceReposContext(ctx, workspaceID, resp.Repos)
+	// Modified for the mouse9527/multica fork (M-161): build only this repo,
+	// in a cache-owned job the request cannot kill (repo_cache_build.go).
+	syncErr := d.buildRepoCacheContext(ctx, workspaceID, registeredURL, resp.Repos)
 	if err := ctx.Err(); err != nil {
 		return "", context.Cause(ctx)
 	}
