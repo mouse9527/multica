@@ -105,7 +105,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdin *
 	if err != nil {
 		return fail(err)
 	}
-	if err := store.AdminReset(ctx, userID, *email, password); err != nil {
+	if err := store.AdminReset(ctx, userID, *email, password, stderr); err != nil {
 		return fail(err)
 	}
 	fmt.Fprintf(stdout, "Password set for user %s; failed attempts and lock cleared.\n", util.UUIDToString(userID))

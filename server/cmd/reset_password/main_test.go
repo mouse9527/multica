@@ -150,14 +150,22 @@ func TestRunAgainstDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runWith := func(args []string, stdin string) (int, string) {
+	// runAt runs the command with the business logger at level, as LOG_LEVEL
+	// would set it. It returns the exit code, stderr, and all output.
+	runAt := func(level slog.Level, args []string, stdin string) (int, string, string) {
 		t.Helper()
 		var stdout, stderr, logs bytes.Buffer
-		code := run(ctx, args, getenv, stdinFile(t, stdin), &stdout, &stderr, slog.New(slog.NewJSONHandler(&logs, nil)))
+		log := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: level}))
+		code := run(ctx, args, getenv, stdinFile(t, stdin), &stdout, &stderr, log)
 		all := stdout.String() + stderr.String() + logs.String()
 		if strings.Contains(all, testPassword) || strings.Contains(all, "$argon2id$") {
 			t.Fatalf("output contains the password or a hash:\n%s", all)
 		}
+		return code, stderr.String(), all
+	}
+	runWith := func(args []string, stdin string) (int, string) {
+		t.Helper()
+		code, _, all := runAt(slog.LevelInfo, args, stdin)
 		return code, all
 	}
 
@@ -186,20 +194,33 @@ func TestRunAgainstDatabase(t *testing.T) {
 		t.Fatalf("refused reset changed the credential: %v, %v", cred, err)
 	}
 
-	// The reset sets the password, clears the failures and the lock, and logs
-	// one audit record.
-	code, out = runWith([]string{"--email", "Ada@Example.test"}, testPassword+"\n")
-	if code != exitOK || !strings.Contains(out, util.UUIDToString(user)) || !strings.Contains(out, "audit") {
-		t.Fatalf("reset: code %d, output %s", code, out)
-	}
-	cred, err := store.Get(ctx, user)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cred.FailedCount != 0 || cred.LockedUntil.Valid {
-		t.Fatalf("after reset: %v", cred)
-	}
-	if ok, err := store.CheckPassword(ctx, user, testPassword); !ok || err != nil {
-		t.Fatalf("login with the new password: ok=%v err=%v", ok, err)
+	// The reset sets the password, clears the failures and the lock, and
+	// writes one audit record to stderr whatever the log level
+	// (LOG_LEVEL=warn, then error, re-locking the account in between).
+	for _, level := range []slog.Level{slog.LevelWarn, slog.LevelError} {
+		if level == slog.LevelError {
+			if err := store.Lock(ctx, user, time.Now().Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		code, stderr, out := runAt(level, []string{"--email", "Ada@Example.test"}, testPassword+"\n")
+		if code != exitOK || !strings.Contains(out, util.UUIDToString(user)) {
+			t.Fatalf("reset at %v: code %d, output %s", level, code, out)
+		}
+		if n := strings.Count(stderr, passwordauth.AuditMessage); n != 1 ||
+			!strings.Contains(stderr, `"user_id":"`+util.UUIDToString(user)+`"`) ||
+			!strings.Contains(stderr, `"email":"ada@example.test"`) || !strings.Contains(stderr, `"at":"`) {
+			t.Fatalf("reset at %v: want one audit record on stderr, got %q", level, stderr)
+		}
+		cred, err := store.Get(ctx, user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cred.FailedCount != 0 || cred.LockedUntil.Valid {
+			t.Fatalf("after reset at %v: %v", level, cred)
+		}
+		if ok, err := store.CheckPassword(ctx, user, testPassword); !ok || err != nil {
+			t.Fatalf("login with the new password: ok=%v err=%v", ok, err)
+		}
 	}
 }

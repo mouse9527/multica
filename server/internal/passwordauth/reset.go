@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -30,18 +32,27 @@ func (s *Store) UserIDByEmail(ctx context.Context, email string) (pgtype.UUID, e
 	return user.ID, nil
 }
 
+// AuditMessage is the message of the record AdminReset writes.
+const AuditMessage = "passwordauth: audit: password reset by admin command"
+
 // AdminReset sets the password of an existing user from the server-side reset
-// command, clearing the failure count and any lock, and writes one audit
-// record naming the account and the time. The record never holds the
-// password or the hash.
-func (s *Store) AdminReset(ctx context.Context, userID pgtype.UUID, email, password string) error {
+// command, clearing the failure count and any lock, then writes one JSON audit
+// record naming the account and the time to audit. The record goes straight to
+// its own handler, so LOG_LEVEL and the Store's logger never filter it out. It
+// never holds the password or the hash.
+func (s *Store) AdminReset(ctx context.Context, userID pgtype.UUID, email, password string, audit io.Writer) error {
 	if err := s.SetPassword(ctx, userID, password); err != nil {
 		return err
 	}
-	s.logger.InfoContext(ctx, "passwordauth: audit: password reset by admin command",
-		"user_id", util.UUIDToString(userID),
-		"email", strings.ToLower(strings.TrimSpace(email)),
-		"at", time.Now().UTC().Format(time.RFC3339),
+	now := time.Now()
+	record := slog.NewRecord(now, slog.LevelInfo, AuditMessage, 0)
+	record.AddAttrs(
+		slog.String("user_id", util.UUIDToString(userID)),
+		slog.String("email", strings.ToLower(strings.TrimSpace(email))),
+		slog.String("at", now.UTC().Format(time.RFC3339)),
 	)
+	if err := slog.NewJSONHandler(audit, nil).Handle(ctx, record); err != nil {
+		return fmt.Errorf("passwordauth: password was set, but writing the audit record failed: %w", err)
+	}
 	return nil
 }
