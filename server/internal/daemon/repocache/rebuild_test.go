@@ -5,11 +5,13 @@ package repocache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -422,5 +424,161 @@ func TestCloneFailureHint(t *testing.T) {
 		if tc.want == "" && got != "" || !strings.Contains(got, tc.want) {
 			t.Errorf("hint for %q = %q, want it to mention %q", tc.output, got, tc.want)
 		}
+	}
+}
+
+// slowBlobFetch makes file downloads wait for the gate current at the time
+// they start, and records the time limit they were given. It swaps package
+// variables, so callers must not be parallel tests.
+type slowBlobFetch struct {
+	mu       sync.Mutex
+	gate     chan struct{}
+	calls    int
+	timeouts []time.Duration
+}
+
+func installSlowBlobFetch(t *testing.T) *slowBlobFetch {
+	t.Helper()
+	slow := &slowBlobFetch{gate: make(chan struct{})}
+	close(slow.gate)
+	orig := runBlobFetch
+	runBlobFetch = func(ctx context.Context, barePath string, oids []string, timeout time.Duration) ([]byte, error) {
+		slow.mu.Lock()
+		gate := slow.gate
+		slow.calls++
+		slow.timeouts = append(slow.timeouts, timeout)
+		slow.mu.Unlock()
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return runBlobFetchContext(ctx, barePath, oids, timeout)
+	}
+	t.Cleanup(func() { runBlobFetch = orig })
+	return slow
+}
+
+func (s *slowBlobFetch) closeGateLater() (release func()) {
+	gate := make(chan struct{})
+	s.mu.Lock()
+	s.gate = gate
+	s.mu.Unlock()
+	return func() { close(gate) }
+}
+
+func (s *slowBlobFetch) stats() (int, []time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls, slices.Clone(s.timeouts)
+}
+
+// The file download of a blobless build gets the build's limit, not the
+// fixed per-command one.
+func TestBloblessBuildDownloadsFilesWithinTheBuildLimit(t *testing.T) {
+	slow := installSlowBlobFetch(t)
+	source := createFilterableTestRepo(t)
+	t.Setenv(BloblessEnv, source)
+	t.Setenv(CloneTimeoutEnv, "3h")
+	cache := New(t.TempDir(), testLogger())
+
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: source}}); err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+	calls, timeouts := slow.stats()
+	if calls != 1 || timeouts[0] != 3*time.Hour {
+		t.Fatalf("file download calls = %d with limits %v, want one with 3h", calls, timeouts)
+	}
+}
+
+// On a slow link a checkout of a blobless cache stops waiting for the files
+// it needs, the download carries on without any request, and the retry checks
+// out. Covers an old commit and a branch other than the default.
+func TestSlowFileDownloadOutlivesTheCheckoutRequest(t *testing.T) {
+	slow := installSlowBlobFetch(t)
+	origBudget := checkoutBlobWaitBudget
+	checkoutBlobWaitBudget = 50 * time.Millisecond
+	t.Cleanup(func() { checkoutBlobWaitBudget = origBudget })
+
+	source := createFilterableTestRepo(t)
+	dir := strings.TrimPrefix(source, "file://")
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %s: %v", args, out, err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	// The old commit holds only a.txt; the feature branch adds feature.txt.
+	// Check out the old commit first: its files are a subset of the branch's.
+	oldCommit := git("-C", dir, "rev-parse", "HEAD~1")
+	git("-C", dir, "checkout", "-q", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature only\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("-C", dir, "add", "feature.txt")
+	git("-C", dir, "commit", "-q", "-m", "feature")
+	git("-C", dir, "checkout", "-q", "-")
+
+	cache := New(t.TempDir(), testLogger())
+	barePath := seedBloblessCache(t, cache, "ws-1", source)
+
+	for i, ref := range []string{oldCommit, "feature"} {
+		params := WorktreeParams{
+			WorkspaceID: "ws-1",
+			RepoURL:     source,
+			WorkDir:     t.TempDir(),
+			Ref:         ref,
+			AgentName:   "tester",
+			TaskID:      fmt.Sprintf("a1b2c3d4-e5f6-7890-abcd-ef123456789%d", i),
+		}
+		callsBefore, _ := slow.stats()
+		release := slow.closeGateLater()
+		for range 2 {
+			_, err := cache.CreateWorktree(params)
+			if !errors.Is(err, ErrCacheBuilding) || !strings.Contains(err.Error(), "still being downloaded") {
+				release()
+				t.Fatalf("%s: expected a retryable pending download, got %v", ref, err)
+			}
+		}
+		if calls, _ := slow.stats(); calls != callsBefore+1 {
+			release()
+			t.Fatalf("%s: requests started %d downloads, want 1", ref, calls-callsBefore)
+		}
+
+		// No request is waiting now; the download must still finish.
+		release()
+		commit := git("-C", dir, "rev-parse", ref)
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			missing, err := missingObjectsContext(context.Background(), barePath, commit)
+			if err == nil && len(missing) == 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: download did not finish after the requests ended: %v %v", ref, missing, err)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+
+		result, err := cache.CreateWorktree(params)
+		if err != nil {
+			t.Fatalf("%s: retry failed: %v", ref, err)
+		}
+		if status := git("-C", result.Path, "status", "--porcelain"); status != "" {
+			t.Fatalf("%s: checkout is missing files:\n%s", ref, status)
+		}
+		if got, err := resolveCommitContext(context.Background(), result.Path, "HEAD"); err != nil || got != commit {
+			t.Fatalf("%s: checkout HEAD = %s (%v), want %s", ref, got, err, commit)
+		}
+	}
+	if _, timeouts := slow.stats(); !slices.ContainsFunc(timeouts, func(d time.Duration) bool { return d == cloneTimeout() }) {
+		t.Fatalf("checkout downloads ran with limits %v, want the build limit %s", timeouts, cloneTimeout())
 	}
 }

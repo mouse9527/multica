@@ -432,6 +432,9 @@ func (c *Cache) SyncContext(ctx context.Context, workspaceID string, repos []Rep
 					firstErr = err
 				}
 			}
+			// Modified for the mouse9527/multica fork (M-161): a blobless
+			// cache fetches the moved default branch's files in the background.
+			c.prefetchDefaultBranchInBackground(ctx, barePath)
 		} else {
 			// Not cached — bare clone.
 			// Modified for the mouse9527/multica fork (M-161): the clone runs in
@@ -739,7 +742,7 @@ func gitFetch(barePath string) error {
 
 // Modified for the mouse9527/multica fork (M-161): a ref case conflict is
 // returned after the fetch's other work is done, as a warning for the caller
-// to report, and a blobless cache gets its default branch's files.
+// to report.
 func gitFetchContext(ctx context.Context, barePath string) error {
 	if err := ensureRemoteTrackingLayoutContext(ctx, barePath); err != nil && !IsRefCaseConflict(err) {
 		return fmt.Errorf("ensure refspec: %w", err)
@@ -755,8 +758,6 @@ func gitFetchContext(ctx context.Context, barePath string) error {
 	// path (the only path that can't be recovered any other way) relies
 	// on this call.
 	_ = runGitContext(ctx, "-C", barePath, "remote", "set-head", "origin", "--auto")
-	// Best-effort: a file the cache lacks is still fetched lazily at checkout.
-	_ = prefetchDefaultBranchBlobsContext(ctx, barePath)
 	return fetchErr
 }
 
@@ -994,6 +995,12 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 	// default-branch case.
 	if baseRef == "" {
 		return nil, fmt.Errorf("cannot resolve default branch for %s: bare cache at %s has no usable refs (origin/* is empty or ambiguous and bare HEAD has no match). The cache may be corrupted; delete it and retry", params.RepoURL, barePath)
+	}
+	// Modified for the mouse9527/multica fork (M-161): a blobless cache gets
+	// the base's files from a cache-owned download, so a slow link does not
+	// end the request mid-checkout and restart the download on every retry.
+	if err := c.ensureCheckoutBlobsContext(ctx, params.RepoURL, barePath, baseRef); err != nil {
+		return nil, err
 	}
 
 	// Build branch name: agent/{sanitized-name}/{task-id}

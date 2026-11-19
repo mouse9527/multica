@@ -16,8 +16,9 @@
 //   - the clone is bounded by a stall check plus a generous total limit
 //     instead of a fixed 10 minutes;
 //   - repositories listed in MULTICA_REPO_CACHE_BLOBLESS are cloned without
-//     file contents, and the default branch's files are fetched into the
-//     cache so checkouts do not download them again;
+//     file contents; the files a checkout needs are fetched into the cache by
+//     a cache-owned job, so a slow download outlives the checkout request
+//     and the retry finds them;
 //   - a ref case conflict is a warning, not a failure.
 package repocache
 
@@ -122,10 +123,12 @@ func (e *CloneError) Error() string {
 func (e *CloneError) Unwrap() error { return e.Err }
 
 // buildRegistry tracks the cache builds in flight, at most one per
-// repository and workspace.
+// repository and workspace, and the file downloads, at most one per cache and
+// commit.
 type buildRegistry struct {
-	mu   sync.Mutex
-	jobs map[string]*buildJob
+	mu       sync.Mutex
+	jobs     map[string]*buildJob
+	blobJobs map[string]*buildJob
 }
 
 type buildJob struct {
@@ -311,8 +314,8 @@ func cloneBareContext(ctx context.Context, url, dest string, opts cloneOptions) 
 		warn(err)
 	}
 	if opts.blobless {
-		if err := prefetchDefaultBranchBlobsContext(ctx, dest); err != nil {
-			warn(fmt.Errorf("prefetch default branch files (checkouts will download them instead): %w", err))
+		if err := prefetchDefaultBranchBlobsContext(ctx, dest, timeout); err != nil {
+			warn(fmt.Errorf("prefetch default branch files (a checkout fetches them in the background instead): %w", err))
 		}
 	}
 	return nil
@@ -416,11 +419,124 @@ func rejectedRefs(output string) []string {
 	return refs
 }
 
-// prefetchDefaultBranchBlobsContext fetches, in one batch, the files of the
-// default branch's tip that a blobless cache does not have yet. Without it
-// every checkout of a blobless cache downloads them again into its own
-// object store. It is a no-op for a full clone.
-func prefetchDefaultBranchBlobsContext(ctx context.Context, barePath string) error {
+// A blobless cache lacks the files of every commit until something fetches
+// them. Git would fetch them lazily during a checkout, inside the checkout
+// request, where a slow link means the request ends first and the next
+// attempt starts the download again. So missing files are fetched by a job
+// the cache owns, bounded like a build (stall check plus the total limit),
+// and a checkout only waits for it up to checkoutBlobWaitBudget.
+
+// checkoutBlobWaitBudget is how long a checkout waits for the files of its
+// base commit before answering with a retryable error. Together with the
+// daemon's cache build wait it stays under the CLI's 5-minute request limit
+// in the common case where only one of them has work to do.
+var checkoutBlobWaitBudget = 3 * time.Minute
+
+// BlobsPendingError reports a file download the checkout stopped waiting for.
+// It matches ErrCacheBuilding and unwraps to the reason the wait ended.
+type BlobsPendingError struct {
+	URL     string
+	Ref     string
+	Running time.Duration
+	Cause   error
+}
+
+func (e *BlobsPendingError) Error() string {
+	return fmt.Sprintf("files of %s in %s are still being downloaded into the repository cache in the background (running for %s); retry `multica repo checkout` in a few minutes",
+		e.Ref, e.URL, e.Running.Round(time.Second))
+}
+
+func (e *BlobsPendingError) Is(target error) bool { return target == ErrCacheBuilding }
+
+func (e *BlobsPendingError) Unwrap() error { return e.Cause }
+
+// ensureCheckoutBlobsContext makes sure a blobless cache holds the files of
+// ref before a checkout of it, fetching them in a cache-owned job. Any
+// problem determining what is missing is left to the checkout, which still
+// fetches lazily.
+func (c *Cache) ensureCheckoutBlobsContext(ctx context.Context, repoURL, barePath, ref string) error {
+	if !isPartialCloneContext(ctx, barePath) {
+		return nil
+	}
+	commit, err := resolveCommitContext(ctx, barePath, ref)
+	if err != nil {
+		return nil
+	}
+	if missing, err := missingObjectsContext(ctx, barePath, commit); err != nil || len(missing) == 0 {
+		return nil
+	}
+	job := c.startBlobFetch(barePath, commit)
+	waitCtx, cancel := context.WithTimeout(ctx, checkoutBlobWaitBudget)
+	defer cancel()
+	select {
+	case <-job.done:
+		if job.err != nil {
+			return fmt.Errorf("download files of %s into the repository cache: %w", ref, job.err)
+		}
+		return nil
+	case <-waitCtx.Done():
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+		return &BlobsPendingError{URL: repoURL, Ref: ref, Running: time.Since(job.started), Cause: context.Cause(waitCtx)}
+	}
+}
+
+// prefetchDefaultBranchInBackground starts fetching the default branch's
+// missing files after a fetch moved it, without waiting.
+func (c *Cache) prefetchDefaultBranchInBackground(ctx context.Context, barePath string) {
+	if !isPartialCloneContext(ctx, barePath) {
+		return
+	}
+	ref := getRemoteDefaultBranchContext(ctx, barePath)
+	if ref == "" {
+		return
+	}
+	commit, err := resolveCommitContext(ctx, barePath, ref)
+	if err != nil {
+		return
+	}
+	if missing, err := missingObjectsContext(ctx, barePath, commit); err == nil && len(missing) > 0 {
+		c.startBlobFetch(barePath, commit)
+	}
+}
+
+// startBlobFetch starts, or joins, the job fetching commit's missing files
+// into barePath. The job does not take the repository lock: it only adds
+// objects, which Git writes atomically, and a checkout waiting for it holds
+// that lock. Automatic maintenance is off so it never repacks under others.
+func (c *Cache) startBlobFetch(barePath, commit string) *buildJob {
+	key := barePath + "\x00" + commit
+	c.builds.mu.Lock()
+	defer c.builds.mu.Unlock()
+	if job, ok := c.builds.blobJobs[key]; ok {
+		return job
+	}
+	if c.builds.blobJobs == nil {
+		c.builds.blobJobs = make(map[string]*buildJob)
+	}
+	job := &buildJob{done: make(chan struct{}), started: time.Now()}
+	c.builds.blobJobs[key] = job
+	go func() {
+		timeout := cloneTimeout()
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		err := fetchMissingObjectsContext(ctx, barePath, commit, timeout)
+		cancel()
+		if err != nil {
+			c.logger.Warn("repo cache: file download failed", "path", barePath, "commit", commit, "error", err)
+		}
+		c.builds.mu.Lock()
+		delete(c.builds.blobJobs, key)
+		c.builds.mu.Unlock()
+		job.err = err
+		close(job.done)
+	}()
+	return job
+}
+
+// prefetchDefaultBranchBlobsContext fetches the files of the default branch's
+// tip that a blobless cache lacks, within timeout. A no-op for a full clone.
+func prefetchDefaultBranchBlobsContext(ctx context.Context, barePath string, timeout time.Duration) error {
 	if !isPartialCloneContext(ctx, barePath) {
 		return nil
 	}
@@ -428,37 +544,64 @@ func prefetchDefaultBranchBlobsContext(ctx context.Context, barePath string) err
 	if ref == "" {
 		return nil
 	}
-	// --missing=print lists absent objects with a "?" prefix without
-	// fetching them one by one.
-	out, err := runGitOutputContext(ctx, "-C", barePath, "rev-list", "--objects", "--missing=print", "--no-walk", ref)
+	commit, err := resolveCommitContext(ctx, barePath, ref)
 	if err != nil {
-		return fmt.Errorf("list missing objects of %s: %w", ref, err)
+		return err
 	}
-	var missing strings.Builder
+	return fetchMissingObjectsContext(ctx, barePath, commit, timeout)
+}
+
+// missingObjectsContext lists the objects of commit's tree that barePath
+// does not have. --missing=print reports them with a "?" prefix without
+// fetching them one by one.
+func missingObjectsContext(ctx context.Context, barePath, commit string) ([]string, error) {
+	out, err := runGitOutputContext(ctx, "-C", barePath, "rev-list", "--objects", "--missing=print", "--no-walk", commit)
+	if err != nil {
+		return nil, fmt.Errorf("list missing objects of %s: %w", commit, err)
+	}
+	var missing []string
 	for _, line := range strings.Split(string(out), "\n") {
 		if oid, ok := strings.CutPrefix(strings.TrimSpace(line), "?"); ok && oid != "" {
-			missing.WriteString(oid)
-			missing.WriteByte('\n')
+			missing = append(missing, oid)
 		}
 	}
-	if missing.Len() == 0 {
-		return nil
-	}
+	return missing, nil
+}
 
-	cmdCtx, cancel := context.WithTimeout(ctx, repoCacheGitTimeout)
+// runBlobFetch runs the batched fetch behind fetchMissingObjectsContext.
+// Tests replace it to model a slow link.
+var runBlobFetch = runBlobFetchContext
+
+// fetchMissingObjectsContext fetches, in one batch, the objects of commit's
+// tree that barePath lacks.
+func fetchMissingObjectsContext(ctx context.Context, barePath, commit string, timeout time.Duration) error {
+	missing, err := missingObjectsContext(ctx, barePath, commit)
+	if err != nil || len(missing) == 0 {
+		return err
+	}
+	out, err := runBlobFetch(ctx, barePath, missing, timeout)
+	if err != nil {
+		return fmt.Errorf("fetch %d missing objects of %s: %s: %w", len(missing), commit, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+func runBlobFetchContext(ctx context.Context, barePath string, oids []string, timeout time.Duration) ([]byte, error) {
+	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	// The same request Git makes for a lazy fetch, for all objects at once.
 	cmd := newGitCommand("-C", barePath,
 		"-c", "fetch.negotiationAlgorithm=noop",
+		"-c", "http.lowSpeedLimit="+cloneLowSpeedLimit,
+		"-c", "http.lowSpeedTime="+cloneLowSpeedTime,
+		"-c", "maintenance.auto=false",
+		"-c", "gc.auto=0",
 		"fetch", "origin", "--no-tags", "--no-write-fetch-head", "--recurse-submodules=no",
 		"--filter="+partialCloneFilter, "--stdin")
-	cmd.Stdin = strings.NewReader(missing.String())
-	fetchOut, err := processtree.CombinedOutput(cmdCtx, cmd, 5*time.Second)
+	cmd.Stdin = strings.NewReader(strings.Join(oids, "\n") + "\n")
+	out, err := processtree.CombinedOutput(cmdCtx, cmd, 5*time.Second)
 	if cmdCtx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("git command timed out after %s: %w", repoCacheGitTimeout, cmdCtx.Err())
+		return out, fmt.Errorf("git command timed out after %s: %w", timeout, cmdCtx.Err())
 	}
-	if err != nil {
-		return fmt.Errorf("fetch missing objects of %s: %s: %w", ref, strings.TrimSpace(string(fetchOut)), err)
-	}
-	return nil
+	return out, err
 }
