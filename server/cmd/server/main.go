@@ -22,6 +22,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/dbreader"
 	"github.com/multica-ai/multica/server/internal/dbstartup"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/evolution"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -880,6 +881,8 @@ func main() {
 	// Modified for the mouse9527/multica fork: Router capture (M-85) and
 	// dispatch (M-86). Inert unless router_v1 (and router_dispatch) is on.
 	agentrouter.Register(context.Background(), flags, bus, pool, schedulerMgr, taskSvc)
+	// mouse9527/multica fork: the Evolution daily analysis (M-136). Inert unless evolution_v1 is on.
+	evolution.Register(context.Background(), flags, pool, queries, schedulerMgr, h.IssueService, bus)
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)
 	}()

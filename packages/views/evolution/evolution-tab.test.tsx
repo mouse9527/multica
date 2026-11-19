@@ -1,6 +1,7 @@
-// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135).
+// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136).
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import { renderWithI18n } from "../test/i18n";
@@ -11,6 +12,7 @@ import { useEvolutionSettingsTabs } from "./use-evolution-settings-tabs";
 const state = vi.hoisted(() => ({
   role: "owner" as string,
   status: { agent: null } as unknown,
+  config: null as unknown,
   flag: true,
 }));
 
@@ -22,7 +24,26 @@ vi.mock("@multica/core/auth", () => ({
 }));
 vi.mock("@multica/core/permissions", () => ({ useCurrentMember: () => ({ role: state.role }) }));
 vi.mock("@multica/core/paths", () => ({
-  useWorkspacePaths: () => ({ agentDetail: (id: string) => `/acme/agents/${id}` }),
+  useWorkspacePaths: () => ({
+    agentDetail: (id: string) => `/acme/agents/${id}`,
+    issueDetail: (id: string) => `/acme/issues/${id}`,
+  }),
+}));
+vi.mock("@multica/core/projects", () => ({
+  projectListOptions: (wsId: string) => ({
+    queryKey: ["projects", wsId],
+    queryFn: async () => [{ id: "p-1", title: "Website", archived_at: null }],
+  }),
+}));
+vi.mock("@multica/core/workspace/queries", async (original) => ({
+  ...(await original<typeof import("@multica/core/workspace/queries")>()),
+  agentListOptions: (wsId: string) => ({
+    queryKey: ["agents", wsId],
+    queryFn: async () => [
+      { id: "agent-evo", name: "Evolution", archived_at: null },
+      { id: "agent-2", name: "Builder", archived_at: null },
+    ],
+  }),
 }));
 vi.mock("@multica/core/runtimes", () => ({
   runtimeListOptions: (wsId: string) => ({
@@ -53,15 +74,45 @@ vi.mock("@multica/core/api", async (original) => ({
 
 const apiRequest = vi.mocked(api.request);
 
+function configState(overrides: { chat_active?: boolean; chat?: boolean; enabled?: boolean } = {}) {
+  return {
+    config: {
+      enabled: overrides.enabled ?? false,
+      schedule: { time: "03:00", timezone: "Asia/Shanghai", interval_days: 1 },
+      sources: { comments: true, chat: overrides.chat ?? false },
+      exclude_projects: [],
+      exclude_agents: [],
+      max_items_per_window: 2000,
+      max_window_days: 7,
+      max_runs_per_day: 3,
+    },
+    chat_active: overrides.chat_active ?? false,
+    comments_active: false,
+    limits: { items_per_window: [50, 5000], window_days: [1, 30], runs_per_day: [1, 10], interval_days: [1, 7], max_excluded: 200 },
+    runs: [],
+  };
+}
+
 beforeEach(() => {
   state.role = "owner";
   state.status = { agent: null };
+  state.config = configState();
   state.flag = true;
   apiRequest.mockReset();
   apiRequest.mockImplementation(async (path: string, init?: RequestInit) => {
-    if ((init?.method ?? "GET") === "POST" && path === "/api/evolution/enable") {
+    const method = init?.method ?? "GET";
+    if (method === "POST" && path === "/api/evolution/enable") {
       state.status = { agent: { id: "agent-evo", name: "Evolution" } };
       return state.status;
+    }
+    if (path === "/api/evolution/config") {
+      if (method === "PUT") {
+        const body = JSON.parse(String(init?.body));
+        const turnsChatOn = body.config.enabled && body.config.sources.chat;
+        if (turnsChatOn && !body.acknowledge_member_notice) throw new Error("confirm with acknowledge_member_notice");
+        state.config = { ...configState(), config: body.config, chat_active: turnsChatOn };
+      }
+      return state.config;
     }
     return state.status;
   });
@@ -123,5 +174,63 @@ describe("EvolutionTab", () => {
     show(<EvolutionTab />);
     expect(await screen.findByText(en.not_enabled_member)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: en.enable })).not.toBeInTheDocument();
+  });
+});
+
+describe("EvolutionConfigSection", () => {
+  beforeEach(() => {
+    state.status = { agent: { id: "agent-evo", name: "Evolution" } };
+  });
+
+  const puts = () => apiRequest.mock.calls.filter(([path, init]) => path === "/api/evolution/config" && init?.method === "PUT");
+
+  it("asks before turning chat reading on, then saves with the confirmation", async () => {
+    const user = userEvent.setup();
+    show(<EvolutionTab />);
+    await user.click(await screen.findByRole("switch", { name: en.config_title }));
+    await user.click(screen.getByRole("switch", { name: en.chat_label }));
+    expect(screen.getByText(en.chat_pending)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: en.config_save }));
+
+    expect(await screen.findByText(en.notice_title)).toBeInTheDocument();
+    expect(puts()).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: en.notice_confirm }));
+
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    const body = JSON.parse(String(puts()[0]?.[1]?.body));
+    expect(body.acknowledge_member_notice).toBe(true);
+    expect(body.config).toMatchObject({ enabled: true, sources: { comments: true, chat: true } });
+    expect(await screen.findByText(en.chat_active)).toBeInTheDocument();
+  });
+
+  it("saves without asking when chat reading is not being turned on", async () => {
+    const user = userEvent.setup();
+    show(<EvolutionTab />);
+    await user.click(await screen.findByRole("switch", { name: en.config_title }));
+    await user.click(screen.getByRole("button", { name: en.config_save }));
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(screen.queryByText(en.notice_title)).not.toBeInTheDocument();
+    expect(JSON.parse(String(puts()[0]?.[1]?.body))).toMatchObject({
+      acknowledge_member_notice: false,
+      config: { enabled: true, sources: { chat: false } },
+    });
+  });
+
+  it("offers other agents, not Evolution itself, as exclusions", async () => {
+    show(<EvolutionTab />);
+    const agents = within(await screen.findByRole("group", { name: en.exclude_agents }));
+    expect(await agents.findByText("Builder")).toBeInTheDocument();
+    expect(agents.queryByText("Evolution")).not.toBeInTheDocument();
+    const projects = within(screen.getByRole("group", { name: en.exclude_projects }));
+    expect(await projects.findByText("Website")).toBeInTheDocument();
+  });
+
+  it("shows members the settings read-only", async () => {
+    state.role = "member";
+    state.config = configState({ enabled: true, chat: true, chat_active: true });
+    show(<EvolutionTab />);
+    expect(await screen.findByText(en.chat_active)).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: en.chat_label })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.queryByRole("button", { name: en.config_save })).not.toBeInTheDocument();
   });
 });
