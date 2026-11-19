@@ -52,20 +52,16 @@ type PasswordStatusResponse struct {
 // MountPasswordAuth registers POST /auth/password-login and
 // GET/POST /api/me/password when MULTICA_PASSWORD_AUTH_ENABLED is on, and
 // nothing otherwise. requireAuth is the session middleware of the
-// authenticated routes. Invalid argon2id settings leave the feature off
-// rather than store weak hashes.
+// authenticated routes. Invalid argon2id settings (including parameters that
+// do not fit the hashing memory budget) leave the feature off rather than
+// store weak hashes or overrun memory.
 func (h *Handler) MountPasswordAuth(r chi.Router, requireAuth func(http.Handler) http.Handler, trustedProxies []*net.IPNet) {
 	if !passwordauth.Enabled(os.Getenv) {
 		return
 	}
-	params, err := passwordauth.ParamsFromEnv(os.Getenv)
+	hasher, err := passwordauth.HasherFromEnv(os.Getenv)
 	if err != nil {
 		slog.Error("password login disabled: invalid argon2id settings", "error", err)
-		return
-	}
-	hasher, err := passwordauth.NewHasher(params)
-	if err != nil {
-		slog.Error("password login disabled", "error", err)
 		return
 	}
 	h.mountPasswordAuth(r, passwordauth.NewService(passwordauth.NewStore(h.DB, hasher, nil), nil), requireAuth, trustedProxies)
@@ -83,12 +79,14 @@ func (h *Handler) mountPasswordAuth(r chi.Router, svc *passwordauth.Service, req
 }
 
 // requirePasswordSession limits password management to a person's own login
-// session. Agent task tokens and cloud tokens act for machines; a personal
-// access token is a long-lived credential handed to scripts, and must not be
-// able to turn itself into a password.
+// session, judged by the credential Auth actually used rather than by where
+// it was sent: a personal access token placed in the auth cookie is still a
+// personal access token. Agent task tokens and cloud tokens act for machines;
+// a personal access token is a long-lived credential handed to scripts, and
+// must not be able to turn itself into a password.
 func requirePasswordSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isMachineCredentialActor(r) || strings.HasPrefix(r.Header.Get("Authorization"), "Bearer mul_") {
+		if isMachineCredentialActor(r) || !middleware.AuthenticatedBySession(r) {
 			writeError(w, http.StatusForbidden, "sign in to the web app to manage your password")
 			return
 		}

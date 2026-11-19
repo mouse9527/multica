@@ -1,6 +1,7 @@
 package passwordauth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -8,9 +9,11 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/sync/semaphore"
 )
 
 // Algo is the only algorithm user_credential.algo accepts.
@@ -31,6 +34,9 @@ var (
 	ErrPasswordTooLong  = fmt.Errorf("passwordauth: password must be at most %d bytes", MaxPasswordBytes)
 	ErrMalformedHash    = errors.New("passwordauth: stored hash is malformed")
 	ErrUnsupportedHash  = errors.New("passwordauth: stored hash uses an unsupported algorithm or version")
+	// ErrHashOverBudget means a stored hash was made with more memory than
+	// the whole hashing budget, so it is not verified at all.
+	ErrHashOverBudget = errors.New("passwordauth: stored hash needs more memory than the hashing budget")
 )
 
 // ValidatePassword checks a new password against the length rules. Login does
@@ -90,6 +96,35 @@ const (
 	minTestMemoryKiB = 8 // argon2 needs at least 8 KiB per lane
 )
 
+// The hashing memory budget caps the argon2id memory in use at once across
+// every hash and verification of one Hasher. Each computation reserves the
+// memory of the parameters it actually runs with (a stored hash's own, not
+// the current ones) and waits while the budget is short. A single
+// computation larger than the whole budget is refused rather than run, so
+// the budget is never exceeded; the current parameters must fit in it.
+const (
+	EnvMemoryBudgetKiB     = "MULTICA_PASSWORD_ARGON2_MEMORY_BUDGET_KIB"
+	DefaultMemoryBudgetKiB = 256 * 1024
+	maxMemoryBudgetKiB     = 64 * 1024 * 1024
+)
+
+// HasherFromEnv returns a Hasher with ParamsFromEnv's parameters and the
+// memory budget from EnvMemoryBudgetKiB (DefaultMemoryBudgetKiB when unset).
+func HasherFromEnv(getenv func(string) string) (*Hasher, error) {
+	p, err := ParamsFromEnv(getenv)
+	if err != nil {
+		return nil, err
+	}
+	budget := uint64(DefaultMemoryBudgetKiB)
+	if v := strings.TrimSpace(getenv(EnvMemoryBudgetKiB)); v != "" {
+		budget, err = strconv.ParseUint(v, 10, 32)
+		if err != nil || budget < minMemoryKiB || budget > maxMemoryBudgetKiB {
+			return nil, fmt.Errorf("passwordauth: %s must be an integer from %d to %d", EnvMemoryBudgetKiB, minMemoryKiB, maxMemoryBudgetKiB)
+		}
+	}
+	return NewHasherWithBudget(p, uint32(budget))
+}
+
 // ParamsFromEnv returns DefaultParams with the environment overrides applied.
 // getenv is os.Getenv in production. An override below the OWASP minimum or
 // above the ceilings is an error, so a misconfigured server fails at startup
@@ -141,20 +176,36 @@ func (p Params) validate() error {
 	return nil
 }
 
-// Hasher hashes and verifies passwords with one set of current parameters.
+// Hasher hashes and verifies passwords with one set of current parameters,
+// within a memory budget.
 type Hasher struct {
-	params Params
+	params    Params
+	budgetKiB uint32
+	memory    *semaphore.Weighted
+	// inUseKiB and peakKiB track reserved memory, for tests.
+	inUseKiB atomic.Int64
+	peakKiB  atomic.Int64
 	// dummy is a hash of a random password, verified when the account has no
 	// credential so that case costs the same time as a wrong password.
 	dummy string
 }
 
-// NewHasher returns a Hasher producing hashes with p.
+// NewHasher returns a Hasher producing hashes with p, within
+// DefaultMemoryBudgetKiB.
 func NewHasher(p Params) (*Hasher, error) {
+	return NewHasherWithBudget(p, DefaultMemoryBudgetKiB)
+}
+
+// NewHasherWithBudget returns a Hasher producing hashes with p that never has
+// more than budgetKiB of argon2id memory in use at once.
+func NewHasherWithBudget(p Params, budgetKiB uint32) (*Hasher, error) {
 	if err := p.validate(); err != nil {
 		return nil, err
 	}
-	h := &Hasher{params: p}
+	if p.MemoryKiB > budgetKiB {
+		return nil, fmt.Errorf("passwordauth: argon2id memory %d KiB exceeds the hashing budget of %d KiB (%s)", p.MemoryKiB, budgetKiB, EnvMemoryBudgetKiB)
+	}
+	h := &Hasher{params: p, budgetKiB: budgetKiB, memory: semaphore.NewWeighted(int64(budgetKiB))}
 	random := make([]byte, 32)
 	if _, err := rand.Read(random); err != nil {
 		return nil, fmt.Errorf("passwordauth: read random: %w", err)
@@ -185,14 +236,41 @@ func (h *Hasher) hash(password string) (string, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("passwordauth: read random: %w", err)
 	}
-	key := argon2.IDKey([]byte(password), salt, h.params.Iterations, h.params.MemoryKiB, h.params.Parallelism, h.params.KeyLen)
+	key, err := h.idKey([]byte(password), salt, h.params)
+	if err != nil {
+		return "", err
+	}
 	return encode(h.params, salt, key), nil
+}
+
+// idKey runs argon2id with p once its memory is reserved from the budget.
+func (h *Hasher) idKey(password, salt []byte, p Params) ([]byte, error) {
+	if p.MemoryKiB > h.budgetKiB {
+		return nil, ErrHashOverBudget
+	}
+	n := int64(p.MemoryKiB)
+	// Background: a request that gives up still holds nothing, and the
+	// wait is bounded by the hashes ahead of it.
+	if err := h.memory.Acquire(context.Background(), n); err != nil {
+		return nil, err
+	}
+	defer h.memory.Release(n)
+	inUse := h.inUseKiB.Add(n)
+	defer h.inUseKiB.Add(-n)
+	for {
+		peak := h.peakKiB.Load()
+		if inUse <= peak || h.peakKiB.CompareAndSwap(peak, inUse) {
+			break
+		}
+	}
+	return argon2.IDKey(password, salt, p.Iterations, p.MemoryKiB, p.Parallelism, p.KeyLen), nil
 }
 
 // Verify reports whether password matches encoded. The key comparison takes
 // constant time. A password over MaxPasswordBytes never matches; only its
 // first MaxPasswordBytes are hashed, so it costs the same as any other wrong
-// password and as VerifyDummy. An error means encoded itself is unusable.
+// password and as VerifyDummy. An error means encoded itself is unusable,
+// or (ErrHashOverBudget) needs more memory than the whole budget.
 func (h *Hasher) Verify(password, encoded string) (bool, error) {
 	p, salt, key, err := decode(encoded)
 	if err != nil {
@@ -202,7 +280,10 @@ func (h *Hasher) Verify(password, encoded string) (bool, error) {
 	if !inLimit {
 		password = password[:MaxPasswordBytes]
 	}
-	got := argon2.IDKey([]byte(password), salt, p.Iterations, p.MemoryKiB, p.Parallelism, p.KeyLen)
+	got, err := h.idKey([]byte(password), salt, p)
+	if err != nil {
+		return false, err
+	}
 	return subtle.ConstantTimeCompare(got, key) == 1 && inLimit, nil
 }
 

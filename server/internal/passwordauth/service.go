@@ -30,12 +30,6 @@ var (
 	ErrWrongCurrentPassword = errors.New("passwordauth: current password is incorrect")
 )
 
-// hashMemoryBudgetKiB caps the memory argon2id may use at once across all
-// requests: with the default 64 MiB per hash, four hashes run in parallel and
-// the rest wait. Without it, a burst of logins from many addresses could
-// allocate 64 MiB each.
-const hashMemoryBudgetKiB = 256 * 1024
-
 // Service is the password-login policy: who may log in, account lockout,
 // the per-IP limit, and setting a password.
 type Service struct {
@@ -44,7 +38,6 @@ type Service struct {
 	now      func() time.Time
 	ips      *ipLimiter
 	phantoms *phantomLocks
-	slots    chan struct{}
 }
 
 // NewService returns a Service over store. logger may be nil.
@@ -52,14 +45,12 @@ func NewService(store *Store, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	slots := max(1, hashMemoryBudgetKiB/int(store.hasher.Params().MemoryKiB))
 	return &Service{
 		store:    store,
 		logger:   logger,
 		now:      time.Now,
 		ips:      newIPLimiter(),
 		phantoms: newPhantomLocks(),
-		slots:    make(chan struct{}, slots),
 	}
 }
 
@@ -80,11 +71,6 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (db.Use
 		s.logger.WarnContext(ctx, "password login: rate limited", "ip", ip)
 		return db.User{}, ErrThrottled
 	}
-	release, err := s.acquire(ctx)
-	if err != nil {
-		return db.User{}, err
-	}
-	defer release()
 
 	email = NormalizeEmail(email)
 	user, err := s.store.q.GetUserByEmail(ctx, email)
@@ -108,6 +94,15 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (db.Use
 		return db.User{}, ErrThrottled
 	}
 	ok, err := s.store.verify(ctx, cred, password)
+	if errors.Is(err, ErrHashOverBudget) {
+		// The operator lowered the budget below an old hash's memory. Refuse
+		// without counting a failure, at the cost and with the answer of a
+		// wrong password, and tell the operator.
+		s.store.hasher.VerifyDummy(password)
+		s.logger.ErrorContext(ctx, "password login: stored hash exceeds the hashing memory budget; raise "+EnvMemoryBudgetKiB+" or reset this password",
+			"user_id", util.UUIDToString(user.ID))
+		return db.User{}, ErrInvalidCredentials
+	}
 	if err != nil {
 		return db.User{}, err
 	}
@@ -175,11 +170,6 @@ func (s *Service) SetPassword(ctx context.Context, userID pgtype.UUID, current, 
 	if err := ValidatePassword(next); err != nil {
 		return err
 	}
-	release, err := s.acquire(ctx)
-	if err != nil {
-		return err
-	}
-	defer release()
 
 	cred, err := s.store.Get(ctx, userID)
 	switch {
@@ -206,14 +196,4 @@ func (s *Service) SetPassword(ctx context.Context, userID pgtype.UUID, current, 
 		}
 	}
 	return s.store.SetPassword(ctx, userID, next)
-}
-
-// acquire waits for a hashing slot; see hashMemoryBudgetKiB.
-func (s *Service) acquire(ctx context.Context) (func(), error) {
-	select {
-	case s.slots <- struct{}{}:
-		return func() { <-s.slots }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
 }

@@ -224,3 +224,37 @@ func TestSetPasswordRules(t *testing.T) {
 	}
 	assertNoSecrets(t, pool, logs.String(), testPassword, wrongPassword, second)
 }
+
+// A stored hash larger than the hashing budget (the budget was lowered below
+// old parameters) is refused like a wrong password, without counting a
+// failure, and the operator is told.
+func TestLoginRefusesHashOverBudget(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	f := testutil.New(pool, "", "")
+	user := util.MustParseUUID(f.User(t, "Ada", "ada@example.test"))
+	old := cheapParams
+	old.MemoryKiB = 128
+	if err := NewStore(pool, newTestHasher(t, old), nil).SetPassword(ctx, user, testPassword); err != nil {
+		t.Fatal(err)
+	}
+
+	logs := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logs, nil))
+	small, err := NewHasherWithBudget(cheapParams, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewService(NewStore(pool, small, logger), logger)
+	if _, err := s.Login(ctx, "ada@example.test", testPassword, "203.0.113.1"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("login with over-budget hash: %v", err)
+	}
+	cred, err := s.store.Get(ctx, user)
+	if err != nil || cred.FailedCount != 0 {
+		t.Fatalf("failure counted: %v %v", cred, err)
+	}
+	if !strings.Contains(logs.String(), EnvMemoryBudgetKiB) {
+		t.Fatalf("operator not told: %s", logs)
+	}
+	assertNoSecrets(t, pool, logs.String(), testPassword)
+}

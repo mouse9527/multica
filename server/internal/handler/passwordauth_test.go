@@ -3,6 +3,10 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -16,7 +20,10 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/passwordauth"
+	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 const (
@@ -24,11 +31,41 @@ const (
 	pwWrongPassword = "wrong password, twelve+"
 )
 
-func passthrough(next http.Handler) http.Handler { return next }
+// realAuth is the production session middleware, so the tests see the
+// credential kinds exactly as the server does.
+func realAuth() func(http.Handler) http.Handler {
+	return middleware.Auth(testHandler.Queries, nil, nil, nil)
+}
+
+// pwSession returns a login session JWT for an existing user.
+func pwSession(t *testing.T, userID string) string {
+	t.Helper()
+	user, err := testHandler.Queries.GetUser(context.Background(), parseUUID(userID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := testHandler.issueJWT(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+// tokenBoundCSRF builds the CSRF value ValidateCSRF accepts for a cookie
+// holding token, the way any holder of the token can.
+func tokenBoundCSRF(t *testing.T, token string) string {
+	t.Helper()
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	mac := hmac.New(sha256.New, []byte(token))
+	mac.Write(nonce)
+	return hex.EncodeToString(nonce) + "." + hex.EncodeToString(mac.Sum(nil))
+}
 
 // passwordTestServer mounts the password routes on a fresh router with cheap
-// hashing. Requests reach /api/me/password with whatever X-User-ID the test
-// sets, as they would after the session middleware.
+// hashing behind the real session middleware.
 type passwordTestServer struct {
 	t      *testing.T
 	router chi.Router
@@ -49,7 +86,7 @@ func newPasswordTestServer(t *testing.T) *passwordTestServer {
 	slog.SetDefault(logger)
 	svc := passwordauth.NewService(passwordauth.NewStore(testPool, hasher, logger), logger)
 	router := chi.NewRouter()
-	testHandler.mountPasswordAuth(router, svc, passthrough, nil)
+	testHandler.mountPasswordAuth(router, svc, realAuth(), nil)
 	t.Cleanup(func() {
 		slog.SetDefault(prev)
 		testHandler.PasswordAuth = nil
@@ -58,8 +95,9 @@ func newPasswordTestServer(t *testing.T) *passwordTestServer {
 }
 
 // do sends a request from a fresh client address, so the per-IP limit stays
-// out of tests that are not about it.
-func (s *passwordTestServer) do(method, path, userID string, body any, header ...string) *httptest.ResponseRecorder {
+// out of tests that are not about it. A non-empty token is sent as a bearer
+// token.
+func (s *passwordTestServer) do(method, path, token string, body any, header ...string) *httptest.ResponseRecorder {
 	s.t.Helper()
 	var buf bytes.Buffer
 	switch b := body.(type) {
@@ -75,8 +113,8 @@ func (s *passwordTestServer) do(method, path, userID string, body any, header ..
 	n := s.ip.Add(1)
 	req.RemoteAddr = fmt.Sprintf("198.51.%d.%d:1234", n/250, n%250+1)
 	req.Header.Set("Content-Type", "application/json")
-	if userID != "" {
-		req.Header.Set("X-User-ID", userID)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	for i := 0; i+1 < len(header); i += 2 {
 		req.Header.Set(header[i], header[i+1])
@@ -139,12 +177,13 @@ func TestPasswordAuthSwitch(t *testing.T) {
 	t.Cleanup(func() { testHandler.PasswordAuth = nil })
 	routes := func() chi.Router {
 		r := chi.NewRouter()
-		testHandler.MountPasswordAuth(r, passthrough, nil)
+		testHandler.MountPasswordAuth(r, realAuth(), nil)
 		return r
 	}
+	session := pwSession(t, testUserID)
 	status := func(r chi.Router, method, path string) int {
 		req := httptest.NewRequest(method, path, strings.NewReader("{}"))
-		req.Header.Set("X-User-ID", testUserID)
+		req.Header.Set("Authorization", "Bearer "+session)
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
 		return rec.Code
@@ -275,12 +314,13 @@ func TestPasswordLoginLockout(t *testing.T) {
 func TestSetMyPassword(t *testing.T) {
 	s := newPasswordTestServer(t)
 	userID, email := pwTestUser(t, "set")
+	session := pwSession(t, userID)
 	const second = "second password, long"
-	call := func(current, next string, header ...string) *httptest.ResponseRecorder {
-		return s.do(http.MethodPost, "/api/me/password", userID, SetPasswordRequest{CurrentPassword: current, NewPassword: next}, header...)
+	call := func(current, next string) *httptest.ResponseRecorder {
+		return s.do(http.MethodPost, "/api/me/password", session, SetPasswordRequest{CurrentPassword: current, NewPassword: next})
 	}
 	status := func() bool {
-		rec := s.do(http.MethodGet, "/api/me/password", userID, nil)
+		rec := s.do(http.MethodGet, "/api/me/password", session, nil)
 		var out PasswordStatusResponse
 		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil {
 			t.Fatalf("status: %d %s", rec.Code, rec.Body)
@@ -290,13 +330,6 @@ func TestSetMyPassword(t *testing.T) {
 
 	if status() {
 		t.Fatal("has_password before setting one")
-	}
-	// Only a person's own session may manage the password.
-	if rec := call("", pwTestPassword, "Authorization", "Bearer mul_test"); rec.Code != http.StatusForbidden {
-		t.Fatalf("PAT = %d", rec.Code)
-	}
-	if rec := call("", pwTestPassword, "X-Actor-Source", "task_token"); rec.Code != http.StatusForbidden {
-		t.Fatalf("task token = %d", rec.Code)
 	}
 	if rec := call("", "too short"); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), passwordCodeInvalidPassword) {
 		t.Fatalf("short password: %d %s", rec.Code, rec.Body)
@@ -331,7 +364,11 @@ func TestSetMyPassword(t *testing.T) {
 func TestSetMyPasswordNeedsExistingUser(t *testing.T) {
 	s := newPasswordTestServer(t)
 	ghost := "00000000-0000-4000-8000-00000000abcd"
-	rec := s.do(http.MethodPost, "/api/me/password", ghost,
+	session, err := testHandler.issueJWT(db.User{ID: parseUUID(ghost), Email: "pw-ghost@example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := s.do(http.MethodPost, "/api/me/password", session,
 		map[string]string{"new_password": pwTestPassword, "email": "pw-ghost@example.test"})
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("unknown user = %d %s", rec.Code, rec.Body)
@@ -344,5 +381,41 @@ func TestSetMyPasswordNeedsExistingUser(t *testing.T) {
 	}
 	if rec := s.login("pw-ghost@example.test", pwTestPassword); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("login as ghost = %d", rec.Code)
+	}
+}
+
+// Password management takes the credential Auth actually used: a personal
+// access token is refused as a bearer token and inside the auth cookie, even
+// with the CSRF value its holder can compute, while a session JWT in the same
+// cookie with the same kind of CSRF value is accepted.
+func TestPasswordManagementRefusesPATs(t *testing.T) {
+	s := newPasswordTestServer(t)
+	userID, _ := pwTestUser(t, "pat")
+	pat := "mul_" + hex.EncodeToString([]byte(fmt.Sprintf("pw-pat-%d", time.Now().UnixNano())))
+	dbfx.Insert(t, "personal_access_token", testutil.Cols{
+		"user_id": userID, "name": "password test", "token_hash": auth.HashToken(pat), "token_prefix": pat[:12],
+	})
+	body := SetPasswordRequest{NewPassword: pwTestPassword}
+	cookie := func(token string) []string {
+		return []string{"Cookie", auth.AuthCookieName + "=" + token, auth.CSRFHeaderName, tokenBoundCSRF(t, token)}
+	}
+
+	// The PAT itself authenticates (so a 403 below is this guard, not Auth).
+	if rec := s.do(http.MethodPost, "/api/me/password", pat, body); rec.Code != http.StatusForbidden {
+		t.Fatalf("PAT bearer = %d %s", rec.Code, rec.Body)
+	}
+	if rec := s.do(http.MethodPost, "/api/me/password", "", body, cookie(pat)...); rec.Code != http.StatusForbidden {
+		t.Fatalf("PAT cookie = %d %s", rec.Code, rec.Body)
+	}
+	if rec := s.do(http.MethodGet, "/api/me/password", "", nil, cookie(pat)...); rec.Code != http.StatusForbidden {
+		t.Fatalf("PAT cookie status = %d %s", rec.Code, rec.Body)
+	}
+	var n int
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM user_credential WHERE user_id = $1`, userID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("PAT set a password: %d %v", n, err)
+	}
+
+	if rec := s.do(http.MethodPost, "/api/me/password", "", body, cookie(pwSession(t, userID))...); rec.Code != http.StatusOK {
+		t.Fatalf("session cookie = %d %s", rec.Code, rec.Body)
 	}
 }
