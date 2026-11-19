@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), the Router's boundary (M-112), self-contained owner decisions (M-162), and the chat wakeup and batch split (M-164).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), the Router's boundary (M-112), self-contained owner decisions (M-162), the chat wakeup and batch split (M-164), and what "subscribed" means (M-175).
 
 package agentrouter
 
@@ -51,7 +51,9 @@ func TestBuildNote(t *testing.T) {
 	if strings.Contains(note, "comment own") || strings.Contains(note, "by agent Router") {
 		t.Error("note lists the agent's own event")
 	}
-	if len(note) > 9*1024 {
+	// 6 KiB of events plus the fixed rules (boundary, wakeup split, owner
+	// decisions, what "subscribed" means) and the in-flight and state parts.
+	if len(note) > 10*1024 {
 		t.Errorf("note is %d bytes; the event list should be capped", len(note))
 	}
 }
@@ -76,6 +78,9 @@ func TestBuildNoteStatesRouterBoundary(t *testing.T) {
 			// M-164: batches, not chat wakeups, report issues in scope.
 			"do not create a chat wakeup (`--until-*` condition or `--every` check) for an issue in scope",
 			"A chat wakeup is still fine for issues outside the scope",
+			// M-175: "subscribed" means a scope, not an issue subscriber.
+			"\"subscribed\" (订阅) means only a scope of this Super Agent",
+			"`multica router scope <subscription-id>`",
 		} {
 			if !strings.Contains(note, want) {
 				t.Errorf("chat=%v: note lacks %q", chat, want)

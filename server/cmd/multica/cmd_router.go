@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router settings by instruction (M-105), the Super Agent name in help (M-148), and the guide pointer (M-150).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router settings by instruction (M-105), the Super Agent name in help (M-148), the guide pointer (M-150), and the issue subscriber help in a Super Agent chat (M-175).
 
 package main
 
@@ -97,6 +97,10 @@ var routerScopeCmd = &cobra.Command{
 	RunE:  runRouterScope,
 }
 
+const issueSubscriberSuperAgentNote = "Whoever creates an issue, an agent included, is subscribed to it automatically (reason `creator`). " +
+	"In a Super Agent chat, being a subscriber is not \"subscribed\": only `multica router scope <subscription-id>` " +
+	"tells whether batches report the issue (see `multica router guide`)."
+
 func init() {
 	// Without a group the root help template leaves the command out entirely.
 	routerCmd.GroupID = groupCore
@@ -107,6 +111,10 @@ func init() {
 	issueSubscriberAddCmd.Long = issueSubscriberAddCmd.Short + ".\n\n" +
 		"This only sends the subscriber inbox notifications about the issue; it never starts a run.\n" +
 		"To have a chat run on an issue's events (a Super Agent), use `multica router subscribe --issue <id> --anchor-chat current`."
+	// A Super Agent that created an issue is already its `creator` subscriber
+	// and read that as "subscribed" (M-175).
+	issueSubscriberListCmd.Long = issueSubscriberListCmd.Short + ".\n\n" + issueSubscriberSuperAgentNote
+	issueSubscriberAddCmd.Long += "\n\n" + issueSubscriberSuperAgentNote
 	routerCmd.AddCommand(routerSubscribeCmd, routerListCmd, routerGetCmd, routerPauseCmd,
 		routerResumeCmd, routerDeleteCmd, routerEventsCmd, routerScopeCmd)
 

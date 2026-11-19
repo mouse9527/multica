@@ -359,6 +359,7 @@ Super Agent 的使用说明不再作为 skill 维护（手工导入的 skill 不
 - **怎么找到它**：`multica --help` 把 `router` 列为 Super Agent 命令（M-148）；`multica router --help` 的 EXAMPLES 第一条就是 `multica router guide`，写明设置、修改、解除 Super Agent 之前和作为 Super Agent 运行时先读它。
 - **Mika 的提示词**：`router_v1` 打开时，领任务组装 Mika 的提示词，在随二进制发布的系统部分之后、工作区备注之前加一小段「## Super Agent」，只有一句话：遇到 Super Agent 相关的请求先跑 `multica router guide`。整份说明不进提示词，平常的运行不多花 token。`router_v1` 关闭时这段不出现，Mika 的提示词与上游一致。智能体设置页只读展示的系统提示词里不显示这一段。
 - **Super Agent 批次**：每个批次里的边界说明（M-112）末尾加一句，指向 `multica router guide`。批次只在 Router 开关打开时存在。
+- **Super Agent chat 的每一轮（M-175）**：`router_chat` 生效时，领任务发现这一轮所在的 chat 绑定了订阅（Owner 直接发消息的那一轮也算），就在智能体说明末尾加一小段「## Super Agent」：这个 chat 是 Super Agent、它的每个范围（任务树编号或项目名、订阅 ID、是否在运行），以及「订阅」只指这些范围：自己新建的 issue 只有挂在订阅的任务树下或建在订阅的项目里才在范围内，要用 `router scope` 核对；issue 订阅者（含建 issue 时自动成为的 `creator`）和 chat wakeup 都不是订阅；不在范围就照实说，问 Owner 要不要加，同意后才 `router subscribe --issue <id> --anchor-chat current`。批次的边界说明里也有同一段。没有绑定订阅的 chat、issue 上的运行、`router_chat` 关闭时都不加，与上游一致；读订阅失败时也不加，照常领任务。逻辑在 `server/internal/agentrouter/chat_turn.go` 和 `server/internal/handler/agent_router_chat_turn.go`，`daemon.go` 只加一行调用。`multica router guide` 对应一节「自己新建的 issue 在不在范围里」，`issue subscriber list|add --help` 也写明 `creator` 订阅不是 Super Agent 的范围。
 
 上线步骤（运维或 Owner 执行；本任务不改线上数据）：
 

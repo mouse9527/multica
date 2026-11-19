@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slice 2 (M-97), Router inbox S3b (M-133), and the Super Agent name in help (M-148).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slice 2 (M-97), Router inbox S3b (M-133), the Super Agent name in help (M-148), and the creator subscription in subscriber help (M-175).
 
 package main
 
@@ -112,6 +112,20 @@ func TestHelpLeadsFromSuperAgentToRouter(t *testing.T) {
 	for _, path := range [][]string{{"issue"}, {"issue", "subscriber", "add"}} {
 		if got := renderHelp(t, path...); !strings.Contains(got, "multica router subscribe") {
 			t.Errorf("`multica %s --help` must point a Super Agent subscription at router:\n%s", strings.Join(path, " "), got)
+		}
+	}
+}
+
+// M-175: a Super Agent that created an issue found itself among the issue's
+// subscribers (reason `creator`) and told the owner it had subscribed. The
+// subscriber help says that is not a Super Agent scope and how to check one.
+func TestIssueSubscriberHelpExplainsTheCreatorSubscription(t *testing.T) {
+	for _, path := range [][]string{{"issue", "subscriber", "list"}, {"issue", "subscriber", "add"}} {
+		got := renderHelp(t, path...)
+		for _, want := range []string{"reason `creator`", "multica router scope <subscription-id>"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("`multica %s --help` lacks %q:\n%s", strings.Join(path, " "), want, got)
+			}
 		}
 	}
 }
