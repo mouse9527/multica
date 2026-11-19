@@ -119,6 +119,13 @@ func (s *Proposals) File(ctx context.Context, req FileRequest) (FileResult, erro
 	if err := p.CheckEvidence(evidence, req.Config.MinEvidenceCount); err != nil {
 		return FileResult{}, err
 	}
+	served, err := s.servedSources(ctx, req, run)
+	if err != nil {
+		return FileResult{}, err
+	}
+	if err := p.CheckVerbatim(append(VerbatimSources(evidence), served...)); err != nil {
+		return FileResult{}, err
+	}
 	names, err := s.memberNames(ctx, req.WorkspaceID, snap.Name)
 	if err != nil {
 		return FileResult{}, err
@@ -589,6 +596,45 @@ func (s *Proposals) resolveEvidence(ctx context.Context, req FileRequest) ([]Res
 		}
 		r.Content, _ = Redact(r.Content)
 		out = append(out, r)
+	}
+	return out, nil
+}
+
+// servedSources re-reads what the signal channel served this run, so text
+// the run read but does not cite cannot be pasted into a proposal either.
+// Each source's range runs from its cursor (the run's start, since cursors
+// move only when a run ends) to how far the run was served; with the cursor
+// gone (the source was turned off meanwhile) it starts max_window_days
+// before the run's upper bound, which can only include more.
+func (s *Proposals) servedSources(ctx context.Context, req FileRequest, run Run) ([]VerbatimSource, error) {
+	excludedAgents := append([]string{req.AgentID}, req.Config.ExcludeAgents...)
+	limit := req.Config.MaxItemsPerWindow + MaxPageSize
+	out := []VerbatimSource{}
+	for _, source := range []string{SourceComment, SourceChat} {
+		served, ok := run.Served[source]
+		if !ok {
+			continue
+		}
+		start, ok, err := GetCursor(ctx, s.DB, req.WorkspaceID, source)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			start = Position{TS: run.WindowUntil.Add(-time.Duration(req.Config.MaxWindowDays) * 24 * time.Hour)}
+		}
+		var items []Signal
+		if source == SourceComment {
+			items, err = readComments(ctx, s.DB, req.WorkspaceID, start, served.TS, req.HiddenProjects, req.Config.ExcludeProjects, excludedAgents, limit)
+		} else {
+			items, err = readChats(ctx, s.DB, req.WorkspaceID, start, served.TS, req.HiddenProjects, req.Config.ExcludeProjects, excludedAgents, limit)
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, it := range items {
+			content, _ := Redact(it.Content)
+			out = append(out, VerbatimSource{Type: source, ID: it.ID, Content: content})
+		}
 	}
 	return out, nil
 }

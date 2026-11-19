@@ -26,6 +26,10 @@ type proposalFixture struct {
 
 const proposalChatText = "please stop closing my issues before the pull request is actually merged into main"
 
+// proposalLongComment is longer than a quote may be.
+const proposalLongComment = "The release checklist says to wait for CI, then tag, then publish the notes; " +
+	"but the agent tagged before CI finished three times this week, and each time the tag had to be deleted and redone by hand."
+
 func newProposalFixture(t *testing.T, cfg evolution.Config) proposalFixture {
 	t.Helper()
 	var f proposalFixture
@@ -239,6 +243,8 @@ func TestEvolutionProposalRejections(t *testing.T) {
 	private := dbfx.Project(t, "evolution proposal private", testutil.Cols{"visibility": "private"})
 	privateComment := dbfx.Comment(t, dbfx.Issue(t, "evolution proposal private issue", testutil.Cols{"project_id": private}), "private finding")
 	dbfx.Member(t, testWorkspaceID, dbfx.User(t, "Zelda Quartz", "zelda-quartz-evolution@example.test"), "member")
+	longComment := dbfx.Comment(t, dbfx.Issue(t, "evolution proposal evidence long"), proposalLongComment)
+	longRunes := []rune(proposalLongComment)
 
 	evidence := func(items ...map[string]any) []map[string]any { return items }
 	cases := []struct {
@@ -263,6 +269,10 @@ func TestEvolutionProposalRejections(t *testing.T) {
 		{"pasting a chat", func(p map[string]any) {
 			p["evidence"] = evidence(map[string]any{"type": "comment", "id": f.commentA}, map[string]any{"type": "chat", "id": f.chatMessage, "note": "a member asked to wait for the merge"})
 			p["problem"] = "A member wrote: " + proposalChatText
+		}, http.StatusUnprocessableEntity, evolution.RejectQuote},
+		{"copying a cited comment past 120 characters", func(p map[string]any) {
+			p["evidence"] = evidence(map[string]any{"type": "comment", "id": f.commentA}, map[string]any{"type": "comment", "id": longComment, "note": "tagged before CI"})
+			p["problem"] = "As a comment put it: " + string(longRunes[5:5+evolution.MaxQuoteRunes+1])
 		}, http.StatusUnprocessableEntity, evolution.RejectQuote},
 		{"quote too long", func(p map[string]any) {
 			p["evidence"] = evidence(map[string]any{"type": "comment", "id": f.commentA, "quote": strings.Repeat("x", evolution.MaxQuoteRunes+1)}, map[string]any{"type": "comment", "id": f.commentB})
@@ -336,4 +346,55 @@ func TestEvolutionProposalCitesOnlySourcesBeingRead(t *testing.T) {
 	if n := countProposals(t); n != 0 {
 		t.Fatalf("%d proposal issues, want 0", n)
 	}
+}
+
+// TestEvolutionProposalChecksWhatTheRunRead: text the run was served but
+// does not cite cannot be pasted in either — a chat message (any 20
+// characters) or more than 120 characters of a comment, in any field.
+func TestEvolutionProposalChecksWhatTheRunRead(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	f := newProposalFixture(t, evolution.DefaultConfig())
+	backdateEvolutionCursors(t)
+
+	hourAgo := testutil.Cols{"created_at": testutil.Raw("now() - interval '1 hour'")}
+	runtimeID := handlerTestRuntimeID(t)
+	chatAgent := dbfx.Agent(t, "evolution proposal served chat agent", runtimeID, testutil.Cols{
+		"visibility": "workspace", "permission_mode": "public_to",
+	})
+	dbfx.Insert(t, "agent_invocation_target", testutil.Cols{
+		"agent_id": chatAgent, "target_type": "workspace", "target_id": testWorkspaceID,
+	})
+	const servedChat = "kindly hold every deploy until the nightly smoke suite has finished running"
+	chatID := dbfx.Insert(t, "chat_message", testutil.Cols{
+		"chat_session_id": dbfx.ChatSession(t, chatAgent), "role": "user", "content": servedChat,
+		"created_at": testutil.Raw("now() - interval '1 hour'"),
+	})
+	commentID := dbfx.Comment(t, dbfx.Issue(t, "evolution proposal served comment"), proposalLongComment, hourAgo)
+
+	chats, _ := readAllSignals(t, f.evo, f.taskID, evolution.SourceChat)
+	comments, _ := readAllSignals(t, f.evo, f.taskID, evolution.SourceComment)
+	if _, ok := chats[chatID]; !ok {
+		t.Fatal("the run should have been served the chat message")
+	}
+	if _, ok := comments[commentID]; !ok {
+		t.Fatal("the run should have been served the comment")
+	}
+
+	// Neither is cited: the default proposal cites two other comments.
+	p := f.proposal()
+	p["problem"] = "A member asked us to " + servedChat + "."
+	wantRejected(t, propose(t, f.evo, f.taskID, p), http.StatusUnprocessableEntity, evolution.RejectQuote)
+
+	p = f.proposal()
+	p["expected_effect"] = string([]rune(proposalLongComment)[:evolution.MaxQuoteRunes+10])
+	wantRejected(t, propose(t, f.evo, f.taskID, p), http.StatusUnprocessableEntity, evolution.RejectQuote)
+
+	if n := countProposals(t); n != 0 {
+		t.Fatalf("%d proposal issues, want 0", n)
+	}
+	// What the run read does not get in the way of a proposal that only
+	// summarizes it.
+	propose(t, f.evo, f.taskID, f.proposal()).Want(http.StatusCreated)
 }

@@ -320,29 +320,146 @@ func containsText(haystack, needle string) bool {
 	return strings.Contains(collapseSpace(haystack), collapseSpace(needle))
 }
 
-// chatFragmentFound reports whether text carries a stretch of a chat
-// message: chatFragmentRunes characters in a row, or the whole message when
-// it is shorter (but not trivially short). Case and spacing are ignored.
-// Rewording defeats it; the prompt asks for summaries for that reason.
-func chatFragmentFound(text string, chat string) bool {
-	t := []rune(strings.ToLower(collapseSpace(text)))
-	c := []rune(strings.ToLower(collapseSpace(chat)))
-	if len(c) < minChatFragmentRunes {
-		return false
+// verbatimIndex finds stretches of source text (comments, chat messages)
+// copied word for word into a proposal's fields. Case and spacing are
+// ignored. Each field is matched on its own: a stretch split across two
+// fields, or reworded, is not found; the prompt asks for summaries for that
+// reason.
+type verbatimIndex struct {
+	names []string
+	texts []string
+	// hashes holds the rolling hash of every chatFragmentRunes-long window of
+	// every field. Fields are joined with NUL, which no source contains, so no
+	// window spans two fields.
+	hashes map[uint64]struct{}
+}
+
+const verbatimHashBase = 1000003
+
+func normalizeVerbatim(s string) []rune {
+	return []rune(strings.ToLower(collapseSpace(s)))
+}
+
+func newVerbatimIndex(fields map[string]string) *verbatimIndex {
+	x := &verbatimIndex{hashes: map[uint64]struct{}{}}
+	for _, name := range sortedKeys(fields) {
+		x.names = append(x.names, name)
+		x.texts = append(x.texts, string(normalizeVerbatim(fields[name])))
 	}
-	if len(c) <= chatFragmentRunes {
-		return strings.Contains(string(t), string(c))
+	forEachWindowHash([]rune(strings.Join(x.texts, "\x00")), func(_ int, h uint64) bool {
+		x.hashes[h] = struct{}{}
+		return true
+	})
+	return x
+}
+
+// forEachWindowHash calls fn with the start and rolling hash of every
+// chatFragmentRunes-long window of r, until fn returns false.
+func forEachWindowHash(r []rune, fn func(start int, h uint64) bool) {
+	const w = chatFragmentRunes
+	if len(r) < w {
+		return
 	}
-	windows := make(map[string]struct{}, len(t))
-	for i := 0; i+chatFragmentRunes <= len(t); i++ {
-		windows[string(t[i:i+chatFragmentRunes])] = struct{}{}
-	}
-	for i := 0; i+chatFragmentRunes <= len(c); i++ {
-		if _, ok := windows[string(c[i:i+chatFragmentRunes])]; ok {
-			return true
+	var h, pow uint64 = 0, 1
+	for i := 0; i < w; i++ {
+		h = h*verbatimHashBase + uint64(r[i])
+		if i > 0 {
+			pow *= verbatimHashBase
 		}
 	}
-	return false
+	for i := 0; ; i++ {
+		if !fn(i, h) || i+w >= len(r) {
+			return
+		}
+		h = (h-uint64(r[i])*pow)*verbatimHashBase + uint64(r[i+w])
+	}
+}
+
+// field returns the first field that contains needle.
+func (x *verbatimIndex) field(needle string) string {
+	for i, text := range x.texts {
+		if strings.Contains(text, needle) {
+			return x.names[i]
+		}
+	}
+	return ""
+}
+
+// find returns the field holding at least n runes of source in a row, or
+// "" when none does.
+func (x *verbatimIndex) find(source []rune, n int) string {
+	if n <= 0 || len(source) < n {
+		return ""
+	}
+	if n < chatFragmentRunes {
+		return x.field(string(source))
+	}
+	need := n - chatFragmentRunes + 1 // consecutive window hits a match implies
+	found, run := "", 0
+	forEachWindowHash(source, func(i int, h uint64) bool {
+		if _, ok := x.hashes[h]; !ok {
+			run = 0
+			return true
+		}
+		run++
+		if run >= need {
+			start := i + chatFragmentRunes - n
+			found = x.field(string(source[start : i+chatFragmentRunes]))
+		}
+		return found == ""
+	})
+	return found
+}
+
+// chatFragmentFound reports whether text carries a stretch of a chat
+// message: chatFragmentRunes characters in a row, or the whole message when
+// it is shorter (but not trivially short).
+func chatFragmentFound(text string, chat string) bool {
+	return newVerbatimIndex(map[string]string{"text": text}).findChat(normalizeVerbatim(chat)) != ""
+}
+
+func (x *verbatimIndex) findChat(chat []rune) string {
+	if len(chat) < minChatFragmentRunes {
+		return ""
+	}
+	return x.find(chat, min(len(chat), chatFragmentRunes))
+}
+
+// VerbatimSource is text a proposal may not copy: a comment or a chat
+// message, redacted the way the signal channel serves it.
+type VerbatimSource struct {
+	Type    string // EvidenceComment or EvidenceChat
+	ID      string
+	Content string
+}
+
+// CheckVerbatim rejects proposal text that copies a source word for word:
+// any chatFragmentRunes characters of a chat message (or a whole short one),
+// or more than MaxQuoteRunes characters of a comment. It covers every field
+// the proposal publishes except change.before, which CheckTarget already
+// ties to the target's current text.
+func (p *ProposalRequest) CheckVerbatim(sources []VerbatimSource) error {
+	x := newVerbatimIndex(p.texts(false))
+	seen := map[string]bool{}
+	for _, src := range sources {
+		key := src.Type + ":" + src.ID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		runes := normalizeVerbatim(src.Content)
+		switch src.Type {
+		case EvidenceChat:
+			if name := x.findChat(runes); name != "" {
+				return reject(RejectQuote, "%s repeats chat message %s word for word; summarize chats instead of pasting them", name, src.ID)
+			}
+		case EvidenceComment:
+			if name := x.find(runes, MaxQuoteRunes+1); name != "" {
+				return reject(RejectQuote, "%s copies more than %d characters of comment %s; summarize it, or quote at most %d characters in evidence[].quote", name, MaxQuoteRunes, src.ID, MaxQuoteRunes)
+			}
+		}
+	}
+	return nil
 }
 
 // nameFound reports whether text names a member. Names written in Latin
@@ -402,8 +519,8 @@ type ResolvedEvidence struct {
 }
 
 // CheckEvidence applies the rules that need the resolved evidence: enough
-// independent items, quotes that are real excerpts, and no chat text pasted
-// into the proposal.
+// independent items and quotes that are real excerpts. Copied text is
+// CheckVerbatim's.
 func (p *ProposalRequest) CheckEvidence(items []ResolvedEvidence, minIndependent int) error {
 	contexts := map[string]bool{}
 	for _, e := range items {
@@ -412,21 +529,23 @@ func (p *ProposalRequest) CheckEvidence(items []ResolvedEvidence, minIndependent
 	if len(contexts) < minIndependent {
 		return reject(RejectEvidence, "a proposal needs evidence from at least %d independent sources (different issues or chat sessions); it has %d", minIndependent, len(contexts))
 	}
-	texts := p.texts(false)
 	for i, e := range items {
 		if e.Quote != "" && !containsText(e.Content, e.Quote) {
 			return reject(RejectQuote, "evidence[%d].quote is not an excerpt of that comment; copy it exactly, at most %d characters", i, MaxQuoteRunes)
 		}
-		if e.Type != EvidenceChat {
-			continue
-		}
-		for _, name := range sortedKeys(texts) {
-			if chatFragmentFound(texts[name], e.Content) {
-				return reject(RejectQuote, "%s repeats chat message %s word for word; summarize chats instead of pasting them", name, e.ID)
-			}
-		}
 	}
 	return nil
+}
+
+// VerbatimSources are the cited comments and chat messages.
+func VerbatimSources(items []ResolvedEvidence) []VerbatimSource {
+	out := []VerbatimSource{}
+	for _, e := range items {
+		if e.Type == EvidenceComment || e.Type == EvidenceChat {
+			out = append(out, VerbatimSource{Type: e.Type, ID: e.ID, Content: e.Content})
+		}
+	}
+	return out
 }
 
 // CheckNames rejects text that names a member.

@@ -95,9 +95,11 @@ change as a diff, evidence, expected effect, risk) and labels it
   not read;
 - a quote is on a chat or an issue, is longer than 120 characters, or is not
   an exact excerpt of the comment;
-- any text repeats a cited chat message word for word, names a workspace
-  member, or contains what looks like a secret, credential, email, phone
-  number, internal host, or URL query string;
+- any text repeats a chat message word for word (20 characters in a row),
+  or copies more than 120 characters of a comment in a row — whether you
+  cite it or only read it in this run;
+- any text names a workspace member, or contains what looks like a secret,
+  credential, email, phone number, internal host, or URL query string;
 - this run already opened its maximum number of proposals;
 - the same proposal was declined recently.
 

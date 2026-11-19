@@ -177,19 +177,52 @@ func TestCheckEvidence(t *testing.T) {
 	if got := rejectionCode(p.CheckEvidence(resolved(p), 2)); got != RejectQuote {
 		t.Errorf("made-up quote: %q", got)
 	}
+}
 
-	p = validProposal()
-	chat := ResolvedEvidence{
-		ProposalEvidence: ProposalEvidence{Type: EvidenceChat, ID: testChatID},
-		Context:          "chat:" + testChatSessn, Content: "I need the agent to wait until the PR is merged, every time.",
-	}
+func TestCheckVerbatim(t *testing.T) {
+	chat := VerbatimSource{Type: EvidenceChat, ID: testChatID, Content: "I need the agent to wait until the PR is merged, every time."}
+	long := "The release checklist says to wait for CI, then tag, then publish the notes; " +
+		"but the agent tagged before CI finished three times this week, and each time the tag had to be deleted and redone by hand."
+	comment := VerbatimSource{Type: EvidenceComment, ID: testCommentA, Content: long}
+
+	// Cited or merely served: the check is the same, on every published field.
+	p := validProposal()
 	p.Problem = "A member asked: I need the agent to wait until the PR is merged."
-	if got := rejectionCode(p.CheckEvidence(append(resolved(p), chat), 2)); got != RejectQuote {
-		t.Errorf("pasted chat: %q", got)
+	if got := rejectionCode(p.CheckVerbatim([]VerbatimSource{chat})); got != RejectQuote {
+		t.Errorf("pasted chat in problem: %q", got)
 	}
+	p = validProposal()
+	p.Evidence[1].Note = "they said they need the agent to wait until the PR"
+	if got := rejectionCode(p.CheckVerbatim([]VerbatimSource{chat})); got != RejectQuote {
+		t.Errorf("pasted chat in a note: %q", got)
+	}
+	p = validProposal()
 	p.Problem = "A member asked for agents to wait for merges."
-	if err := p.CheckEvidence(append(resolved(p), chat), 2); err != nil {
+	if err := p.CheckVerbatim([]VerbatimSource{chat}); err != nil {
 		t.Errorf("summarized chat rejected: %v", err)
+	}
+
+	runes := []rune(long)
+	p = validProposal()
+	p.Problem = "As one comment put it: " + string(runes[10:10+MaxQuoteRunes+1])
+	if got := rejectionCode(p.CheckVerbatim([]VerbatimSource{comment})); got != RejectQuote {
+		t.Errorf("121 characters of a comment in problem: %q", got)
+	}
+	p = validProposal()
+	p.Change.After = "Wait for CI.\n" + strings.ToUpper(string(runes[:MaxQuoteRunes+5]))
+	if got := rejectionCode(p.CheckVerbatim([]VerbatimSource{comment})); got != RejectQuote {
+		t.Errorf("a comment copied into the diff, case changed: %q", got)
+	}
+	p = validProposal()
+	p.Problem = "As one comment put it: " + string(runes[10:10+MaxQuoteRunes])
+	if err := p.CheckVerbatim([]VerbatimSource{comment}); err != nil {
+		t.Errorf("120 characters of a comment rejected: %v", err)
+	}
+	// change.before is the target's own text, tied to it by CheckTarget.
+	p = validProposal()
+	p.Change.Before = long
+	if err := p.CheckVerbatim([]VerbatimSource{comment}); err != nil {
+		t.Errorf("change.before checked: %v", err)
 	}
 }
 

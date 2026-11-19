@@ -132,12 +132,18 @@ chat 游标是「已告知」的唯一凭证：只有上面第 2 步会建它。
 | `field_not_allowed` | 字段不在白名单：agent 只限 `instructions`、`description`、`skills`；workflow 只限 `steps`、`name`、`description`；squad 只限 `instructions`、`description`、`members`、`leader`（squad 提案只出文本）。`custom_env`、`custom_args`、`mcp_config`、runtime、权限、可见性、密钥类字段单独给出原因 |
 | `change_does_not_match_target` | `change.before` 不在目标当前的文本里（比较时忽略空白排版）；`before` 为空时，`after` 已经在目标里 |
 | `insufficient_evidence` | 没有证据；独立来源数低于 `min_evidence_count`（同一 issue 下的多条评论算一个来源）；证据指向进化读不到的内容（私有项目、私有 agent 的会话、被排除的项目和 agent、进化自己的评论和会话、进化自己的分析和提案 issue） |
-| `quote_not_allowed` | 在 chat 或 issue 证据上带 `quote`；`quote` 超过 120 字；`quote` 不是那条评论的原文摘录；任何文本里出现所引 chat 消息中连续 20 个字符（或整条短消息） |
+| `quote_not_allowed` | 在 chat 或 issue 证据上带 `quote`；`quote` 超过 120 字；`quote` 不是那条评论的原文摘录；任何一个发布出去的字段（标题、问题、改动后的文本、预期效果、风险、回滚、证据说明和摘录）里出现某条 chat 消息中连续 20 个字符（或整条 8 字以上的短消息），或某条评论中连续 121 个字符以上。比对范围是所引的证据**加上本次运行通过数据通道读到的全部评论和 chat**（按游标到已读位置重读，过滤规则与数据通道相同） |
 | `sensitive_content` | 任何文本经脱敏规则（与数据通道同一套）会被替换；任何文本含工作区成员的姓名（与目标同名的除外） |
 | `run_limit_reached` | 本次运行新开的提案已达 `max_proposals_per_run` |
 | `recently_rejected` | 同一提案在 `rejected_cooldown_days` 内被取消过 |
 
-「chat 原文」只能和所引的 chat 消息做子串比对，改写过的原话拦不住，所以提示词要求只写归纳。
+比对是逐字段的连续子串比对（忽略大小写和空白排版）。拦不住的情况：
+- 改写过的原话；
+- 拆到两个字段里各放一段（每段都不超过阈值）；
+- 本次运行没读到、也没被引用的内容（例如以前运行读过的）；
+- `change.before`：它必须是目标当前文本里的原文，由 `change_does_not_match_target` 约束，不做这项比对。
+
+所以提示词仍要求只写归纳，审查时抽查。
 
 **查重**：`fingerprint = sha256(target_type, target_id, field, 归一化 topic)` 的前 32 位（topic 忽略大小写、标点和空白）。在工作区级 advisory lock 下：
 
