@@ -26,6 +26,8 @@ import zhHansSquads from "./zh-Hans/squads.json";
 import zhHansBilling from "./zh-Hans/billing.json";
 // Modified by the mouse9527/multica fork (M-105): the Router namespace.
 import zhHansRouter from "./zh-Hans/router.json";
+// Modified by the mouse9527/multica fork (M-43): the password login namespace.
+import zhHansPasswordauth from "./zh-Hans/passwordauth.json";
 import zhHansEvolution from "./zh-Hans/evolution.json";
 
 const resources: LocaleResources = {
@@ -55,6 +57,7 @@ const resources: LocaleResources = {
   squads: zhHansSquads,
   billing: zhHansBilling,
   router: zhHansRouter,
+  passwordauth: zhHansPasswordauth,
   evolution: zhHansEvolution,
 };
 

@@ -26,6 +26,8 @@ import ruSquads from "./ru/squads.json";
 import ruBilling from "./ru/billing.json";
 // Modified by the mouse9527/multica fork (M-105): the Router namespace.
 import ruRouter from "./ru/router.json";
+// Modified by the mouse9527/multica fork (M-43): the password login namespace.
+import ruPasswordauth from "./ru/passwordauth.json";
 import ruEvolution from "./ru/evolution.json";
 
 const resources: LocaleResources = {
@@ -55,6 +57,7 @@ const resources: LocaleResources = {
   squads: ruSquads,
   billing: ruBilling,
   router: ruRouter,
+  passwordauth: ruPasswordauth,
   evolution: ruEvolution,
 };
 
