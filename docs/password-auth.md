@@ -4,6 +4,8 @@
 
 本文件随实施阶段补充；当前内容对应阶段 1（#37：数据表、凭据存取、哈希封装）、阶段 2（#38：开关、接口、失败锁定、限流；#39：管理员重置命令）和阶段 3（#40：网页端登录表单与设置密码）。
 
+打开开关、上线前检查、Owner 实测清单、安全测试汇总和已接受的风险见 [password-login.md](password-login.md)（阶段 4，#41）；本文件写设计与实现细节。
+
 ## 数据表
 
 迁移 `9018_passwordauth_user_credential` 新建 `user_credential`，不改现有表（包括 `user`）。fork 的迁移编号从 9000 起，取当时最大号加一；CI 的 `migrations-roundtrip` 会对所有 fork 迁移做 up/down 往返，见 [fork-ci.md](fork-ci.md)。
@@ -74,7 +76,7 @@ argon2id（`golang.org/x/crypto/argon2`）。
 
 `/api/me/password` 只接受会话 JWT：判断的是鉴权中间件实际用的那个凭据（先看 `Authorization`，没有再看 Cookie，与中间件一致），不看它放在哪里。**直接提交的**任务令牌（`mat_`）、云节点令牌（`mcn_`）和个人访问令牌（`mul_`）都返回 403，放进 `multica_auth` Cookie 也一样（持有 PAT 的人能自己算出与它绑定的 CSRF 值，所以 CSRF 挡不住）。判断在 fork 文件 `server/internal/middleware/session_credential_fork.go`。
 
-**不保证会话 JWT 的来源（已接受的风险）**：上游的 `POST /api/cli-token` 允许用 PAT 换一个普通的会话 JWT，用这个 JWT 就能给**还没设过密码**的账号设第一个密码（第一次设置只需要会话）。所以 PAT 泄露后，攻击者可以经 `/api/cli-token` 换到会话，给没密码的账号设一个自己知道的密码；之后只吊销 PAT 撤不掉这个密码。这是 Owner 2026-11-19 选定的方案 B：保留上游的换票行为，不改 CLI 流程，接受这个风险，列入 P6 的安全汇总。发现 PAT 泄露时，除了吊销 PAT，还要查这个账号是否被设了密码（`GET /api/me/password`），必要时用管理员重置命令改掉。
+**不保证会话 JWT 的来源（已接受的风险）**：上游的 `POST /api/cli-token` 允许用 PAT 换一个普通的会话 JWT，用这个 JWT 就能给**还没设过密码**的账号设第一个密码（第一次设置只需要会话）。所以 PAT 泄露后，攻击者可以经 `/api/cli-token` 换到会话，给没密码的账号设一个自己知道的密码；之后只吊销 PAT 撤不掉这个密码。这是 Owner 2026-11-19 选定的方案 B：保留上游的换票行为，不改 CLI 流程，接受这个风险，列入 [password-login.md](password-login.md)「已接受的风险」。发现 PAT 泄露时，除了吊销 PAT，还要查这个账号是否被设了密码（`GET /api/me/password`），必要时用管理员重置命令改掉。
 
 错误响应（`code` 供前端翻译）：
 
