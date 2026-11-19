@@ -29,6 +29,7 @@ argon2id（`golang.org/x/crypto/argon2`）。
 | 内存 | 65536 KiB（64 MiB） | `MULTICA_PASSWORD_ARGON2_MEMORY_KIB` |
 | 迭代 | 3 | `MULTICA_PASSWORD_ARGON2_ITERATIONS` |
 | 并行度 | 4 | `MULTICA_PASSWORD_ARGON2_PARALLELISM` |
+| 同时计算的内存预算 | 262144 KiB（256 MiB） | `MULTICA_PASSWORD_ARGON2_MEMORY_BUDGET_KIB`，见「失败锁定与限流」 |
 | 盐 | 16 字节 | 不可配 |
 | 输出 | 32 字节 | 不可配 |
 
@@ -71,7 +72,7 @@ argon2id（`golang.org/x/crypto/argon2`）。
 | `GET /api/me/password` | 登录会话 | `{"has_password": bool}`，设置页据此决定要不要填当前密码 |
 | `POST /api/me/password` | 登录会话 | 请求 `{"current_password","new_password"}`。第一次设置只需会话；已有密码时必须给对当前密码。新密码最短 12 个字符。只作用于会话里的现有用户，用户不存在返回 401，不建用户、不建凭据 |
 
-`/api/me/password` 只接受本人的登录会话（Cookie 或 JWT）：任务令牌（`mat_`）、云节点令牌和个人访问令牌（`mul_`）都返回 403，避免一个交给脚本的令牌变成密码。
+`/api/me/password` 只接受本人的登录会话 JWT：判断的是鉴权中间件实际用的那个凭据（先看 `Authorization`，没有再看 Cookie，与中间件一致），不看它放在哪里。任务令牌（`mat_`）、云节点令牌（`mcn_`）和个人访问令牌（`mul_`）都返回 403，放进 `multica_auth` Cookie 也一样（持有 PAT 的人能自己算出与它绑定的 CSRF 值，所以 CSRF 挡不住），避免一个交给脚本的令牌变成密码。判断在 fork 文件 `server/internal/middleware/session_credential_fork.go`。
 
 错误响应（`code` 供前端翻译）：
 
@@ -93,7 +94,9 @@ argon2id（`golang.org/x/crypto/argon2`）。
 - **没有密码的邮箱也"锁"**：不存在的邮箱和没设密码的账号在进程内按同样规则计数并返回同样的 429，否则"猜 5 次后会不会锁"就能判断某个邮箱有没有密码。这张表只存邮箱的 SHA-256，最多 1 万条；24 小时没有新失败就忘掉（真实账号的计数不会自己清零，因此停一天后两者可能再次不同，探测一次要等一天）；服务重启后清空。
 - **按 IP 限流**（进程内）：每个地址每分钟 10 次登录尝试，IPv6 按 /64 计。客户端地址的取法与上游 `RateLimit` 相同（`RATE_LIMIT_TRUSTED_PROXIES` 里的代理才看 `X-Forwarded-For`）。表最多 1 万个地址，满了且都未过期时新地址不计数直接放行（不因地址洪水挡住所有人；按账号锁定仍然有效）。
 - **多副本的局限**：IP 限流和"无密码邮箱"的计数都在单个进程内。现网单副本；N 个副本时每个地址最多可得 N 倍配额，同一个无密码邮箱也要在每个副本上分别累计才会"锁"，不再与真实账号完全一致。按账号锁定存在数据库里，不受影响。
-- **哈希并发上限**：同时进行的 argon2id 计算占用的内存合计不超过 256 MiB（默认参数下 4 个并发，其余排队），一次校验约 50 ms、64 MiB。
+- **哈希内存预算**：同一进程里同时进行的 argon2id 计算（登录校验、`VerifyDummy`、设密码、重哈希）占用的内存合计不超过预算 `MULTICA_PASSWORD_ARGON2_MEMORY_BUDGET_KIB`（默认 262144，即 256 MiB；可设 19456 到 67108864）。每次计算按**它实际用的参数**占预算：校验旧哈希时按旧哈希自带的内存计，不按当前配置；预算不够就排队。默认参数下一次约 50 ms、64 MiB，最多 4 个并发。
+  - 当前参数的内存必须不超过预算，否则启动时记错误日志、密码登录保持关闭。
+  - **单次超预算**：库里某个哈希的内存大于整个预算（运维把预算调到旧参数以下）时不计算它，按密码错误处理：返回 401、做一次 `VerifyDummy` 拉平耗时、不计失败次数，并记一条 error 日志提示调大预算或重置该账号的密码。所以**调低参数时**，预算要先保持不低于旧参数的内存，等活跃账号登录后自动重哈希，再调低预算。
 
 所有失败路径耗时一致：返回 401 的路径都恰好做一次 argon2id 校验（不存在的账号用 `VerifyDummy`），返回 429 的路径都不做。
 

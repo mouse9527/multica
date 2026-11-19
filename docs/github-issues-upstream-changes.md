@@ -93,4 +93,4 @@
 - daemon 在 LaunchAgent 下的升级重启交给 launchd（M-125）：`server/cmd/multica/cmd_daemon_launchd_handoff.go` 及测试。
 - `docs/github-issues*.md`。
 - 密码登录 P1（M-40，见 [password-auth.md](password-auth.md)；还没有接口和开关，不改运行时行为）：`server/internal/passwordauth/`；`server/migrations/9018_*`；`server/pkg/db/queries/passwordauth.sql` 与 `server/pkg/db/generated/passwordauth.sql.go`；`docs/password-auth.md`。
-- 密码登录 P2（M-41，开关 `MULTICA_PASSWORD_AUTH_ENABLED`，默认关闭，见 [password-auth.md](password-auth.md)）：`server/internal/passwordauth/` 下的 `flag.go`、`service.go`、`throttle.go` 及测试；`server/internal/handler/passwordauth.go` 及测试；`server/internal/middleware/client_ip_fork.go`（上游包里的新文件，只导出 `ClientIP`）；`server/cmd/server/passwordauth_router_test.go`。
+- 密码登录 P2（M-41，开关 `MULTICA_PASSWORD_AUTH_ENABLED`，默认关闭，见 [password-auth.md](password-auth.md)）：`server/internal/passwordauth/` 下的 `flag.go`、`service.go`、`throttle.go` 及测试；`server/internal/handler/passwordauth.go` 及测试；`server/internal/middleware/client_ip_fork.go`、`session_credential_fork.go` 及测试（上游包里的新文件，只导出 `ClientIP`、`AuthenticatedBySession`）；`server/cmd/server/passwordauth_router_test.go`。
