@@ -46,6 +46,9 @@ func newProposalFixture(t *testing.T, cfg evolution.Config) proposalFixture {
 	cfg.Enabled = true
 	cfg.Sources.Chat = true
 	putEvolutionConfig(t, cfg, true).Want(http.StatusOK)
+	// The first scheduled run is due only for a slot after reading started,
+	// and a run reads from two days back.
+	backdateEvolutionCursors(t)
 	tickEvolution(t, nil)
 	_, f.taskID = openEvolutionRunTask(t, f.evo)
 	dbfx.QueryRow(t, `SELECT issue_id::text FROM evolution_run WHERE workspace_id = $1 AND status = 'open'`,
@@ -356,8 +359,8 @@ func TestEvolutionProposalChecksWhatTheRunRead(t *testing.T) {
 		t.Skip("database not available")
 	}
 	f := newProposalFixture(t, evolution.DefaultConfig())
-	backdateEvolutionCursors(t)
 
+	// Written an hour ago: inside the run's window, so the run reads them.
 	hourAgo := testutil.Cols{"created_at": testutil.Raw("now() - interval '1 hour'")}
 	runtimeID := handlerTestRuntimeID(t)
 	chatAgent := dbfx.Agent(t, "evolution proposal served chat agent", runtimeID, testutil.Cols{
