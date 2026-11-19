@@ -74,12 +74,20 @@ type passwordTestServer struct {
 	ip     atomic.Int32
 }
 
+// pwCheapParams keeps hashing fast in tests.
+var pwCheapParams = passwordauth.Params{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltLen: 16, KeyLen: 32}
+
 func newPasswordTestServer(t *testing.T) *passwordTestServer {
 	t.Helper()
-	hasher, err := passwordauth.NewHasher(passwordauth.Params{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltLen: 16, KeyLen: 32})
+	hasher, err := passwordauth.NewHasher(pwCheapParams)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return newPasswordTestServerWith(t, hasher)
+}
+
+func newPasswordTestServerWith(t *testing.T, hasher *passwordauth.Hasher) *passwordTestServer {
+	t.Helper()
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	prev := slog.Default()
@@ -254,6 +262,9 @@ func TestPasswordLogin(t *testing.T) {
 		t.Fatal("login did not set the auth cookie")
 	}
 	s.assertNoSecrets(rec.Body.String()+fmt.Sprint(rec.Header()), pwTestPassword)
+	if !strings.Contains(s.logs.String(), "user logged in with password") || !strings.Contains(s.logs.String(), "ip=198.51.") {
+		t.Fatalf("successful login not logged with its address: %s", s.logs)
+	}
 
 	// Wrong password, user without a password, unknown email: one answer.
 	wrong := s.login(email, pwWrongPassword)
@@ -418,4 +429,33 @@ func TestPasswordManagementRefusesPATs(t *testing.T) {
 	if rec := s.do(http.MethodPost, "/api/me/password", "", body, cookie(pwSession(t, userID))...); rec.Code != http.StatusOK {
 		t.Fatalf("session cookie = %d %s", rec.Code, rec.Body)
 	}
+}
+
+// When the stored hash needs more memory than the hashing budget allows, the
+// settings page gets a translatable 409 instead of a generic 500.
+func TestSetMyPasswordHashOverBudget(t *testing.T) {
+	userID, _ := pwTestUser(t, "budget")
+	old := pwCheapParams
+	old.MemoryKiB = 128
+	oldHasher, err := passwordauth.NewHasher(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := passwordauth.NewStore(testPool, oldHasher, nil).SetPassword(context.Background(), parseUUID(userID), pwTestPassword); err != nil {
+		t.Fatal(err)
+	}
+	small, err := passwordauth.NewHasherWithBudget(pwCheapParams, pwCheapParams.MemoryKiB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newPasswordTestServerWith(t, small)
+	rec := s.do(http.MethodPost, "/api/me/password", pwSession(t, userID),
+		SetPasswordRequest{CurrentPassword: pwTestPassword, NewPassword: "second password, long"})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), passwordCodeResetRequired) {
+		t.Fatalf("over-budget hash: %d %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(s.logs.String(), passwordauth.EnvMemoryBudgetKiB) {
+		t.Fatalf("operator not told: %s", s.logs)
+	}
+	s.assertNoSecrets(rec.Body.String()+s.logs.String(), pwTestPassword)
 }

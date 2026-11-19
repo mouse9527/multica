@@ -29,6 +29,7 @@ const (
 	passwordCodeCurrentRequired    = "current_password_required"
 	passwordCodeCurrentIncorrect   = "current_password_incorrect"
 	passwordCodeInvalidPassword    = "invalid_password"
+	passwordCodeResetRequired      = "password_reset_required"
 )
 
 // maxPasswordRequestBytes bounds the request body: two passwords of at most
@@ -67,23 +68,32 @@ func (h *Handler) MountPasswordAuth(r chi.Router, requireAuth func(http.Handler)
 	h.mountPasswordAuth(r, passwordauth.NewService(passwordauth.NewStore(h.DB, hasher, nil), nil), requireAuth, trustedProxies)
 }
 
+// mountPasswordAuth registers the routes on svc. The routes use svc itself;
+// h.PasswordAuth only tells /api/config that they exist.
 func (h *Handler) mountPasswordAuth(r chi.Router, svc *passwordauth.Service, requireAuth func(http.Handler) http.Handler, trustedProxies []*net.IPNet) {
 	h.PasswordAuth = svc
 	r.Post("/auth/password-login", func(w http.ResponseWriter, r *http.Request) {
-		h.PasswordLogin(w, r, middleware.ClientIP(r, trustedProxies))
+		h.passwordLogin(w, r, svc, middleware.ClientIP(r, trustedProxies))
 	})
 	r.With(requireAuth, requirePasswordSession).Route("/api/me/password", func(r chi.Router) {
-		r.Get("/", h.GetMyPasswordStatus)
-		r.Post("/", h.SetMyPassword)
+		r.Get("/", func(w http.ResponseWriter, r *http.Request) { h.getMyPasswordStatus(w, r, svc) })
+		r.Post("/", func(w http.ResponseWriter, r *http.Request) { h.setMyPassword(w, r, svc) })
 	})
 }
 
-// requirePasswordSession limits password management to a person's own login
-// session, judged by the credential Auth actually used rather than by where
-// it was sent: a personal access token placed in the auth cookie is still a
-// personal access token. Agent task tokens and cloud tokens act for machines;
-// a personal access token is a long-lived credential handed to scripts, and
-// must not be able to turn itself into a password.
+// requirePasswordSession refuses password management to requests that Auth
+// authenticated with anything but a session JWT, judged by the credential
+// Auth actually used rather than by where it was sent: a personal access
+// token is refused in the Authorization header and in the auth cookie alike,
+// as are agent task tokens and cloud tokens.
+//
+// It does not guarantee where a session JWT came from. Upstream's
+// POST /api/cli-token exchanges a personal access token for an ordinary
+// session JWT, and that JWT may set the first password of an account that
+// has none. Leaving that exchange as upstream has it is an accepted risk
+// (Owner decision 2026-11-19, option B), listed in the P6 security summary:
+// a leaked personal access token can become a password on an account
+// without one, and revoking the token does not remove that password.
 func requirePasswordSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isMachineCredentialActor(r) || !middleware.AuthenticatedBySession(r) {
@@ -94,10 +104,10 @@ func requirePasswordSession(next http.Handler) http.Handler {
 	})
 }
 
-// PasswordLogin signs in with email and password. It never creates a user.
+// passwordLogin signs in with email and password. It never creates a user.
 // Unknown emails, accounts without a password and wrong passwords get the
 // same 401; a locked account and the per-IP limit get the same 429.
-func (h *Handler) PasswordLogin(w http.ResponseWriter, r *http.Request, ip string) {
+func (h *Handler) passwordLogin(w http.ResponseWriter, r *http.Request, svc *passwordauth.Service, ip string) {
 	var req PasswordLoginRequest
 	r.Body = http.MaxBytesReader(w, r.Body, maxPasswordRequestBytes)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -109,7 +119,7 @@ func (h *Handler) PasswordLogin(w http.ResponseWriter, r *http.Request, ip strin
 		return
 	}
 
-	user, err := h.PasswordAuth.Login(r.Context(), req.Email, req.Password, ip)
+	user, err := svc.Login(r.Context(), req.Email, req.Password, ip)
 	switch {
 	case errors.Is(err, passwordauth.ErrInvalidCredentials):
 		writeErrorCode(w, http.StatusUnauthorized, passwordCodeInvalidCredentials, "invalid email or password")
@@ -142,21 +152,21 @@ func (h *Handler) PasswordLogin(w http.ResponseWriter, r *http.Request, ip strin
 		}
 	}
 
-	slog.Info("user logged in with password", append(logger.RequestAttrs(r), "user_id", uuidToString(user.ID))...)
+	slog.Info("user logged in with password", append(logger.RequestAttrs(r), "user_id", uuidToString(user.ID), "ip", ip)...)
 	writeJSON(w, http.StatusOK, LoginResponse{
 		Token: tokenString,
 		User:  h.userToResponse(user),
 	})
 }
 
-// GetMyPasswordStatus tells the settings page whether to ask for the current
+// getMyPasswordStatus tells the settings page whether to ask for the current
 // password.
-func (h *Handler) GetMyPasswordStatus(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) getMyPasswordStatus(w http.ResponseWriter, r *http.Request, svc *passwordauth.Service) {
 	userID, ok := requireUserID(w, r)
 	if !ok {
 		return
 	}
-	has, err := h.PasswordAuth.HasPassword(r.Context(), parseUUID(userID))
+	has, err := svc.HasPassword(r.Context(), parseUUID(userID))
 	if err != nil {
 		slog.Warn("password status failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to load password status")
@@ -165,10 +175,10 @@ func (h *Handler) GetMyPasswordStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, PasswordStatusResponse{HasPassword: has})
 }
 
-// SetMyPassword sets the signed-in user's first password, or replaces it
+// setMyPassword sets the signed-in user's first password, or replaces it
 // given the current one. The user must already exist: the session's user is
 // looked up and nothing is ever created.
-func (h *Handler) SetMyPassword(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) setMyPassword(w http.ResponseWriter, r *http.Request, svc *passwordauth.Service) {
 	userID, ok := requireUserID(w, r)
 	if !ok {
 		return
@@ -190,7 +200,7 @@ func (h *Handler) SetMyPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = h.PasswordAuth.SetPassword(r.Context(), user.ID, req.CurrentPassword, req.NewPassword)
+	err = svc.SetPassword(r.Context(), user.ID, req.CurrentPassword, req.NewPassword)
 	switch {
 	case errors.Is(err, passwordauth.ErrPasswordTooShort), errors.Is(err, passwordauth.ErrPasswordTooLong):
 		writeErrorCode(w, http.StatusBadRequest, passwordCodeInvalidPassword, strings.TrimPrefix(err.Error(), "passwordauth: "))
@@ -201,6 +211,13 @@ func (h *Handler) SetMyPassword(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, passwordauth.ErrWrongCurrentPassword):
 		slog.Warn("password change: wrong current password", append(logger.RequestAttrs(r), "user_id", userID)...)
 		writeErrorCode(w, http.StatusForbidden, passwordCodeCurrentIncorrect, "current password is incorrect")
+		return
+	case errors.Is(err, passwordauth.ErrHashOverBudget):
+		// The stored hash needs more memory than the operator's hashing
+		// budget now allows, so the current password cannot be checked.
+		slog.Error("password change: stored hash exceeds the hashing memory budget; raise "+passwordauth.EnvMemoryBudgetKiB+" or reset this password",
+			append(logger.RequestAttrs(r), "user_id", userID)...)
+		writeErrorCode(w, http.StatusConflict, passwordCodeResetRequired, "your password cannot be checked right now; ask an administrator to reset it")
 		return
 	case errors.Is(err, passwordauth.ErrThrottled):
 		writeErrorCode(w, http.StatusTooManyRequests, passwordCodeThrottled, "too many attempts, try again later")

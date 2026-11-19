@@ -14,7 +14,9 @@ import (
 // login session JWT. It looks at the same token Auth does (the Authorization
 // header first, else the auth cookie), so a personal access token, task token
 // or cloud token is recognised wherever it was sent, cookie included. Call it
-// only behind Auth, which has already validated the token.
+// only behind Auth, which has already validated the token. It says nothing
+// about how a session JWT was obtained: POST /api/cli-token, for one, issues
+// session JWTs to personal access token holders.
 func AuthenticatedBySession(r *http.Request) bool {
 	token, _ := extractToken(r)
 	if token == "" {
