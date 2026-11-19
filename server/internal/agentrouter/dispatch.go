@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), no rate pause (M-111), and self-contained owner decisions (M-162).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), no rate pause (M-111), self-contained owner decisions (M-162), and the chat wakeup and batch split (M-164).
 
 package agentrouter
 
@@ -818,7 +818,17 @@ const routerBoundary = "You dispatch, track and relay; you do not do the work yo
 	"also gets a GitHub issue, linked as `gh_issue` per the github-evidence skill; " +
 	"ops, environment and credential work stays a local issue only. " +
 	"The full guide, including the commands for this Super Agent's settings, is `multica router guide`.\n" +
+	routerWakeupSplit +
 	routerOwnerDecisions
+
+// routerWakeupSplit: the batch already reports issues in scope, so a chat
+// wakeup on them wakes the Super Agent twice for one change (M-164). The rule
+// and its examples are in `multica router guide`.
+const routerWakeupSplit = "Batches already report every issue in your scope: do not create a chat wakeup " +
+	"(`--until-*` condition or `--every` check) for an issue in scope, and never poll one with `--every`. " +
+	"A chat wakeup is still fine for issues outside the scope, one-off reminders (`--at` / `--after`), " +
+	"and what batches never carry, such as a PR merging or an Actions result. " +
+	"See \"chat wakeup 和事件批次的分工\" in `multica router guide`.\n"
 
 // routerOwnerDecisions: the owner often reads only the decision list at the
 // end of a reply, so each item has to be decidable on its own (M-162). The

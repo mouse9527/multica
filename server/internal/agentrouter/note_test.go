@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), the Router's boundary (M-112), and self-contained owner decisions (M-162).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), the Router's boundary (M-112), self-contained owner decisions (M-162), and the chat wakeup and batch split (M-164).
 
 package agentrouter
 
@@ -73,6 +73,9 @@ func TestBuildNoteStatesRouterBoundary(t *testing.T) {
 			"ops, environment and credential work stays a local issue only",
 			"`multica router guide`", // M-150: the full guide ships in the CLI
 			"Every decision you ask of the owner must stand on its own", // M-162
+			// M-164: batches, not chat wakeups, report issues in scope.
+			"do not create a chat wakeup (`--until-*` condition or `--every` check) for an issue in scope",
+			"A chat wakeup is still fine for issues outside the scope",
 		} {
 			if !strings.Contains(note, want) {
 				t.Errorf("chat=%v: note lacks %q", chat, want)
