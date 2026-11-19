@@ -1,0 +1,290 @@
+package passwordauth
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+)
+
+// Errors returned by Service. Like the rest of the package they never carry
+// a password, a hash or the email that was tried.
+var (
+	// ErrInvalidCredentials covers an unknown email, an account without a
+	// password and a wrong password alike, so the answer does not tell which.
+	ErrInvalidCredentials = errors.New("passwordauth: invalid email or password")
+	// ErrThrottled covers both the account lockout and the per-IP limit.
+	ErrThrottled = errors.New("passwordauth: too many attempts")
+	// ErrCurrentPasswordRequired: changing an existing password needs it.
+	ErrCurrentPasswordRequired = errors.New("passwordauth: current password is required")
+	// ErrWrongCurrentPassword: the current password given to a change is
+	// wrong. It counts towards the account lockout like a failed login.
+	ErrWrongCurrentPassword = errors.New("passwordauth: current password is incorrect")
+)
+
+// Service is the password-login policy: who may log in, account lockout,
+// the per-IP limit, and setting a password.
+type Service struct {
+	store    *Store
+	logger   *slog.Logger
+	now      func() time.Time
+	ips      *ipLimiter
+	phantoms *phantomLocks
+}
+
+// NewService returns a Service over store. logger may be nil.
+func NewService(store *Store, logger *slog.Logger) *Service {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Service{
+		store:    store,
+		logger:   logger,
+		now:      time.Now,
+		ips:      newIPLimiter(),
+		phantoms: newPhantomLocks(),
+	}
+}
+
+// NormalizeEmail is how emails are compared, as in verification-code login.
+func NormalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+// Login checks email and password for a request from ip and returns the
+// user. Failures are ErrInvalidCredentials or ErrThrottled; any other error
+// is an internal one (including ctx's, when the client went away while the
+// request waited for the hashing budget). Only an existing user with a
+// password can succeed.
+//
+// Every path that answers ErrInvalidCredentials runs one argon2id
+// verification, and every path that answers ErrThrottled runs none, so
+// timing does not separate the cases either. The one exception is a password
+// changed while the attempt waited, which is refused without hashing.
+func (s *Service) Login(ctx context.Context, email, password, ip string) (db.User, error) {
+	if !s.ips.allow(ip, s.now()) {
+		s.logger.WarnContext(ctx, "password login: rate limited", "ip", ip)
+		return db.User{}, ErrThrottled
+	}
+
+	email = NormalizeEmail(email)
+	user, err := s.store.q.GetUserByEmail(ctx, email)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.User{}, s.failWithoutPassword(ctx, email, password, ip)
+	}
+	if err != nil {
+		return db.User{}, fmt.Errorf("passwordauth: look up user: %w", err)
+	}
+	cred, err := s.store.Get(ctx, user.ID)
+	if errors.Is(err, ErrNoCredential) {
+		return db.User{}, s.failWithoutPassword(ctx, email, password, ip)
+	}
+	if err != nil {
+		return db.User{}, err
+	}
+
+	if cred.Locked(s.now()) {
+		s.logger.WarnContext(ctx, "password login: account locked", "user_id", util.UUIDToString(user.ID), "ip", ip)
+		return db.User{}, ErrThrottled
+	}
+	ok, err := s.checkPassword(ctx, cred, password)
+	switch {
+	case errors.Is(err, ErrThrottled):
+		s.logger.WarnContext(ctx, "password login: account locked", "user_id", util.UUIDToString(user.ID), "ip", ip)
+		return db.User{}, ErrThrottled
+	case errors.Is(err, ErrHashOverBudget):
+		// The operator lowered the budget below an old hash's memory. Refuse
+		// without counting a failure, at the cost and with the answer of a
+		// wrong password, and tell the operator.
+		if err := s.verifyDummy(ctx, password); err != nil {
+			return db.User{}, err
+		}
+		s.logger.ErrorContext(ctx, "password login: stored hash exceeds the hashing memory budget; raise "+EnvMemoryBudgetKiB+" or reset this password",
+			"user_id", util.UUIDToString(user.ID))
+		return db.User{}, ErrInvalidCredentials
+	case errors.Is(err, errCredentialChanged):
+		s.logger.WarnContext(ctx, "password login: password changed during the attempt", "user_id", util.UUIDToString(user.ID), "ip", ip)
+		return db.User{}, ErrInvalidCredentials
+	case err != nil:
+		return db.User{}, err
+	case !ok:
+		s.logger.WarnContext(ctx, "password login: wrong password", "user_id", util.UUIDToString(user.ID), "ip", ip)
+		return db.User{}, ErrInvalidCredentials
+	}
+	if err := s.store.ResetFailures(ctx, user.ID); err != nil {
+		return db.User{}, err
+	}
+	return user, nil
+}
+
+// errCredentialChanged means the password was replaced while the attempt
+// waited for the hashing budget, so it was checked against neither.
+var errCredentialChanged = errors.New("passwordauth: password changed during the attempt")
+
+// checkPassword checks password against the credential the caller read as
+// cred, applying the lockout when the hash is computed rather than when the
+// request arrived, so concurrent guesses cannot get past a lock by queueing
+// for the hashing budget:
+//
+//   - it waits for the budget first (or for ctx), then re-reads the
+//     credential while holding it: a lock taken or a password set in the
+//     meantime is honoured before any hashing (ErrThrottled,
+//     errCredentialChanged);
+//   - a mismatch is counted, and may lock the account, before the budget is
+//     released, so the next waiting guess already sees it;
+//   - after a match it reads the lock once more, so a guess that was being
+//     computed when the account locked does not sign in either.
+//
+// At most as many guesses as the budget runs at once can be in progress
+// when the lock is taken; each of them is still counted.
+func (s *Service) checkPassword(ctx context.Context, cred Credential, password string) (bool, error) {
+	mem, err := hashMemory(cred.hash)
+	if err != nil {
+		return false, err
+	}
+	release, err := s.store.hasher.reserve(ctx, mem)
+	if err != nil {
+		return false, err
+	}
+	ok, err := s.checkReserved(ctx, cred, password)
+	release()
+	if err != nil || !ok {
+		return false, err
+	}
+	after, err := s.store.Get(ctx, cred.UserID)
+	if err != nil {
+		return false, err
+	}
+	if after.Locked(s.now()) {
+		return false, ErrThrottled
+	}
+	if s.store.hasher.NeedsRehash(cred.hash) {
+		s.store.rehash(ctx, cred, password)
+	}
+	return true, nil
+}
+
+// checkReserved is the part of checkPassword that runs holding the budget.
+func (s *Service) checkReserved(ctx context.Context, cred Credential, password string) (bool, error) {
+	fresh, err := s.store.Get(ctx, cred.UserID)
+	if err != nil {
+		return false, err
+	}
+	if fresh.Locked(s.now()) {
+		return false, ErrThrottled
+	}
+	if fresh.hash != cred.hash {
+		return false, errCredentialChanged
+	}
+	ok, err := s.store.hasher.verifyReserved(password, fresh.hash)
+	if err != nil || ok {
+		return ok, err
+	}
+	return false, s.recordFailure(ctx, cred.UserID)
+}
+
+// failWithoutPassword answers an attempt on an email that has no password the
+// way a wrong password on a real account would be answered, lockout and its
+// re-check under the hashing budget included. It logs no identifier: the
+// email is attacker input and may even be a password typed into the wrong
+// field.
+func (s *Service) failWithoutPassword(ctx context.Context, email, password, ip string) error {
+	if s.phantoms.locked(email, s.now()) {
+		s.logger.WarnContext(ctx, "password login: account locked", "ip", ip)
+		return ErrThrottled
+	}
+	release, err := s.store.hasher.reserve(ctx, s.store.hasher.params.MemoryKiB)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if s.phantoms.locked(email, s.now()) {
+		s.logger.WarnContext(ctx, "password login: account locked", "ip", ip)
+		return ErrThrottled
+	}
+	_, _ = s.store.hasher.verifyReserved(password, s.store.hasher.dummy)
+	s.phantoms.recordFailure(email, s.now())
+	s.logger.WarnContext(ctx, "password login: no password for this email", "ip", ip)
+	return ErrInvalidCredentials
+}
+
+// verifyDummy is VerifyDummy waiting for the budget with ctx.
+func (s *Service) verifyDummy(ctx context.Context, password string) error {
+	release, err := s.store.hasher.reserve(ctx, s.store.hasher.params.MemoryKiB)
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, _ = s.store.hasher.verifyReserved(password, s.store.hasher.dummy)
+	return nil
+}
+
+// recordFailure counts one failure and locks the account once the count
+// reaches LockThreshold. The lock runs from now, not from when the request
+// arrived.
+func (s *Service) recordFailure(ctx context.Context, userID pgtype.UUID) error {
+	n, err := s.store.RecordFailure(ctx, userID)
+	if err != nil {
+		return err
+	}
+	d := LockDuration(n)
+	if d == 0 {
+		return nil
+	}
+	if err := s.store.Lock(ctx, userID, s.now().Add(d)); err != nil {
+		return err
+	}
+	s.logger.WarnContext(ctx, "password login: account locked after failures",
+		"user_id", util.UUIDToString(userID), "failed_count", n, "locked_for", d.String())
+	return nil
+}
+
+// HasPassword reports whether the user has set a password.
+func (s *Service) HasPassword(ctx context.Context, userID pgtype.UUID) (bool, error) {
+	_, err := s.store.Get(ctx, userID)
+	if errors.Is(err, ErrNoCredential) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// SetPassword sets a password for an existing, signed-in user; the caller
+// has checked both. The first password needs nothing more. Replacing one
+// needs the current password, whose failures count towards the lockout.
+func (s *Service) SetPassword(ctx context.Context, userID pgtype.UUID, current, next string) error {
+	if err := ValidatePassword(next); err != nil {
+		return err
+	}
+
+	cred, err := s.store.Get(ctx, userID)
+	switch {
+	case errors.Is(err, ErrNoCredential):
+	case err != nil:
+		return err
+	default:
+		if current == "" {
+			return ErrCurrentPasswordRequired
+		}
+		if cred.Locked(s.now()) {
+			return ErrThrottled
+		}
+		ok, err := s.checkPassword(ctx, cred, current)
+		switch {
+		case errors.Is(err, errCredentialChanged):
+			return ErrWrongCurrentPassword
+		case err != nil:
+			return err
+		case !ok:
+			return ErrWrongCurrentPassword
+		}
+	}
+	return s.store.SetPassword(ctx, userID, next)
+}

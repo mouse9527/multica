@@ -2,7 +2,7 @@
 
 本文件属于 `mouse9527/multica` fork，上游 `multica-ai/multica` 没有这部分功能。代码在 `server/internal/passwordauth/`。实施跟踪见 #42。
 
-本文件随实施阶段补充；当前内容对应阶段 1（#37）：数据表、凭据存取、哈希封装，以及阶段 2 的管理员重置命令（#39）。两者都不含 HTTP 接口，不改任何上游行为。
+本文件随实施阶段补充；当前内容对应阶段 1（#37：数据表、凭据存取、哈希封装）和阶段 2（#38：开关、接口、失败锁定、限流；#39：管理员重置命令）。
 
 ## 数据表
 
@@ -14,7 +14,7 @@
 | `password_hash` | PHC 字符串 `$argon2id$v=19$m=..,t=..,p=..$<salt>$<hash>`，自带盐和参数，校验只读它 |
 | `algo` | 目前只允许 `argon2id`（CHECK 约束） |
 | `params` | 生成该哈希时的参数（JSON），便于运维统计还有多少哈希停在旧参数，不必解析哈希 |
-| `failed_count`、`locked_until` | 按账号的失败计数与锁定，策略在阶段 2 实现；`locked_until` 为 NULL 表示未锁 |
+| `failed_count`、`locked_until` | 按账号的失败计数与锁定，策略见下文「失败锁定与限流」；`locked_until` 为 NULL 表示未锁 |
 
 - 无外键（`AGENTS.md`）。上游目前没有删除用户的代码；以后若有，删除方要一并删这张表的行。
 - 唯一性由主键保证，没有其他索引，所以没有 `CONCURRENTLY` 索引迁移，也不需要在 `server/cmd/migrate/main.go` 登记钩子。
@@ -29,6 +29,7 @@ argon2id（`golang.org/x/crypto/argon2`）。
 | 内存 | 65536 KiB（64 MiB） | `MULTICA_PASSWORD_ARGON2_MEMORY_KIB` |
 | 迭代 | 3 | `MULTICA_PASSWORD_ARGON2_ITERATIONS` |
 | 并行度 | 4 | `MULTICA_PASSWORD_ARGON2_PARALLELISM` |
+| 同时计算的内存预算 | 262144 KiB（256 MiB） | `MULTICA_PASSWORD_ARGON2_MEMORY_BUDGET_KIB`，见「失败锁定与限流」 |
 | 盐 | 16 字节 | 不可配 |
 | 输出 | 32 字节 | 不可配 |
 
@@ -52,6 +53,66 @@ argon2id（`golang.org/x/crypto/argon2`）。
 - sqlc 生成的 `db.UserCredential` 的 `PasswordHash` 带 `json:"password_hash"`。本包只对外返回 `Credential`；阶段 2 写接口时不要直接序列化生成的 model。
 - `Credential` 的哈希是未导出字段；`fmt`（所有动词，含 `%#v`）、`slog`、`encoding/json` 都不输出它。
 - 日志只记 `user_id` 和错误。测试见 `store_test.go`（伪造数据库返回带密码与哈希的 `Detail`，断言错误与日志都不含）。
+
+## 开关
+
+环境变量 `MULTICA_PASSWORD_AUTH_ENABLED`，`true` 或 `1` 为开，默认关。
+
+- 关：不注册任何密码路由（请求得到 404），`/api/config` 不含 `password_login_enabled`，行为与上游一致。
+- 开：注册下面三个路由，`/api/config` 返回 `"password_login_enabled": true`。
+- 开但 argon2id 环境变量不合规：服务照常启动，记一条 error 日志，密码登录保持关闭（同上「关」），不会用弱参数存哈希。
+
+上游文件里的钩子：`server/cmd/server/router.go` 一行 `h.MountPasswordAuth(...)`，`server/internal/handler/handler.go` 的 `PasswordAuth` 字段，`server/internal/handler/config.go` 的 `PasswordLoginEnabled` 字段和一行赋值。其余在 `server/internal/handler/passwordauth.go`、`server/internal/middleware/client_ip_fork.go` 和本包。
+
+## 接口
+
+| 路由 | 鉴权 | 说明 |
+|---|---|---|
+| `POST /auth/password-login` | 无 | 请求 `{"email","password"}`。成功返回与验证码登录相同的 `{"token","user"}`，并设置相同的 Cookie（`issueJWT`、`SetAuthCookies`、CloudFront Cookie）。不创建用户。CLI 的 `cli_callback` 流程不变：网页登录后照旧换 CLI token |
+| `GET /api/me/password` | 登录会话 | `{"has_password": bool}`，设置页据此决定要不要填当前密码 |
+| `POST /api/me/password` | 登录会话 | 请求 `{"current_password","new_password"}`。第一次设置只需会话；已有密码时必须给对当前密码。新密码最短 12 个字符。只作用于会话里的现有用户，用户不存在返回 401，不建用户、不建凭据 |
+
+`/api/me/password` 只接受会话 JWT：判断的是鉴权中间件实际用的那个凭据（先看 `Authorization`，没有再看 Cookie，与中间件一致），不看它放在哪里。**直接提交的**任务令牌（`mat_`）、云节点令牌（`mcn_`）和个人访问令牌（`mul_`）都返回 403，放进 `multica_auth` Cookie 也一样（持有 PAT 的人能自己算出与它绑定的 CSRF 值，所以 CSRF 挡不住）。判断在 fork 文件 `server/internal/middleware/session_credential_fork.go`。
+
+**不保证会话 JWT 的来源（已接受的风险）**：上游的 `POST /api/cli-token` 允许用 PAT 换一个普通的会话 JWT，用这个 JWT 就能给**还没设过密码**的账号设第一个密码（第一次设置只需要会话）。所以 PAT 泄露后，攻击者可以经 `/api/cli-token` 换到会话，给没密码的账号设一个自己知道的密码；之后只吊销 PAT 撤不掉这个密码。这是 Owner 2026-11-19 选定的方案 B：保留上游的换票行为，不改 CLI 流程，接受这个风险，列入 P6 的安全汇总。发现 PAT 泄露时，除了吊销 PAT，还要查这个账号是否被设了密码（`GET /api/me/password`），必要时用管理员重置命令改掉。
+
+错误响应（`code` 供前端翻译）：
+
+| 情况 | 状态码 | `code` |
+|---|---|---|
+| 邮箱不存在、账号没设密码、密码错误 | 401 | `invalid_credentials`（三者响应体逐字节相同） |
+| 账号锁定中、按 IP 限流 | 429 | `too_many_attempts`（两者相同） |
+| 新密码太短或太长 | 400 | `invalid_password` |
+| 修改时没给当前密码 | 400 | `current_password_required` |
+| 修改时当前密码错误 | 403 | `current_password_incorrect` |
+| 修改时库里的哈希超出内存预算（见下文） | 409 | `password_reset_required` |
+
+上游临时停用名单（`server/internal/auth/temporary_disabled_users.go`）里的用户，密码正确时也返回与验证码登录相同的 403，签发不了会话。
+
+## 失败锁定与限流
+
+不依赖 Redis（现网没有 Redis，上游按 IP 的限流在没有 Redis 时关闭，`router.go` 那段不动）。
+
+- **按账号锁定**（存 `user_credential`）：连续失败 5 次后锁 1 分钟，此后每多失败一次时长翻倍，最长 1 小时。失败次数只在登录成功或设置新密码时清零，所以等锁过期后再猜一次就会锁更久。锁定期间不校验密码，正确密码也返回 429。修改密码时当前密码输错同样计数。
+- **锁定按计算那一刻判断**：请求先排队等哈希内存预算，拿到预算后再读一次凭据和锁定状态，已经锁了就直接 429，不计算；输错时在释放预算**之前**记下失败（第 5 次就上锁），所以排在后面的请求一定能看到这把锁；密码对了还会再查一次锁，计算期间账号被锁的话也不签发会话。同时进行中的猜测最多只有预算允许的并发数（默认 4 个），它们照样计入失败次数。排队期间密码被改掉的请求按 401 处理，不计算也不计失败。客户端断开时排队的请求随之取消，不计算、不计失败。
+- **没有密码的邮箱也"锁"**：不存在的邮箱和没设密码的账号在进程内按同样规则计数并返回同样的 429，否则"猜 5 次后会不会锁"就能判断某个邮箱有没有密码。这张表只存邮箱的 SHA-256，最多 1 万条；24 小时没有新失败就忘掉（真实账号的计数不会自己清零，因此停一天后两者可能再次不同，探测一次要等一天）；服务重启后清空。
+- **按 IP 限流**（进程内）：每个地址每分钟 10 次登录尝试，IPv6 按 /64 计。客户端地址的取法与上游 `RateLimit` 相同（`RATE_LIMIT_TRUSTED_PROXIES` 里的代理才看 `X-Forwarded-For`）。**开启功能前必须核对**：服务在反向代理或 Ingress 后面时，要把代理的地址段配进 `RATE_LIMIT_TRUSTED_PROXIES`。否则所有用户看起来都来自代理的地址，全站共用每分钟 10 次的配额，任何人连续输错 10 次就能让所有人收到 429。上游的按 IP 限流在没有 Redis 时不生效，所以这是这套部署里第一个真正生效的按 IP 限流，以前没配也不会出问题。表最多 1 万个地址，满了且都未过期时新地址不计数直接放行（不因地址洪水挡住所有人；按账号锁定仍然有效）。
+- **多副本的局限**：IP 限流和"无密码邮箱"的计数都在单个进程内。现网单副本；N 个副本时每个地址最多可得 N 倍配额，同一个无密码邮箱也要在每个副本上分别累计才会"锁"，不再与真实账号完全一致。按账号锁定存在数据库里，不受影响。
+- **哈希内存预算**：同一进程里同时进行的 argon2id 计算（登录校验、`VerifyDummy`、设密码、重哈希）占用的内存合计不超过预算 `MULTICA_PASSWORD_ARGON2_MEMORY_BUDGET_KIB`（默认 262144，即 256 MiB；可设 19456 到 67108864）。每次计算按**它实际用的参数**占预算：校验旧哈希时按旧哈希自带的内存计，不按当前配置；预算不够就排队。默认参数下一次约 50 ms、64 MiB，最多 4 个并发。
+  - 当前参数的内存必须不超过预算，否则启动时记错误日志、密码登录保持关闭。
+  - **单次超预算**：库里某个哈希的内存大于整个预算（运维把预算调到旧参数以下）时不计算它。登录按密码错误处理：返回 401、做一次 `VerifyDummy` 拉平耗时、不计失败次数。在设置页修改密码时返回 409 `password_reset_required`（当前密码无法核对）。两种情况都记一条 error 日志，提示调大预算或用管理员重置命令重置该账号的密码。所以**调低参数时**，预算要先保持不低于旧参数的内存，等活跃账号登录后自动重哈希，再调低预算。
+
+所有失败路径耗时一致：返回 401 的路径都恰好做一次 argon2id 校验（不存在的账号用 `VerifyDummy`），返回 429 的路径都不做（唯一例外是上面说的「排队期间密码被改掉」）。没有密码的邮箱同样在拿到预算后再查一次"锁"，再在释放预算前记下失败，与真实账号的顺序一致。
+
+## 日志
+
+记录事件，不记密码、哈希，也不记尝试的邮箱（攻击者输入，甚至可能是填错位置的密码）：
+
+- 登录成功：`user logged in with password`，带 `user_id` 和客户端地址 `ip`。
+- 失败：`password login: wrong password`（带 `user_id`）、`password login: no password for this email`（只带 IP）、`password login: account locked`、`password login: account locked after failures`（带次数和时长）、`password login: rate limited`（带 IP）。
+- 设置或修改：`password set`、`password change: wrong current password`，带 `user_id`；修改时哈希超出预算记 error `password change: stored hash exceeds the hashing memory budget…`。
+
+测试对响应体、响应头和日志断言不含测试用的密码与库里的任何哈希（`server/internal/passwordauth/service_db_test.go`、`server/internal/handler/passwordauth_test.go`）。
 
 ## 管理员重置密码
 

@@ -131,6 +131,12 @@ func (s *Store) CheckPassword(ctx context.Context, userID pgtype.UUID, password 
 	if err != nil {
 		return false, err
 	}
+	return s.verify(ctx, cred, password)
+}
+
+// verify checks password against an already loaded credential and re-hashes
+// it on a match with outdated parameters.
+func (s *Store) verify(ctx context.Context, cred Credential, password string) (bool, error) {
 	ok, err := s.hasher.Verify(password, cred.hash)
 	if err != nil || !ok {
 		return false, err
