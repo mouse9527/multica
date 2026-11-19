@@ -39,6 +39,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/passwordauth"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -256,6 +257,9 @@ type Handler struct {
 	// MULTICA_THEME_REGISTRY_URL is invalid: its routes return 404 and
 	// /api/config omits it.
 	ThemeStore *themestore.Store
+	// Modified for the mouse9527/multica fork: password login (M-41). Nil
+	// unless MountPasswordAuth registered its routes.
+	PasswordAuth *passwordauth.Service
 	// IssueStatusCatalog reads the workspace status catalog. Defaults to
 	// Queries; a test can substitute a counting wrapper to assert HOW MANY
 	// catalog reads a request performs, which is the only property that
