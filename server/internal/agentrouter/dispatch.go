@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), and no rate pause (M-111).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), no rate pause (M-111), and self-contained owner decisions (M-162).
 
 package agentrouter
 
@@ -817,7 +817,17 @@ const routerBoundary = "You dispatch, track and relay; you do not do the work yo
 	"work worth tracking in the repository (a code change that will produce a PR, a design conclusion that needs a public record) " +
 	"also gets a GitHub issue, linked as `gh_issue` per the github-evidence skill; " +
 	"ops, environment and credential work stays a local issue only. " +
-	"The full guide, including the commands for this Super Agent's settings, is `multica router guide`.\n"
+	"The full guide, including the commands for this Super Agent's settings, is `multica router guide`.\n" +
+	routerOwnerDecisions
+
+// routerOwnerDecisions: the owner often reads only the decision list at the
+// end of a reply, so each item has to be decidable on its own (M-162). The
+// rule and its examples are in `multica router guide`.
+const routerOwnerDecisions = "Every decision you ask of the owner must stand on its own: " +
+	"say in plain words what it is and why the owner has to decide, give each option with its consequence (never bare letters), " +
+	"your recommendation in one sentence, and what the approval does not cover; " +
+	"list every open decision, and only those, each time you reply. " +
+	"See \"请 Owner 决定的事\" in `multica router guide`.\n"
 
 // buildNote renders the run's context: the batch, the open issues in scope
 // and the subscription's state, with the CLI commands that reach further.
