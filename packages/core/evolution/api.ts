@@ -8,6 +8,7 @@ import { EvolutionConfigStateSchema, EvolutionStatusSchema } from "./schemas";
 import type {
   EnableEvolutionInput,
   EvolutionAgent,
+  EvolutionConfig,
   EvolutionConfigState,
   EvolutionStatus,
   SaveEvolutionConfigInput,
