@@ -223,4 +223,16 @@ func TestRunAgainstDatabase(t *testing.T) {
 			t.Fatalf("login with the new password: ok=%v err=%v", ok, err)
 		}
 	}
+
+	// The command follows MULTICA_PASSWORD_MIN_LENGTH like the server.
+	env[passwordauth.EnvMinLength] = "8"
+	if code, out := runWith([]string{"--email", "ada@example.test"}, "seven77\n"); code != exitError || !strings.Contains(out, "at least 8 characters") {
+		t.Fatalf("7 characters with minimum 8: code %d, output %s", code, out)
+	}
+	if code, out := runWith([]string{"--email", "ada@example.test"}, "eight888\n"); code != exitOK {
+		t.Fatalf("8 characters with minimum 8: code %d, output %s", code, out)
+	}
+	if ok, err := store.CheckPassword(ctx, user, "eight888"); !ok || err != nil {
+		t.Fatalf("login with the 8-character password: ok=%v err=%v", ok, err)
+	}
 }

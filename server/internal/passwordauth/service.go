@@ -254,6 +254,10 @@ func (s *Service) recordFailure(ctx context.Context, userID pgtype.UUID) error {
 	return nil
 }
 
+// MinPasswordRunes returns the minimum length of a new password, in
+// characters, for clients to show and pre-check.
+func (s *Service) MinPasswordRunes() int { return s.store.hasher.MinPasswordRunes() }
+
 // HasPassword reports whether the user has set a password.
 func (s *Service) HasPassword(ctx context.Context, userID pgtype.UUID) (bool, error) {
 	_, err := s.store.Get(ctx, userID)
@@ -267,7 +271,7 @@ func (s *Service) HasPassword(ctx context.Context, userID pgtype.UUID) (bool, er
 // has checked both. The first password needs nothing more. Replacing one
 // needs the current password, whose failures count towards the lockout.
 func (s *Service) SetPassword(ctx context.Context, userID pgtype.UUID, current, next string) error {
-	if err := ValidatePassword(next); err != nil {
+	if err := s.store.hasher.ValidatePassword(next); err != nil {
 		return err
 	}
 
