@@ -2548,3 +2548,17 @@ describe("Issue requester compatibility", () => {
     expect(IssueSchema.parse({ ...baseIssue, requester_id: 42 }).requester_id).toBeUndefined();
   });
 });
+
+describe("AppConfigSchema password_min_length drift", () => {
+  it.each([
+    [undefined, undefined],
+    ["8", undefined],
+    [0, undefined],
+    [7.5, undefined],
+    [8, 8],
+  ])("%j parses as %s", (value, expected) => {
+    expect(AppConfigSchema.parse({ password_min_length: value }).password_min_length).toBe(
+      expected,
+    );
+  });
+});

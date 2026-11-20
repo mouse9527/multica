@@ -1060,6 +1060,9 @@ export interface AppConfigResponse {
   feature_flags?: Record<string, boolean>;
   // Modified by the mouse9527/multica fork (M-43): sent only while password login is on.
   password_login_enabled?: boolean;
+  // Modified by the mouse9527/multica fork (M-184): the server's minimum
+  // password length in characters, sent with password_login_enabled.
+  password_min_length?: number;
   /** Whether this server understands local_directory `execution_mode` and
    * gates worktree mode at save time. Absent on every server that predates this
    * capability signal, which includes the ones that silently DROPPED an unknown
@@ -1376,8 +1379,12 @@ export const AppConfigSchema = z.object({
   comment_delete_keep_replies_supported: BooleanWithDefaultSchema(false),
   theme_store_enabled: BooleanWithDefaultSchema(false),
   server_version: OptionalStringSchema,
-  // Modified by the mouse9527/multica fork (M-43).
+  // Modified by the mouse9527/multica fork (M-43, M-184).
   password_login_enabled: BooleanWithDefaultSchema(false),
+  password_min_length: z.preprocess(
+    (value) => (typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined),
+    z.number().optional(),
+  ),
 }).loose();
 
 export const EMPTY_APP_CONFIG: AppConfigResponse = {

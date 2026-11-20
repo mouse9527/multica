@@ -78,3 +78,17 @@ describe("passwordAuthConfigStore", () => {
     expect(passwordAuthConfigStore.getState().passwordLoginEnabled).toBe(false);
   });
 });
+
+describe("passwordAuthConfigStore minimum length", () => {
+  it("follows a positive integer from the server and falls back to 12 otherwise", () => {
+    const { setPasswordMinLength } = passwordAuthConfigStore.getState();
+    expect(passwordAuthConfigStore.getState().passwordMinLength).toBe(12);
+    setPasswordMinLength(8);
+    expect(passwordAuthConfigStore.getState().passwordMinLength).toBe(8);
+    for (const value of [undefined, "8", 0, -1, 7.5, null, {}]) {
+      setPasswordMinLength(8);
+      setPasswordMinLength(value);
+      expect(passwordAuthConfigStore.getState().passwordMinLength).toBe(12);
+    }
+  });
+});
