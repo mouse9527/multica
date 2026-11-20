@@ -52,10 +52,11 @@ type PasswordStatusResponse struct {
 
 // MountPasswordAuth registers POST /auth/password-login and
 // GET/POST /api/me/password when MULTICA_PASSWORD_AUTH_ENABLED is on, and
-// nothing otherwise. requireAuth is the session middleware of the
-// authenticated routes. Invalid argon2id settings (including parameters that
-// do not fit the hashing memory budget) leave the feature off rather than
-// store weak hashes or overrun memory.
+// nothing otherwise; MULTICA_PASSWORD_IP_LIMIT=0 turns the per-IP limit off.
+// requireAuth is the session middleware of the authenticated routes. Invalid
+// argon2id settings (including parameters that do not fit the hashing memory
+// budget) leave the feature off rather than store weak hashes or overrun
+// memory.
 func (h *Handler) MountPasswordAuth(r chi.Router, requireAuth func(http.Handler) http.Handler, trustedProxies []*net.IPNet) {
 	if !passwordauth.Enabled(os.Getenv) {
 		return
@@ -65,7 +66,12 @@ func (h *Handler) MountPasswordAuth(r chi.Router, requireAuth func(http.Handler)
 		slog.Error("password login disabled: invalid argon2id settings", "error", err)
 		return
 	}
-	h.mountPasswordAuth(r, passwordauth.NewService(passwordauth.NewStore(h.DB, hasher, nil), nil), requireAuth, trustedProxies)
+	svc := passwordauth.NewService(passwordauth.NewStore(h.DB, hasher, nil), nil)
+	if !passwordauth.IPLimitEnabled(os.Getenv) {
+		svc.DisableIPLimit()
+		slog.Warn("password login: per-IP limit off (" + passwordauth.EnvIPLimit + "); only the account lockout applies")
+	}
+	h.mountPasswordAuth(r, svc, requireAuth, trustedProxies)
 }
 
 // mountPasswordAuth registers the routes on svc. The routes use svc itself;

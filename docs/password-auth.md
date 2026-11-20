@@ -63,6 +63,7 @@ argon2id（`golang.org/x/crypto/argon2`）。
 - 关：不注册任何密码路由（请求得到 404），`/api/config` 不含 `password_login_enabled`，行为与上游一致。
 - 开：注册下面三个路由，`/api/config` 返回 `"password_login_enabled": true`。
 - 开但 argon2id 环境变量不合规：服务照常启动，记一条 error 日志，密码登录保持关闭（同上「关」），不会用弱参数存哈希。
+- 按 IP 限流另有开关 `MULTICA_PASSWORD_IP_LIMIT`，默认开，`0` 或 `false` 为关，见下文「失败锁定与限流」（#136）。
 
 上游文件里的钩子：`server/cmd/server/router.go` 一行 `h.MountPasswordAuth(...)`，`server/internal/handler/handler.go` 的 `PasswordAuth` 字段，`server/internal/handler/config.go` 的 `PasswordLoginEnabled` 字段和一行赋值。其余在 `server/internal/handler/passwordauth.go`、`server/internal/middleware/client_ip_fork.go` 和本包。
 
@@ -83,7 +84,7 @@ argon2id（`golang.org/x/crypto/argon2`）。
 | 情况 | 状态码 | `code` |
 |---|---|---|
 | 邮箱不存在、账号没设密码、密码错误 | 401 | `invalid_credentials`（三者响应体逐字节相同） |
-| 账号锁定中、按 IP 限流 | 429 | `too_many_attempts`（两者相同） |
+| 账号锁定中、按 IP 限流（开着时） | 429 | `too_many_attempts`（两者相同） |
 | 新密码太短或太长 | 400 | `invalid_password` |
 | 修改时没给当前密码 | 400 | `current_password_required` |
 | 修改时当前密码错误 | 403 | `current_password_incorrect` |
@@ -99,6 +100,7 @@ argon2id（`golang.org/x/crypto/argon2`）。
 - **锁定按计算那一刻判断**：请求先排队等哈希内存预算，拿到预算后再读一次凭据和锁定状态，已经锁了就直接 429，不计算；输错时在释放预算**之前**记下失败（第 5 次就上锁），所以排在后面的请求一定能看到这把锁；密码对了还会再查一次锁，计算期间账号被锁的话也不签发会话。同时进行中的猜测最多只有预算允许的并发数（默认 4 个），它们照样计入失败次数。排队期间密码被改掉的请求按 401 处理，不计算也不计失败。客户端断开时排队的请求随之取消，不计算、不计失败。
 - **没有密码的邮箱也"锁"**：不存在的邮箱和没设密码的账号在进程内按同样规则计数并返回同样的 429，否则"猜 5 次后会不会锁"就能判断某个邮箱有没有密码。这张表只存邮箱的 SHA-256，最多 1 万条；24 小时没有新失败就忘掉（真实账号的计数不会自己清零，因此停一天后两者可能再次不同，探测一次要等一天）；服务重启后清空。
 - **按 IP 限流**（进程内）：每个地址每分钟 10 次登录尝试，IPv6 按 /64 计。客户端地址的取法与上游 `RateLimit` 相同（`RATE_LIMIT_TRUSTED_PROXIES` 里的代理才看 `X-Forwarded-For`）。**开启功能前必须核对**：服务在反向代理或 Ingress 后面时，要把代理的地址段配进 `RATE_LIMIT_TRUSTED_PROXIES`。否则所有用户看起来都来自代理的地址，全站共用每分钟 10 次的配额，任何人连续输错 10 次就能让所有人收到 429。上游的按 IP 限流在没有 Redis 时不生效，所以这是这套部署里第一个真正生效的按 IP 限流，以前没配也不会出问题。表最多 1 万个地址，满了且都未过期时新地址不计数直接放行（不因地址洪水挡住所有人；按账号锁定仍然有效）。
+  - **关掉**（#136）：`MULTICA_PASSWORD_IP_LIMIT` 设为 `0` 或 `false`（不分大小写）时不再按地址计数，启动时记一条 warn 日志 `password login: per-IP limit off`。不设或其他任何值都保持开启；这个变量只是开关，每分钟 10 次不可调。按账号锁定、"无密码邮箱"的锁定、哈希内存预算都不受影响，所以单个账号能被猜的次数不变。代价见 [password-login.md](password-login.md)「已接受的风险」：失去的是对**总请求量**的限制，同一个来源换着邮箱就能让每个请求都做一次 argon2id。
 - **多副本的局限**：IP 限流和"无密码邮箱"的计数都在单个进程内。现网单副本；N 个副本时每个地址最多可得 N 倍配额，同一个无密码邮箱也要在每个副本上分别累计才会"锁"，不再与真实账号完全一致。按账号锁定存在数据库里，不受影响。
 - **哈希内存预算**：同一进程里同时进行的 argon2id 计算（登录校验、`VerifyDummy`、设密码、重哈希）占用的内存合计不超过预算 `MULTICA_PASSWORD_ARGON2_MEMORY_BUDGET_KIB`（默认 262144，即 256 MiB；可设 19456 到 67108864）。每次计算按**它实际用的参数**占预算：校验旧哈希时按旧哈希自带的内存计，不按当前配置；预算不够就排队。默认参数下一次约 50 ms、64 MiB，最多 4 个并发。
   - 当前参数的内存必须不超过预算，否则启动时记错误日志、密码登录保持关闭。
@@ -122,7 +124,7 @@ argon2id（`golang.org/x/crypto/argon2`）。
 记录事件，不记密码、哈希，也不记尝试的邮箱（攻击者输入，甚至可能是填错位置的密码）：
 
 - 登录成功：`user logged in with password`，带 `user_id` 和客户端地址 `ip`。
-- 失败：`password login: wrong password`（带 `user_id`）、`password login: no password for this email`（只带 IP）、`password login: account locked`、`password login: account locked after failures`（带次数和时长）、`password login: rate limited`（带 IP）。
+- 失败：`password login: wrong password`（带 `user_id`）、`password login: no password for this email`（只带 IP）、`password login: account locked`、`password login: account locked after failures`（带次数和时长）、`password login: rate limited`（带 IP，按 IP 限流关掉时不会出现）。
 - 设置或修改：`password set`、`password change: wrong current password`，带 `user_id`；修改时哈希超出预算记 error `password change: stored hash exceeds the hashing memory budget…`。
 
 测试对响应体、响应头和日志断言不含测试用的密码与库里的任何哈希（`server/internal/passwordauth/service_db_test.go`、`server/internal/handler/passwordauth_test.go`）。

@@ -258,6 +258,46 @@ func TestPasswordAuthSwitch(t *testing.T) {
 	}
 }
 
+// MULTICA_PASSWORD_IP_LIMIT reaches the service MountPasswordAuth builds:
+// unset, one address gets 429 after IPLimit attempts; "0", it keeps getting
+// 401 and the startup log says the limit is off.
+func TestPasswordIPLimitSwitch(t *testing.T) {
+	t.Cleanup(func() { testHandler.PasswordAuth = nil })
+	t.Setenv(passwordauth.EnvEnabled, "true")
+	logs := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	lastOfSpray := func(value string) int {
+		t.Setenv(passwordauth.EnvIPLimit, value)
+		r := chi.NewRouter()
+		testHandler.MountPasswordAuth(r, realAuth(), nil)
+		var rec *httptest.ResponseRecorder
+		for i := 0; i <= passwordauth.IPLimit; i++ {
+			req := httptest.NewRequest(http.MethodPost, "/auth/password-login",
+				strings.NewReader(fmt.Sprintf(`{"email":"pw-ipswitch-%s-%d@example.test","password":"x"}`, value, i)))
+			req.RemoteAddr = "203.0.113.60:999"
+			rec = httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+		}
+		return rec.Code
+	}
+
+	if got := lastOfSpray(""); got != http.StatusTooManyRequests {
+		t.Fatalf("unset: attempt %d from one address = %d, want 429", passwordauth.IPLimit+1, got)
+	}
+	if strings.Contains(logs.String(), "per-IP limit off") {
+		t.Fatalf("unset: logged the limit as off: %s", logs)
+	}
+	if got := lastOfSpray("0"); got != http.StatusUnauthorized {
+		t.Fatalf("off: attempt %d from one address = %d, want 401", passwordauth.IPLimit+1, got)
+	}
+	if !strings.Contains(logs.String(), "per-IP limit off") {
+		t.Fatalf("off: startup did not log the limit as off: %s", logs)
+	}
+}
+
 func TestPasswordLogin(t *testing.T) {
 	s := newPasswordTestServer(t)
 	ctx := context.Background()

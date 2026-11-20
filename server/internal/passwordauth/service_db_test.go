@@ -180,6 +180,45 @@ func TestLoginIPLimit(t *testing.T) {
 	}
 }
 
+// With the per-IP limit off one address can try any number of emails, and
+// the account lockout still applies to real accounts and to emails without a
+// password alike.
+func TestLoginWithoutIPLimit(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	f := testutil.New(pool, "", "")
+	user := util.MustParseUUID(f.User(t, "Ada", "ada@example.test"))
+	s, _, logs := testService(t, pool)
+	s.DisableIPLimit()
+	if err := s.SetPassword(ctx, user, "", testPassword); err != nil {
+		t.Fatal(err)
+	}
+	const ip = "203.0.113.9"
+	for i := 0; i < 2*IPLimit; i++ {
+		email := fmt.Sprintf("spray%d@example.test", i)
+		if _, err := s.Login(ctx, email, wrongPassword, ip); !errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("attempt %d: %v", i+1, err)
+		}
+	}
+	if _, err := s.Login(ctx, "ada@example.test", testPassword, ip); err != nil {
+		t.Fatalf("login after %d attempts from one address: %v", 2*IPLimit, err)
+	}
+
+	for _, email := range []string{"ada@example.test", "nobody@example.test"} {
+		for i := 0; i < LockThreshold; i++ {
+			if _, err := s.Login(ctx, email, wrongPassword, ip); !errors.Is(err, ErrInvalidCredentials) {
+				t.Fatalf("%s guess %d: %v", email, i+1, err)
+			}
+		}
+		if _, err := s.Login(ctx, email, testPassword, ip); !errors.Is(err, ErrThrottled) {
+			t.Fatalf("%s not locked with the per-IP limit off: %v", email, err)
+		}
+	}
+	if strings.Contains(logs.String(), "rate limited") {
+		t.Fatalf("per-IP limit applied: %s", logs)
+	}
+}
+
 func TestSetPasswordRules(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()

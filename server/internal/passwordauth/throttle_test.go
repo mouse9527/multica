@@ -23,6 +23,23 @@ func TestEnabled(t *testing.T) {
 	}
 }
 
+func TestIPLimitEnabled(t *testing.T) {
+	for value, want := range map[string]bool{
+		"": true, "1": true, "true": true, "20": true, "off": true,
+		"0": false, "false": false, " FALSE ": false,
+	} {
+		got := IPLimitEnabled(func(name string) string {
+			if name != EnvIPLimit {
+				t.Fatalf("read %s", name)
+			}
+			return value
+		})
+		if got != want {
+			t.Errorf("IPLimitEnabled(%q) = %v, want %v", value, got, want)
+		}
+	}
+}
+
 func TestLockDuration(t *testing.T) {
 	for n, want := range map[int32]time.Duration{
 		0:  0,
