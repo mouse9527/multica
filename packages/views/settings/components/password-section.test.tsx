@@ -81,6 +81,7 @@ describe("PasswordSettingsSection", () => {
 
   afterEach(() => {
     passwordAuthConfigStore.getState().setPasswordLoginEnabled(false);
+    passwordAuthConfigStore.getState().setPasswordMinLength(undefined);
   });
 
   it("renders nothing and asks nothing while the server switch is off", () => {
@@ -139,6 +140,7 @@ describe("PasswordSettingsSection", () => {
     const user = userEvent.setup();
     await user.type(await screen.findByLabelText("New password"), "short");
     await user.type(screen.getByLabelText("Confirm new password"), "short");
+    expect(screen.getByText("At least 12 characters")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Set password" }));
     expect(await screen.findByText("Use at least 12 characters.")).toBeInTheDocument();
 
@@ -190,6 +192,27 @@ describe("PasswordSettingsSection", () => {
         "Your current password can't be checked right now. Ask an administrator to reset it.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("shows and checks the minimum length the server configured", async () => {
+    passwordAuthConfigStore.getState().setPasswordMinLength(8);
+    serve(false);
+    renderSection();
+
+    const user = userEvent.setup();
+    const newField = await screen.findByLabelText("New password");
+    expect(screen.getByText("At least 8 characters")).toBeInTheDocument();
+    await user.type(newField, "seven77");
+    await user.type(screen.getByLabelText("Confirm new password"), "seven77");
+    await user.click(screen.getByRole("button", { name: "Set password" }));
+    expect(await screen.findByText("Use at least 8 characters.")).toBeInTheDocument();
+    expect(postedBodies()).toEqual([]);
+
+    await user.type(newField, "8");
+    await user.type(screen.getByLabelText("Confirm new password"), "8");
+    await user.click(screen.getByRole("button", { name: "Set password" }));
+    await waitFor(() => expect(mockToastSuccess).toHaveBeenCalledWith("Password set"));
+    expect(postedBodies()).toEqual([{ current_password: "", new_password: "seven778" }]);
   });
 
   it("asks for the current password before sending a change", async () => {

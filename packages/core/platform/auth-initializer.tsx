@@ -11,7 +11,7 @@ import {
   initAnalytics,
 } from "../analytics";
 import { configStore } from "../config";
-// Modified by the mouse9527/multica fork (M-43): password login switch.
+// Modified by the mouse9527/multica fork (M-43, M-184): password login switch and minimum length.
 import { passwordAuthConfigStore } from "../passwordauth/config";
 import { normalizeCommandURL } from "../runtimes/commands";
 import { workspaceListOptions } from "../workspace/queries";
@@ -126,6 +126,7 @@ export function AuthInitializer({
           );
         configStore.getState().setThemeStoreEnabled(cfg.theme_store_enabled === true);
         passwordAuthConfigStore.getState().setPasswordLoginEnabled(cfg.password_login_enabled);
+        passwordAuthConfigStore.getState().setPasswordMinLength(cfg.password_min_length);
         if (cfg.posthog_key) {
           initAnalytics({
             key: cfg.posthog_key,

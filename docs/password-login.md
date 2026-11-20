@@ -11,10 +11,12 @@
 | `MULTICA_PASSWORD_ARGON2_ITERATIONS` | 3 | argon2id 迭代次数；「内存 × 迭代」不低于 38912 |
 | `MULTICA_PASSWORD_ARGON2_PARALLELISM` | 4 | argon2id 并行度，1–255 |
 | `MULTICA_PASSWORD_ARGON2_MEMORY_BUDGET_KIB` | 262144 | 同一进程同时进行的哈希计算合计可占的内存（默认 256 MiB，约 4 个并发） |
+| `MULTICA_PASSWORD_MIN_LENGTH` | 12 | 新密码最短多少个字符（按 Unicode 字符计）。最低 6：设得更低按 6 处理，不是整数按 12 处理，这两种情况启动时都记一条 warn 日志 `password minimum length: ...`。设置页的提示和检查跟着变（经 `/api/config` 的 `password_min_length`）。调低之前读下文「已接受的风险」 |
 | `MULTICA_PASSWORD_IP_LIMIT` | 开 | 按 IP 限流的开关。`0` 或 `false` 为关：不再按地址计数，只剩按账号锁定，启动日志有 `password login: per-IP limit off`。关之前读下文「已接受的风险」 |
 | `RATE_LIMIT_TRUSTED_PROXIES` | 空 | 上游已有的变量。服务在反向代理或 Ingress 后面时**必须**配上代理的地址段，见下文「上线前检查清单」 |
 | `DATABASE_URL` | — | 管理员重置命令 `reset_password` 用，容器里已有 |
 
+- 最短长度只在设置、修改、管理员重置密码时检查。改了之后，已经设好的密码不重新检查，照样能登录；调高也不会让已有的短密码失效，要换只能让用户自己改或管理员重置。
 - 不设 argon2id 变量就用默认值，一般不用设。设了但不合规（低于下限、超出预算等）时，服务照常启动，记一条 error 日志 `password login disabled: invalid argon2id settings`，密码登录保持关闭。
 - 关掉：去掉 `MULTICA_PASSWORD_AUTH_ENABLED` 并重启。已设的密码留在 `user_credential` 表里，再打开时仍然有效。
 - 打开、关闭都只影响密码登录；验证码登录和 Google 登录不受影响，始终可以作为后备。
@@ -41,7 +43,7 @@
    kubectl exec -it deploy/<后端> -- ./reset_password --email user@example.com
    ```
 
-   命令先按邮箱找用户（找不到就报错退出，这时还没让你输密码），再提示输入新密码两次，输入不回显。密码至少 12 个字符。
+   命令先按邮箱找用户（找不到就报错退出，这时还没让你输密码），再提示输入新密码两次，输入不回显。密码至少 `MULTICA_PASSWORD_MIN_LENGTH` 个字符（默认 12）；命令在后端容器里执行，读的是和服务端同一份环境变量。
 3. 成功时输出 `Password set for user <用户 ID>; failed attempts and lock cleared.`，并在 stderr 打出一行 JSON 审计记录（`passwordauth: audit: password reset by admin command`，含 `user_id`、`email`、`at`）。这行只回到你的终端，不进容器日志；需要留档就自己保存。
 4. 新密码立即生效，原来的锁定和失败次数同时清除。把新密码通过安全渠道交给用户，并请他登录后在「设置 → 个人资料 → 密码」改成自己的。
 
@@ -58,6 +60,7 @@
 - [ ] 部署的镜像包含 `reset_password`：`kubectl exec deploy/<后端> -- ls /app` 能看到它。
 - [ ] **`RATE_LIMIT_TRUSTED_PROXIES`**（按 IP 限流开着时）：服务在反向代理或 Ingress 后面时，把代理的地址段配进去。否则所有用户看起来来自同一个代理地址，全站共用每分钟 10 次的配额，任何人连续输错 10 次就能让所有人收到「尝试次数过多」。打开后用实测清单第 7 步核对：日志里 `user logged in with password` 的 `ip` 应是真实客户端地址，不是代理地址。
 - [ ] argon2id 变量要么不设，要么合规：重启后日志里没有 `password login disabled: invalid argon2id settings`，`/api/config` 返回 `"password_login_enabled": true`。
+- [ ] **`MULTICA_PASSWORD_MIN_LENGTH`** 要么不设（默认 12），要么设成 Owner 选定的值：重启后 `/api/config` 的 `password_min_length` 等于这个值，日志里没有 `password minimum length:` 的 warn（有就说明值低于 6 或不是整数）。
 - [ ] 后端容器的内存上限为哈希预算（默认 256 MiB）留出余量。
 - [ ] **保留验证码登录作为后备**：打开后登录页的「改用邮箱验证码」能走通；不要因为有了密码登录就停掉验证码。
 - [ ] 知道怎么关：去掉 `MULTICA_PASSWORD_AUTH_ENABLED` 并重启即恢复上游行为。
@@ -70,11 +73,11 @@
 | # | 操作 | 预期结果 |
 |---|---|---|
 | 1 | 开关关闭时打开登录页；执行 `curl -s https://<测试实例>/api/config`；`curl -s -o /dev/null -w '%{http_code}\n' -X POST https://<测试实例>/auth/password-login` | 登录页只有验证码登录，与上游一致；config 里没有 `password_login_enabled`；POST 返回 `404` |
-| 2 | 给后端加环境变量 `MULTICA_PASSWORD_AUTH_ENABLED=true`，重启；再执行第 1 步的 `curl` | 启动日志没有 `password login disabled`；config 含 `"password_login_enabled": true`；POST 不带请求体返回 `400` |
+| 2 | 给后端加环境变量 `MULTICA_PASSWORD_AUTH_ENABLED=true`，重启；再执行第 1 步的 `curl` | 启动日志没有 `password login disabled`；config 含 `"password_login_enabled": true` 和 `"password_min_length": 12`（设了 `MULTICA_PASSWORD_MIN_LENGTH` 时是设的值）；POST 不带请求体返回 `400` |
 | 3 | 打开登录页 | 第一步是邮箱加密码表单，下面有「改用邮箱验证码」，Google 登录按钮照旧 |
 | 4 | **首次设置密码**：点「改用邮箱验证码」，用验证码登录；进入「设置 → 个人资料」，页面底部的「密码」区块 | 只要求填新密码和确认，不要求当前密码 |
-| 5 | 先输一个 11 个字符的密码 | 提示「密码至少需要 12 个字符。」，不提交 |
-| 6 | 输一个 12 个字符以上的密码并确认，点「设置密码」 | 提示「密码已设置」；之后这一块多出「当前密码」，按钮变成「修改密码」 |
+| 5 | 先输一个比最短长度少 1 个字符的密码（默认 12，即 11 个字符） | 「新密码」下的提示是「至少 N 个字符」，N 是最短长度；提交时提示「密码至少需要 N 个字符。」，不提交 |
+| 6 | 输一个不短于最短长度的密码并确认，点「设置密码」 | 提示「密码已设置」；之后这一块多出「当前密码」，按钮变成「修改密码」 |
 | 7 | 退出登录，用邮箱加刚设的密码登录 | 登录成功；后端日志有 `user logged in with password`，其中 `ip` 是你的真实地址（不是代理地址） |
 | 8 | 退出，用一个不存在的邮箱加任意密码登录；再用测试账号加错误密码登录 | 两次都显示「邮箱或密码不正确」，文案完全相同 |
 | 9 | **触发锁定**：用测试账号连续输错密码，直到出现「尝试次数过多」（前面第 8 步已错 1 次，再错 4 次后第 6 次尝试即出现）；然后输入正确密码 | 正确密码也显示「尝试次数过多」 |
@@ -102,6 +105,8 @@
 | | `passwordauth`：`TestQueuedGuessesStopAtTheLock`、`TestQueuedLoginRefusedAfterLock`、`TestQueuedLoginCancelled` | 并发猜测排队等哈希预算时，锁上之后不再计算；锁定中排队的正确密码不签发会话；断开的请求不计算、不计失败 |
 | | `passwordauth`：`TestLoginIPLimit`、`TestIPLimiter`、`TestIPLimiterFullTable`；`handler`：`TestPasswordLoginLockout` | 按 IP 每分钟 10 次；IPv6 按 /64；表满时放行；HTTP 层锁定与限流返回相同的 429 |
 | | `passwordauth`：`TestIPLimitEnabled`、`TestLoginWithoutIPLimit`；`handler`：`TestPasswordIPLimitSwitch`（#136） | 只有 `0`、`false` 关掉按 IP 限流，不设或其他值保持开启；关掉后同一地址可以连续尝试，真实账号和无密码邮箱仍在 5 次后锁定；开关经 `MountPasswordAuth` 生效，关掉时启动日志有提示 |
+| 最短长度 | `passwordauth`：`TestMinPasswordRunesFromEnv`、`TestHasherFromEnvAppliesMinLength`、`TestServiceSetPasswordUsesConfiguredMinLength`；`handler`：`TestPasswordMinLengthFromEnv`、`TestPasswordAuthSwitch`；`cmd/reset_password`：`TestRunAgainstDatabase`（#138） | 不设为 12；设 8 后 7 个字符被拒、8 个字符可设；低于 6 按 6 处理并记 warn，不是整数按 12 处理并记 warn；设置、修改、管理员重置都按配置检查；`/api/config` 的 `password_min_length` 与配置一致，开关关闭时没有这个字段 |
+| | 前端 `rules.test.ts`、`api.test.ts`、`schemas.test.ts`、`password-section.test.tsx` | 设置页按服务端下发的最短长度显示提示并预检；服务端没下发或值不合法时按 12 |
 | 防枚举 | `passwordauth`：`TestLoginAnswersDoNotRevealAccounts`、`TestPhantomLocks` | 不存在的邮箱、没设密码、密码错误走完全相同的应答序列，含第 5 次后的"锁定"；日志不记尝试的邮箱 |
 | | `handler`：`TestPasswordLogin`、`TestPasswordLoginLockout` | 三种失败的 401 响应体逐字节相同；锁定与 IP 限流的 429 相同 |
 | | 前端 `password-login.test.tsx` | 只显示「邮箱或密码不正确」「尝试次数过多」，不显示服务端原文 |
@@ -117,7 +122,7 @@
 | 只用会话、不建账号 | `handler`：`TestPasswordManagementRefusesPATs`；`middleware`：`TestAuthenticatedBySession` | 个人访问令牌（含放进 Cookie 并带上可自算的 CSRF 值）、任务令牌、云节点令牌都不能读写密码 |
 | | `handler`：`TestSetMyPasswordNeedsExistingUser`；`cmd/reset_password`：`TestRunAgainstDatabase` | 设置接口和重置命令都不会创建用户或给不存在的邮箱建凭据 |
 | 管理员重置后登录 | `cmd/server`：`TestAdminResetThenPasswordLogin`（M-44 新增） | 在生产路由上：管理员给没密码的用户设密码后可经 `POST /auth/password-login` 登录，返回的会话能访问 `/api/me`；账号锁定后重置，新密码立即可登录，旧密码不再可用 |
-| 哈希与参数 | `passwordauth`：`TestHashRoundTrip`、`TestNeedsRehashAfterParameterUpgrade`、`TestCheckPasswordRehashesAfterParameterUpgrade`、`TestRehashDoesNotOverwriteNewerPassword`、`TestParamsFromEnv`、`TestValidatePassword` 及 `budget_test.go` | 加盐、参数升级后自动重哈希且不覆盖新密码、弱参数拒绝启动、12 字符下限按 Unicode 字符计、内存预算 |
+| 哈希与参数 | `passwordauth`：`TestHashRoundTrip`、`TestNeedsRehashAfterParameterUpgrade`、`TestCheckPasswordRehashesAfterParameterUpgrade`、`TestRehashDoesNotOverwriteNewerPassword`、`TestParamsFromEnv`、`TestValidatePassword` 及 `budget_test.go` | 加盐、参数升级后自动重哈希且不覆盖新密码、弱参数拒绝启动、最短长度按 Unicode 字符计、内存预算 |
 
 ## 已接受的风险
 
@@ -129,6 +134,12 @@
   - 已有的上限：哈希内存预算（默认 256 MiB）把同时进行的 argon2id 限制在 4 个，内存不会超；默认参数每个用 4 个线程，最多约 16 个线程在算，每个进程每秒约 80 次。所以不会无限占内存，但**能把后端的 CPU 占满**（容器核数少于 16 时），拖慢同一进程里的其他接口；排队等预算的请求没有上限，正常用户的密码登录会排在攻击请求后面，变得很慢甚至超时（这时验证码登录仍可用）。
   - 也会更容易被人故意把别人的账号锁住（对账号连续输错），不过开着按 IP 限流时换地址同样做得到。
   - 可选的缓解（是否做由 Owner 决定）：一是不改代码，把 `MULTICA_PASSWORD_ARGON2_MEMORY_BUDGET_KIB` 调到 `65536`，同时只算 1 个哈希，最多约 4 个线程，代价是攻击期间正常登录排队更久；二是改代码，给排队设上限，排队的请求超过一定数量就直接返回 429、不做哈希；三是改代码，加一个全进程的速率上限（例如每分钟 N 次，不分地址），超出返回 429。二和三在被攻击时都会让正常用户也收到「尝试次数过多」，但 CPU 和排队都有上限。
+- **调低最短长度**（`MULTICA_PASSWORD_MIN_LENGTH`，#138）：
+  - 在线猜某一个账号，靠的是按账号锁定，不是密码长度：5 次错后锁定，之后每错一次锁得更久，最长 1 小时，所以一个账号每天大约只能被猜 24 次（第一天 30 多次）。随机生成的 6 位密码在这个速度下猜不出来。
+  - 真正的风险是**常见密码**：最短长度越短，用户越可能选 `123456`、`password1` 这类密码，服务端不查常见密码表。攻击者用前几次猜测就会试这些。
+  - **和关掉按 IP 限流（#136）叠加时更明显**：开着按 IP 限流时，一个地址每分钟总共只能试 10 次；关掉之后只剩按账号锁定，攻击者可以对**每个账号**各试几个常见密码（每个账号锁定前都能试 5 次），不受总量限制。这时短密码完全依赖按账号锁定来防护，账号越多、短密码越多，被猜中的人越多。
+  - **数据库泄露时**：`user_credential` 里的哈希可以离线破解，argon2id 只能拖慢，不能阻止；短密码比 12 位的容易破解得多。
+  - 建议：不低于 8；如果同时关掉按 IP 限流，先看上一条的缓解办法；调低后提醒用户别用常见密码。调高不影响已有密码，见上文「开关与环境变量」。
 - **"无密码邮箱"计数会遗忘**：24 小时没有新失败、或服务重启后清空；真实账号的计数不会自己清零。所以长时间后两者可能不同，但每探测一次要等一天。
 - **IP 表满时放行**：同时跟踪的地址超过 1 万且都未过期时，新地址不计数（不因地址洪水挡住所有人）；按账号锁定仍然有效。
 - **锁上那一刻正在计算的猜测**：最多与哈希并发数相同（默认 4 个）的猜测在锁定前已开始计算，它们照样计入失败次数。
