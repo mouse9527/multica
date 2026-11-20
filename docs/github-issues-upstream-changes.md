@@ -26,7 +26,7 @@
 | `server/cmd/server/main.go` | M-85、M-86、M-136 | 调用 `agentrouter.Register`（M-86 起多传 `taskSvc`）：`router_v1` 打开时注册 Router 监听器和对账任务，`router_dispatch` 也打开时再注册派发任务；关闭时什么都不注册。M-136 紧挨着一行调用 `evolution.Register`：`evolution_v1` 打开时注册进化的定时任务，关闭时什么都不注册（一行和一个 import） | 有 |
 | `server/cmd/server/router.go` | M-85、M-135、M-41 | 挂载 `/api/router`（开关关闭时返回 404）；M-135 在旁边挂载 `/api/evolution`（`evolution_v1` 关闭时返回 404，一块）；M-41 在 `/auth/logout` 之后一行调用 `h.MountPasswordAuth`（`MULTICA_PASSWORD_AUTH_ENABLED` 关闭时什么都不注册） | 有 |
 | `server/internal/handler/handler.go` | M-41 | `Handler` 加字段 `PasswordAuth`（密码登录服务，未挂载时为 nil）和一个 import | 有 |
-| `server/internal/handler/config.go` | M-41 | `AppConfig` 加 `password_login_enabled`（`omitempty`，未挂载时不出现）和一行赋值 | 有 |
+| `server/internal/handler/config.go` | M-41、M-184 | `AppConfig` 加 `password_login_enabled`（`omitempty`，未挂载时不出现）；M-184 紧挨着加 `password_min_length`（同样 `omitempty`），赋值合成一个 `if` | 有 |
 | `server/internal/featureflags/keys.go` | M-85、M-89、M-86、M-96、M-97、M-105、M-135 | 新开关 `router_v1` 与 `RouterV1Enabled`；`handoff_reply_wake` 与 `HandoffReplyWakeEnabled`；`router_dispatch` 与 `RouterDispatchEnabled`；`router_chat` 与 `RouterChatEnabled`；`router_hold_shadow` 与 `RouterHoldShadowEnabled`；`EvaluateFrontendPublicFlags` 把 `router_chat` 的组合结果发给前端（一行）；M-135 再发布 `evolution_v1`（一行，常量和判断函数在 fork 文件 `evolution_fork.go`） | 有 |
 | `server/internal/handler/comment.go` | M-89 | `computeCommentAgentTriggers` 改名为 `computeUpstreamCommentAgentTriggers`（一行），由 fork 的同名包装函数调用，见 `handoff_reply_wake.go` | 有 |
 | `server/internal/handler/workspace.go` | M-20、M-85、M-136 | 删除工作区时清理迁移 9000 建的 5 张表（功能撤回后表仍在，见 [github-issues.md](github-issues.md)），以及 Router 的表（迁移 9004、9008，由 `agentrouter.DeleteWorkspaceData` 删除；M-86 新增的 3 张表不再改这个文件）；M-136 紧挨着加一步，由 `evolution.DeleteWorkspaceData` 删除迁移 9019 的 2 张表（一块和一个 import） | 有 |
@@ -41,7 +41,8 @@
 | `server/internal/handler/chat.go` | M-96 | `normalizeMessageKind` 原样透出 `router_batch`（一个 case） | 有 |
 | `server/pkg/db/queries/chat.sql` | M-96 | `ListChatSessionsByCreator`、`ListAllChatSessionsByCreator`：预览排除 Router 批次和批次轮次的 `no_response`，未读数不计后者 | 有 |
 | `server/pkg/db/generated/chat.sql.go` | M-96 | sqlc 按上面的 `chat.sql` 重新生成（生成文件，不手改） | 有（来自 SQL 注释） |
-| `packages/core/api/schemas.ts` | M-96 | 两处 `message_kind` 枚举加 `router_batch` | 有 |
+| `packages/core/api/schemas.ts` | M-96、M-43、M-184 | 两处 `message_kind` 枚举加 `router_batch`；M-43 在 `AppConfigResponse` 和 `AppConfigSchema` 末尾各加 `password_login_enabled`，M-184 紧挨着各加 `password_min_length` | 有 |
+| `packages/core/platform/auth-initializer.tsx` | M-43、M-184 | 读 `/api/config` 后把 `password_login_enabled`、`password_min_length` 写进 `passwordAuthConfigStore`（一个 import、两行） | 有 |
 | `packages/core/types/chat.ts` | M-96 | `ChatMessageKind` 加 `router_batch` | 有 |
 | `packages/views/chat/components/chat-message-list.tsx` | M-96 | 引入 `router-batch.tsx`：批次消息折叠显示，批次轮次的 `no_response` 不显示（一个 import、一个过滤、一个分支） | 有 |
 | `packages/core/package.json` | M-105、M-135 | 导出 `./router`；M-135 导出 `./evolution`（紧挨着的一行） | 无（JSON） |

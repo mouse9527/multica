@@ -45,9 +45,10 @@ argon2id（`golang.org/x/crypto/argon2`）。
 
 ## 密码规则
 
-- 最短 12 个字符（按 Unicode 字符计，不按字节）。
+- 最短长度按 Unicode 字符计，不按字节。默认 12；环境变量 `MULTICA_PASSWORD_MIN_LENGTH` 可改（#138），最低 6：设得更低按 6 处理，不是整数按 12 处理，两种情况都记一条 warn 日志。`HasherFromEnv` 读取它，所以服务端和 `reset_password` 用同一个值；`NewHasher` 固定用默认值。
 - 最长 1024 字节：防止超大输入消耗 CPU。登录时超长输入一定判错，但仍对前 1024 字节做一次哈希，耗时与普通错误密码、没设密码的账号相同。
-- 只在设置密码时校验（`ValidatePassword`、`Hasher.Hash`、`Store.SetPassword`）；登录时按存储的哈希原样比对。
+- 只在设置密码时校验（`Hasher.ValidatePassword`、`Hasher.Hash`、`Store.SetPassword`）；登录时按存储的哈希原样比对，所以改了最短长度后已有的密码照样能登录。
+- 太短的错误用 `errors.Is(err, ErrPasswordTooShort)` 判断，错误文字里带当时的最短长度。
 
 ## 不泄露密码与哈希
 
@@ -63,9 +64,10 @@ argon2id（`golang.org/x/crypto/argon2`）。
 - 关：不注册任何密码路由（请求得到 404），`/api/config` 不含 `password_login_enabled`，行为与上游一致。
 - 开：注册下面三个路由，`/api/config` 返回 `"password_login_enabled": true`。
 - 开但 argon2id 环境变量不合规：服务照常启动，记一条 error 日志，密码登录保持关闭（同上「关」），不会用弱参数存哈希。
+- 新密码的最短长度由 `MULTICA_PASSWORD_MIN_LENGTH` 决定，见下文「密码规则」（#138）。开关打开时 `/api/config` 同时返回 `"password_min_length": <N>`，关闭时没有这个字段。
 - 按 IP 限流另有开关 `MULTICA_PASSWORD_IP_LIMIT`，默认开，`0` 或 `false` 为关，见下文「失败锁定与限流」（#136）。
 
-上游文件里的钩子：`server/cmd/server/router.go` 一行 `h.MountPasswordAuth(...)`，`server/internal/handler/handler.go` 的 `PasswordAuth` 字段，`server/internal/handler/config.go` 的 `PasswordLoginEnabled` 字段和一行赋值。其余在 `server/internal/handler/passwordauth.go`、`server/internal/middleware/client_ip_fork.go` 和本包。
+上游文件里的钩子：`server/cmd/server/router.go` 一行 `h.MountPasswordAuth(...)`，`server/internal/handler/handler.go` 的 `PasswordAuth` 字段，`server/internal/handler/config.go` 的 `PasswordLoginEnabled`、`PasswordMinLength` 两个字段和一处赋值。其余在 `server/internal/handler/passwordauth.go`、`server/internal/middleware/client_ip_fork.go` 和本包。
 
 ## 接口
 
@@ -73,7 +75,7 @@ argon2id（`golang.org/x/crypto/argon2`）。
 |---|---|---|
 | `POST /auth/password-login` | 无 | 请求 `{"email","password"}`。成功返回与验证码登录相同的 `{"token","user"}`，并设置相同的 Cookie（`issueJWT`、`SetAuthCookies`、CloudFront Cookie）。不创建用户。CLI 的 `cli_callback` 流程不变：网页登录后照旧换 CLI token |
 | `GET /api/me/password` | 登录会话 | `{"has_password": bool}`，设置页据此决定要不要填当前密码 |
-| `POST /api/me/password` | 登录会话 | 请求 `{"current_password","new_password"}`。第一次设置只需会话；已有密码时必须给对当前密码。新密码最短 12 个字符。只作用于会话里的现有用户，用户不存在返回 401，不建用户、不建凭据 |
+| `POST /api/me/password` | 登录会话 | 请求 `{"current_password","new_password"}`。第一次设置只需会话；已有密码时必须给对当前密码。新密码最短 `MULTICA_PASSWORD_MIN_LENGTH` 个字符（默认 12），太短返回 400 `invalid_password`，`error` 里写明最短长度。只作用于会话里的现有用户，用户不存在返回 401，不建用户、不建凭据 |
 
 `/api/me/password` 只接受会话 JWT：判断的是鉴权中间件实际用的那个凭据（先看 `Authorization`，没有再看 Cookie，与中间件一致），不看它放在哪里。**直接提交的**任务令牌（`mat_`）、云节点令牌（`mcn_`）和个人访问令牌（`mul_`）都返回 403，放进 `multica_auth` Cookie 也一样（持有 PAT 的人能自己算出与它绑定的 CSRF 值，所以 CSRF 挡不住）。判断在 fork 文件 `server/internal/middleware/session_credential_fork.go`。
 
@@ -115,8 +117,8 @@ argon2id（`golang.org/x/crypto/argon2`）。
 - **登录页**（`packages/views/auth/login-page.tsx` 里的薄钩子，逻辑在 `packages/views/auth/password-login.tsx`）：开关打开时，第一步默认是邮箱加密码表单，「改用邮箱验证码」切回上游的验证码流程，Google 登录按钮照旧显示。邮箱框 `autocomplete="username"`、密码框 `type="password"` `autocomplete="current-password"`，密码管理器可自动填充。
 - **错误提示**：`invalid_credentials` 统一显示「邮箱或密码不正确」，`too_many_attempts`（锁定与限流）统一显示「尝试次数过多」，都不显示服务端原文，不区分账号是否存在；临时停用账号（403）沿用验证码登录的提示；其他失败显示通用的「登录失败」。失败后清空密码框。
 - **CLI 授权**（`?cli_callback=`）：密码登录与验证码登录一样，拿到 token 后直接交给 CLI 的本地回调。
-- **设置密码**：设置 → 个人资料页底部的「密码」区块（`packages/views/settings/components/password-section.tsx`），开关关闭时不渲染、也不请求接口。先读 `GET /api/me/password`：没有密码时只填新密码和确认（第一次设置），已有密码时还要填当前密码。新密码在前端先按服务端规则检查（至少 12 个字符、按 Unicode 字符计，不超过 1024 字节，两次一致），服务端仍是最终判断。服务端错误码按上文「错误响应」逐一翻译，`password_reset_required` 提示联系管理员重置。表单带一个隐藏的 `autocomplete="username"` 字段（当前邮箱），新密码框为 `new-password`。
-- **状态与接口**：开关状态在 `packages/core/passwordauth/config.ts`，由 `AuthInitializer` 读 `/api/config` 时写入；接口调用、查询与校验规则在 `packages/core/passwordauth/`；会话建立在 auth store 的 `loginWithPassword`，与验证码登录相同（Cookie 模式不在本地存 token）。文案在独立的 `passwordauth` 命名空间（`packages/views/locales/*/passwordauth.json`）。
+- **设置密码**：设置 → 个人资料页底部的「密码」区块（`packages/views/settings/components/password-section.tsx`），开关关闭时不渲染、也不请求接口。先读 `GET /api/me/password`：没有密码时只填新密码和确认（第一次设置），已有密码时还要填当前密码。新密码在前端先按服务端规则检查（至少 `/api/config` 下发的 `password_min_length` 个字符，没下发或不合法时按 12；按 Unicode 字符计，不超过 1024 字节，两次一致），服务端仍是最终判断。服务端错误码按上文「错误响应」逐一翻译，`password_reset_required` 提示联系管理员重置。表单带一个隐藏的 `autocomplete="username"` 字段（当前邮箱），新密码框为 `new-password`。
+- **状态与接口**：开关状态和最短长度在 `packages/core/passwordauth/config.ts`，由 `AuthInitializer` 读 `/api/config` 时写入；接口调用、查询与校验规则在 `packages/core/passwordauth/`；会话建立在 auth store 的 `loginWithPassword`，与验证码登录相同（Cookie 模式不在本地存 token）。文案在独立的 `passwordauth` 命名空间（`packages/views/locales/*/passwordauth.json`）。
 - **桌面端**与网页共用登录组件，开关打开时同样可用，但不专门适配也不测试；原生 mobile app 不包含。
 
 ## 日志
@@ -143,8 +145,8 @@ kubectl exec -i deploy/<后端> -- ./reset_password --email user@example.com < p
 
 - 密码**只从 stdin 读**，没有 `--password` 之类的参数，不会进 shell 历史和进程列表。stdin 是终端时关闭回显、输入两次核对（Linux、macOS）；不是终端时整个 stdin 就是密码，只允许末尾一个换行，多行报错。
 - 先按邮箱找用户（与登录相同：去首尾空白、转小写），找不到就报错退出，**不创建用户**；找到后才提示输入密码。
-- 密码规则与用户自己设置时相同（最短 12 个字符、最长 1024 字节）。成功后失败计数清零、解除锁定（`UpsertUserCredential` 一条语句完成）。
-- 读环境变量 `DATABASE_URL`（必需）和 `MULTICA_PASSWORD_ARGON2_*`，在容器里与服务端一致；参数不同也不要紧，用户下次登录时会自动重哈希。
+- 密码规则与用户自己设置时相同（最短 `MULTICA_PASSWORD_MIN_LENGTH` 个字符、默认 12，最长 1024 字节）。成功后失败计数清零、解除锁定（`UpsertUserCredential` 一条语句完成）。
+- 读环境变量 `DATABASE_URL`（必需）、`MULTICA_PASSWORD_ARGON2_*` 和 `MULTICA_PASSWORD_MIN_LENGTH`，在容器里与服务端一致；argon2id 参数不同也不要紧，用户下次登录时会自动重哈希。
 - 输出只有用户 ID，不回显密码。审计：在 stderr 写一行 JSON，`msg` 为 `passwordauth: audit: password reset by admin command`，含 `user_id`、`email`、`at`（UTC 时间），不含密码和哈希。这一行不走业务日志，`LOG_LEVEL` 设成 `warn` 或 `error` 也照样输出；写不出去时命令报错、退出码 1（此时密码已经改了，按报错提示另行留档）。注意 `kubectl exec` 的输出只回到执行人的终端，不进容器日志；需要留档时由执行人保存这条输出。
 - 退出码：0 成功；1 失败（用户不存在、密码不合规、数据库错误、审计记录写不出去）；2 用法错误。
 - 这个命令不看功能开关：开关只控制登录接口；关闭时设置的密码在打开后生效。
