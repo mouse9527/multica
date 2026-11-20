@@ -18,3 +18,20 @@ func Enabled(getenv func(string) string) bool {
 		return false
 	}
 }
+
+// EnvIPLimit switches the per-IP limit on login attempts. On by default; "0"
+// or "false" (any case, surrounding spaces ignored) turns it off, which leaves
+// the account lockout as the only throttle. It is a switch, not the limit
+// itself: any other value keeps IPLimit.
+const EnvIPLimit = "MULTICA_PASSWORD_IP_LIMIT"
+
+// IPLimitEnabled reports whether the per-IP limit is on. getenv is os.Getenv
+// in production.
+func IPLimitEnabled(getenv func(string) string) bool {
+	switch strings.ToLower(strings.TrimSpace(getenv(EnvIPLimit))) {
+	case "0", "false":
+		return false
+	default:
+		return true
+	}
+}
