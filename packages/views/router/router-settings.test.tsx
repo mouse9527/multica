@@ -1,9 +1,10 @@
 // Added by the mouse9527/multica fork: Router page settings (M-105), live
-// Super Agent settings (M-147), and the overlap refusal on subscribe (M-194).
+// Super Agent settings (M-147, M-172), and the overlap refusal on subscribe (M-194).
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api, ApiError } from "@multica/core/api";
+import { routerKeys } from "@multica/core/router";
 import type { Agent, ChatSession } from "@multica/core/types";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@multica/ui/components/ui/dropdown-menu";
 import { toast } from "sonner";
@@ -139,7 +140,7 @@ function Harness({ chat }: { chat: ChatSession }) {
 
 function show(ui: React.ReactElement, queries: { staleTime?: number } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0, ...queries } } });
-  return renderWithI18n(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  return { ...renderWithI18n(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>), qc };
 }
 
 function openMenu() {
@@ -300,6 +301,22 @@ describe("Router in the chat menu", () => {
     state.subscriptions = [sub()];
     fireEvent.click(item);
     expect(await screen.findByRole("dialog", { name: en.dialog.title_settings })).toBeInTheDocument();
+  });
+
+  it("shows a scope added elsewhere while the dialog stays open (M-172)", async () => {
+    state.subscriptions = [sub()];
+    const { qc } = show(<Harness chat={session} />, { staleTime: Infinity });
+    openMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: en.menu.settings }));
+    const dialog = await screen.findByRole("dialog", { name: en.dialog.title_settings });
+    expect(await within(dialog).findByText("M-1")).toBeInTheDocument();
+
+    // The chat's agent adds a scope through the CLI; router:subscription_changed
+    // invalidates the Router queries (the realtime sync's own test covers that step).
+    state.subscriptions = [sub(), sub({ id: "sub-2", scope_id: "issue-2", anchor_issue_id: "issue-2" })];
+    await act(() => qc.invalidateQueries({ queryKey: routerKeys.all("ws-1") }));
+    expect(await within(dialog).findByText("M-9")).toBeInTheDocument();
+    expect(within(dialog).getByText("M-1")).toBeInTheDocument();
   });
 
   it("rejects batching outside the server's limits", async () => {
