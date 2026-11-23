@@ -119,5 +119,16 @@
     "scope_paused": "{{scope}}（一時停止中）",
     "paused": "一時停止中（{{reasons}}）",
     "separator": "、"
+  },
+  "overlap": {
+    "title": "これらのスコープのイベントは、すでに他の Super Agent が受け取っています",
+    "item": "{{scope}}：{{agent}}（{{other}}）がそのうち {{n}} 件のタスクのイベントを受け取っています。",
+    "examples": "例：{{issues}}。",
+    "hint": "2 つの Super Agent が同じタスクをそれぞれ処理します。それでも追加する場合は、もう一度「{{action}}」を選んでください。"
+  },
+  "covering": {
+    "label": "Super Agent",
+    "none": "なし",
+    "superseded": "このエージェントのより狭いスコープがイベントを受け取ります"
   }
 }

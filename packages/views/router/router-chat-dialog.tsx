@@ -1,4 +1,5 @@
-// Added by the mouse9527/multica fork: Router page settings (M-105).
+// Added by the mouse9527/multica fork: Router page settings (M-105), and the
+// overlap refusal on subscribe (M-194).
 //
 // "Set as Router" / "Router settings" for one chat. A Router is the chat plus
 // the subscriptions bound to it; its agent is the chat's agent. Every write
@@ -15,6 +16,7 @@ import {
   routerStatus,
   routerSubscriptionsOfChat,
   routerSubscriptionsOptions,
+  RouterScopeOverlapError,
   RouterScopeTakenError,
   useLastRouterDispatch,
   useAddRouterScopes,
@@ -23,6 +25,7 @@ import {
   useSetRouterPaused,
   useUpdateRouterSettings,
   type AddRouterScopesResult,
+  type RouterOverlap,
   type RouterReleaseMode,
   type RouterSettingsInput,
   type RouterSubscription,
@@ -52,6 +55,7 @@ import { X } from "@multica/ui/icons";
 import { useT, useTimeAgo } from "../i18n";
 import { DEFAULT_ROUTER_SETTINGS, settingsChanged, settingsOf, validSettings, type PendingScope } from "./router-form";
 import { BoardLink, RouterStatusBadge, ScopeLabel, ScopePausedBadge } from "./router-labels";
+import { overlapsOf, RouterOverlapWarning } from "./router-overlap-warning";
 import { RouterScopePicker } from "./router-scope-picker";
 import { RouterSettingsFields } from "./router-settings-fields";
 
@@ -115,11 +119,15 @@ function useBoard(session: ChatSession) {
   return { title: t(($) => $.board.title, { chat }), description: t(($) => $.board.description, { chat }) };
 }
 
-/** Toasts each scope that failed; returns whether any was created. */
+/**
+ * Toasts each scope that failed, except an overlap, which the form shows
+ * (RouterOverlapWarning); returns whether any was created.
+ */
 function useReportAdded() {
   const { t } = useT("router");
   return (result: AddRouterScopesResult, labels: Map<string, string>) => {
     for (const f of result.failed) {
+      if (f.error instanceof RouterScopeOverlapError) continue;
       const scope = labels.get(f.scope.scope_id) ?? f.scope.scope_id;
       toast.error(
         f.error instanceof RouterScopeTakenError
@@ -157,6 +165,7 @@ function RouterSetupBody({
   const add = useAddRouterScopes();
   const [scopes, setScopes] = useState<PendingScope[]>([]);
   const [settings, setSettings] = useState<RouterSettingsInput>(DEFAULT_ROUTER_SETTINGS);
+  const [overlaps, setOverlaps] = useState<Map<string, RouterOverlap[]>>(() => new Map());
   const busy = add.isPending;
 
   const submit = async () => {
@@ -167,10 +176,13 @@ function RouterSetupBody({
       settings,
       board,
       existing: allSubs,
+      // Shown the overlap, the member submitted again: add those anyway.
+      allowOverlap: [...overlaps.keys()],
     });
     const created = new Set(result.created.map((s) => s.scope_id));
     // Keep what failed in the form so it can be retried.
     setScopes((prev) => prev.filter((s) => !created.has(s.scope_id)));
+    setOverlaps(overlapsOf(result));
     if (report(result, new Map(scopes.map((s) => [s.scope_id, s.label])))) {
       toast.success(t(($) => $.toast.created));
       if (result.failed.length === 0) onDone();
@@ -186,6 +198,11 @@ function RouterSetupBody({
           {scopes.some((s) => s.scope_type === "project") && (
             <p className="text-caption text-muted-foreground">{t(($) => $.scopes.board_hint)}</p>
           )}
+          <RouterOverlapWarning
+            overlaps={overlaps}
+            labels={new Map(scopes.map((s) => [s.scope_id, s.label]))}
+            action={t(($) => $.actions.create)}
+          />
         </section>
         <RouterSettingsFields value={settings} onChange={setSettings} disabled={busy} />
       </div>
@@ -222,6 +239,7 @@ function RouterSettingsBody({
   const release = useReleaseRouter();
   const [pending, setPending] = useState<PendingScope[]>([]);
   const [settings, setSettings] = useState<RouterSettingsInput>(() => settingsOf(subs));
+  const [overlaps, setOverlaps] = useState<Map<string, RouterOverlap[]>>(() => new Map());
   const [releasing, setReleasing] = useState(false);
   const busy = add.isPending || update.isPending || pause.isPending || remove.isPending || release.isPending;
   const paused = routerStatus(subs).kind === "paused";
@@ -240,9 +258,11 @@ function RouterSettingsBody({
           settings,
           board,
           existing: allSubs,
+          allowOverlap: [...overlaps.keys()],
         });
         const created = new Set(result.created.map((s) => s.scope_id));
         setPending((prev) => prev.filter((s) => !created.has(s.scope_id)));
+        setOverlaps(overlapsOf(result));
         report(result, new Map(pending.map((s) => [s.scope_id, s.label])));
         if (result.failed.length > 0) return;
       }
@@ -305,6 +325,11 @@ function RouterSettingsBody({
           {pending.some((s) => s.scope_type === "project") && (
             <p className="text-caption text-muted-foreground">{t(($) => $.scopes.board_hint)}</p>
           )}
+          <RouterOverlapWarning
+            overlaps={overlaps}
+            labels={new Map(pending.map((s) => [s.scope_id, s.label]))}
+            action={t(($) => $.actions.save)}
+          />
         </section>
         <RouterSettingsFields value={settings} onChange={setSettings} disabled={busy} />
         <RouterHealth subs={subs} />

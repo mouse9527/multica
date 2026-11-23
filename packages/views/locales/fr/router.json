@@ -119,5 +119,16 @@
     "scope_paused": "{{scope}} (en pause)",
     "paused": "En pause ({{reasons}})",
     "separator": ", "
+  },
+  "overlap": {
+    "title": "D'autres Super Agents reçoivent déjà les événements de ces périmètres",
+    "item": "{{scope}} : {{agent}} ({{other}}) reçoit les événements de {{n}} de ses tâches.",
+    "examples": "Par exemple {{issues}}.",
+    "hint": "Les deux Super Agents traiteraient les mêmes tâches. Pour ajouter ces périmètres quand même, choisissez {{action}} à nouveau."
+  },
+  "covering": {
+    "label": "Super Agent",
+    "none": "Aucun",
+    "superseded": "Un périmètre plus restreint de cet agent reçoit les événements"
   }
 }

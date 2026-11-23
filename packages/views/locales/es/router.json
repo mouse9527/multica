@@ -119,5 +119,16 @@
     "scope_paused": "{{scope}} (en pausa)",
     "paused": "En pausa ({{reasons}})",
     "separator": ", "
+  },
+  "overlap": {
+    "title": "Otros Super Agents ya reciben los eventos de estos ámbitos",
+    "item": "{{scope}}: {{agent}} ({{other}}) recibe los eventos de {{n}} de sus tareas.",
+    "examples": "Por ejemplo, {{issues}}.",
+    "hint": "Ambos Super Agents actuarían sobre las mismas tareas. Para añadir estos ámbitos de todos modos, elige {{action}} otra vez."
+  },
+  "covering": {
+    "label": "Super Agent",
+    "none": "Ninguno",
+    "superseded": "Un ámbito más estrecho de este agente recibe los eventos"
   }
 }

@@ -1,11 +1,12 @@
-// Added by the mouse9527/multica fork: Router page settings (M-105) and live
-// Super Agent settings (M-147).
+// Added by the mouse9527/multica fork: Router page settings (M-105), live
+// Super Agent settings (M-147), and the overlap refusal on subscribe (M-194).
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { api } from "@multica/core/api";
+import { api, ApiError } from "@multica/core/api";
 import type { Agent, ChatSession } from "@multica/core/types";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@multica/ui/components/ui/dropdown-menu";
+import { toast } from "sonner";
 import { renderWithI18n } from "../test/i18n";
 import en from "../locales/en/router.json";
 import { useRouterChatMenu } from "./use-router-chat-menu";
@@ -209,6 +210,52 @@ describe("Router in the chat menu", () => {
       },
     });
     expect(api.createIssue).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("names the Super Agents a new scope overlaps, and adds it when created again (M-194)", async () => {
+    const fallback = request.getMockImplementation()!;
+    let refused = false;
+    request.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (init?.method === "POST" && path === "/api/router/subscriptions" && !refused) {
+        refused = true;
+        throw new ApiError("overlap", 409, "Conflict", {
+          code: "router_scope_overlap",
+          error: "other Super Agents already receive events from this scope",
+          overlaps: [
+            {
+              subscription_id: "sub-ops",
+              agent_id: "agent-2",
+              agent_name: "ops",
+              scope_type: "project",
+              scope_id: "proj-2",
+              scope_name: "home",
+              issue_count: 3,
+              issues: ["M-4"],
+            },
+          ],
+        });
+      }
+      return fallback(path, init);
+    });
+    show(<Harness chat={session} />);
+    openMenu();
+    fireEvent.click(await screen.findByRole("menuitem", { name: en.menu.setup }));
+    const dialog = await screen.findByRole("dialog", { name: en.dialog.title_setup });
+    fireEvent.click(within(dialog).getByRole("button", { name: en.scopes.add_issue_tree }));
+    fireEvent.click(screen.getByRole("button", { name: "pick root" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: en.actions.create }));
+
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent(en.overlap.title);
+    expect(alert).toHaveTextContent(/ops \(home\) receives 3 of its issues/);
+    expect(alert).toHaveTextContent("M-4");
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(calls("POST")[0]?.body).not.toHaveProperty("allow_overlap");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: en.actions.create }));
+    await waitFor(() => expect(calls("POST")).toHaveLength(2));
+    expect(calls("POST")[1]?.body).toMatchObject({ scope_id: "issue-root", allow_overlap: true });
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
