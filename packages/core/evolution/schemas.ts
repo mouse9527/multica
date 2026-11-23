@@ -1,4 +1,4 @@
-// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-137, M-138).
+// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-137, M-138, M-139).
 
 import { z } from "zod";
 
@@ -45,6 +45,10 @@ export const EvolutionConfigSchema = z.object({
   max_proposals_per_run: z.number().int().catch(5),
   min_evidence_count: z.number().int().catch(2),
   rejected_cooldown_days: z.number().int().catch(30),
+  // P5 (M-139): effect measurement. Kept so a save round-trips them.
+  effect_window_days: z.number().int().catch(7),
+  regression_threshold_percent: z.number().int().catch(20),
+  min_effect_sample: z.number().int().catch(5),
 });
 
 export const EvolutionRunSchema = z.object({
