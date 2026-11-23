@@ -11,6 +11,7 @@
 - `router_hold_shadow`（v6 切片 2），默认关闭，`FF_ROUTER_HOLD_SHADOW=true` 打开，**只在 `router_chat` 也打开时生效**，启动时读一次。关闭时不注册收件箱拦截器，收件箱写入与上游完全一致；批次里也没有「Hold preview」一节。
 - `router_inbox_resolve`（S3a，M-118），默认关闭，`FF_ROUTER_INBOX_RESOLVE=true` 打开，**只在 `router_v1` 也打开时生效**，启动时读一次。另外只在工作区设置里有 `router_inbox_resolve`（指定了 Owner）的工作区生效。任一缺失时不注册监听器和对账任务、不归档任何条目，行为与上游一致。开关常量放在 `internal/agentrouter/inbox_resolve.go`，没有改 `featureflags/keys.go`。
 - `router_inbox_rules`（S3b，M-133），默认关闭，`FF_ROUTER_INBOX_RULES=true` 打开，**只在影子钩子注册时生效**（`router_hold_shadow` 及它依赖的开关都打开），启动时读一次。另外只在工作区设置里有 `router_inbox_rules`（规则清单）的工作区生效。任一缺失时影子行照旧写、不带判定，收件箱写入与关闭时完全一样。开关常量放在 `internal/agentrouter/inbox_rules.go`，没有改 `featureflags/keys.go`。
+- `router_chat_quiet`（M-210），默认关闭，`FF_ROUTER_CHAT_QUIET=true` 打开，**只在 `router_chat` 也打开时生效**，启动时读一次。打开后批次轮次可以「静默结束」：回复留在 chat 里，但不弹 chat 回复通知（见后文「通知与显示」）。关闭时批次说明和通知都与上游一致。开关常量放在 `internal/agentrouter/chat_quiet.go`，没有改 `featureflags/keys.go`。
 - `MULTICA_ROUTER_RECONCILE_INTERVAL`：对账周期（Go duration，如 `5m`），默认 5 分钟，最小 30 秒。
 
 ## 数据（迁移 9004–9007，只新增表）
@@ -232,6 +233,7 @@ Super Agent 只做分派、跟踪、转告，不自己干活。实质性工作�
 ### 通知与显示
 
 - 批次轮次没有文字输出时，上游照常写一条 `no_response`，它不弹通知；有文字输出就是一条普通回复，走 chat 回复通知（#10424），这就是 Super Agent 找 Owner 的方式。
+- 静默结束（M-210，开关 `router_chat_quiet`）：运行环境发现轮次没有可见回复时会要求补一句，所以批次轮次实际上总有文字，每一轮都弹通知。开关打开后，批次说明告诉 Super Agent：这一批没有需要 Owner 新决定或新操作的事时，回复第一行只写 `[无需你处理]`。服务端在 `broadcastChatDone` 挂通知前问 fork 的钩子（`service.SetChatReplyAlertGate`，判定在 `agentrouter/chat_quiet.go`）：这一轮的输入只有批次消息、没有 Owner 的消息，并且回复第一行是这个标记（允许外面包一层 `**`），或整条回复以运行环境的报错 `API Error:` 开头，就不挂通知。消息本身、`chat:done`、未读都照旧，Owner 打开 chat 能看到。Owner 发起的轮次、带 Owner 消息的轮次、不带标记的批次回复照常通知；查询出错时也照常通知。批次轮次失败（任务 `failed`）本来就只留失败消息、不弹通知，不受影响。
 - 会话列表的预览不显示批次消息和批次轮次的 `no_response`，未读数也不算后者（`chat.sql` 两个列表查询）。
 - 前端：批次消息显示为折叠的卡片（标题是正文前两行），批次轮次的 `no_response` 不显示：按输入归属识别，即 `no_response` 的任务就是写这条批次的任务（批次轮次没有系统重试，回复总是带着这个任务 ID）（`packages/views/chat/components/router-batch.tsx`）。批次写入时广播的 `chat:message` 不带 `message_id`，客户端只刷新、不先插一条不带类型的用户气泡。
 - 消息类型 `router_batch` 的挂法（M-141）：常量在 fork 文件 `pkg/protocol/router_fork.go`；接口经上游 `normalizeMessageKind` 的 `default` 分支调用 `forkChatMessageKind`（`handler/agent_router_chat_kind.go`）原样透出；前端只在 `ChatMessageSchema` 的枚举里登记，判断用 `isRouterBatch`（`router-batch.tsx`），上游的 `ChatMessageKind` 类型不列这个值。这样上游再加 chat 消息类型时，只有那一行枚举可能冲突。

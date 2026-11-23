@@ -1,4 +1,4 @@
-// Added by the mouse9527/multica fork: the Super Agent guide in the CLI (M-150), and issues a Super Agent creates (M-175).
+// Added by the mouse9527/multica fork: the Super Agent guide in the CLI (M-150), issues a Super Agent creates (M-175), and quiet batch replies (M-210).
 
 package main
 
@@ -141,4 +141,33 @@ func runRouterGuide(t *testing.T) string {
 		t.Fatalf("multica router guide: %v", err)
 	}
 	return out.String()
+}
+
+// Every text reply in a chat alerts the owner, and a batch turn cannot end
+// without text, so the guide names the line that keeps a batch reply quiet,
+// says when not to use it, and shows using it on a decision as the wrong way
+// (M-210). The marker must match agentrouter.QuietReplyMarker.
+func TestRouterGuideExplainsQuietBatchReplies(t *testing.T) {
+	guide := runRouterGuide(t)
+	start := strings.Index(guide, "## 没事可报的批次")
+	if start < 0 {
+		t.Fatal("`multica router guide` lacks the quiet batch section")
+	}
+	section := guide[start:]
+	if end := strings.Index(section[1:], "\n## "); end >= 0 {
+		section = section[:end+1]
+	}
+	for _, want := range []string{
+		"`[无需你处理]`",
+		"router_chat_quiet",
+		"不要写这一行",
+		"Owner 自己发起的轮次",
+		"API Error:",
+		"反例",
+		"正例",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("the quiet batch section lacks %q:\n%s", want, section)
+		}
+	}
 }

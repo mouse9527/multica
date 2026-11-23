@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), no rate pause (M-111), self-contained owner decisions (M-162), the chat wakeup and batch split (M-164), what "subscribed" means (M-175), and own actions by run (M-193).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), no rate pause (M-111), self-contained owner decisions (M-162), the chat wakeup and batch split (M-164), what "subscribed" means (M-175), own actions by run (M-193), and quiet batch replies (M-210).
 
 package agentrouter
 
@@ -73,6 +73,9 @@ type Dispatcher struct {
 	// have taken since the last batch, and prunes old shadow rows (the
 	// router_hold_shadow feature, hold.go).
 	HoldShadow bool
+	// Quiet tells chat batches how to end without alerting the owner (the
+	// router_chat_quiet feature, chat_quiet.go).
+	Quiet bool
 
 	lastPrune atomic.Int64
 }
@@ -406,7 +409,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 	}
 	note := buildNote(noteInput{
 		sub: sub, anchorKey: anchorKey, scopeLabel: scopeLabel(ctx, tx, sub),
-		batch: batch, inflight: inflight, inflightTotal: total, now: time.Now(), chat: chatID != "",
+		batch: batch, inflight: inflight, inflightTotal: total, now: time.Now(), chat: chatID != "", quiet: d.Quiet,
 		shadow: shadow, shadowTotal: shadowTotal,
 	})
 
@@ -792,6 +795,8 @@ type noteInput struct {
 	now           time.Time
 	// chat: the note is written into the subscription's chat (M-96).
 	chat bool
+	// quiet: a chat batch can end with a quiet reply (M-210).
+	quiet bool
 	// shadow lists the inbox items the hold would have taken (M-97), of
 	// shadowTotal not yet listed.
 	shadow      []shadowHold
@@ -840,6 +845,22 @@ const routerOwnerDecisions = "Every decision you ask of the owner must stand on 
 	"list every open decision, and only those, each time you reply. " +
 	"See \"请 Owner 决定的事\" in `multica router guide`.\n"
 
+// chatBatchReplyRule says when a chat batch's reply alerts the owner. With
+// quiet replies on, a reply that opens with QuietReplyMarker stays in the
+// chat without the alert; the turn cannot end without text, as the runtime
+// asks for a visible reply.
+func chatBatchReplyRule(quiet bool) string {
+	if !quiet {
+		return "Any text you reply here notifies the owner: reply only when they need to know, decide or act, and say so plainly. " +
+			"When nothing needs them, finish without any text reply; the turn stays silent.\n"
+	}
+	return "A reply here notifies the owner unless its first line is exactly `" + QuietReplyMarker + "`. " +
+		"When the batch brings nothing new for the owner to decide or act on, start the reply with that line and add at most one short line on what happened; " +
+		"it stays in this chat without notifying them, and does not repeat the open decisions. " +
+		"When the owner has something new to decide or act on, never use that line: reply plainly, and the owner is notified. " +
+		"See \"没事可报的批次\" in `multica router guide`.\n"
+}
+
 // buildNote renders the run's context: the batch, the open issues in scope
 // and the subscription's state, with the CLI commands that reach further.
 // The daemon puts it in the run's prompt as the handoff note.
@@ -861,8 +882,7 @@ func buildNote(in noteInput) string {
 			"You are the Super Agent for this scope. Read the events, check current state where it matters, and act. " +
 			"Your own actions are left out and never start a batch: those of your turns in this chat. " +
 			"What your agent does in issue tasks or other chats comes in like anyone else's, so work you hand to your own agent is reported here too. " +
-			"Any text you reply here notifies the owner: reply only when they need to know, decide or act, and say so plainly. " +
-			"When nothing needs them, finish without any text reply; the turn stays silent.\n" +
+			chatBatchReplyRule(in.quiet) +
 			routerBoundary +
 			"When the owner asks you something here, answer directly only if one sentence from current state answers it; " +
 			"otherwise open an issue, hand it off and reply with one line naming the issue and who has it.\n\n")
