@@ -308,10 +308,6 @@ const (
 	// the opening self-describes: chat renders the starter cards under this
 	// kind instead of quick-action chips (MUL-5765).
 	ChatMessageKindOnboardingOpening = "onboarding_opening"
-	// ChatMessageKindRouterBatch is a batch of issue events the server wrote
-	// into a Router chat as a user-role input (role 'user', not said by the
-	// session's creator). Modified for the mouse9527/multica fork (M-96).
-	ChatMessageKindRouterBatch = "router_batch"
 	// ChatMessageKindWakeup is the server-authored input of a turn a chat
 	// wakeup started. Its content is for the runtime; clients render a
 	// divider naming the wakeup (wakeup_id) instead of the text.

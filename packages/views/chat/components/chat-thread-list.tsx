@@ -53,7 +53,9 @@ import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useLocale, useT } from "../../i18n";
 import { SessionHistoryList } from "./session-history-list";
 import { SessionRenameInput } from "./session-rename-input";
+
 // Modified by the mouse9527/multica fork (M-108): the Router marker beside a Router chat's title.
+// Below the import block, apart from upstream's imports (M-141).
 import { RouterChatListMarker } from "../../router/router-chat-marker";
 
 const apiLogger = createLogger("chat.api");

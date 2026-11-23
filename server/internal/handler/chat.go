@@ -2212,12 +2212,9 @@ func normalizeMessageKind(kind string) string {
 		return protocol.ChatMessageKindOnboardingKickoff
 	case protocol.ChatMessageKindOnboardingOpening:
 		return protocol.ChatMessageKindOnboardingOpening
-	// Modified for the mouse9527/multica fork (M-96): a Router event batch.
-	case protocol.ChatMessageKindRouterBatch:
-		return protocol.ChatMessageKindRouterBatch
 	case protocol.ChatMessageKindWakeup:
 		return protocol.ChatMessageKindWakeup
 	default:
-		return protocol.ChatMessageKindMessage
+		return forkChatMessageKind(kind) // mouse9527/multica fork (M-96, M-141)
 	}
 }

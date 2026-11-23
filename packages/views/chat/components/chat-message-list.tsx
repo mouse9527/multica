@@ -48,8 +48,6 @@ import { buildTimeline } from "../../common/task-transcript";
 import { readCommandInput, traceToolArgSummary } from "../../common/task-transcript/trace-event-presenter";
 import { OnboardingStarterCards } from "./onboarding-starter-cards";
 import { TaskStatusPill } from "./task-status-pill";
-// Modified for the mouse9527/multica fork (M-96): Router batch messages.
-import { RouterBatchMessage, hideSilentRouterTurns } from "./router-batch";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { FOLLOW_EDGE_THRESHOLD } from "../../common/task-transcript/transcript-follow";
 import { LIVE_END_ROW_ATTR, useStickToBottom } from "./stick-to-bottom";
@@ -64,6 +62,10 @@ import { stripChatQuickActionsProtocol } from "../lib/quick-actions";
 import { useT } from "../../i18n";
 import { isAnnotatableChatMessage, type ChatAnnotations } from "./use-chat-annotations";
 import { ChatWakeupCards, ChatWakeupDivider, useWakeupsBySourceTask } from "./chat-wakeups";
+
+// Modified for the mouse9527/multica fork (M-96): Router batch messages.
+// Below the import block, apart from upstream's imports (M-141).
+import { RouterBatchMessage, hideSilentRouterTurns, isRouterBatch } from "./router-batch";
 
 // ─── Public component ────────────────────────────────────────────────────
 
@@ -545,6 +547,13 @@ const MessageBubble = memo(function MessageBubble({
   /** Wakeups this row's turn created. */
   createdWakeups?: ChatWakeup[];
 }) {
+  // Modified for the mouse9527/multica fork (M-96, M-141): a Router batch is
+  // its own card. Kept apart from the kind branches below, where upstream
+  // adds its own kinds.
+  if (item.kind === "message" && isRouterBatch(item.message)) {
+    return <RouterBatchMessage message={item.message} />;
+  }
+
   // The live row and the persisted assistant row both land here under one key,
   // and both render <AssistantMessage> — same component type, same position —
   // so React reconciles rather than remounts at task completion. The wakeup
@@ -569,10 +578,6 @@ const MessageBubble = memo(function MessageBubble({
   // A wakeup turn's input is the runtime's, not something the person wrote.
   if (message.message_kind === "wakeup") {
     return <ChatWakeupDivider message={message} wakeup={wakeup} />;
-  }
-
-  if (message.message_kind === "router_batch") {
-    return <RouterBatchMessage message={message} />;
   }
 
   if (message.role === "user") {

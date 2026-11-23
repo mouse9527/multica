@@ -80,7 +80,6 @@ import { ActionShortcutKeycaps } from "../../common/shortcut-keycaps";
 import { UnsubscribeArchiveButton } from "../../inbox/components/unsubscribe-archive-button";
 import type { InboxUnsubscribeScope } from "@multica/core/inbox/mutations";
 import { PropRow } from "../../common/prop-row";
-import { IssueSuperAgentsRow } from "../../router/issue-super-agents"; // mouse9527/multica fork (M-194)
 import { TimelineHandoff } from "../../workflows/timeline-handoff";
 import { PropertyIcon } from "../../common/property-icon";
 import type { Attachment, Issue, IssueProperty, IssueStatus, IssueStatusCategory, IssuePriority, TimelineEntry, UpdateIssueRequest } from "@multica/core/types";
@@ -228,6 +227,10 @@ import {
   useAnimatedRightSidebarState,
   useRightSidebarShortcut,
 } from "../../layout/animated-right-sidebar";
+
+// mouse9527/multica fork (M-194), below the import block, apart from
+// upstream's imports (M-141).
+import { IssueSuperAgentsRow } from "../../router/issue-super-agents";
 
 /**
  * Memento entry recording that the comment-highlight deep link for this
