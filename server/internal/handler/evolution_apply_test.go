@@ -494,8 +494,9 @@ func TestEvolutionRollbackWaitsForSkillEdits(t *testing.T) {
 }
 
 // TestEvolutionProposalInPrivateProject: a proposal moved into a private
-// project is not found for a member outside it, like the issue itself; an
-// owner still sees it.
+// project is not found for a member outside it, like the issue itself, and
+// its writes answer that member 403 without loading it; an owner still sees
+// and may apply it.
 func TestEvolutionProposalInPrivateProject(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -513,6 +514,10 @@ func TestEvolutionProposalInPrivateProject(t *testing.T) {
 		testPool.Exec(context.Background(), `DELETE FROM member WHERE user_id = $1`, member)
 	})
 	evolutionCall(t, member, newRequest("GET", proposalRoute(issueID, ""), nil)).Want(http.StatusNotFound)
+	// Writes refuse a member before the issue is loaded, so they reveal
+	// nothing either.
+	changeProposal(t, member, issueID, "apply").Want(http.StatusForbidden)
+	changeProposal(t, member, issueID, "rollback").Want(http.StatusForbidden)
 	if state := proposalState(t, testUserID, issueID); !state.CanApply {
 		t.Fatalf("owner state: %+v", state)
 	}
