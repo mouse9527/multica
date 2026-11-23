@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// A batch turn always ends with text: the agent runtime asks for a visible
-// reply when a turn ends without one, and every text reply in a chat raises
+// A batch turn almost always ends with text: the agent runtime often asks for
+// a visible reply when a turn ends without one, and every text reply in a chat raises
 // the owner's chat reply alert. Most batches need nothing from the owner, so
 // with FlagChatQuiet on a batch turn can end quietly: its reply stays in the
 // chat, but raises no alert. Turns the owner starts, and batch replies that
