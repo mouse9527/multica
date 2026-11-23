@@ -1,4 +1,5 @@
-// Added by the mouse9527/multica fork: Evolution P3, filing proposals (M-137).
+// Added by the mouse9527/multica fork: Evolution P3, filing proposals (M-137);
+// P4 stores what a proposal changes (M-138).
 
 package evolution
 
@@ -15,13 +16,10 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/multica-ai/multica/server/internal/events"
 	inboxwriter "github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/dbid"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // ProposalLabel is the issue label every proposal carries.
@@ -110,6 +108,10 @@ func (s *Proposals) File(ctx context.Context, req FileRequest) (FileResult, erro
 		return FileResult{}, err
 	}
 	if err := p.CheckTarget(snap); err != nil {
+		return FileResult{}, err
+	}
+	proposed, err := p.Patched(snap)
+	if err != nil {
 		return FileResult{}, err
 	}
 	evidence, err := s.resolveEvidence(ctx, req)
@@ -223,6 +225,15 @@ func (s *Proposals) File(ctx context.Context, req FileRequest) (FileResult, erro
 		WHERE id = $1::uuid AND workspace_id = $2::uuid`, issueID, req.WorkspaceID, string(meta)); err != nil {
 		return FileResult{}, fmt.Errorf("mark proposal issue %s: %w", issueID, err)
 	}
+	// What apply will write (P4), out of reach of edits to the issue.
+	if err := saveProposalRecord(ctx, tx, ProposalRecord{
+		IssueID: issueID, WorkspaceID: req.WorkspaceID, RunID: run.ID,
+		TargetType: p.Target.Type, TargetID: p.Target.ID, Field: p.Field, BaseHash: snap.ContentHash(),
+		ChangeBefore: p.Change.Before, ChangeAfter: p.Change.After,
+		BaseValue: snap.Fields[p.Field], ProposedValue: proposed,
+	}); err != nil {
+		return FileResult{}, fmt.Errorf("record proposal %s: %w", issueID, err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return FileResult{}, fmt.Errorf("mark proposal issue %s: %w", issueID, err)
 	}
@@ -333,40 +344,11 @@ func (s *Proposals) appendEvidence(ctx context.Context, req FileRequest, run Run
 	}
 	lang := proposalLanguage(req.AgentName)
 	content := renderMoreEvidence(lang, fresh, run.IssueID, runIssue, req.Config.Location())
-	issueUUID, wsUUID := util.MustParseUUID(e.ID), util.MustParseUUID(req.WorkspaceID)
-	created, err := s.Queries.CreateComment(ctx, db.CreateCommentParams{
-		ID:          dbid.NewV7(),
-		IssueID:     issueUUID,
-		WorkspaceID: wsUUID,
-		AuthorType:  "agent",
-		AuthorID:    util.MustParseUUID(req.AgentID),
-		Content:     content,
-		Type:        "comment",
-	})
+	created, err := addComment(ctx, s.Queries, req.WorkspaceID, e.ID, "agent", req.AgentID, content)
 	if err != nil {
 		return 0, fmt.Errorf("add evidence to %s: %w", e.Identifier, err)
 	}
-	if s.Bus != nil {
-		comment := created.Comment()
-		s.Bus.Publish(events.Event{
-			Type:        protocol.EventCommentCreated,
-			WorkspaceID: req.WorkspaceID,
-			ActorType:   "agent",
-			ActorID:     req.AgentID,
-			Payload: map[string]any{
-				"comment": map[string]any{
-					"id":          util.UUIDToString(comment.ID),
-					"issue_id":    util.UUIDToString(comment.IssueID),
-					"author_type": comment.AuthorType,
-					"author_id":   util.UUIDToString(comment.AuthorID),
-					"content":     comment.Content,
-					"type":        comment.Type,
-					"revision":    comment.Revision,
-				},
-				"issue_revision": created.IssueRevision,
-			},
-		})
-	}
+	PublishComment(s.Bus, req.WorkspaceID, created)
 	return len(fresh), nil
 }
 
@@ -420,111 +402,38 @@ func identifierOf(number int32, sibling string) string {
 // itself, and excluded agents.
 func (s *Proposals) loadTarget(ctx context.Context, req FileRequest) (TargetSnapshot, error) {
 	p := req.Proposal
-	snap := TargetSnapshot{Type: p.Target.Type, ID: p.Target.ID, Fields: map[string]string{}}
-	notFound := reject(RejectTarget, "%s %s was not found in this workspace", p.Target.Type, p.Target.ID)
-	switch p.Target.Type {
-	case TargetAgent:
-		var kind, systemKey, instructions, description string
-		var archived bool
-		err := s.DB.QueryRow(ctx, `
-			SELECT name, description, instructions, kind, COALESCE(system_key, ''), archived_at IS NOT NULL
-			FROM agent WHERE id = $1::uuid AND workspace_id = $2::uuid`, p.Target.ID, req.WorkspaceID).
-			Scan(&snap.Name, &description, &instructions, &kind, &systemKey, &archived)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return snap, notFound
-		}
-		if err != nil {
-			return snap, err
-		}
-		switch {
-		case systemKey == service.EvolutionSystemKey:
-			return snap, reject(RejectTarget, "Evolution never proposes changes to itself")
-		case kind == "system":
-			return snap, reject(RejectTarget, "agent %s is an internal system agent and cannot be a target", p.Target.ID)
-		case archived:
-			return snap, reject(RejectTarget, "agent %s is archived", p.Target.ID)
-		}
+	snap, st, err := ReadTarget(ctx, s.DB, req.WorkspaceID, p.Target.Type, p.Target.ID, false)
+	if errors.Is(err, ErrTargetNotFound) {
+		return snap, reject(RejectTarget, "%s %s was not found in this workspace", p.Target.Type, p.Target.ID)
+	}
+	if err != nil {
+		return snap, err
+	}
+	if err := refuseTarget(p.Target.Type, p.Target.ID, st); err != nil {
+		return snap, err
+	}
+	if p.Target.Type == TargetAgent {
 		for _, ex := range req.Config.ExcludeAgents {
 			if ex == p.Target.ID {
 				return snap, reject(RejectTarget, "agent %s is excluded from Evolution", p.Target.ID)
 			}
 		}
-		skills, err := s.lines(ctx, `
-			SELECT s.name FROM agent_skill x JOIN skill s ON s.id = x.skill_id
-			WHERE x.agent_id = $1::uuid AND x.enabled ORDER BY lower(s.name), s.name`, p.Target.ID)
-		if err != nil {
-			return snap, err
-		}
-		snap.Fields["instructions"], snap.Fields["description"], snap.Fields["skills"] = instructions, description, skills
-	case TargetWorkflow:
-		var description string
-		var steps []byte
-		err := s.DB.QueryRow(ctx, `
-			SELECT name, description, steps FROM issue_workflow WHERE id = $1::uuid AND workspace_id = $2::uuid`,
-			p.Target.ID, req.WorkspaceID).Scan(&snap.Name, &description, &steps)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return snap, notFound
-		}
-		if err != nil {
-			return snap, err
-		}
-		var pretty strings.Builder
-		var v any
-		if json.Unmarshal(steps, &v) == nil {
-			out, _ := json.MarshalIndent(v, "", "  ")
-			pretty.Write(out)
-		}
-		snap.Fields["name"], snap.Fields["description"], snap.Fields["steps"] = snap.Name, description, pretty.String()
-	case TargetSquad:
-		var description, instructions, leaderID, leaderName string
-		var archived bool
-		err := s.DB.QueryRow(ctx, `
-			SELECT s.name, s.description, s.instructions, COALESCE(s.leader_id::text, ''), COALESCE(l.name, ''), s.archived_at IS NOT NULL
-			FROM squad s LEFT JOIN agent l ON l.id = s.leader_id
-			WHERE s.id = $1::uuid AND s.workspace_id = $2::uuid`, p.Target.ID, req.WorkspaceID).
-			Scan(&snap.Name, &description, &instructions, &leaderID, &leaderName, &archived)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return snap, notFound
-		}
-		if err != nil {
-			return snap, err
-		}
-		if archived {
-			return snap, reject(RejectTarget, "squad %s is archived", p.Target.ID)
-		}
-		// Members are listed by agent name, people by id: proposals never
-		// name members.
-		members, err := s.lines(ctx, `
-			SELECT CASE m.member_type WHEN 'agent' THEN 'agent · ' || COALESCE(a.name, m.member_id::text)
-			                          ELSE m.member_type || ' · ' || m.member_id::text END
-			       || CASE WHEN COALESCE(m.role, '') = '' THEN '' ELSE ' · ' || m.role END
-			FROM squad_member m LEFT JOIN agent a ON m.member_type = 'agent' AND a.id = m.member_id
-			WHERE m.squad_id = $1::uuid
-			ORDER BY m.member_type, lower(COALESCE(a.name, '')), m.member_id`, p.Target.ID)
-		if err != nil {
-			return snap, err
-		}
-		snap.Fields["description"], snap.Fields["instructions"] = description, instructions
-		snap.Fields["members"], snap.Fields["leader"] = members, leaderName+" · "+leaderID
 	}
 	return snap, nil
 }
 
-func (s *Proposals) lines(ctx context.Context, sql string, args ...any) (string, error) {
-	rows, err := s.DB.Query(ctx, sql, args...)
-	if err != nil {
-		return "", err
+// refuseTarget refuses targets nothing may propose or change: Evolution
+// itself, hidden system agents, and archived agents and squads.
+func refuseTarget(targetType, targetID string, st TargetState) error {
+	switch {
+	case targetType == TargetAgent && st.SystemKey == service.EvolutionSystemKey:
+		return reject(RejectTarget, "Evolution never proposes changes to itself")
+	case targetType == TargetAgent && st.Kind == "system":
+		return reject(RejectTarget, "agent %s is an internal system agent and cannot be a target", targetID)
+	case st.Archived:
+		return reject(RejectTarget, "%s %s is archived", targetType, targetID)
 	}
-	defer rows.Close()
-	out := []string{}
-	for rows.Next() {
-		var line string
-		if err := rows.Scan(&line); err != nil {
-			return "", err
-		}
-		out = append(out, line)
-	}
-	return strings.Join(out, "\n"), rows.Err()
+	return nil
 }
 
 // resolveEvidence loads every evidence item under the signal channel's
