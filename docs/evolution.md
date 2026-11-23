@@ -43,7 +43,7 @@
 | `PUT` | `/api/evolution/config` | 所有者、管理员（人类账号） | 请求 `{"config": {...}, "acknowledge_member_notice": bool}`，整块替换配置，拒绝未知字段；超出上限返回 400；要开始读 chat 却没带确认返回 409 |
 | `GET` | `/api/evolution/signals` | 只限进化 agent 的分析运行（见下） | `?source=comment\|chat&after=<next_after>&limit=1..200`，返回一页数据 |
 | `POST` | `/api/evolution/proposals` | 只限进化 agent 的分析运行（同数据通道的授权） | 提交一条结构化提案，见下文「提案（P3）」 |
-| `GET` | `/api/evolution/proposals/{issueId}` | 任何成员 | 提案的状态：改动、`state`（pending / applied / rolled_back）、`stale`、`changed_since_apply`、版本列表；`can_apply` / `can_rollback` 只对所有者、管理员为 true。不是可应用的提案时 404 |
+| `GET` | `/api/evolution/proposals/{issueId}` | 能看到这个 issue 的成员（提案在调用者看不到的私有项目里时 404，三个提案接口都一样） | 提案的状态：改动、`state`（pending / applied / rolled_back）、`stale`、`changed_since_apply`、版本列表；`can_apply` / `can_rollback` 只对所有者、管理员为 true。不是可应用的提案时 404 |
 | `POST` | `/api/evolution/proposals/{issueId}/apply` | 所有者、管理员（人类账号；agent 身份、task token、cloud PAT 一律 403） | 应用提案，见下文「应用与回滚（P4）」 |
 | `POST` | `/api/evolution/proposals/{issueId}/rollback` | 同上 | 回滚这条提案的应用 |
 
@@ -170,7 +170,7 @@ P4 起，新建提案时服务端同时在 `evolution_proposal` 表里存下这�
 
 **apply 流程**（一个事务）：
 
-1. 工作流目标先取与 `UpdateIssueWorkflow` 相同的状态目录锁；再锁提案 issue 行（同一提案的两次操作串行），再锁目标行（`FOR NO KEY UPDATE`）。
+1. 工作流目标先取与 `UpdateIssueWorkflow` 相同的状态目录锁；再锁提案 issue 行（同一提案的两次操作串行），再锁目标行（`FOR NO KEY UPDATE`）；agent 目标还锁住它全部的技能绑定行（`FOR UPDATE`），技能接口对这些行的修改和删除要等 apply 结束（或 apply 等它们提交后再读），不会被覆盖。期间别人新加的绑定不会被删：写入只碰读到的行，写完重读发现多了绑定就返回 409。
 2. 读目标白名单字段算内容哈希，与提案的基线哈希比较。**不一致**：什么都不写，返回 409 `proposal_stale`，并把提案标为过期（`evolution_state=stale`，只在第一次时留一条评论说明）。已应用且未回滚：409 `already_applied`。
 3. 用上游接口同样的查询写入字段，并做同样的校验：agent 描述不超过 255 字；技能按名称在工作区里解析，启用列表变为提案里的名单（多的删绑定、少的补上、停用的重新启用；名单外停用的绑定不动；Qoder agent 不能有技能）；工作流走 `Normalize`、`Validate`、交接处理人校验，若会让项目里的 issue 停在被删掉的状态上就拒绝（需要人选迁移目标，到工作流设置里手工改）；工作流名称重复、默认工作流改名都拒绝。校验不过返回 422 `cannot_apply`，什么都不写。
 4. 写完重读：只有这个字段变了、且变成提案里的值（技能按名单集合比较、`steps` 按 JSON 值比较），否则整体回滚，返回 422 `cannot_apply`。
