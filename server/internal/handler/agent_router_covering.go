@@ -51,17 +51,19 @@ func (h *Handler) GetRouterIssueCovering(w http.ResponseWriter, r *http.Request)
 
 // superAgentChatRun returns the chat session of the run an agent request
 // comes from, or "" when the caller is not an agent in a chat run. The run is
-// the task named by X-Task-ID, which must belong to the calling agent.
+// the one M-193 attributes the agent's actions to (actorTaskID), and its chat
+// is read with the same helper.
 func (h *Handler) superAgentChatRun(r *http.Request, workspaceID string) (agentID, chatSessionID string) {
 	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
-	if actorType != "agent" {
+	taskID := actorTaskID(r, actorType)
+	if taskID == "" {
 		return "", ""
 	}
-	task, ok := h.taskFromRequestHeader(r)
-	if !ok || !task.ChatSessionID.Valid || uuidToString(task.AgentID) != actorID {
+	chat, err := agentrouter.TaskChatSession(r.Context(), h.DB, taskID)
+	if err != nil || chat == "" {
 		return "", ""
 	}
-	return actorID, uuidToString(task.ChatSessionID)
+	return actorID, chat
 }
 
 // superAgentCreatedIssueScope is the scope check on an issue created from a
