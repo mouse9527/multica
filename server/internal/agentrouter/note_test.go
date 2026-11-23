@@ -158,20 +158,26 @@ var replyFormatRules = []string{
 // still ends with every open item, because the owner reads only the end of
 // the last reply (M-162). The owner chose this over dropping them (M-206).
 func TestQuietChatBatchStillListsOpenItems(t *testing.T) {
-	in := noteInput{sub: dispatchSub{ID: "sub-1"}, anchorKey: "RT-1", scopeLabel: "issue tree RT-1", now: time.Now(), chat: true, quiet: true}
-	note := buildNote(in)
-	for _, want := range []string{
-		"then end it with every open item as in any reply",
-		"Quiet means no alert, never fewer open items",
-		"a quiet one included, still ends with all open items",
-	} {
-		if !strings.Contains(note, want) {
-			t.Errorf("quiet chat batch note lacks %q:\n%s", want, note)
+	member := "member"
+	evs := []batchEvent{{ID: "1", Kind: KindCommentCreated, IssueKey: "RT-2", ActorType: &member, ActorName: "Mouse",
+		Payload: map[string]any{"comment_id": "c1"}, OccurredAt: time.Now()}}
+	for name, events := range map[string][]batchEvent{"empty": nil, "with events": evs} {
+		in := noteInput{sub: dispatchSub{ID: "sub-1"}, batch: batch{events: events}, anchorKey: "RT-1", scopeLabel: "issue tree RT-1",
+			now: time.Now(), chat: true, quiet: true}
+		note := buildNote(in)
+		for _, want := range []string{
+			"then end it with every open item as in any reply",
+			"Quiet means no alert, never fewer open items",
+			"a quiet one included, still ends with all open items",
+		} {
+			if !strings.Contains(note, want) {
+				t.Errorf("%s: quiet chat batch note lacks %q:\n%s", name, want, note)
+			}
 		}
-	}
-	for _, banned := range []string{"does not repeat", "gets no reply"} {
-		if strings.Contains(note, banned) {
-			t.Errorf("quiet chat batch note still says %q:\n%s", banned, note)
+		for _, banned := range []string{"does not repeat", "gets no reply"} {
+			if strings.Contains(note, banned) {
+				t.Errorf("%s: quiet chat batch note still says %q:\n%s", name, banned, note)
+			}
 		}
 	}
 }
