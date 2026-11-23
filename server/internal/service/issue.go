@@ -119,6 +119,10 @@ type IssueCreateOpts struct {
 	// owner). Empty falls back to CreatorID.
 	ActorID string
 
+	// ActorTaskID is the run an agent creator acted from, carried on the
+	// created event. mouse9527/multica fork (M-193).
+	ActorTaskID string
+
 	// AnalyticsAgentID is the agent associated with the issue for
 	// analytics purposes (assignee agent or, for agent-created issues,
 	// the creator agent). Resolved by the caller because it depends on
@@ -802,6 +806,7 @@ func (s *IssueService) publishIssueCreated(issue db.Issue, attachments []db.Atta
 		WorkspaceID: util.UUIDToString(issue.WorkspaceID),
 		ActorType:   creatorType,
 		ActorID:     actorID,
+		ActorTaskID: opts.ActorTaskID, // mouse9527/multica fork (M-193)
 		Payload:     payload,
 	})
 }
