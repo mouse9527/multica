@@ -49,6 +49,17 @@ func ReadTarget(ctx context.Context, q Querier, workspaceID, targetType, targetI
 		if err != nil {
 			return snap, st, err
 		}
+		if lock {
+			// The skill endpoints write agent_skill rows without touching the
+			// agent row. Locking the agent's bindings makes their updates and
+			// deletes wait for this transaction (or this one wait for theirs),
+			// and the read below, a new statement, sees what they committed.
+			// A binding added meanwhile is never removed here: writes touch
+			// only rows this read saw.
+			if _, err := q.Exec(ctx, `SELECT 1 FROM agent_skill WHERE agent_id = $1::uuid FOR UPDATE`, targetID); err != nil {
+				return snap, st, err
+			}
+		}
 		skills, err := queryLines(ctx, q, `
 			SELECT s.name FROM agent_skill x JOIN skill s ON s.id = x.skill_id
 			WHERE x.agent_id = $1::uuid AND x.enabled ORDER BY lower(s.name), s.name`, targetID)

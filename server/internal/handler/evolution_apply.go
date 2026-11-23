@@ -93,18 +93,15 @@ func (h *Handler) evolutionHumanAdmin(r *http.Request, workspaceID string) (db.M
 	return member, roleAllowed(member.Role, "owner", "admin")
 }
 
-// loadEvolutionProposal resolves the {issueId} of a proposal route.
+// loadEvolutionProposal resolves the {issueId} of a proposal route through
+// the issue loader, so a proposal moved into a private project the caller
+// cannot see is not found, as the issue itself is not.
 func (h *Handler) loadEvolutionProposal(w http.ResponseWriter, r *http.Request) (evolution.ProposalRecord, bool) {
-	workspaceID := ctxWorkspaceID(r.Context())
-	if workspaceID == "" {
-		writeError(w, http.StatusBadRequest, "workspace_id is required")
-		return evolution.ProposalRecord{}, false
-	}
-	issueID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "issueId"), "issue id")
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "issueId"))
 	if !ok {
 		return evolution.ProposalRecord{}, false
 	}
-	rec, err := evolution.GetProposalRecord(r.Context(), h.DB, workspaceID, uuidToString(issueID))
+	rec, err := evolution.GetProposalRecord(r.Context(), h.DB, uuidToString(issue.WorkspaceID), uuidToString(issue.ID))
 	if errors.Is(err, evolution.ErrNotProposal) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return evolution.ProposalRecord{}, false
@@ -308,6 +305,21 @@ func (h *Handler) changeEvolutionProposal(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if !evolution.OnlyFieldChanged(snap, after, rec.Field, want) || (rollback && after.ContentHash() != active.BeforeHash) {
+		// The rows read above are locked, so only a skill binding added by
+		// someone else meanwhile can make skills differ: the target changed,
+		// and nothing is written.
+		if rec.Field == "skills" {
+			tx.Rollback(ctx)
+			if rollback {
+				h.writeEvolutionChangeError(w, r, applyRefused(evolution.ApplyChangedSinceApply,
+					"the agent's skills changed while rolling back; nothing was changed"))
+				return
+			}
+			h.markEvolutionProposalStale(ctx, note)
+			h.writeEvolutionChangeError(w, r, applyRefused(evolution.ApplyStale,
+				"the agent's skills changed while applying; nothing was applied, and the proposal is marked out of date"))
+			return
+		}
 		h.writeEvolutionChangeError(w, r, applyRefused(evolution.ApplyFailed,
 			"the %s would not end up as the proposal describes (its %s is normalized differently); nothing was changed, so change it by hand", rec.TargetType, rec.Field))
 		return

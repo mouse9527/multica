@@ -6,6 +6,9 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/multica-ai/multica/server/internal/evolution"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -337,13 +340,16 @@ func TestEvolutionApplyWorkflow(t *testing.T) {
 	}
 }
 
-// TestEvolutionApplySkills: the skills field sets the agent's enabled
-// skills by name, and a rollback restores the previous set.
-func TestEvolutionApplySkills(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	f := newProposalFixture(t, evolution.DefaultConfig())
+// skillsFixture is a target agent with skill "review" bound and enabled, a
+// second skill "tests", and a filed proposal that swaps review for tests.
+type skillsFixture struct {
+	proposalFixture
+	review, tests, issueID string
+}
+
+func newSkillsFixture(t *testing.T) skillsFixture {
+	t.Helper()
+	sf := skillsFixture{proposalFixture: newProposalFixture(t, evolution.DefaultConfig())}
 	// Short enough that no redaction rule takes it for a number to hide.
 	suffix := workflowTestSuffix()
 	suffix = suffix[len(suffix)-8:]
@@ -356,23 +362,158 @@ func TestEvolutionApplySkills(t *testing.T) {
 		return id
 	}
 	reviewName, testsName := "evo-review-"+suffix, "evo-tests-"+suffix
-	review, tests := skill(reviewName), skill(testsName)
-	dbfx.Exec(t, `INSERT INTO agent_skill (agent_id, skill_id) VALUES ($1, $2)`, f.target, review)
+	sf.review, sf.tests = skill(reviewName), skill(testsName)
+	dbfx.Exec(t, `INSERT INTO agent_skill (agent_id, skill_id) VALUES ($1, $2)`, sf.target, sf.review)
 
-	body := f.proposal()
+	body := sf.proposal()
 	body["field"] = "skills"
 	body["topic"] = "Reviewer lacks the tests skill"
 	body["change"] = map[string]any{"before": reviewName, "after": testsName}
-	issueID := fileProposal(t, f, body)
-	changeProposal(t, testUserID, issueID, "apply").Want(http.StatusOK)
-	enabled := func(skillID string) int {
-		return dbfx.Count(t, `SELECT count(*) FROM agent_skill WHERE agent_id = $1 AND skill_id = $2 AND enabled`, f.target, skillID)
+	sf.issueID = fileProposal(t, sf.proposalFixture, body)
+	return sf
+}
+
+// binding returns whether the agent has the skill bound, and enabled.
+func (sf skillsFixture) binding(t *testing.T, skillID string) (bound, enabled bool) {
+	t.Helper()
+	n := dbfx.Count(t, `SELECT count(*) FROM agent_skill WHERE agent_id = $1 AND skill_id = $2`, sf.target, skillID)
+	e := dbfx.Count(t, `SELECT count(*) FROM agent_skill WHERE agent_id = $1 AND skill_id = $2 AND enabled`, sf.target, skillID)
+	return n == 1, e == 1
+}
+
+// TestEvolutionApplySkills: the skills field sets the agent's enabled
+// skills by name, and a rollback restores the previous set.
+func TestEvolutionApplySkills(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
 	}
-	if enabled(tests) != 1 || enabled(review) != 0 {
-		t.Fatalf("after apply: tests %d, review %d", enabled(tests), enabled(review))
+	sf := newSkillsFixture(t)
+	changeProposal(t, testUserID, sf.issueID, "apply").Want(http.StatusOK)
+	if _, tests := sf.binding(t, sf.tests); !tests {
+		t.Fatal("after apply the tests skill should be enabled")
 	}
-	changeProposal(t, testUserID, issueID, "rollback").Want(http.StatusOK)
-	if enabled(tests) != 0 || enabled(review) != 1 {
-		t.Fatalf("after rollback: tests %d, review %d", enabled(tests), enabled(review))
+	if bound, _ := sf.binding(t, sf.review); bound {
+		t.Fatal("after apply the review skill should be unbound")
+	}
+	changeProposal(t, testUserID, sf.issueID, "rollback").Want(http.StatusOK)
+	if bound, _ := sf.binding(t, sf.tests); bound {
+		t.Fatal("after rollback the tests skill should be unbound")
+	}
+	if _, review := sf.binding(t, sf.review); !review {
+		t.Fatal("after rollback the review skill should be enabled again")
+	}
+}
+
+// holdSkillEdit starts the transaction of a person editing one of the
+// agent's skill bindings, as SetAgentSkillEnabled does, and leaves it open.
+func holdSkillEdit(t *testing.T, agentID, skillID string) (pgx.Tx, int) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { tx.Rollback(context.Background()) })
+	var pid int
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatalf("backend pid: %v", err)
+	}
+	tag, err := tx.Exec(ctx, `UPDATE agent_skill SET enabled = false WHERE agent_id = $1 AND skill_id = $2`, agentID, skillID)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("disable skill: %v (%d rows)", err, tag.RowsAffected())
+	}
+	return tx, pid
+}
+
+// changeProposalBehind runs apply or rollback while another transaction
+// holds a lock it needs: it checks the call queues behind that transaction,
+// commits it, and returns the call's response.
+func changeProposalBehind(t *testing.T, holder pgx.Tx, holderPID int, issueID, action string) *testutil.Response {
+	t.Helper()
+	done := make(chan *testutil.Response, 1)
+	go func() { done <- changeProposal(t, testUserID, issueID, action) }()
+	if waitForWaiterPIDBlockedBy(t, holderPID, 5*time.Second) == 0 {
+		t.Fatalf("%s never queued behind the open skill edit", action)
+	}
+	if err := holder.Commit(context.Background()); err != nil {
+		t.Fatalf("commit the skill edit: %v", err)
+	}
+	select {
+	case resp := <-done:
+		return resp
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s did not finish after the skill edit committed", action)
+		return nil
+	}
+}
+
+// TestEvolutionApplyWaitsForSkillEdits forces the interleaving review R1
+// named: a person disables the review skill while apply runs. Apply waits
+// for that edit, sees the agent changed, and answers 409 without removing
+// the binding; the person's edit stands.
+func TestEvolutionApplyWaitsForSkillEdits(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	sf := newSkillsFixture(t)
+	holder, pid := holdSkillEdit(t, sf.target, sf.review)
+	wantRejected(t, changeProposalBehind(t, holder, pid, sf.issueID, "apply"), http.StatusConflict, evolution.ApplyStale)
+
+	if bound, enabled := sf.binding(t, sf.review); !bound || enabled {
+		t.Fatalf("the person's edit was overwritten: review bound %v enabled %v", bound, enabled)
+	}
+	if bound, _ := sf.binding(t, sf.tests); bound {
+		t.Fatal("a refused apply bound the tests skill")
+	}
+	if n := countVersions(t, sf.issueID); n != 0 {
+		t.Fatalf("a refused apply wrote %d versions", n)
+	}
+}
+
+// TestEvolutionRollbackWaitsForSkillEdits is the same race for a rollback:
+// a person disables the skill the apply enabled while the rollback runs.
+func TestEvolutionRollbackWaitsForSkillEdits(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	sf := newSkillsFixture(t)
+	changeProposal(t, testUserID, sf.issueID, "apply").Want(http.StatusOK)
+
+	holder, pid := holdSkillEdit(t, sf.target, sf.tests)
+	wantRejected(t, changeProposalBehind(t, holder, pid, sf.issueID, "rollback"), http.StatusConflict, evolution.ApplyChangedSinceApply)
+
+	if bound, enabled := sf.binding(t, sf.tests); !bound || enabled {
+		t.Fatalf("the person's edit was overwritten: tests bound %v enabled %v", bound, enabled)
+	}
+	if bound, _ := sf.binding(t, sf.review); bound {
+		t.Fatal("a refused rollback bound the review skill again")
+	}
+	if n := countVersions(t, sf.issueID); n != 1 {
+		t.Fatalf("%d version rows, want 1", n)
+	}
+}
+
+// TestEvolutionProposalInPrivateProject: a proposal moved into a private
+// project is not found for a member outside it, like the issue itself; an
+// owner still sees it.
+func TestEvolutionProposalInPrivateProject(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	f := newProposalFixture(t, evolution.DefaultConfig())
+	issueID := fileProposal(t, f, f.proposal())
+	private := dbfx.Project(t, "evolution apply private", testutil.Cols{"visibility": "private"})
+	dbfx.Exec(t, `UPDATE issue SET project_id = $2 WHERE id = $1`, issueID, private)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `UPDATE issue SET project_id = NULL WHERE id = $1`, issueID)
+	})
+
+	member := addSecondWorkspaceMember(t, "evolution-private-member@multica.test")
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM member WHERE user_id = $1`, member)
+	})
+	evolutionCall(t, member, newRequest("GET", proposalRoute(issueID, ""), nil)).Want(http.StatusNotFound)
+	if state := proposalState(t, testUserID, issueID); !state.CanApply {
+		t.Fatalf("owner state: %+v", state)
 	}
 }
