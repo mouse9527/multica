@@ -32,6 +32,8 @@ func enableEvolutionAgent(t *testing.T) string {
 		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE agent_id = $1`, agentID)
 		testPool.Exec(ctx, `DELETE FROM issue WHERE id IN (SELECT issue_id FROM evolution_run WHERE workspace_id = $1)`, testWorkspaceID)
 		testPool.Exec(ctx, `DELETE FROM evolution_run WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id IN (SELECT issue_id FROM evolution_review WHERE workspace_id = $1)`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM evolution_review WHERE workspace_id = $1`, testWorkspaceID)
 		testPool.Exec(ctx, `DELETE FROM evolution_cursor WHERE workspace_id = $1`, testWorkspaceID)
 		testPool.Exec(ctx, `DELETE FROM evolution_proposal WHERE workspace_id = $1`, testWorkspaceID)
 		testPool.Exec(ctx, `DELETE FROM evolution_config_version WHERE workspace_id = $1`, testWorkspaceID)

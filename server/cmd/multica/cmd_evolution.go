@@ -1,5 +1,5 @@
 // Added by the mouse9527/multica fork: Evolution P2, the signal channel (M-136);
-// P3 proposals (M-137).
+// P3 proposals (M-137); P6 condense and team proposals (M-140).
 
 package main
 
@@ -43,14 +43,15 @@ returned.`,
 
 var evolutionProposeCmd = &cobra.Command{
 	Use:   "propose",
-	Short: "File an improvement proposal from the current Evolution analysis run",
-	Long: `File an improvement proposal from the current Evolution analysis run.
+	Short: "File an improvement proposal from the current Evolution analysis run or review",
+	Long: `File an improvement proposal from the current Evolution analysis run or review.
 
 Only the Evolution agent can call this, from the task of a scheduled analysis
-issue. The proposal is a JSON object (see the multica-evolution skill):
+issue or monthly condense review issue. The proposal is a JSON object (see the
+multica-evolution skill):
 
   {
-    "target": {"type": "agent|workflow|squad", "id": "<uuid>"},
+    "target": {"type": "agent|workflow|squad|team", "id": "<uuid>"},
     "field": "instructions",
     "topic": "a few words naming the problem",
     "title": "one line",
@@ -65,7 +66,12 @@ issue. The proposal is a JSON object (see the multica-evolution skill):
 
 The server checks the rules and refuses with a reason (code and error) when one
 is broken. The same proposal already open gets the new evidence as a comment
-instead of a new issue ("outcome": "merged" or "duplicate"). Nothing is applied.`,
+instead of a new issue ("outcome": "merged" or "duplicate"). Nothing is applied.
+
+A condense review files shorter agent instructions with an empty evidence list;
+the server attaches its measurement. A team proposal (target id: the
+workspace's id; field new_agent, merge_agents, or routing) leaves change.before
+empty and is carried out by hand.`,
 	Example: `  $ multica evolution propose --file proposal.json
   $ multica evolution propose --file - < proposal.json`,
 	Args: exactArgs(0),

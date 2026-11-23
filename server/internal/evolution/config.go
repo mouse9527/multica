@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: Evolution P2, configuration (M-136);
-// P3 proposal bounds (M-137); P5 effect measurement (M-139).
+// P3 proposal bounds (M-137); P5 effect measurement (M-139);
+// P6 the monthly condense review (M-140).
 
 package evolution
 
@@ -64,6 +65,19 @@ const (
 	MaxEffectSampleLowerBound = 100
 	DefaultMinEffectSample    = 5
 
+	// P6 (M-140): the monthly condense review.
+	MinCondenseDayOfMonth     = 1
+	MaxCondenseDayOfMonth     = 28
+	DefaultCondenseDayOfMonth = 1
+
+	MinCondenseMinRunes     = 1000
+	MaxCondenseMinRunes     = 100000
+	DefaultCondenseMinRunes = 6000
+
+	MinCondenseRepeatPercent     = 5
+	MaxCondenseRepeatPercent     = 90
+	DefaultCondenseRepeatPercent = 15
+
 	DefaultScheduleTime     = "03:00"
 	DefaultScheduleTimezone = "Asia/Shanghai"
 )
@@ -112,6 +126,22 @@ type Config struct {
 	// MinEffectSample is the fewest runs (agent) or issues (workflow) each
 	// window needs before a verdict is drawn.
 	MinEffectSample int `json:"min_effect_sample"`
+
+	// P6 (M-140). Missing or zero means the default, so the review is on
+	// unless CondenseDisabled says otherwise.
+
+	// CondenseDisabled turns the monthly condense review off. The review
+	// runs only while the scheduled analysis is on (Enabled).
+	CondenseDisabled bool `json:"condense_disabled"`
+	// CondenseDayOfMonth is the day the review starts, at Schedule.Time in
+	// Schedule.Timezone.
+	CondenseDayOfMonth int `json:"condense_day_of_month"`
+	// CondenseMinRunes: instructions at least this long (in characters) are
+	// reviewed.
+	CondenseMinRunes int `json:"condense_min_runes"`
+	// CondenseRepeatPercent: instructions in which at least this share of
+	// lines repeats an earlier line are reviewed.
+	CondenseRepeatPercent int `json:"condense_repeat_percent"`
 }
 
 // Schedule is when the daily analysis starts: at Time in Timezone, every
@@ -152,6 +182,10 @@ func DefaultConfig() Config {
 		EffectWindowDays:           DefaultEffectWindowDays,
 		RegressionThresholdPercent: DefaultRegressionThresholdPercent,
 		MinEffectSample:            DefaultMinEffectSample,
+
+		CondenseDayOfMonth:    DefaultCondenseDayOfMonth,
+		CondenseMinRunes:      DefaultCondenseMinRunes,
+		CondenseRepeatPercent: DefaultCondenseRepeatPercent,
 	}
 }
 
@@ -170,6 +204,10 @@ type Limits struct {
 	EffectWindowDays           [2]int `json:"effect_window_days"`
 	RegressionThresholdPercent [2]int `json:"regression_threshold_percent"`
 	MinEffectSample            [2]int `json:"min_effect_sample"`
+
+	CondenseDayOfMonth    [2]int `json:"condense_day_of_month"`
+	CondenseMinRunes      [2]int `json:"condense_min_runes"`
+	CondenseRepeatPercent [2]int `json:"condense_repeat_percent"`
 }
 
 func CurrentLimits() Limits {
@@ -187,6 +225,10 @@ func CurrentLimits() Limits {
 		EffectWindowDays:           [2]int{MinEffectWindowDays, MaxEffectWindowDays},
 		RegressionThresholdPercent: [2]int{MinRegressionThresholdPercent, MaxRegressionThresholdPercent},
 		MinEffectSample:            [2]int{MinEffectSampleLowerBound, MaxEffectSampleLowerBound},
+
+		CondenseDayOfMonth:    [2]int{MinCondenseDayOfMonth, MaxCondenseDayOfMonth},
+		CondenseMinRunes:      [2]int{MinCondenseMinRunes, MaxCondenseMinRunes},
+		CondenseRepeatPercent: [2]int{MinCondenseRepeatPercent, MaxCondenseRepeatPercent},
 	}
 }
 
@@ -226,6 +268,9 @@ func (c Config) clamped() Config {
 	c.EffectWindowDays = clampInt(c.EffectWindowDays, MinEffectWindowDays, MaxEffectWindowDays)
 	c.RegressionThresholdPercent = clampInt(c.RegressionThresholdPercent, MinRegressionThresholdPercent, MaxRegressionThresholdPercent)
 	c.MinEffectSample = clampInt(c.MinEffectSample, MinEffectSampleLowerBound, MaxEffectSampleLowerBound)
+	c.CondenseDayOfMonth = clampInt(c.CondenseDayOfMonth, MinCondenseDayOfMonth, MaxCondenseDayOfMonth)
+	c.CondenseMinRunes = clampInt(c.CondenseMinRunes, MinCondenseMinRunes, MaxCondenseMinRunes)
+	c.CondenseRepeatPercent = clampInt(c.CondenseRepeatPercent, MinCondenseRepeatPercent, MaxCondenseRepeatPercent)
 	if !scheduleTimePattern.MatchString(c.Schedule.Time) {
 		c.Schedule.Time = d.Schedule.Time
 	}
@@ -253,7 +298,7 @@ func invalidf(format string, args ...any) error {
 	return &InvalidConfigError{Message: fmt.Sprintf(format, args...)}
 }
 
-// withProposalDefaults fills the P3 and P5 fields a client left out (zero)
+// withProposalDefaults fills the P3, P5, and P6 fields a client left out (zero)
 // with their defaults, so a settings page that predates them keeps working.
 func (c Config) withProposalDefaults() Config {
 	if c.MaxProposalsPerRun == 0 {
@@ -274,11 +319,20 @@ func (c Config) withProposalDefaults() Config {
 	if c.MinEffectSample == 0 {
 		c.MinEffectSample = DefaultMinEffectSample
 	}
+	if c.CondenseDayOfMonth == 0 {
+		c.CondenseDayOfMonth = DefaultCondenseDayOfMonth
+	}
+	if c.CondenseMinRunes == 0 {
+		c.CondenseMinRunes = DefaultCondenseMinRunes
+	}
+	if c.CondenseRepeatPercent == 0 {
+		c.CondenseRepeatPercent = DefaultCondenseRepeatPercent
+	}
 	return c
 }
 
 // Validate rejects a configuration a client sent that is outside the bounds.
-// It returns a client-facing message. Zero P3 and P5 fields mean their
+// It returns a client-facing message. Zero P3, P5, and P6 fields mean their
 // defaults.
 func (c Config) Validate() error {
 	c = c.withProposalDefaults()
@@ -299,6 +353,15 @@ func (c Config) Validate() error {
 	}
 	if c.MinEffectSample < MinEffectSampleLowerBound || c.MinEffectSample > MaxEffectSampleLowerBound {
 		return invalidf("min_effect_sample must be between %d and %d", MinEffectSampleLowerBound, MaxEffectSampleLowerBound)
+	}
+	if c.CondenseDayOfMonth < MinCondenseDayOfMonth || c.CondenseDayOfMonth > MaxCondenseDayOfMonth {
+		return invalidf("condense_day_of_month must be between %d and %d", MinCondenseDayOfMonth, MaxCondenseDayOfMonth)
+	}
+	if c.CondenseMinRunes < MinCondenseMinRunes || c.CondenseMinRunes > MaxCondenseMinRunes {
+		return invalidf("condense_min_runes must be between %d and %d", MinCondenseMinRunes, MaxCondenseMinRunes)
+	}
+	if c.CondenseRepeatPercent < MinCondenseRepeatPercent || c.CondenseRepeatPercent > MaxCondenseRepeatPercent {
+		return invalidf("condense_repeat_percent must be between %d and %d", MinCondenseRepeatPercent, MaxCondenseRepeatPercent)
 	}
 	if c.MaxItemsPerWindow < MinItemsPerWindow || c.MaxItemsPerWindow > MaxItemsPerWindow {
 		return invalidf("max_items_per_window must be between %d and %d", MinItemsPerWindow, MaxItemsPerWindow)
@@ -349,6 +412,9 @@ func (c Config) ChatWanted() bool { return c.Enabled && c.Sources.Chat }
 
 // CommentsWanted reports whether comments are read.
 func (c Config) CommentsWanted() bool { return c.Enabled && c.Sources.Comments }
+
+// CondenseWanted reports whether the monthly condense review runs.
+func (c Config) CondenseWanted() bool { return c.Enabled && !c.CondenseDisabled }
 
 // Location is the schedule's time zone; ConfigFromSettings and Validate
 // guarantee it loads.

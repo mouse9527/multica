@@ -1,5 +1,5 @@
 // Added by the mouse9527/multica fork: Evolution P3 (M-137), shared with
-// apply and rollback in P4 (M-138).
+// apply and rollback in P4 (M-138); team targets in P6 (M-140).
 
 package evolution
 
@@ -112,6 +112,20 @@ func ReadTarget(ctx context.Context, q Querier, workspaceID, targetType, targetI
 		}
 		snap.Fields["description"], snap.Fields["instructions"] = description, instructions
 		snap.Fields["members"], snap.Fields["leader"] = members, leaderName+" · "+leaderID
+	case TargetTeam:
+		// The team is the workspace itself. Its fields hold no text: a team
+		// proposal only describes a change for a person to carry out.
+		err := q.QueryRow(ctx, `SELECT name FROM workspace WHERE id = $1::uuid AND id = $2::uuid`, targetID, workspaceID).
+			Scan(&snap.Name)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return snap, st, ErrTargetNotFound
+		}
+		if err != nil {
+			return snap, st, err
+		}
+		for _, field := range ProposalFields[TargetTeam] {
+			snap.Fields[field] = ""
+		}
 	default:
 		return snap, st, ErrTargetNotFound
 	}

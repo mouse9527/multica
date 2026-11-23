@@ -1,8 +1,8 @@
 # 进化（Evolution）：内置系统 agent
 
-本文件属于 `mouse9527/multica` fork（M-135、M-136、M-137、M-138、M-139，设计见 M-132）。「进化」是和上游 Mika 同一机制的内置系统 agent：定期分析工作区里的对话和评论，针对 agent、工作流、团队提出改进提案，由所有者或管理员批准后再执行。
+本文件属于 `mouse9527/multica` fork（M-135、M-136、M-137、M-138、M-139、M-140，设计见 M-132）。「进化」是和上游 Mika 同一机制的内置系统 agent：定期分析工作区里的对话和评论，针对 agent、工作流、团队提出改进提案，由所有者或管理员批准后再执行。
 
-**当前阶段是 P5**：P1 的身份与一键启用、P2 的配置、游标、每日调度和数据通道、P3 的提案接口、P4 的**应用**与**回滚**（每次追加一条版本记录）之上，定时任务在应用满一个观察窗口后**度量效果**，变差时提示所有者回滚，但**从不自动回滚**。提案本身仍不会改动任何配置，进化 agent 也调不了 apply。
+**当前阶段是 P6**：P1 的身份与一键启用、P2 的配置、游标、每日调度和数据通道、P3 的提案接口、P4 的**应用**与**回滚**（每次追加一条版本记录）、P5 的**效果度量**（变差时提示所有者回滚，但**从不自动回滚**）之上，每月一次**精简检查**让进化为指令过长或重复的 agent 提出精简提案（走同一套审批、应用与版本链路），并新增**团队类提案**（新建 agent、合并 agent、工作分派），团队类提案只出文本、由人手工执行。提案本身仍不会改动任何配置，进化 agent 也调不了 apply。
 
 ## 开关
 
@@ -42,7 +42,7 @@
 | `GET` | `/api/evolution/config` | 任何成员 | 配置、实际在读什么（`comments_active`、`chat_active`）、服务端上限、最近 10 次运行 |
 | `PUT` | `/api/evolution/config` | 所有者、管理员（人类账号） | 请求 `{"config": {...}, "acknowledge_member_notice": bool}`，整块替换配置，拒绝未知字段；超出上限返回 400；要开始读 chat 却没带确认返回 409 |
 | `GET` | `/api/evolution/signals` | 只限进化 agent 的分析运行（见下） | `?source=comment\|chat&after=<next_after>&limit=1..200`，返回一页数据 |
-| `POST` | `/api/evolution/proposals` | 只限进化 agent 的分析运行（同数据通道的授权） | 提交一条结构化提案，见下文「提案（P3）」 |
+| `POST` | `/api/evolution/proposals` | 只限进化 agent 的分析运行或精简检查（同数据通道的授权，任务所在 issue 是打开的运行或检查的 issue） | 提交一条结构化提案，见下文「提案（P3）」「精简检查（P6）」 |
 | `GET` | `/api/evolution/proposals/{issueId}` | 能看到这个 issue 的成员（提案在调用者看不到的私有项目里时 404，三个提案接口都一样） | 提案的状态：改动、`state`（pending / applied / rolled_back）、`stale`、`changed_since_apply`、版本列表；`can_apply` / `can_rollback` 只对所有者、管理员为 true。不是可应用的提案时 404 |
 | `POST` | `/api/evolution/proposals/{issueId}/apply` | 所有者、管理员（人类账号；agent 身份、task token、cloud PAT 一律 403） | 应用提案，见下文「应用与回滚（P4）」 |
 | `POST` | `/api/evolution/proposals/{issueId}/rollback` | 同上 | 回滚这条提案的应用 |
@@ -68,8 +68,12 @@
 | `effect_window_days`（应用后观察几天，和应用前同样天数比较） | 7 | 1–30 |
 | `regression_threshold_percent`（指标比应用前差多少算变差） | 20 | 5–200 |
 | `min_effect_sample`（前后每个窗口至少几次运行 / 几个 issue 才下结论） | 5 | 1–100 |
+| `condense_disabled`（关闭每月精简检查；精简检查只在 `enabled=true` 时运行） | false | — |
+| `condense_day_of_month`（每月几号开始精简检查，时刻和时区同 `schedule`） | 1 | 1–28 |
+| `condense_min_runes`（指令达到多少字列入精简检查） | 6000 | 1000–100000 |
+| `condense_repeat_percent`（指令里与前面重复的行占多少比例列入精简检查，且至少 2 行） | 15 | 5–90 |
 
-P3、P5 的这几项设置页暂不展示，用 `PUT /api/evolution/config` 修改；设置页保存时原样带回；请求里不带或为 0 时取默认值。
+P3、P5、P6 的这几项设置页暂不展示，用 `PUT /api/evolution/config` 修改；设置页保存时原样带回；请求里不带或为 0 时取默认值。
 
 `workspace.settings` 也能经上游的工作区更新接口整块写入，所以读取时一律按上限夹紧，写入时超限直接拒绝。
 
@@ -134,13 +138,14 @@ chat 游标是「已告知」的唯一凭证：只有上面第 2 步会建它。
 
 | code | 什么时候 |
 |---|---|
-| `target_not_allowed` | 目标类型不是 agent / workflow / squad；目标不存在、已归档、是内部系统 agent（`kind=system`）、被排除；**目标是进化自己** |
-| `field_not_allowed` | 字段不在白名单：agent 只限 `instructions`、`description`、`skills`；workflow 只限 `steps`、`name`、`description`；squad 只限 `instructions`、`description`、`members`、`leader`（squad 提案只出文本）。`custom_env`、`custom_args`、`mcp_config`、runtime、权限、可见性、密钥类字段单独给出原因 |
+| `target_not_allowed` | 目标类型不是 agent / workflow / squad / team；目标不存在、已归档、是内部系统 agent（`kind=system`）、被排除；**目标是进化自己**；team 的 id 不是本工作区；精简检查里目标不在这次检查的名单上 |
+| `field_not_allowed` | 字段不在白名单：agent 只限 `instructions`、`description`、`skills`；workflow 只限 `steps`、`name`、`description`；squad 只限 `instructions`、`description`、`members`、`leader`（squad 提案只出文本）；team 只限 `new_agent`、`merge_agents`、`routing`（只出文本，P6）。`custom_env`、`custom_args`、`mcp_config`、runtime、权限、可见性、密钥类字段单独给出原因 |
 | `change_does_not_match_target` | `change.before` 不在目标当前的文本里（比较时忽略空白排版）；`before` 为空时，`after` 已经在目标里 |
 | `change_is_ambiguous` | `change.before` 在目标当前的文本里出现不止一处（P4 起：apply 要写的位置必须唯一） |
 | `insufficient_evidence` | 没有证据；独立来源数低于 `min_evidence_count`（同一 issue 下的多条评论算一个来源）；证据指向进化读不到的内容（私有项目、私有 agent 的会话、被排除的项目和 agent、进化自己的评论和会话、进化自己的分析和提案 issue） |
 | `quote_not_allowed` | 在 chat 或 issue 证据上带 `quote`；`quote` 超过 120 字；`quote` 不是那条评论的原文摘录；任何一个发布出去的字段（标题、问题、改动后的文本、预期效果、风险、回滚、证据说明和摘录）里出现某条 chat 消息中连续 20 个字符（或整条 8 字以上的短消息），或某条评论中连续 121 个字符以上。比对范围是所引的证据**加上本次运行通过数据通道读到的全部评论和 chat**（按游标到已读位置重读，过滤规则与数据通道相同） |
-| `invalid_proposal` | 请求不合法；P4 起也包括：改动后工作流的 `steps` 不再是合法 JSON |
+| `invalid_proposal` | 请求不合法；P4 起也包括：改动后工作流的 `steps` 不再是合法 JSON；P6 起也包括：team 提案带了 `change.before`、精简提案带了证据或 `change.before` 为空 |
+| `change_not_shorter` | 精简提案改完后的指令不比现在短（P6） |
 | `sensitive_content` | 任何文本经脱敏规则（与数据通道同一套）会被替换；任何文本含工作区成员的姓名（与目标同名的除外） |
 | `run_limit_reached` | 本次运行新开的提案已达 `max_proposals_per_run` |
 | `recently_rejected` | 同一提案在 `rejected_cooldown_days` 内被取消过 |
@@ -169,7 +174,7 @@ P4 起，新建提案时服务端同时在 `evolution_proposal` 表里存下这�
 
 **谁能调用**：工作区所有者、管理员的人类账号。路由带 `RequireHumanActor`，处理函数里再判一次：以 agent 身份（`X-Agent-ID` + `X-Task-ID`）、task token、cloud PAT 调用一律 403，普通成员 403。进化 agent 没有任何写入通道。
 
-**写什么（白名单）**：agent 只写 `instructions`、`description`、`skills`；workflow 只写 `steps`、`name`、`description`。其余一律拒绝：`custom_env`、`custom_args`、`mcp_config`、runtime、权限与可见性、模型、密钥类字段返回 `field_not_allowed`；squad 提案、新建或合并 agent 的提案只出文本，返回 `target_not_allowed`（由人手工执行）。进化自己、内部系统 agent、已归档的 agent 不能被写。
+**写什么（白名单）**：agent 只写 `instructions`、`description`、`skills`；workflow 只写 `steps`、`name`、`description`。其余一律拒绝：`custom_env`、`custom_args`、`mcp_config`、runtime、权限与可见性、模型、密钥类字段返回 `field_not_allowed`；squad 提案只出文本，返回 `target_not_allowed`（由人手工执行）；团队类提案（新建、合并 agent，分派）没有存下的改动，返回 404（见「精简检查与团队类提案（P6）」）。进化自己、内部系统 agent、已归档的 agent 不能被写。
 
 **apply 流程**（一个事务）：
 
@@ -200,6 +205,27 @@ P4 起，新建提案时服务端同时在 `evolution_proposal` 表里存下这�
 - **`steps` 改动只能引用已有状态。** apply 不像工作流设置页那样自动新建状态（新建的状态没法随版本回滚），引用不存在的状态会返回 422 `cannot_apply`。要用新状态，先在设置里建好，再让进化重新提案。
 - **两处状态码不精确。** 加载提案之后、加锁之前，如果提案 issue 被删掉，返回 500 而不是 404；目标工作流存的 `steps` 本身是坏 JSON 时，返回 500 而不是 422。都是极端情况，什么都不会写入。
 - **提案 issue 删除后，`evolution_proposal` 里的行不会回收。** 这些行只在删除工作区时一起清掉。孤立的行读不到，也不再用到，只占空间。
+
+## 精简检查与团队类提案（P6）
+
+**精简检查**：定时任务 `evolution_tick` 每月一次（`condense_day_of_month` 那天的 `schedule.time`，时区同 `schedule`）对工作区的 agent 量指令：
+
+- 量哪些 agent：提案能指向的、**全体成员都可见**的 agent（`permission_mode=public_to` 且调用目标含整个工作区，与数据通道读 chat 的边界相同；不含进化自己、内部系统 agent、已归档的、被排除的）。检查 issue 和提案全体成员可读，所以私有 agent、只对部分成员可见的 agent 不会出现在里面；提交精简提案时服务端再核对一次，检查开始后被改成私有的 agent 返回 `target_not_allowed`。
+- 量什么：指令字数；与前面某一行重复的行数（比较时去掉列表和标题记号、忽略大小写和空白；不足 12 字的行和代码围栏不算）。
+- 列入名单：字数达到 `condense_min_runes`，或重复行至少 2 行且占比达到 `condense_repeat_percent`。名单最多 20 个，按字数从长到短。
+- 有名单时建一个指派给进化 agent 的「进化精简 · 年-月」issue，正文列出名单和测量值；没有就记为 `skipped`，不建 issue。每个工作区每月最多一次（工作区级 advisory lock 下检查）；服务停机错过的当月，恢复后补上；更早的月份不补。检查失败不重试，等下个月。
+- 记录在新表 `evolution_review`（迁移 `9022_evolution_review`：只新增这一张表，DO 块建表，含 down，无外键，随工作区删除清理）。检查的任务结束后结算：最新一个任务 `completed` 为 `succeeded`，否则 `failed`。
+
+检查运行里，进化 agent 用 `multica agent get` 读名单上 agent 的指令，用同一个 `POST /api/evolution/proposals` 提交精简提案，服务端额外强制：
+
+- 只能是名单上的 agent 的 `instructions`；`change.before` 必填（原文照抄），改完后的指令必须比现在短（否则 `change_not_shorter`）；
+- 不带证据（带了返回 `invalid_proposal`），由服务端把测量值（字数、重复行、阈值、改后字数）写进提案正文「证据」一节；
+- topic 由服务端固定，所以同一 agent 的精简提案还开着时再提只算重复（`duplicate`），被取消后在冷却期内不再提；
+- 其余规则（白名单、脱敏、姓名、单次上限 `max_proposals_per_run`）与分析运行相同。检查运行不读数据通道（`signals` 返回 409）。
+
+精简提案和其他 agent 指令提案一样存进 `evolution_proposal`，由所有者或管理员**应用**、**回滚**，写版本行，应用满观察窗口后照常度量效果。
+
+**团队类提案**：目标类型 `team`，`target.id` 是本工作区的 id，字段 `new_agent`（新建 agent）、`merge_agents`（合并 agent）、`routing`（工作在 agent 和 squad 之间怎么分派）。`change.before` 必须为空，`change.after` 写要做的改动；证据要求与其他提案相同。服务端只建提案 issue，正文注明「需手动执行」，**不存可应用的改动**（`evolution_proposal` 没有这一行），所以没有应用和回滚：接口返回 404，issue 页不显示提案行，不写任何 agent、squad。squad 提案同样只出文本（P4 起 apply 返回 `target_not_allowed`），正文也注明需手动执行。
 
 ## 效果度量（P5）
 
@@ -240,10 +266,10 @@ P4：提案 issue 的侧栏属性里多一行「提案」：显示未应用 / �
 
 ## CLI
 
-`multica evolution signals --source comment|chat [--after <next_after>] [--limit N]`：分析运行读数据用；`multica evolution propose --file <path|->`：分析运行提交提案用。都在 fork 新文件 `server/cmd/multica/cmd_evolution.go`。
+`multica evolution signals --source comment|chat [--after <next_after>] [--limit N]`：分析运行读数据用；`multica evolution propose --file <path|->`：分析运行和精简检查提交提案用。都在 fork 新文件 `server/cmd/multica/cmd_evolution.go`。
 
 ## 上游触点
 
-见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。P5 没有新的上游触点：度量挂在 fork 文件 `internal/evolution/job.go` 的定时任务里，`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9021_evolution_effect`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认三个配置项。P4 没有新增上游文件：在已是触点的 `issue-detail.tsx` 里，紧挨 M-194 的两处 fork 行（导入块后的 fork 导入、侧栏属性里的 Super Agent 行）各加一行，不新增独立冲突块；后端路由仍在 fork 文件 `evolution_agent.go`，`workspace_delete_manifest_test.go` 在 P2 那块里登记两张新表。迁移 `9020_evolution_apply`（两张新表，DO 块建表，含 down）。P3 没有新的上游触点：路由加在 fork 文件 `evolution_agent.go` 的 `MountEvolution` 里，其余都是 fork 新文件。P2 没有新的上游文件，在已有 fork 改动的 3 个上游文件上各追加一块：`main.go` 一行注册定时任务（紧挨 `agentrouter.Register`）；`workspace.go` 的删除步骤（紧挨 Router 那块）；`workspace_delete_manifest_test.go` 登记两张新表。前端没有新的上游触点（只改 fork 自己的文件）。
+见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。P6 没有新的上游触点：精简检查挂在 fork 文件 `internal/evolution/job.go` 的定时任务里（新文件 `condense.go`），`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9022_evolution_review`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认四个配置项。P5 没有新的上游触点：度量挂在 fork 文件 `internal/evolution/job.go` 的定时任务里，`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9021_evolution_effect`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认三个配置项。P4 没有新增上游文件：在已是触点的 `issue-detail.tsx` 里，紧挨 M-194 的两处 fork 行（导入块后的 fork 导入、侧栏属性里的 Super Agent 行）各加一行，不新增独立冲突块；后端路由仍在 fork 文件 `evolution_agent.go`，`workspace_delete_manifest_test.go` 在 P2 那块里登记两张新表。迁移 `9020_evolution_apply`（两张新表，DO 块建表，含 down）。P3 没有新的上游触点：路由加在 fork 文件 `evolution_agent.go` 的 `MountEvolution` 里，其余都是 fork 新文件。P2 没有新的上游文件，在已有 fork 改动的 3 个上游文件上各追加一块：`main.go` 一行注册定时任务（紧挨 `agentrouter.Register`）；`workspace.go` 的删除步骤（紧挨 Router 那块）；`workspace_delete_manifest_test.go` 登记两张新表。前端没有新的上游触点（只改 fork 自己的文件）。
 
 P1：后端 5 个上游文件各 1 块：`daemon.go` 拼接提示词、`mika_agent.go` 的 `systemInstructionsFor` 展示提示词（两处都调用 fork 的 `service.ComposeForkSystemInstructions` / `ForkSystemInstructions`，以后新增 fork 系统 agent 不用再改这两个文件）、`builtin_skills.go` 的技能映射、`router.go` 挂载路由、`keys.go` 发布开关。前端 11 个上游文件：`package.json` 导出、设置页 3 块、i18n 类型和 8 个语言入口各 2 块，除设置页工作区分组那一处外都紧挨着 Router 已有的 fork 行。
