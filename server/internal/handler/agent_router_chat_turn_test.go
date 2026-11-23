@@ -1,4 +1,4 @@
-// Added by the mouse9527/multica fork: the Super Agent note on every chat turn (M-175).
+// Added by the mouse9527/multica fork: the Super Agent note on every chat turn (M-175), the reply format (M-206), and wakeups on issues in scope (M-208).
 
 package handler
 
@@ -41,6 +41,12 @@ func TestSuperAgentChatOwnerTurnGetsTheNote(t *testing.T) {
 		"the automatic `creator` one",
 		"multica router subscribe --issue <id> --anchor-chat current",
 		"`multica router guide`",
+		// M-206: the reply format reaches every workspace's owner turns.
+		"(「需要你处理」 in Chinese)",
+		"Merged is not fixed",
+		"\"每次回复的格式\" in `multica router guide`",
+		// M-208: wakeup turns are chat turns, so the wakeup rules ride here too.
+		"In a turn a wakeup starts, read the issue's current status",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("owner turn instructions lack %q:\n%s", want, got)
@@ -58,7 +64,8 @@ func TestSuperAgentChatNoteNeedsRouterChat(t *testing.T) {
 	withRouterChatFlags(t, false)
 	rc := newRouterChat(t, ctx)
 	sendDirectChat(t, ctx, rc.agentID, rc.sessionID, "anything new?")
-	if got := claimAndDecodeAgent(t, rc.runtimeID).Instructions; strings.Contains(got, superAgentNoteMarker) {
+	got := claimAndDecodeAgent(t, rc.runtimeID).Instructions
+	if strings.Contains(got, superAgentNoteMarker) || strings.Contains(got, "每次回复的格式") {
 		t.Fatalf("router_chat off, instructions still carry the note:\n%s", got)
 	}
 }

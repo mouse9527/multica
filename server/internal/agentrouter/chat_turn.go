@@ -1,4 +1,4 @@
-// Added by the mouse9527/multica fork: the Super Agent note on every chat turn (M-175), and the create warning (M-194).
+// Added by the mouse9527/multica fork: the Super Agent note on every chat turn (M-175), the create warning (M-194), the reply format (M-206), and wakeups on issues in scope (M-208).
 
 package agentrouter
 
@@ -33,7 +33,8 @@ type chatTurnScope struct {
 // ChatTurnNote is what every turn in a Super Agent chat is told about it,
 // owner turns included: batch turns carry the boundary in the batch itself,
 // but a turn the owner starts would otherwise not know the chat is a Super
-// Agent at all. It is "" for a chat no subscription is bound to.
+// Agent at all. The turns a chat wakeup starts get it too, which is where the
+// wakeup rules have to reach. It is "" for a chat no subscription is bound to.
 func (s *Store) ChatTurnNote(ctx context.Context, workspaceID, chatSessionID string) (string, error) {
 	rows, err := s.DB.Query(ctx, `
 		SELECT s.id::text, s.enabled, s.paused_reason,
@@ -83,6 +84,9 @@ func buildChatTurnNote(scopes []chatTurnScope) string {
 		fmt.Fprintf(&b, "- %s (subscription %s, %s)\n", sc.Label, sc.SubscriptionID, state)
 	}
 	b.WriteString(routerSubscribedMeans)
+	b.WriteString(routerWakeupSplit)
+	b.WriteString(routerOwnerDecisions)
+	b.WriteString(routerReplyFormat)
 	b.WriteString("What a Super Agent does itself and what it hands off, and the commands for its settings, are in `multica router guide`.")
 	return b.String()
 }

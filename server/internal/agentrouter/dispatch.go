@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), no rate pause (M-111), self-contained owner decisions (M-162), the chat wakeup and batch split (M-164), what "subscribed" means (M-175), own actions by run (M-193), and quiet batch replies (M-210).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), no rate pause (M-111), self-contained owner decisions (M-162), the chat wakeup and batch split (M-164), what "subscribed" means (M-175), own actions by run (M-193), quiet batch replies (M-210), the reply format (M-206), and wakeups on issues in scope (M-208).
 
 package agentrouter
 
@@ -825,15 +825,22 @@ const routerBoundary = "You dispatch, track and relay; you do not do the work yo
 	"The full guide, including the commands for this Super Agent's settings, is `multica router guide`.\n" +
 	routerSubscribedMeans +
 	routerWakeupSplit +
-	routerOwnerDecisions
+	routerOwnerDecisions +
+	routerReplyFormat
 
 // routerWakeupSplit: the batch already reports issues in scope, so a chat
-// wakeup on them wakes the Super Agent twice for one change (M-164). The rule
-// and its examples are in `multica router guide`.
+// wakeup on them wakes the Super Agent twice for one change (M-164). A timed
+// wakeup on such an issue is still right, but the owner saw it next to the
+// batch reports and read it as a duplicate (M-208). The rule and its examples
+// are in `multica router guide`.
 const routerWakeupSplit = "Batches already report every issue in your scope: do not create a chat wakeup " +
 	"(`--until-*` condition or `--every` check) for an issue in scope, and never poll one with `--every`. " +
 	"A chat wakeup is still fine for issues outside the scope, one-off reminders (`--at` / `--after`), " +
 	"and what batches never carry, such as a PR merging or an Actions result. " +
+	"When you do create one on an issue in scope (a timed retry or reminder), say in your reply what kind it is and why batches do not cover it, " +
+	"e.g. a timed retry, not a repeat of the issue's events. " +
+	"In a turn a wakeup starts, read the issue's current status and latest comments before reporting: the wakeup was written earlier, " +
+	"and a batch may have reported it already. " +
 	"See \"chat wakeup 和事件批次的分工\" in `multica router guide`.\n"
 
 // routerOwnerDecisions: the owner often reads only the decision list at the
@@ -860,6 +867,20 @@ func chatBatchReplyRule(quiet bool) string {
 		"When the owner has something new to decide or act on, never use that line: reply plainly, and the owner is notified. " +
 		"See \"没事可报的批次\" in `multica router guide`.\n"
 }
+
+// routerReplyFormat: the reporting format came only from per-workspace notes
+// and the agent's memory, so a Super Agent in another workspace lost it
+// (M-206). The rule and its examples are in `multica router guide`.
+const routerReplyFormat = "Write every reply to the owner in the owner's language, and end it with a separate, numbered section " +
+	"of what needs the owner, titled in that language (「需要你处理」 in Chinese): " +
+	"repeat every open item each time, and write \"none for now\" (目前没有) when there is none. " +
+	"Write times in the owner's time zone: convert the UTC (`...Z`) times the CLI and API return, and name the zone when you do not know theirs. " +
+	"Merged is not fixed: when the fix for a problem the owner reported is merged but not deployed, " +
+	"say it is merged, not live, and still happens in production, and list whether to deploy as an item for the owner. " +
+	"Before relaying an issue, read its current status and latest comments; do not repeat an older conclusion. " +
+	"A batch with nothing new for the owner gets no reply: do not send one only to repeat open items, " +
+	"but whenever you do reply, list them all. " +
+	"See \"每次回复的格式\" in `multica router guide`.\n"
 
 // buildNote renders the run's context: the batch, the open issues in scope
 // and the subscription's state, with the CLI commands that reach further.
@@ -890,7 +911,8 @@ func buildNote(in noteInput) string {
 		b.WriteString("You are the Super Agent for this scope. Read the events, check current state where it matters, and act. " +
 			"Your own actions are left out and never start a run: those of your runs for this subscription. " +
 			"What your agent does in other tasks or chats comes in like anyone else's, so work you hand to your own agent is reported here too. " +
-			"When a person has to decide or act, tell them with `multica notify owner --subscription " + id + " --title ... --body ...`; do not rely on issue comments alone.\n" +
+			"When a person has to decide or act, tell them with `multica notify owner --subscription " + id + " --title ... --body ...`; do not rely on issue comments alone. " +
+			"Write that body as you would a reply to the owner, in the format below.\n" +
 			routerBoundary + "\n")
 	}
 
