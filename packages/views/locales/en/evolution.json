@@ -33,5 +33,35 @@
   "run_open": "Running",
   "run_succeeded": "Done",
   "run_failed": "Failed",
-  "run_catch_up": "Catch-up"
+  "run_catch_up": "Catch-up",
+  "proposal": {
+    "label": "Proposal",
+    "pending": "Not applied",
+    "applied": "Applied · version {{version}}",
+    "changed_since_apply": "Applied · version {{version}}, changed since",
+    "rolled_back": "Rolled back",
+    "stale": "Out of date",
+    "by_hand": "Carried out by hand",
+    "apply": "Apply",
+    "rollback": "Roll back",
+    "apply_title": "Apply this proposal?",
+    "apply_body": "Writes this change to the {{field}} of {{target}}. The current version is kept, so the change can be rolled back.",
+    "rollback_title": "Roll back this proposal?",
+    "rollback_body": "Restores the {{field}} of {{target}} to what it was before version {{version}}.",
+    "before": "Before",
+    "after": "After",
+    "cancel": "Cancel",
+    "applied_toast": "Proposal applied",
+    "rolled_back_toast": "Proposal rolled back",
+    "failed": "Couldn't change the proposal",
+    "target_agent": "agent {{name}}",
+    "target_workflow": "workflow {{name}}",
+    "fields": {
+      "instructions": "instructions",
+      "description": "description",
+      "skills": "skills",
+      "steps": "steps",
+      "name": "name"
+    }
+  }
 }

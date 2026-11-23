@@ -324,7 +324,7 @@ func recordServed(ctx context.Context, q Querier, runID, source string, p Positi
 // DeleteWorkspaceData removes every Evolution row of a workspace. It runs
 // inside the workspace delete transaction; the tables have no foreign keys.
 func DeleteWorkspaceData(ctx context.Context, q Querier, workspaceID any) error {
-	for _, table := range []string{"evolution_cursor", "evolution_run"} {
+	for _, table := range []string{"evolution_cursor", "evolution_run", "evolution_proposal", "evolution_config_version"} {
 		if _, err := q.Exec(ctx, `DELETE FROM `+table+` WHERE workspace_id = $1`, workspaceID); err != nil {
 			return fmt.Errorf("delete %s: %w", table, err)
 		}

@@ -1,4 +1,5 @@
-// Added by the mouse9527/multica fork: Evolution P3, proposals (M-137).
+// Added by the mouse9527/multica fork: Evolution P3, proposals (M-137); P4
+// (M-138) keeps the patched field.
 
 package evolution
 
@@ -118,6 +119,7 @@ const (
 	RejectQuote            = "quote_not_allowed"
 	RejectSensitive        = "sensitive_content"
 	RejectStaleBefore      = "change_does_not_match_target"
+	RejectAmbiguous        = "change_is_ambiguous"
 	RejectRunLimit         = "run_limit_reached"
 	RejectRecentlyRejected = "recently_rejected"
 )
@@ -572,6 +574,23 @@ func (p *ProposalRequest) CheckTarget(s TargetSnapshot) error {
 		return reject(RejectStaleBefore, "change.after is already in the %s's current %s", p.Target.Type, p.Field)
 	}
 	return nil
+}
+
+// Patched is the target's field as the change leaves it, what apply (P4)
+// writes. The change must pick out one place in the field, and a workflow's
+// steps must stay JSON.
+func (p *ProposalRequest) Patched(s TargetSnapshot) (string, error) {
+	out, n := PatchText(s.Fields[p.Field], p.Change.Before, p.Change.After)
+	switch {
+	case n == 0:
+		return "", reject(RejectStaleBefore, "change.before is not in the %s's current %s; copy the current text exactly", p.Target.Type, p.Field)
+	case n > 1:
+		return "", reject(RejectAmbiguous, "change.before occurs %d times in the %s's current %s; quote enough of it to pick out one place", n, p.Target.Type, p.Field)
+	}
+	if p.Target.Type == TargetWorkflow && p.Field == "steps" && !json.Valid([]byte(out)) {
+		return "", reject(RejectInvalid, "the change leaves the workflow's steps as invalid JSON")
+	}
+	return out, nil
 }
 
 func sortedKeys(m map[string]string) []string {

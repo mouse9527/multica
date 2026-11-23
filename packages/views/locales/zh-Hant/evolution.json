@@ -33,5 +33,35 @@
   "run_open": "執行中",
   "run_succeeded": "已完成",
   "run_failed": "失敗",
-  "run_catch_up": "補跑"
+  "run_catch_up": "補跑",
+  "proposal": {
+    "label": "提案",
+    "pending": "未套用",
+    "applied": "已套用 · 第 {{version}} 版",
+    "changed_since_apply": "已套用 · 第 {{version}} 版，之後有變更",
+    "rolled_back": "已復原",
+    "stale": "已過期",
+    "by_hand": "需手動執行",
+    "apply": "套用",
+    "rollback": "復原",
+    "apply_title": "套用這則提案？",
+    "apply_body": "將這項變更寫入{{target}}的{{field}}。目前版本會保留，可以復原。",
+    "rollback_title": "復原這則提案？",
+    "rollback_body": "將{{target}}的{{field}}還原到第 {{version}} 版之前的內容。",
+    "before": "變更前",
+    "after": "變更後",
+    "cancel": "取消",
+    "applied_toast": "已套用提案",
+    "rolled_back_toast": "已復原提案",
+    "failed": "無法變更提案",
+    "target_agent": "智能體「{{name}}」",
+    "target_workflow": "工作流程「{{name}}」",
+    "fields": {
+      "instructions": "指令",
+      "description": "描述",
+      "skills": "技能",
+      "steps": "步驟",
+      "name": "名稱"
+    }
+  }
 }

@@ -1,11 +1,13 @@
-// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136).
+// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-138).
 
 import type { z } from "zod";
 import type {
   EvolutionAgentSchema,
   EvolutionConfigSchema,
   EvolutionConfigStateSchema,
+  EvolutionProposalStateSchema,
   EvolutionRunSchema,
+  EvolutionVersionSchema,
 } from "./schemas";
 
 export type EvolutionAgent = z.infer<typeof EvolutionAgentSchema>;
@@ -44,3 +46,9 @@ export interface SaveEvolutionConfigInput {
   /** Confirms that turning chat reading on notifies every member. */
   acknowledgeMemberNotice?: boolean;
 }
+
+/** A proposal's apply and rollback state (`GET /api/evolution/proposals/{issueId}`). */
+export type EvolutionProposalState = z.infer<typeof EvolutionProposalStateSchema>;
+
+/** One apply or rollback of a proposal. */
+export type EvolutionVersion = z.infer<typeof EvolutionVersionSchema>;

@@ -90,6 +90,9 @@ change as a diff, evidence, expected effect, risk) and labels it
   target as it is now; leave it empty for a pure addition). For `skills`
   the current text is the enabled skill names, one per line; for `steps`,
   the workflow's steps as indented JSON;
+- `change.before` occurs more than once in that text: quote enough of it to
+  pick out one place, because an approved proposal is applied exactly where
+  it points. For `steps`, the change must leave valid JSON;
 - the evidence comes from fewer independent sources (different issues or
   chat sessions) than the workspace requires, or cites something you may
   not read;

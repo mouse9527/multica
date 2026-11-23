@@ -33,5 +33,35 @@
   "run_open": "Выполняется",
   "run_succeeded": "Готово",
   "run_failed": "Ошибка",
-  "run_catch_up": "Догоняющий"
+  "run_catch_up": "Догоняющий",
+  "proposal": {
+    "label": "Предложение",
+    "pending": "Не применено",
+    "applied": "Применено · версия {{version}}",
+    "changed_since_apply": "Применено · версия {{version}}, затем изменено",
+    "rolled_back": "Откачено",
+    "stale": "Устарело",
+    "by_hand": "Выполняется вручную",
+    "apply": "Применить",
+    "rollback": "Откатить",
+    "apply_title": "Применить это предложение?",
+    "apply_body": "Записывает это изменение в поле «{{field}}» ({{target}}). Текущая версия сохраняется, поэтому изменение можно откатить.",
+    "rollback_title": "Откатить это предложение?",
+    "rollback_body": "Возвращает поле «{{field}}» ({{target}}) к состоянию до версии {{version}}.",
+    "before": "До",
+    "after": "После",
+    "cancel": "Отмена",
+    "applied_toast": "Предложение применено",
+    "rolled_back_toast": "Предложение откачено",
+    "failed": "Не удалось изменить предложение",
+    "target_agent": "агент {{name}}",
+    "target_workflow": "рабочий процесс {{name}}",
+    "fields": {
+      "instructions": "инструкции",
+      "description": "описание",
+      "skills": "навыки",
+      "steps": "шаги",
+      "name": "название"
+    }
+  }
 }

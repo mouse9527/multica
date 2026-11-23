@@ -33,5 +33,35 @@
   "run_open": "En cours",
   "run_succeeded": "Terminée",
   "run_failed": "Échec",
-  "run_catch_up": "Rattrapage"
+  "run_catch_up": "Rattrapage",
+  "proposal": {
+    "label": "Proposition",
+    "pending": "Non appliquée",
+    "applied": "Appliquée · version {{version}}",
+    "changed_since_apply": "Appliquée · version {{version}}, modifiée depuis",
+    "rolled_back": "Annulée",
+    "stale": "Obsolète",
+    "by_hand": "À appliquer à la main",
+    "apply": "Appliquer",
+    "rollback": "Annuler la modification",
+    "apply_title": "Appliquer cette proposition ?",
+    "apply_body": "Écrit cette modification dans {{field}} de {{target}}. La version actuelle est conservée, la modification peut donc être annulée.",
+    "rollback_title": "Annuler cette proposition ?",
+    "rollback_body": "Rétablit {{field}} de {{target}} tel qu’il était avant la version {{version}}.",
+    "before": "Avant",
+    "after": "Après",
+    "cancel": "Annuler",
+    "applied_toast": "Proposition appliquée",
+    "rolled_back_toast": "Proposition annulée",
+    "failed": "Impossible de modifier la proposition",
+    "target_agent": "l’agent {{name}}",
+    "target_workflow": "le workflow {{name}}",
+    "fields": {
+      "instructions": "les instructions",
+      "description": "la description",
+      "skills": "les compétences",
+      "steps": "les étapes",
+      "name": "le nom"
+    }
+  }
 }

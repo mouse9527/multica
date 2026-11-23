@@ -1,4 +1,4 @@
-// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-137).
+// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-137, M-138).
 
 package handler
 
@@ -76,6 +76,10 @@ func (h *Handler) MountEvolution(r chi.Router) {
 	r.Get("/signals", h.GetEvolutionSignals)
 	// P3 (M-137): proposals from the analysis run.
 	r.Post("/proposals", h.CreateEvolutionProposal)
+	// P4 (M-138): an owner or admin applies a proposal, or rolls it back.
+	r.Get("/proposals/{issueId}", h.GetEvolutionProposal)
+	r.With(RequireHumanActor).Post("/proposals/{issueId}/apply", h.ApplyEvolutionProposal)
+	r.With(RequireHumanActor).Post("/proposals/{issueId}/rollback", h.RollbackEvolutionProposal)
 }
 
 func (h *Handler) requireEvolutionV1(next http.Handler) http.Handler {

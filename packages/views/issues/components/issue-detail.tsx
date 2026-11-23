@@ -228,9 +228,10 @@ import {
   useRightSidebarShortcut,
 } from "../../layout/animated-right-sidebar";
 
-// mouse9527/multica fork (M-194), below the import block, apart from
+// mouse9527/multica fork (M-194, M-138), below the import block, apart from
 // upstream's imports (M-141).
 import { IssueSuperAgentsRow } from "../../router/issue-super-agents";
+import { EvolutionProposalRow } from "../../evolution/evolution-proposal-row";
 
 /**
  * Memento entry recording that the comment-highlight deep link for this
@@ -3487,6 +3488,8 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
           </PropRow>
           {/* mouse9527/multica fork (M-194): the Super Agents covering this issue. */}
           <IssueSuperAgentsRow issueId={id} />
+          {/* mouse9527/multica fork (M-138): apply or roll back an Evolution proposal. */}
+          <EvolutionProposalRow issueId={id} metadata={issue.metadata} />
         </IssueSidebarPropertyGrid>}
       </div>
     ),
