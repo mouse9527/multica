@@ -270,16 +270,19 @@ type issueRow struct {
 	CreatorID    string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	// OriginTask is the run that created the issue, when its origin records
+	// one (issueOriginTaskSQL).
+	OriginTask *string
 }
 
 func loadIssue(ctx context.Context, q Querier, workspaceID, issueID string) (issueRow, error) {
 	var r issueRow
 	err := q.QueryRow(ctx, `
 		SELECT id::text, project_id::text, status, assignee_type, assignee_id::text,
-		       creator_type, creator_id::text, created_at, updated_at
-		FROM issue WHERE id = $1::uuid AND workspace_id = $2::uuid`, issueID, workspaceID,
+		       creator_type, creator_id::text, created_at, updated_at, (`+issueOriginTaskSQL+`)::text
+		FROM issue i WHERE id = $1::uuid AND workspace_id = $2::uuid`, issueID, workspaceID,
 	).Scan(&r.ID, &r.ProjectID, &r.Status, &r.AssigneeType, &r.AssigneeID,
-		&r.CreatorType, &r.CreatorID, &r.CreatedAt, &r.UpdatedAt)
+		&r.CreatorType, &r.CreatorID, &r.CreatedAt, &r.UpdatedAt, &r.OriginTask)
 	return r, err
 }
 
@@ -424,7 +427,7 @@ func (c *Capturer) capture(ctx context.Context, workspaceID string, subs []scope
 		issueTriggered := t.eventType == protocol.EventIssueCreated || t.eventType == protocol.EventIssueUpdated
 		if t.eventType == protocol.EventIssueCreated {
 			ct, cid := issue.CreatorType, issue.CreatorID
-			var creatorTask *string
+			creatorTask := issue.OriginTask
 			if t.actorTaskID != "" && t.actorType == ct && t.actorID == cid {
 				creatorTask = &t.actorTaskID
 			}

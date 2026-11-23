@@ -29,8 +29,12 @@ func (e *env) superAgentRuns() runFixture {
 	r.child = e.issue("child", testutil.Cols{"parent_issue_id": r.root})
 	r.sub = e.subscribe(e.agentA, ScopeIssueTree, r.root)
 	chat := e.bindChat(r.sub)
+	// Running, not queued: one issue may hold several of these runs, and the
+	// pending-task unique index allows only one queued run per issue and agent.
 	task := func(cols testutil.Cols) string {
 		cols["runtime_id"] = e.runtimeOf(e.agentA)
+		cols["status"] = "running"
+		cols["started_at"] = testutil.Raw("now()")
 		return e.fx.Task(e.t, e.agentA, cols)
 	}
 	r.chatTurn = task(testutil.Cols{"chat_session_id": chat})
@@ -65,7 +69,8 @@ func (e *env) publishIssueFrom(eventType, issueID, task string) {
 		ActorTaskID: task, Payload: map[string]any{"issue": e.issuePayload(issueID)}})
 }
 
-// selfByKey maps each event's comment id, status "to" or kind to is_self.
+// selfByKey maps each event's comment id, status "to", created issue id or
+// kind to is_self.
 func selfByKey(evs []Event) map[string]bool {
 	out := map[string]bool{}
 	for _, ev := range evs {
@@ -74,6 +79,8 @@ func selfByKey(evs []Event) map[string]bool {
 			out[ev.Payload["comment_id"].(string)] = ev.Self
 		case KindStatusChanged:
 			out["status:"+ev.Payload["to"].(string)] = ev.Self
+		case KindIssueCreated:
+			out[ev.IssueID] = ev.Self
 		default:
 			out[ev.Kind] = ev.Self
 		}
@@ -127,9 +134,20 @@ func TestOwnActionsAreTheSuperAgentsRunsOnly(t *testing.T) {
 	status("in_review", r.chatTurn, true)
 	status("done", "", true)
 
-	created := e.issue("sub-issue", testutil.Cols{"parent_issue_id": r.child, "creator_type": "agent", "creator_id": e.agentA})
-	e.publishIssueFrom(protocol.EventIssueCreated, created, r.issueTask)
-	want[KindIssueCreated], names[KindIssueCreated] = false, "issue created from an issue task"
+	created := func(name, eventTask string, origin testutil.Cols, self bool) {
+		cols := testutil.Cols{"parent_issue_id": r.child, "creator_type": "agent", "creator_id": e.agentA}
+		for k, v := range origin {
+			cols[k] = v
+		}
+		id := e.issue(name, cols)
+		e.publishIssueFrom(protocol.EventIssueCreated, id, eventTask)
+		want[id], names[id] = self, name
+	}
+	created("issue created from an issue task", r.issueTask, nil, false)
+	created("issue created from the chat turn", r.chatTurn, nil, true)
+	// An event that does not name its run falls back to the issue's origin.
+	created("quick-created issue from an issue task", "",
+		testutil.Cols{"origin_type": "quick_create", "origin_id": r.issueTask}, false)
 
 	failed := e.failedTask(e.agentA, r.child, testutil.Cols{"runtime_id": e.runtimeOf(e.agentA)})
 	e.publishTaskFailed(failed, r.child, e.agentA, false)
@@ -148,16 +166,25 @@ func TestReconcileJudgesOwnActionsByRun(t *testing.T) {
 	fromChat := e.agentComment(r.child, r.chatTurn)
 	unknown := e.agentComment(r.child, "")
 	e.failedTask(e.agentA, r.child, testutil.Cols{"runtime_id": e.runtimeOf(e.agentA)})
-	// No issue row records the run that created it.
-	e.issue("sub-issue", testutil.Cols{"parent_issue_id": r.child, "creator_type": "agent", "creator_id": e.agentA})
+	// An issue records the run that created it in origin_id for agent_create
+	// and quick_create; an autopilot's origin_id is not a task.
+	createdBy := func(originType, originID string) string {
+		return e.issue("sub-issue "+originType, testutil.Cols{"parent_issue_id": r.child,
+			"creator_type": "agent", "creator_id": e.agentA, "origin_type": originType, "origin_id": originID})
+	}
+	createdByExecutor := createdBy("agent_create", r.issueTask)
+	createdByChat := createdBy("quick_create", r.chatTurn)
+	createdByAutopilot := createdBy("autopilot", r.issueTask)
 	e.reconcile()
 
 	assertSelf(t, selfByKey(e.events(r.sub.ID)), map[string]bool{
-		fromIssueTask: false, fromChat: true, unknown: true, KindTaskFailed: false, KindIssueCreated: true,
+		fromIssueTask: false, fromChat: true, unknown: true, KindTaskFailed: false,
+		createdByExecutor: false, createdByChat: true, createdByAutopilot: true,
 	}, map[string]string{
 		fromIssueTask: "comment from an issue task", fromChat: "comment from the chat turn",
 		unknown: "comment from no known run", KindTaskFailed: "failed issue task",
-		KindIssueCreated: "issue created, run unknown",
+		createdByExecutor: "issue created from an issue task", createdByChat: "issue quick-created from the chat turn",
+		createdByAutopilot: "issue created by an autopilot, run unknown",
 	})
 }
 

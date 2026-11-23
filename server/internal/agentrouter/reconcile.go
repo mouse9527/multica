@@ -141,13 +141,18 @@ func reconcileSelfSQL(actedAsAgent, taskID string) string {
 	return "(" + actedAsAgent + " AND " + ownRunSQL("m.sub_id", "m.agent_id", taskID) + ") AS is_self"
 }
 
+// issueOriginTaskSQL is the run that created issue i, for the origins whose
+// origin_id is the creating agent's task (checked against the agent when the
+// issue is written). An autopilot's origin_id is its run, not a task.
+const issueOriginTaskSQL = "CASE WHEN i.origin_type IN ('agent_create', 'quick_create') THEN i.origin_id END"
+
 var edgeKinds = []edgeKind{
 	{
 		kind: KindIssueCreated,
 		join: "JOIN issue i ON i.id = m.issue_id", ts: "i.created_at", item: "i.id",
 		cols: `'issue:' || i.id::text || ':created' AS event_key, 'issue_created'::text AS kind,
 		       i.id AS issue_id, i.creator_type AS actor_type, i.creator_id AS actor_id,
-		       ` + reconcileSelfSQL("i.creator_type = 'agent' AND i.creator_id = m.agent_id", "NULL::uuid") + `,
+		       ` + reconcileSelfSQL("i.creator_type = 'agent' AND i.creator_id = m.agent_id", issueOriginTaskSQL) + `,
 		       '{}'::jsonb AS payload, i.created_at AS occurred_at`,
 	},
 	{
