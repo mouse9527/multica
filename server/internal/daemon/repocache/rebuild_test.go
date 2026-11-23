@@ -142,8 +142,10 @@ func TestUnexplainedCaseConflictKeepsCache(t *testing.T) {
 }
 
 // failCacheFetches makes the first n cache fetches fail as a dropped link
-// does. It swaps a package variable, so callers must not be parallel tests.
-func failCacheFetches(t *testing.T, n int) {
+// does. With lose set, the first of them stores every ref except the ones
+// lose removes again, as a fetch cut off part way does; the others store
+// nothing. It swaps a package variable, so callers must not be parallel tests.
+func failCacheFetches(t *testing.T, n int, lose func(barePath string) error) {
 	t.Helper()
 	var mu sync.Mutex
 	calls := 0
@@ -151,36 +153,73 @@ func failCacheFetches(t *testing.T, n int) {
 	runGitFetchOutput = func(ctx context.Context, barePath string) ([]byte, error) {
 		mu.Lock()
 		calls++
-		fail := calls <= n
+		call := calls
 		mu.Unlock()
-		if fail {
-			return []byte("error: RPC failed; curl 56 Recv failure: Connection reset by peer\nfatal: early EOF\n"), errors.New("exit status 128")
+		if call > n {
+			return runGitFetchOutputContext(ctx, barePath)
 		}
-		return runGitFetchOutputContext(ctx, barePath)
+		if lose != nil && call == 1 {
+			if out, err := runGitFetchOutputContext(ctx, barePath); err != nil {
+				return out, err
+			}
+			if err := lose(barePath); err != nil {
+				return nil, err
+			}
+		}
+		return []byte("error: RPC failed; curl 56 Recv failure: Connection reset by peer\nfatal: early EOF\n"), errors.New("exit status 128")
 	}
 	t.Cleanup(func() { runGitFetchOutput = orig })
 }
 
+// createTrunkRepo creates a source repository whose default branch is trunk,
+// one commit ahead of a main branch, and returns it with trunk's commit.
+func createTrunkRepo(t *testing.T) (dir, trunk string) {
+	t.Helper()
+	dir = t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-b", "trunk", dir},
+		{"-C", dir, "commit", "--allow-empty", "-m", "first"},
+		{"-C", dir, "branch", "main"},
+		{"-C", dir, "commit", "--allow-empty", "-m", "second"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git setup failed: %s: %v", out, err)
+		}
+	}
+	out, err := runGitOutput("-C", dir, "rev-parse", "trunk")
+	if err != nil {
+		t.Fatalf("rev-parse: %v", err)
+	}
+	return dir, strings.TrimSpace(string(out))
+}
+
 // A complete clone is kept when the fetch that fills refs/remotes/origin/*
-// fails: it is retried once, and if that fails too the cache still checks
-// out the default branch from the clone's own refs.
+// fails: it is retried once, and if that fails too the clone's default
+// branch is recorded, so a checkout whose own fetch fails still starts from
+// the remote's default branch. The remote's default is trunk and it also has
+// main, the branch the fallbacks would pick if the default were not recorded.
 func TestFetchFailureAfterCloneKeepsCache(t *testing.T) {
+	loseTrunk := func(barePath string) error {
+		return runGit("-C", barePath, "update-ref", "-d", "refs/remotes/origin/trunk")
+	}
 	for _, tc := range []struct {
-		name          string
-		failures      int
-		wantOriginRef bool
+		name     string
+		failures int
+		lose     func(string) error
 	}{
-		{"retry succeeds", 1, true},
-		{"retry fails", 2, false},
-		{"checkout fetch fails too", 3, false},
+		{"retry succeeds", 1, nil},
+		{"retry fails", 2, nil},
+		{"checkout fetch fails too", 3, nil},
+		{"partial fetches, checkout fetch fails too", 3, loseTrunk},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			failCacheFetches(t, tc.failures)
-			source := createTestRepo(t)
-			head, err := runGitOutput("-C", source, "rev-parse", "HEAD")
-			if err != nil {
-				t.Fatalf("rev-parse: %v", err)
-			}
+			failCacheFetches(t, tc.failures, tc.lose)
+			source, trunk := createTrunkRepo(t)
 			cache := New(t.TempDir(), testLogger())
 
 			if err := cache.Sync("ws-1", []RepoInfo{{URL: source}}); err != nil {
@@ -193,12 +232,8 @@ func TestFetchFailureAfterCloneKeepsCache(t *testing.T) {
 			if refspec, err := readFetchRefspec(barePath); err != nil || refspec != modernFetchRefspec {
 				t.Fatalf("refspec = %q (%v), want %q", refspec, err, modernFetchRefspec)
 			}
-			out, err := runGitOutput("-C", barePath, "for-each-ref", "refs/remotes/origin")
-			if err != nil {
-				t.Fatalf("for-each-ref: %v", err)
-			}
-			if got := strings.TrimSpace(string(out)) != ""; got != tc.wantOriginRef {
-				t.Fatalf("refs/remotes/origin/* filled = %v, want %v", got, tc.wantOriginRef)
+			if got := getRemoteDefaultBranch(barePath); got != "refs/remotes/origin/trunk" {
+				t.Fatalf("default branch = %q, want refs/remotes/origin/trunk", got)
 			}
 
 			result, err := cache.CreateWorktree(WorktreeParams{
@@ -211,8 +246,8 @@ func TestFetchFailureAfterCloneKeepsCache(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CreateWorktree failed: %v", err)
 			}
-			if got, err := resolveCommitContext(t.Context(), result.Path, "HEAD"); err != nil || got != strings.TrimSpace(string(head)) {
-				t.Fatalf("checkout HEAD = %s (%v), want %s", got, err, head)
+			if got, err := resolveCommitContext(t.Context(), result.Path, "HEAD"); err != nil || got != trunk {
+				t.Fatalf("checkout HEAD = %s (%v), want trunk %s", got, err, trunk)
 			}
 		})
 	}

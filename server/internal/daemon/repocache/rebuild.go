@@ -331,9 +331,13 @@ func cloneBareContext(ctx context.Context, url, dest string, opts cloneOptions) 
 		if !IsRefCaseConflict(err) {
 			// The download is complete and only the fetch that fills
 			// refs/remotes/origin/* failed. Retry it once, then keep the
-			// clone anyway: every later fetch fills them, and until then the
-			// default branch resolves from the clone's own refs.
-			err = gitFetchContext(ctx, dest)
+			// clone anyway, once its default branch is recorded: every later
+			// fetch fills the other refs.
+			if err = gitFetchContext(ctx, dest); err != nil && !IsRefCaseConflict(err) {
+				if recordErr := recordCloneDefaultBranchContext(ctx, dest); recordErr != nil {
+					return fmt.Errorf("configure fetch refspec: %w (and the clone's default branch could not be recorded: %v)", err, recordErr)
+				}
+			}
 		}
 		if err != nil {
 			warn(err)
@@ -345,6 +349,33 @@ func cloneBareContext(ctx context.Context, url, dest string, opts cloneOptions) 
 func hasModernRefspecContext(ctx context.Context, barePath string) bool {
 	refspec, err := readFetchRefspecContext(ctx, barePath)
 	return err == nil && refspec == modernFetchRefspec
+}
+
+// recordCloneDefaultBranchContext points refs/remotes/origin/HEAD at the
+// remote's default branch as `git clone` recorded it in the bare HEAD,
+// creating that remote-tracking ref from the clone's copy if no fetch stored
+// it. A failed fetch may store only some refs; without this, the default
+// branch would resolve to whichever of origin/main or origin/master it
+// stored, not the remote's actual default.
+func recordCloneDefaultBranchContext(ctx context.Context, barePath string) error {
+	bareRef := bareHeadBranchContext(ctx, barePath)
+	if bareRef == "" {
+		return errors.New("the clone records no default branch")
+	}
+	originRef := "refs/remotes/origin/" + strings.TrimPrefix(bareRef, "refs/heads/")
+	if err := runGitContext(ctx, "-C", barePath, "rev-parse", "--verify", "--quiet", originRef); err != nil {
+		commit, err := resolveCommitContext(ctx, barePath, bareRef)
+		if err != nil {
+			return err
+		}
+		if out, err := runGitCombinedOutputContext(ctx, "-C", barePath, "update-ref", originRef, commit); err != nil {
+			return fmt.Errorf("create %s: %s: %w", originRef, strings.TrimSpace(string(out)), err)
+		}
+	}
+	if out, err := runGitCombinedOutputContext(ctx, "-C", barePath, "symbolic-ref", "refs/remotes/origin/HEAD", originRef); err != nil {
+		return fmt.Errorf("point origin/HEAD at %s: %s: %w", originRef, strings.TrimSpace(string(out)), err)
+	}
+	return nil
 }
 
 func cloneTimeout() time.Duration {
