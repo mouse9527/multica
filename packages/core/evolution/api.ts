@@ -1,15 +1,16 @@
-// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136).
+// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-138).
 //
 // Evolution endpoints (`/api/evolution/*`, see docs/evolution.md). They answer
 // 404 while `evolution_v1` is off.
 
 import { api, ApiError, parseWithFallback } from "../api";
-import { EvolutionConfigStateSchema, EvolutionStatusSchema } from "./schemas";
+import { EvolutionConfigStateSchema, EvolutionProposalStateSchema, EvolutionStatusSchema } from "./schemas";
 import type {
   EnableEvolutionInput,
   EvolutionAgent,
   EvolutionConfig,
   EvolutionConfigState,
+  EvolutionProposalState,
   EvolutionStatus,
   SaveEvolutionConfigInput,
 } from "./types";
@@ -87,4 +88,48 @@ export async function saveEvolutionConfig(
  */
 export function startsChatReading(current: EvolutionConfigState, next: EvolutionConfig): boolean {
   return next.enabled && next.sources.chat && !current.chat_active;
+}
+
+function proposalPath(issueId: string, action?: "apply" | "rollback"): string {
+  const base = `/api/evolution/proposals/${encodeURIComponent(issueId)}`;
+  return action ? `${base}/${action}` : base;
+}
+
+function parseProposalState(raw: unknown, endpoint: string): EvolutionProposalState {
+  const parsed = EvolutionProposalStateSchema.safeParse(raw);
+  if (!parsed.success) throw new Error(`${endpoint}: unexpected response`);
+  return parsed.data;
+}
+
+/**
+ * A proposal's apply and rollback state, or null when the issue is not a
+ * proposal that can be applied (404, also while `evolution_v1` is off).
+ */
+export async function getEvolutionProposal(wsId: string, issueId: string): Promise<EvolutionProposalState | null> {
+  let raw: unknown;
+  try {
+    raw = await api.request(proposalPath(issueId), scoped(wsId));
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+  return parseWithFallback<EvolutionProposalState | null>(raw, EvolutionProposalStateSchema, null, {
+    endpoint: "GET /api/evolution/proposals/{id}",
+  });
+}
+
+/**
+ * Applies a proposal. The server answers 409 when the target changed since
+ * the proposal was written (and marks it stale) or it is already applied,
+ * and 422 when the change cannot be written; the error carries its reason.
+ */
+export async function applyEvolutionProposal(wsId: string, issueId: string): Promise<EvolutionProposalState> {
+  const raw = await api.request(proposalPath(issueId, "apply"), scoped(wsId, { method: "POST" }));
+  return parseProposalState(raw, "POST /api/evolution/proposals/{id}/apply");
+}
+
+/** Rolls an applied proposal back; 409 when the target changed after the apply. */
+export async function rollbackEvolutionProposal(wsId: string, issueId: string): Promise<EvolutionProposalState> {
+  const raw = await api.request(proposalPath(issueId, "rollback"), scoped(wsId, { method: "POST" }));
+  return parseProposalState(raw, "POST /api/evolution/proposals/{id}/rollback");
 }

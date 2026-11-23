@@ -1,4 +1,4 @@
-// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-137).
+// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-137, M-138).
 
 import { z } from "zod";
 
@@ -75,4 +75,34 @@ export const EvolutionConfigStateSchema = z.object({
   comments_active: z.boolean().catch(false),
   limits: EvolutionLimitsSchema,
   runs: z.array(EvolutionRunSchema).catch([]),
+});
+
+// P4 (M-138): a proposal's apply and rollback state, for its issue page.
+
+export const EvolutionVersionSchema = z.object({
+  id: z.string(),
+  version: z.number().catch(0),
+  action: z.string().catch(""),
+  field: z.string().catch(""),
+  reverted_of: nullableString,
+  actor_id: z.string().catch(""),
+  created_at: z.string().catch(""),
+});
+
+export const EvolutionProposalStateSchema = z.object({
+  issue_id: z.string(),
+  target_type: z.string().catch(""),
+  target_id: z.string().catch(""),
+  target_name: z.string().catch(""),
+  field: z.string().catch(""),
+  change: z.object({ before: z.string().catch(""), after: z.string().catch("") }).catch({ before: "", after: "" }),
+  /** pending, applied, or rolled_back; anything else reads as pending. */
+  state: z.enum(["pending", "applied", "rolled_back"]).catch("pending"),
+  applicable: z.boolean().catch(false),
+  stale: z.boolean().catch(false),
+  changed_since_apply: z.boolean().catch(false),
+  // Affordances default to off: an unreadable answer offers nothing.
+  can_apply: z.boolean().catch(false),
+  can_rollback: z.boolean().catch(false),
+  versions: z.array(EvolutionVersionSchema).catch([]),
 });

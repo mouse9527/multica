@@ -33,5 +33,35 @@
   "run_open": "En curso",
   "run_succeeded": "Completada",
   "run_failed": "Fallida",
-  "run_catch_up": "Recuperación"
+  "run_catch_up": "Recuperación",
+  "proposal": {
+    "label": "Propuesta",
+    "pending": "Sin aplicar",
+    "applied": "Aplicada · versión {{version}}",
+    "changed_since_apply": "Aplicada · versión {{version}}, cambiada después",
+    "rolled_back": "Revertida",
+    "stale": "Desactualizada",
+    "by_hand": "Se aplica a mano",
+    "apply": "Aplicar",
+    "rollback": "Revertir",
+    "apply_title": "¿Aplicar esta propuesta?",
+    "apply_body": "Escribe este cambio en {{field}} de {{target}}. La versión actual se conserva, así que el cambio se puede revertir.",
+    "rollback_title": "¿Revertir esta propuesta?",
+    "rollback_body": "Restaura {{field}} de {{target}} a como estaba antes de la versión {{version}}.",
+    "before": "Antes",
+    "after": "Después",
+    "cancel": "Cancelar",
+    "applied_toast": "Propuesta aplicada",
+    "rolled_back_toast": "Propuesta revertida",
+    "failed": "No se pudo cambiar la propuesta",
+    "target_agent": "el agente {{name}}",
+    "target_workflow": "el flujo de trabajo {{name}}",
+    "fields": {
+      "instructions": "las instrucciones",
+      "description": "la descripción",
+      "skills": "las habilidades",
+      "steps": "los pasos",
+      "name": "el nombre"
+    }
+  }
 }

@@ -33,5 +33,35 @@
   "run_open": "実行中",
   "run_succeeded": "完了",
   "run_failed": "失敗",
-  "run_catch_up": "追い上げ"
+  "run_catch_up": "追い上げ",
+  "proposal": {
+    "label": "提案",
+    "pending": "未適用",
+    "applied": "適用済み · バージョン {{version}}",
+    "changed_since_apply": "適用済み · バージョン {{version}}、その後に変更あり",
+    "rolled_back": "ロールバック済み",
+    "stale": "古くなっています",
+    "by_hand": "手動で実施",
+    "apply": "適用",
+    "rollback": "ロールバック",
+    "apply_title": "この提案を適用しますか？",
+    "apply_body": "この変更を{{target}}の{{field}}に書き込みます。現在のバージョンは保持されるため、ロールバックできます。",
+    "rollback_title": "この提案をロールバックしますか？",
+    "rollback_body": "{{target}}の{{field}}をバージョン {{version}} より前の内容に戻します。",
+    "before": "変更前",
+    "after": "変更後",
+    "cancel": "キャンセル",
+    "applied_toast": "提案を適用しました",
+    "rolled_back_toast": "提案をロールバックしました",
+    "failed": "提案を変更できませんでした",
+    "target_agent": "エージェント「{{name}}」",
+    "target_workflow": "ワークフロー「{{name}}」",
+    "fields": {
+      "instructions": "指示",
+      "description": "説明",
+      "skills": "スキル",
+      "steps": "ステップ",
+      "name": "名前"
+    }
+  }
 }

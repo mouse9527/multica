@@ -33,5 +33,35 @@
   "run_open": "运行中",
   "run_succeeded": "已完成",
   "run_failed": "失败",
-  "run_catch_up": "补跑"
+  "run_catch_up": "补跑",
+  "proposal": {
+    "label": "提案",
+    "pending": "未应用",
+    "applied": "已应用 · 第 {{version}} 版",
+    "changed_since_apply": "已应用 · 第 {{version}} 版，之后有改动",
+    "rolled_back": "已回滚",
+    "stale": "已过期",
+    "by_hand": "需手动执行",
+    "apply": "应用",
+    "rollback": "回滚",
+    "apply_title": "应用这条提案？",
+    "apply_body": "把这项改动写入{{target}}的{{field}}。当前版本会保留，可以回滚。",
+    "rollback_title": "回滚这条提案？",
+    "rollback_body": "把{{target}}的{{field}}恢复到第 {{version}} 版之前的内容。",
+    "before": "改动前",
+    "after": "改动后",
+    "cancel": "取消",
+    "applied_toast": "提案已应用",
+    "rolled_back_toast": "提案已回滚",
+    "failed": "操作提案失败",
+    "target_agent": "智能体「{{name}}」",
+    "target_workflow": "工作流「{{name}}」",
+    "fields": {
+      "instructions": "指令",
+      "description": "描述",
+      "skills": "技能",
+      "steps": "步骤",
+      "name": "名称"
+    }
+  }
 }

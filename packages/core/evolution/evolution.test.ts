@@ -1,8 +1,17 @@
 // @vitest-environment node
-// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-137).
+// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-137, M-138).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiClient, setApiInstance } from "../api";
-import { enableEvolution, getEvolution, getEvolutionConfig, saveEvolutionConfig, startsChatReading } from ".";
+import { ApiClient, ApiError, setApiInstance } from "../api";
+import {
+  applyEvolutionProposal,
+  enableEvolution,
+  getEvolution,
+  getEvolutionConfig,
+  getEvolutionProposal,
+  rollbackEvolutionProposal,
+  saveEvolutionConfig,
+  startsChatReading,
+} from ".";
 
 let calls: { method: string; url: string; body: unknown; headers: unknown }[] = [];
 
@@ -166,5 +175,80 @@ describe("startsChatReading", () => {
     expect(startsChatReading({ ...current, chat_active: true }, on)).toBe(false);
     expect(startsChatReading(current, { ...on, enabled: false })).toBe(false);
     expect(startsChatReading(current, { ...on, sources: { comments: true, chat: false } })).toBe(false);
+  });
+});
+
+describe("getEvolutionProposal", () => {
+  it("reads 404 as not an applicable proposal", async () => {
+    serve(() => Response.json({ error: "not found" }, { status: 404 }));
+    await expect(getEvolutionProposal("ws-1", "i1")).resolves.toBeNull();
+    expect(calls[0]).toMatchObject({
+      url: "https://api.example.test/api/evolution/proposals/i1",
+      headers: { "X-Workspace-ID": "ws-1" },
+    });
+  });
+
+  it("parses the state with defaults", async () => {
+    serve(() =>
+      Response.json({
+        issue_id: "i1",
+        target_type: "agent",
+        target_name: "Reviewer",
+        field: "instructions",
+        change: { before: "old", after: "new" },
+        state: "applied",
+        applicable: true,
+        can_rollback: true,
+        versions: [{ id: "v1", version: 1, action: "apply", field: "instructions", created_at: "2026-11-23T08:00:00Z" }],
+      }),
+    );
+    const state = await getEvolutionProposal("ws", "i1");
+    expect(state).toMatchObject({
+      state: "applied",
+      can_apply: false,
+      can_rollback: true,
+      stale: false,
+      changed_since_apply: false,
+      change: { before: "old", after: "new" },
+    });
+    expect(state?.versions[0]).toMatchObject({ id: "v1", reverted_of: null, actor_id: "" });
+  });
+
+  it("offers nothing on an unknown state or a malformed body", async () => {
+    serve(() => Response.json({ issue_id: "i1", state: "exploded", can_apply: "yes", versions: "nope" }));
+    await expect(getEvolutionProposal("ws", "i1")).resolves.toMatchObject({
+      state: "pending",
+      can_apply: false,
+      can_rollback: false,
+      versions: [],
+    });
+    serve(() => Response.json(null));
+    await expect(getEvolutionProposal("ws", "i1")).resolves.toBeNull();
+  });
+});
+
+describe("applyEvolutionProposal and rollbackEvolutionProposal", () => {
+  const applied = { issue_id: "i1", state: "applied", can_rollback: true };
+
+  it("post to the proposal's routes", async () => {
+    serve(() => Response.json(applied));
+    await expect(applyEvolutionProposal("ws-1", "i1")).resolves.toMatchObject({ state: "applied" });
+    await rollbackEvolutionProposal("ws-1", "i1");
+    expect(calls.map((c) => [c.method, c.url])).toEqual([
+      ["POST", "https://api.example.test/api/evolution/proposals/i1/apply"],
+      ["POST", "https://api.example.test/api/evolution/proposals/i1/rollback"],
+    ]);
+  });
+
+  it("rejects with the server's reason when refused", async () => {
+    serve(() => Response.json({ code: "proposal_stale", error: "the agent changed" }, { status: 409 }));
+    const err = await applyEvolutionProposal("ws", "i1").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(409);
+  });
+
+  it("fails on a response it cannot read", async () => {
+    serve(() => Response.json({ state: "applied" }));
+    await expect(applyEvolutionProposal("ws", "i1")).rejects.toThrow(/unexpected response/);
   });
 });
