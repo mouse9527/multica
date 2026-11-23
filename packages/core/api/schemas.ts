@@ -2598,8 +2598,6 @@ const ChatLastMessageSchema = z.object({
     "onboarding_kickoff",
     "onboarding_opening",
     "wakeup",
-    // mouse9527/multica fork (M-96).
-    "router_batch",
   ]).optional().catch(undefined),
 }).loose();
 

@@ -234,6 +234,7 @@ Super Agent 只做分派、跟踪、转告，不自己干活。实质性工作�
 - 批次轮次没有文字输出时，上游照常写一条 `no_response`，它不弹通知；有文字输出就是一条普通回复，走 chat 回复通知（#10424），这就是 Super Agent 找 Owner 的方式。
 - 会话列表的预览不显示批次消息和批次轮次的 `no_response`，未读数也不算后者（`chat.sql` 两个列表查询）。
 - 前端：批次消息显示为折叠的卡片（标题是正文前两行），批次轮次的 `no_response` 不显示：按输入归属识别，即 `no_response` 的任务就是写这条批次的任务（批次轮次没有系统重试，回复总是带着这个任务 ID）（`packages/views/chat/components/router-batch.tsx`）。批次写入时广播的 `chat:message` 不带 `message_id`，客户端只刷新、不先插一条不带类型的用户气泡。
+- 消息类型 `router_batch` 的挂法（M-141）：常量在 fork 文件 `pkg/protocol/router_fork.go`；接口经上游 `normalizeMessageKind` 的 `default` 分支调用 `forkChatMessageKind`（`handler/agent_router_chat_kind.go`）原样透出；前端只在 `ChatMessageSchema` 的枚举里登记，判断用 `isRouterBatch`（`router-batch.tsx`），上游的 `ChatMessageKind` 类型不列这个值。这样上游再加 chat 消息类型时，只有那一行枚举可能冲突。
 
 ### chat 不可用时
 

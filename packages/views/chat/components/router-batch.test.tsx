@@ -33,7 +33,11 @@ import { hideSilentRouterTurns, routerBatchHeadline } from "./router-batch";
 const BATCH =
   "[Super Agent 事件批次 · 非 Owner 发言]\nSuper Agent batch for subscription s1 (issue tree RT-1, anchor RT-1): 2 new event(s).\nEvents, oldest first:\n- RT-2 comment_created";
 
-function msg(over: Partial<ChatMessage> & Pick<ChatMessage, "id">): ChatMessage {
+// message_kind is a plain string: upstream's ChatMessageKind does not list
+// "router_batch" (see isRouterBatch).
+function msg(
+  over: Partial<Omit<ChatMessage, "message_kind">> & Pick<ChatMessage, "id"> & { message_kind?: string },
+): ChatMessage {
   return {
     chat_session_id: "session-1",
     role: "user",

@@ -48,8 +48,6 @@ import { slackKeys } from "../slack/queries";
 import { dingtalkKeys } from "../dingtalk/queries";
 import { wecomKeys } from "../wecom/queries";
 import { telegramKeys } from "../telegram/queries";
-// Modified by the mouse9527/multica fork (M-147): Super Agent subscription changes.
-import { routerKeys } from "../router/queries";
 import {
   onIssueCreated,
   onIssueUpdated,
@@ -148,6 +146,10 @@ import type {
   ChatSessionCreatedPayload,
   InvitationCreatedPayload,
 } from "../types";
+
+// Modified by the mouse9527/multica fork (M-147): Super Agent subscription changes.
+// Below the import block, apart from upstream's imports (M-141).
+import { routerKeys } from "../router/queries";
 
 const chatWsLogger = createLogger("chat.ws");
 
