@@ -1,5 +1,5 @@
 // Added by the mouse9527/multica fork: Evolution P2, the daily schedule (M-136);
-// P3 proposals in the run description (M-137).
+// P3 proposals in the run description (M-137); P5 effect measurement (M-139).
 
 package evolution
 
@@ -52,8 +52,8 @@ type IssueCreator interface {
 }
 
 // Scheduler is the Evolution tick: it keeps cursors in line with each
-// workspace's configuration, tells new members, settles finished runs, and
-// starts the next run when one is due.
+// workspace's configuration, tells new members, measures applied proposals,
+// settles finished runs, and starts the next run when one is due.
 type Scheduler struct {
 	DB      Database
 	Queries *db.Queries
@@ -101,7 +101,7 @@ func (s *Scheduler) Job() scheduler.JobSpec {
 				RowsAffected: int64(res.Started),
 				Result: map[string]any{
 					"workspaces": res.Workspaces, "started": res.Started, "settled": res.Settled,
-					"notified": res.Notified, "errors": res.Errors,
+					"notified": res.Notified, "measured": res.Measured, "errors": res.Errors,
 				},
 			}, err
 		},
@@ -114,6 +114,7 @@ type TickResult struct {
 	Started    int
 	Settled    int
 	Notified   int
+	Measured   int
 	Errors     int
 }
 
@@ -224,6 +225,14 @@ func (s *Scheduler) tickWorkspace(ctx context.Context, wa workspaceAgent, res *T
 		if err != nil {
 			return err
 		}
+	}
+
+	// Applies are measured whether or not the analysis is on: an owner who
+	// paused it still hears that an applied change made things worse.
+	measured, err := s.measureWorkspace(ctx, wa, cfg, now)
+	res.Measured += measured
+	if err != nil {
+		return err
 	}
 
 	open, hasOpen, err := OpenRun(ctx, s.DB, wa.WorkspaceID)

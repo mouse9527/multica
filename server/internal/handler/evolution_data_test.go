@@ -1,4 +1,5 @@
-// Added by the mouse9527/multica fork: Evolution P2 (M-136), P4 (M-138).
+// Added by the mouse9527/multica fork: Evolution P2 (M-136), P4 (M-138), P5
+// (M-139).
 
 package handler
 
@@ -34,7 +35,9 @@ func enableEvolutionAgent(t *testing.T) string {
 		testPool.Exec(ctx, `DELETE FROM evolution_cursor WHERE workspace_id = $1`, testWorkspaceID)
 		testPool.Exec(ctx, `DELETE FROM evolution_proposal WHERE workspace_id = $1`, testWorkspaceID)
 		testPool.Exec(ctx, `DELETE FROM evolution_config_version WHERE workspace_id = $1`, testWorkspaceID)
-		testPool.Exec(ctx, `DELETE FROM inbox_item WHERE workspace_id = $1 AND type = $2`, testWorkspaceID, evolution.NoticeInboxType)
+		testPool.Exec(ctx, `DELETE FROM evolution_effect WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM inbox_item WHERE workspace_id = $1 AND type IN ($2, $3)`, testWorkspaceID,
+			evolution.NoticeInboxType, evolution.RegressionInboxType)
 		testPool.Exec(ctx, `UPDATE workspace SET settings = settings - 'evolution' WHERE id = $1`, testWorkspaceID)
 	})
 	return agentID

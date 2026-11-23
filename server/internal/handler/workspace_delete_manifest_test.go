@@ -198,12 +198,13 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// Modified for the mouse9527/multica fork: Router hold (M-97), deleted
 	// by agentrouter.DeleteWorkspaceData.
 	"router_hold": workspaceDelete,
-	// mouse9527/multica fork: Evolution tables (M-136, M-138), deleted by
-	// evolution.DeleteWorkspaceData.
+	// mouse9527/multica fork: Evolution tables (M-136, M-138, M-139), deleted
+	// by evolution.DeleteWorkspaceData.
 	"evolution_cursor":         workspaceDelete,
 	"evolution_run":            workspaceDelete,
 	"evolution_proposal":       workspaceDelete,
 	"evolution_config_version": workspaceDelete,
+	"evolution_effect":         workspaceDelete,
 	// Modified for the mouse9527/multica fork: password login. A password
 	// belongs to the account, like "user", not to a workspace.
 	"user_credential": workspaceDeleteKeep,
