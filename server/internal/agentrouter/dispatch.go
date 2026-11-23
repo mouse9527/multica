@@ -854,8 +854,8 @@ const routerOwnerDecisions = "Every decision you ask of the owner must stand on 
 
 // chatBatchReplyRule says when a chat batch's reply alerts the owner. With
 // quiet replies on, a reply that opens with QuietReplyMarker stays in the
-// chat without the alert; the turn cannot end without text, as the runtime
-// asks for a visible reply. A quiet reply still ends with every open item:
+// chat without the alert; this matters because the runtime often asks for a
+// visible reply when the turn ends without text. A quiet reply still ends with every open item:
 // quiet is about the alert, not the content (M-206).
 func chatBatchReplyRule(quiet bool) string {
 	if !quiet {
@@ -880,7 +880,7 @@ const routerReplyFormat = "Write every reply to the owner in the owner's languag
 	"Merged is not fixed: when the fix for a problem the owner reported is merged but not deployed, " +
 	"say it is merged, not live, and still happens in production, and list whether to deploy as an item for the owner. " +
 	"Before relaying an issue, read its current status and latest comments; do not repeat an older conclusion. " +
-	"A batch with nothing new for the owner must not alert them, not even to repeat open items (the batch note says how to end it); " +
+	"A batch with nothing new for the owner must not alert them, not even to repeat open items (the batch note may say how to end it); " +
 	"every reply you do write, a quiet one included, still ends with all open items. " +
 	"See \"每次回复的格式\" in `multica router guide`.\n"
 

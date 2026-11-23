@@ -197,8 +197,8 @@ func runRouterGuide(t *testing.T) string {
 	return out.String()
 }
 
-// Every text reply in a chat alerts the owner, and a batch turn cannot end
-// without text, so the guide names the line that keeps a batch reply quiet,
+// Every text reply in a chat alerts the owner, and the runtime often makes a
+// batch turn end with text, so the guide names the line that keeps a batch reply quiet,
 // says when not to use it, and shows using it on a decision as the wrong way
 // (M-210). The marker must match agentrouter.QuietReplyMarker.
 func TestRouterGuideExplainsQuietBatchReplies(t *testing.T) {
@@ -229,5 +229,13 @@ func TestRouterGuideExplainsQuietBatchReplies(t *testing.T) {
 	}
 	if strings.Contains(section, "也不用把未结的决定事项再列一遍") {
 		t.Error("the quiet batch section still lets a quiet reply drop the open items")
+	}
+	// M-215: with the flag off the guide still says to write no reply, so the
+	// section's premise must not say a batch turn can never end without text.
+	if !strings.Contains(section, "没事可报就不写回复（这一轮不输出文字）") {
+		t.Error("the quiet batch section lacks what to do with router_chat_quiet off")
+	}
+	if strings.Contains(section, "不能不写字就结束") {
+		t.Error("the quiet batch section still says a batch turn cannot end without text")
 	}
 }
