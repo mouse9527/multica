@@ -84,7 +84,8 @@ change as a diff, evidence, expected effect, risk) and labels it
 
 - `field` is not on the target's whitelist — agent: `instructions`,
   `description`, `skills`; workflow: `steps`, `name`, `description`; squad:
-  `instructions`, `description`, `members`, `leader`;
+  `instructions`, `description`, `members`, `leader`; team: `new_agent`,
+  `merge_agents`, `routing`;
 - the target is you, an archived or internal agent, or an excluded agent;
 - `change.before` is not in the target's current text (copy it from the
   target as it is now; leave it empty for a pure addition). For `skills`
@@ -115,14 +116,46 @@ of opening another issue. Keep the topic stable across runs so this works.
   adding them.
 - One proposal per change. Do not bundle unrelated changes.
 
+## Propose a team change
+
+Creating an agent, merging agents, and routing work between agents and squads
+are team proposals: `"target": {"type": "team", "id": "<workspace uuid>"}`,
+`field` one of `new_agent`, `merge_agents`, `routing`, `change.before` empty,
+and `change.after` the change for a person to carry out (which agents or
+squads, what each should own). They need evidence like any other proposal.
+Nothing applies them, and no apply button is offered: an approved team
+proposal is carried out by hand. Squad proposals are text only in the same way.
+
+## Condense instructions (monthly review)
+
+A condense review issue lists agents whose instructions are long or repeat
+themselves, with their measurement. For each listed agent:
+
+1. Read its instructions with `multica agent get <id> --output json`.
+2. Rewrite the longest stretch you can say in fewer words: merge repeated and
+   overlapping lines, cut filler and restated context. Keep every rule and its
+   meaning; a condense proposal changes how the instructions read, never what
+   the agent does.
+3. File it with `"field": "instructions"`, `change.before` copied exactly (the
+   whole instructions when they fit in 16,000 characters), the shorter
+   `change.after`, and `"evidence": []`. The server sets the topic, attaches
+   the measurement, and refuses a change that is not shorter
+   (`change_not_shorter`), an agent the review does not list, or any evidence.
+4. One condense proposal per agent is kept open: filing again while it is open
+   adds nothing (`"outcome": "duplicate"`), and a declined one is not filed
+   again during the cooldown.
+
+The approved proposal is applied, and can be rolled back, like any other agent
+instructions proposal.
+
 ## Guardrails
 
 - Never target yourself.
 - Never touch permissions, secrets, credentials, environment variables, MCP
   configuration, runtimes, or visibility — not even as a suggestion inside a
   larger change.
-- Creating, merging, or re-routing agents and squads is proposal-only: describe
-  the change for a person to carry out.
+- Creating, merging, or re-routing agents and squads is proposal-only: file a
+  team or squad proposal describing the change for a person to carry out.
 - Never paste chat messages; summarize them and point to the chat session.
   From comments, quote at most one excerpt of up to 120 characters. Never name
   members; say "a member" or describe their role. Remove anything resembling a

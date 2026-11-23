@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: Evolution P3, proposals (M-137); P4
-// (M-138) keeps the patched field.
+// (M-138) keeps the patched field; P6 (M-140) adds team proposals and
+// condense proposals.
 
 package evolution
 
@@ -23,6 +24,10 @@ const (
 	TargetAgent    = "agent"
 	TargetWorkflow = "workflow"
 	TargetSquad    = "squad"
+	// TargetTeam is the workspace's team as a whole: creating or merging
+	// agents and routing work between agents and squads. Its id is the
+	// workspace's.
+	TargetTeam = "team"
 
 	EvidenceComment = "comment"
 	EvidenceChat    = "chat"
@@ -33,12 +38,18 @@ const (
 var proposalRisks = map[string]bool{"low": true, "medium": true, "high": true}
 
 // ProposalFields is the field whitelist per target type: a proposal changes
-// exactly one of these. Squad proposals are text only; nothing applies them.
+// exactly one of these. Squad and team proposals are text only; nothing
+// applies them.
 var ProposalFields = map[string][]string{
 	TargetAgent:    {"instructions", "description", "skills"},
 	TargetWorkflow: {"steps", "name", "description"},
 	TargetSquad:    {"instructions", "description", "members", "leader"},
+	TargetTeam:     {"new_agent", "merge_agents", "routing"},
 }
+
+// CondenseTopic is the topic of every condense proposal, set by the server:
+// one open condense proposal per agent, found again by its fingerprint.
+const CondenseTopic = "condense instructions"
 
 // forbiddenFields are refused with a reason of their own: permissions,
 // secrets, environment, MCP configuration, runtimes, and visibility are never
@@ -122,6 +133,9 @@ const (
 	RejectAmbiguous        = "change_is_ambiguous"
 	RejectRunLimit         = "run_limit_reached"
 	RejectRecentlyRejected = "recently_rejected"
+	// RejectNotShorter: a condense proposal must leave the instructions
+	// shorter than they are.
+	RejectNotShorter = "change_not_shorter"
 )
 
 // RejectedError is a proposal the server refuses; Message says why, for the
@@ -147,13 +161,45 @@ func IsFieldAllowed(targetType, field string) bool {
 	return false
 }
 
-// Validate checks the request on its own: shapes, lengths, whitelists, quote
-// rules, and that no text carries what redaction would remove. Checks that
-// need the database (the target, the evidence) come after.
+// Validate checks a proposal from an analysis run on its own: shapes,
+// lengths, whitelists, quote rules, and that no text carries what redaction
+// would remove. Checks that need the database (the target, the evidence)
+// come after.
 func (p *ProposalRequest) Validate() error {
+	if err := p.validate(); err != nil {
+		return err
+	}
+	if len(p.Evidence) == 0 {
+		return reject(RejectEvidence, "evidence is required: link the comments, chats, or issues the proposal rests on")
+	}
+	return nil
+}
+
+// ValidateCondense checks a proposal from a condense review the way
+// Validate does, with the review's own rules: it rewrites an agent's
+// instructions, cites no evidence (the server attaches the measurement that
+// put the agent on the review), and its topic is CondenseTopic.
+func (p *ProposalRequest) ValidateCondense() error {
+	if err := p.validate(); err != nil {
+		return err
+	}
+	if p.Target.Type != TargetAgent || p.Field != "instructions" {
+		return reject(RejectField, "a condense review proposes only shorter agent instructions: target.type agent, field instructions")
+	}
+	if p.Change.Before == "" {
+		return reject(RejectInvalid, "change.before is required: copy the passage the proposal rewrites")
+	}
+	if len(p.Evidence) > 0 {
+		return reject(RejectInvalid, "a condense proposal cites no evidence; the server attaches the measurement that put the agent on the review")
+	}
+	p.Topic = CondenseTopic
+	return nil
+}
+
+func (p *ProposalRequest) validate() error {
 	p.trim()
 	if _, ok := ProposalFields[p.Target.Type]; !ok {
-		return reject(RejectTarget, "target.type must be agent, workflow, or squad")
+		return reject(RejectTarget, "target.type must be agent, workflow, squad, or team")
 	}
 	if _, err := util.ParseUUID(p.Target.ID); err != nil {
 		return reject(RejectInvalid, "target.id must be a uuid")
@@ -195,8 +241,8 @@ func (p *ProposalRequest) Validate() error {
 	if !proposalRisks[p.Risk] {
 		return reject(RejectInvalid, "risk must be low, medium, or high")
 	}
-	if len(p.Evidence) == 0 {
-		return reject(RejectEvidence, "evidence is required: link the comments, chats, or issues the proposal rests on")
+	if p.Target.Type == TargetTeam && p.Change.Before != "" {
+		return reject(RejectInvalid, "a team proposal describes the change in change.after only; leave change.before empty")
 	}
 	if len(p.Evidence) > MaxEvidenceItems {
 		return reject(RejectInvalid, "evidence may list at most %d items", MaxEvidenceItems)

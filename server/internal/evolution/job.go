@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: Evolution P2, the daily schedule (M-136);
-// P3 proposals in the run description (M-137); P5 effect measurement (M-139).
+// P3 proposals in the run description (M-137); P5 effect measurement (M-139);
+// P6 the monthly condense review (M-140).
 
 package evolution
 
@@ -53,7 +54,8 @@ type IssueCreator interface {
 
 // Scheduler is the Evolution tick: it keeps cursors in line with each
 // workspace's configuration, tells new members, measures applied proposals,
-// settles finished runs, and starts the next run when one is due.
+// runs the monthly condense review, settles finished runs, and starts the
+// next run when one is due.
 type Scheduler struct {
 	DB      Database
 	Queries *db.Queries
@@ -101,7 +103,8 @@ func (s *Scheduler) Job() scheduler.JobSpec {
 				RowsAffected: int64(res.Started),
 				Result: map[string]any{
 					"workspaces": res.Workspaces, "started": res.Started, "settled": res.Settled,
-					"notified": res.Notified, "measured": res.Measured, "errors": res.Errors,
+					"notified": res.Notified, "measured": res.Measured, "reviews_started": res.ReviewsStarted,
+					"reviews_settled": res.ReviewsSettled, "errors": res.Errors,
 				},
 			}, err
 		},
@@ -116,6 +119,9 @@ type TickResult struct {
 	Notified   int
 	Measured   int
 	Errors     int
+
+	ReviewsStarted int
+	ReviewsSettled int
 }
 
 type workspaceAgent struct {
@@ -148,6 +154,12 @@ func (s *Scheduler) Tick(ctx context.Context) (TickResult, error) {
 	}
 	if _, err := s.DB.Exec(ctx, `
 		UPDATE evolution_run r SET status = 'failed', failure_reason = 'the Evolution agent was removed', finished_at = now()
+		WHERE r.status = 'open' AND NOT EXISTS (
+			SELECT 1 FROM agent a WHERE a.id = r.agent_id AND a.archived_at IS NULL)`); err != nil {
+		return res, err
+	}
+	if _, err := s.DB.Exec(ctx, `
+		UPDATE evolution_review r SET status = 'failed', failure_reason = 'the Evolution agent was removed', finished_at = now()
 		WHERE r.status = 'open' AND NOT EXISTS (
 			SELECT 1 FROM agent a WHERE a.id = r.agent_id AND a.archived_at IS NULL)`); err != nil {
 		return res, err
@@ -235,6 +247,15 @@ func (s *Scheduler) tickWorkspace(ctx context.Context, wa workspaceAgent, res *T
 		return err
 	}
 
+	// The monthly condense review has its own issue and row; it neither
+	// waits for nor holds up the analysis runs below.
+	settledReviews, startedReviews, err := s.reviewWorkspace(ctx, wa, cfg, now)
+	res.ReviewsSettled += settledReviews
+	res.ReviewsStarted += startedReviews
+	if err != nil {
+		return err
+	}
+
 	open, hasOpen, err := OpenRun(ctx, s.DB, wa.WorkspaceID)
 	if err != nil {
 		return err
@@ -309,44 +330,56 @@ func (s *Scheduler) settle(ctx context.Context, run Run, now time.Time) (bool, e
 		}
 		return true, finishRun(ctx, s.DB, run.ID, RunFailed, "the analysis issue was not created")
 	}
+	done, last, err := s.issueOutcome(ctx, run.IssueID, run.AgentID, run.CreatedAt, now)
+	if err != nil || !done {
+		return false, err
+	}
+	if last == "" {
+		return true, finishRun(ctx, s.DB, run.ID, RunFailed, "no task was queued for the analysis issue; check the Evolution agent's runtime")
+	}
+	if last != "completed" {
+		return true, finishRun(ctx, s.DB, run.ID, RunFailed, "the analysis task "+last)
+	}
+	return true, s.succeed(ctx, run)
+}
+
+// issueOutcome reports whether the agent's work on an issue is over and how
+// its latest task ended. It is not over while any task is queued or running,
+// or while none was queued yet within taskGrace of createdAt; once that
+// grace has passed with no task, it is over with last "".
+func (s *Scheduler) issueOutcome(ctx context.Context, issueID, agentID string, createdAt, now time.Time) (done bool, last string, err error) {
 	rows, err := s.DB.Query(ctx, `
 		SELECT status FROM agent_task_queue
 		WHERE issue_id = $1::uuid AND agent_id = $2::uuid
-		ORDER BY created_at DESC, id DESC`, run.IssueID, run.AgentID)
+		ORDER BY created_at DESC, id DESC`, issueID, agentID)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	statuses := []string{}
 	for rows.Next() {
 		var st string
 		if err := rows.Scan(&st); err != nil {
 			rows.Close()
-			return false, err
+			return false, "", err
 		}
 		statuses = append(statuses, st)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return false, err
+		return false, "", err
 	}
 	for _, st := range statuses {
 		switch st {
 		case "completed", "failed", "cancelled":
 		default:
 			// Queued, deferred, dispatched, running, or waiting: not over yet.
-			return false, nil
+			return false, "", nil
 		}
 	}
 	if len(statuses) == 0 {
-		if now.Sub(run.CreatedAt) < taskGrace {
-			return false, nil
-		}
-		return true, finishRun(ctx, s.DB, run.ID, RunFailed, "no task was queued for the analysis issue; check the Evolution agent's runtime")
+		return now.Sub(createdAt) >= taskGrace, "", nil
 	}
-	if statuses[0] != "completed" {
-		return true, finishRun(ctx, s.DB, run.ID, RunFailed, "the analysis task "+statuses[0])
-	}
-	return true, s.succeed(ctx, run)
+	return true, statuses[0], nil
 }
 
 func (s *Scheduler) succeed(ctx context.Context, run Run) error {

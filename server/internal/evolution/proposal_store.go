@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: Evolution P3, filing proposals (M-137);
-// P4 stores what a proposal changes (M-138).
+// P4 stores what a proposal changes (M-138); P6 files condense and team
+// proposals (M-140).
 
 package evolution
 
@@ -11,6 +12,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -52,7 +54,8 @@ type FileRequest struct {
 	WorkspaceID string
 	AgentID     string
 	AgentName   string
-	// IssueID is the analysis issue of the calling task; it selects the run.
+	// IssueID is the analysis or review issue of the calling task; it
+	// selects the run.
 	IssueID  string
 	Proposal ProposalRequest
 	Config   Config
@@ -90,14 +93,28 @@ type Proposals struct {
 }
 
 // File validates and files one proposal. A *RejectedError says why it was
-// refused; ErrNoOpenRun means the task is not an open run's.
+// refused; ErrNoOpenRun means the task is not an open run's or review's.
+//
+// An analysis run files proposals that cite evidence. A condense review
+// files proposals that make a listed agent's instructions shorter; they cite
+// none, and the review's measurement stands in for it.
 func (s *Proposals) File(ctx context.Context, req FileRequest) (FileResult, error) {
 	p := &req.Proposal
-	if err := p.Validate(); err != nil {
+	run, review, err := runOrReviewForIssue(ctx, s.DB, req.WorkspaceID, req.IssueID)
+	if err != nil {
 		return FileResult{}, err
 	}
-	run, err := runForIssue(ctx, s.DB, req.WorkspaceID, req.IssueID)
-	if err != nil {
+	var measure *CondenseCandidate
+	if review != nil {
+		if err := p.ValidateCondense(); err != nil {
+			return FileResult{}, err
+		}
+		c, ok := review.Candidate(p.Target.ID)
+		if !ok {
+			return FileResult{}, reject(RejectTarget, "agent %s is not listed on this condense review", p.Target.ID)
+		}
+		measure = &c
+	} else if err := p.Validate(); err != nil {
 		return FileResult{}, err
 	}
 	if p.Target.Type == TargetAgent && p.Target.ID == strings.ToLower(req.AgentID) {
@@ -114,12 +131,18 @@ func (s *Proposals) File(ctx context.Context, req FileRequest) (FileResult, erro
 	if err != nil {
 		return FileResult{}, err
 	}
+	if measure != nil && utf8.RuneCountInString(proposed) >= utf8.RuneCountInString(snap.Fields[p.Field]) {
+		return FileResult{}, reject(RejectNotShorter, "the change leaves the instructions %d characters long, not shorter than the current %d",
+			utf8.RuneCountInString(proposed), utf8.RuneCountInString(snap.Fields[p.Field]))
+	}
 	evidence, err := s.resolveEvidence(ctx, req)
 	if err != nil {
 		return FileResult{}, err
 	}
-	if err := p.CheckEvidence(evidence, req.Config.MinEvidenceCount); err != nil {
-		return FileResult{}, err
+	if measure == nil {
+		if err := p.CheckEvidence(evidence, req.Config.MinEvidenceCount); err != nil {
+			return FileResult{}, err
+		}
 	}
 	served, err := s.servedSources(ctx, req, run)
 	if err != nil {
@@ -197,7 +220,10 @@ func (s *Proposals) File(ctx context.Context, req FileRequest) (FileResult, erro
 	created, err := s.Issues.Create(ctx, service.IssueCreateParams{
 		WorkspaceID: util.MustParseUUID(req.WorkspaceID),
 		Title:       proposalTitlePrefix[lang] + " · " + p.Title,
-		Description: pgtype.Text{String: renderProposal(lang, p, snap, evidence, run.IssueID, runIssue, req.Config.Location()), Valid: true},
+		Description: pgtype.Text{String: proposalView{
+			lang: lang, p: p, snap: snap, evidence: evidence, runIssueID: run.IssueID, runIdentifier: runIssue,
+			loc: req.Config.Location(), measure: measure, proposedRunes: utf8.RuneCountInString(proposed), cfg: req.Config,
+		}.render(), Valid: true},
 		// Unassigned and parked: a proposal waits for an owner and starts
 		// nothing.
 		Status:         "backlog",
@@ -225,14 +251,17 @@ func (s *Proposals) File(ctx context.Context, req FileRequest) (FileResult, erro
 		WHERE id = $1::uuid AND workspace_id = $2::uuid`, issueID, req.WorkspaceID, string(meta)); err != nil {
 		return FileResult{}, fmt.Errorf("mark proposal issue %s: %w", issueID, err)
 	}
-	// What apply will write (P4), out of reach of edits to the issue.
-	if err := saveProposalRecord(ctx, tx, ProposalRecord{
-		IssueID: issueID, WorkspaceID: req.WorkspaceID, RunID: run.ID,
-		TargetType: p.Target.Type, TargetID: p.Target.ID, Field: p.Field, BaseHash: snap.ContentHash(),
-		ChangeBefore: p.Change.Before, ChangeAfter: p.Change.After,
-		BaseValue: snap.Fields[p.Field], ProposedValue: proposed,
-	}); err != nil {
-		return FileResult{}, fmt.Errorf("record proposal %s: %w", issueID, err)
+	// What apply will write (P4), out of reach of edits to the issue. A team
+	// proposal is only text for a person to carry out: nothing to record.
+	if p.Target.Type != TargetTeam {
+		if err := saveProposalRecord(ctx, tx, ProposalRecord{
+			IssueID: issueID, WorkspaceID: req.WorkspaceID, RunID: run.ID,
+			TargetType: p.Target.Type, TargetID: p.Target.ID, Field: p.Field, BaseHash: snap.ContentHash(),
+			ChangeBefore: p.Change.Before, ChangeAfter: p.Change.After,
+			BaseValue: snap.Fields[p.Field], ProposedValue: proposed,
+		}); err != nil {
+			return FileResult{}, fmt.Errorf("record proposal %s: %w", issueID, err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return FileResult{}, fmt.Errorf("mark proposal issue %s: %w", issueID, err)
@@ -244,6 +273,21 @@ func (s *Proposals) File(ctx context.Context, req FileRequest) (FileResult, erro
 	res.NewEvidence = len(evidence)
 	res.ProposalsLeft = left - 1
 	return res, nil
+}
+
+// runOrReviewForIssue returns the open analysis run whose issue is issueID,
+// or else the open review whose issue it is, as the run its proposals are
+// filed under (review is then non-nil).
+func runOrReviewForIssue(ctx context.Context, q Querier, workspaceID, issueID string) (Run, *Review, error) {
+	run, err := runForIssue(ctx, q, workspaceID, issueID)
+	if !errors.Is(err, ErrNoOpenRun) {
+		return run, nil, err
+	}
+	review, err := reviewForIssue(ctx, q, workspaceID, issueID)
+	if err != nil {
+		return Run{}, nil, err
+	}
+	return review.run(), &review, nil
 }
 
 // runForIssue returns the open run whose analysis issue is issueID.
@@ -399,9 +443,12 @@ func identifierOf(number int32, sibling string) string {
 
 // loadTarget reads the target's whitelisted fields and refuses targets that
 // are not allowed: missing, archived, hidden system agents, Evolution
-// itself, and excluded agents.
+// itself, excluded agents, and a team other than this workspace's.
 func (s *Proposals) loadTarget(ctx context.Context, req FileRequest) (TargetSnapshot, error) {
 	p := req.Proposal
+	if p.Target.Type == TargetTeam && !strings.EqualFold(p.Target.ID, req.WorkspaceID) {
+		return TargetSnapshot{}, reject(RejectTarget, "a team proposal's target.id is this workspace's id, %s", req.WorkspaceID)
+	}
 	snap, st, err := ReadTarget(ctx, s.DB, req.WorkspaceID, p.Target.Type, p.Target.ID, false)
 	if errors.Is(err, ErrTargetNotFound) {
 		return snap, reject(RejectTarget, "%s %s was not found in this workspace", p.Target.Type, p.Target.ID)
@@ -492,7 +539,8 @@ func (s *Proposals) resolveEvidence(ctx context.Context, req FileRequest) ([]Res
 				  AND ($3::uuid[] IS NULL OR i.project_id IS NULL OR NOT (i.project_id = ANY($3::uuid[])))
 				  AND (i.project_id IS NULL OR NOT (i.project_id = ANY(COALESCE($4::uuid[], '{}'))))
 				  AND NOT (i.metadata ? 'evolution_fingerprint')
-				  AND NOT EXISTS (SELECT 1 FROM evolution_run r WHERE r.issue_id = i.id)`,
+				  AND NOT EXISTS (SELECT 1 FROM evolution_run r WHERE r.issue_id = i.id)
+				  AND NOT EXISTS (SELECT 1 FROM evolution_review v WHERE v.issue_id = i.id)`,
 				req.WorkspaceID, e.ID, req.HiddenProjects, req.Config.ExcludeProjects).
 				Scan(&r.CreatedAt, &r.IssueID, &r.IssueIdentifier)
 			r.Context = "issue:" + r.IssueID
