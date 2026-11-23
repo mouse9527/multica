@@ -495,9 +495,11 @@ func TestEvolutionRollbackWaitsForSkillEdits(t *testing.T) {
 }
 
 // TestEvolutionProposalInPrivateProject: a proposal moved into a private
-// project is not found for a member outside it, like the issue itself, and
-// its writes answer that member 403 without loading it; an owner still sees
-// and may apply it.
+// project is not found for anyone outside that project, like the issue
+// itself: a member gets 404 on the read and 403 on the writes (refused
+// before the issue is loaded), and an owner who is not in the project gets
+// 404 on all three, since a workspace role grants no project access. Once
+// the owner is a project member, the proposal is theirs to apply.
 func TestEvolutionProposalInPrivateProject(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -519,9 +521,19 @@ func TestEvolutionProposalInPrivateProject(t *testing.T) {
 	// nothing either.
 	changeProposal(t, member, issueID, "apply").Want(http.StatusForbidden)
 	changeProposal(t, member, issueID, "rollback").Want(http.StatusForbidden)
-	if state := proposalState(t, testUserID, issueID); !state.CanApply {
-		t.Fatalf("owner state: %+v", state)
+
+	evolutionCall(t, testUserID, newRequest("GET", proposalRoute(issueID, ""), nil)).Want(http.StatusNotFound)
+	changeProposal(t, testUserID, issueID, "apply").Want(http.StatusNotFound)
+	changeProposal(t, testUserID, issueID, "rollback").Want(http.StatusNotFound)
+	if got := agentInstructions(t, f.target); got != proposalTargetInstructions {
+		t.Fatalf("an apply the owner could not see changed the target: %q", got)
 	}
+
+	addProjectMemberRow(t, private, testUserID)
+	if state := proposalState(t, testUserID, issueID); !state.CanApply {
+		t.Fatalf("project member owner state: %+v", state)
+	}
+	changeProposal(t, testUserID, issueID, "apply").Want(http.StatusOK)
 }
 
 // changeProposalWhileAdding runs apply or rollback and, between its locked

@@ -40,8 +40,8 @@ var forkPrivateProjectRoutesNotProbed = map[string]string{
 	"GET /api/router/issues/{id}/covering": "404 unless router_v1 is on, and the probe's router has no feature flags; TestRouterIssueCoveringHidesPrivateProjects probes it with router_v1 on",
 	// M-138: Evolution proposals, loaded through loadIssueForUser.
 	"GET /api/evolution/proposals/{issueId}":           "404 unless evolution_v1 is on, and the probe's router has no feature flags; TestEvolutionProposalInPrivateProject probes it with evolution_v1 on",
-	"POST /api/evolution/proposals/{issueId}/apply":    "404 unless evolution_v1 is on; owners and admins only, who see every private project, and everyone else gets 403 before the issue is loaded (TestEvolutionProposalInPrivateProject)",
-	"POST /api/evolution/proposals/{issueId}/rollback": "404 unless evolution_v1 is on; owners and admins only, who see every private project, and everyone else gets 403 before the issue is loaded (TestEvolutionProposalInPrivateProject)",
+	"POST /api/evolution/proposals/{issueId}/apply":    "404 unless evolution_v1 is on, and the probe's router has no feature flags; non-admins get 403 before the issue is loaded, and owners and admins load it through loadIssueForUser, 404 outside the private project (TestEvolutionProposalInPrivateProject)",
+	"POST /api/evolution/proposals/{issueId}/rollback": "404 unless evolution_v1 is on, and the probe's router has no feature flags; non-admins get 403 before the issue is loaded, and owners and admins load it through loadIssueForUser, 404 outside the private project (TestEvolutionProposalInPrivateProject)",
 }
 
 var forkChiRouteParam = regexp.MustCompile(`\{([^}:]+)(?::[^}]*)?\}`)
