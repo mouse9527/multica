@@ -53,7 +53,7 @@ func fakeCaseConflictFetch(t *testing.T) {
 
 func TestClassifyFetchErrorRecognizesCaseConflict(t *testing.T) {
 	t.Parallel()
-	err := classifyFetchError([]byte(caseConflictFetchOutput), errors.New("exit status 1"))
+	err := classifyFetchError([]byte(caseConflictFetchOutput), errors.New("exit status 1"), nil)
 	var conflict *RefCaseConflictError
 	if !errors.As(err, &conflict) {
 		t.Fatalf("expected RefCaseConflictError, got %v", err)
@@ -65,12 +65,191 @@ func TestClassifyFetchErrorRecognizesCaseConflict(t *testing.T) {
 		t.Fatalf("message must name the ref and say the cache is usable: %v", err)
 	}
 
-	other := classifyFetchError([]byte("fatal: unable to access 'x'\n"), errors.New("exit status 128"))
+	other := classifyFetchError([]byte("fatal: unable to access 'x'\n"), errors.New("exit status 128"), nil)
 	if IsRefCaseConflict(other) {
 		t.Fatalf("an ordinary failure was classified as a case conflict: %v", other)
 	}
 	if got, want := other.Error(), "git fetch: fatal: unable to access 'x': exit status 128"; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
+// unexplainedCaseConflictOutput is a refused ref without Git's explanation of
+// the case conflict, as from a Git version that words it differently.
+const unexplainedCaseConflictOutput = `From /tmp/src
+ * [new branch]      Dup           -> origin/Dup
+ ! [new branch]      dup           -> origin/dup  (unable to update local ref)
+ * [new branch]      main          -> origin/main
+`
+
+func TestClassifyFetchErrorRecognizesUnexplainedCaseConflict(t *testing.T) {
+	t.Parallel()
+	exit1 := errors.New("exit status 1")
+	stored := func(refs ...string) func() []string { return func() []string { return refs } }
+
+	err := classifyFetchError([]byte(unexplainedCaseConflictOutput), exit1, stored("origin/Dup", "origin/main"))
+	var conflict *RefCaseConflictError
+	if !errors.As(err, &conflict) || !slices.Equal(conflict.Refs, []string{"origin/dup"}) {
+		t.Fatalf("expected a conflict over origin/dup, got %v", err)
+	}
+
+	for name, storedRefs := range map[string]func() []string{
+		"no ref differs only in case": stored("origin/main"),
+		"the refused ref itself":      stored("origin/dup", "origin/main"),
+		"refs unknown":                nil,
+	} {
+		if err := classifyFetchError([]byte(unexplainedCaseConflictOutput), exit1, storedRefs); IsRefCaseConflict(err) {
+			t.Errorf("%s: a refused ref was excused: %v", name, err)
+		}
+	}
+	lockFailure := " ! [new branch]      dup           -> origin/dup  (unable to update local ref)\n" +
+		" ! [new branch]      other         -> origin/other  (unable to update local ref)\n"
+	if err := classifyFetchError([]byte(lockFailure), exit1, stored("origin/Dup")); IsRefCaseConflict(err) {
+		t.Errorf("a ref refused for another reason was excused: %v", err)
+	}
+}
+
+// Without Git's explanation, a fetch that refused only a ref differing in case
+// from one the cache holds still keeps the cache and reports a warning.
+func TestUnexplainedCaseConflictKeepsCache(t *testing.T) {
+	source := createTestRepo(t)
+	if err := runGit("-C", source, "branch", "feature/Dup"); err != nil {
+		t.Fatalf("branch: %v", err)
+	}
+	orig := runGitFetchOutput
+	runGitFetchOutput = func(ctx context.Context, barePath string) ([]byte, error) {
+		out, err := runGitFetchOutputContext(ctx, barePath)
+		if err != nil {
+			return out, err
+		}
+		refused := " ! [new branch]      feature/dup   -> origin/feature/dup  (unable to update local ref)\n"
+		return append(out, refused...), errors.New("exit status 1")
+	}
+	t.Cleanup(func() { runGitFetchOutput = orig })
+	cache := New(t.TempDir(), testLogger())
+
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: source}}); err != nil {
+		t.Fatalf("Sync of a cold cache failed: %v", err)
+	}
+	if cache.Lookup("ws-1", source) == "" {
+		t.Fatal("cache was not kept")
+	}
+	err := cache.Sync("ws-1", []RepoInfo{{URL: source}})
+	var conflict *RefCaseConflictError
+	if !errors.As(err, &conflict) || !slices.Equal(conflict.Refs, []string{"origin/feature/dup"}) {
+		t.Fatalf("Sync of a cached repo should report the conflict over origin/feature/dup, got %v", err)
+	}
+}
+
+// failCacheFetches makes the first n cache fetches fail as a dropped link
+// does. With lose set, the first of them stores every ref except the ones
+// lose removes again, as a fetch cut off part way does; the others store
+// nothing. It swaps a package variable, so callers must not be parallel tests.
+func failCacheFetches(t *testing.T, n int, lose func(barePath string) error) {
+	t.Helper()
+	var mu sync.Mutex
+	calls := 0
+	orig := runGitFetchOutput
+	runGitFetchOutput = func(ctx context.Context, barePath string) ([]byte, error) {
+		mu.Lock()
+		calls++
+		call := calls
+		mu.Unlock()
+		if call > n {
+			return runGitFetchOutputContext(ctx, barePath)
+		}
+		if lose != nil && call == 1 {
+			if out, err := runGitFetchOutputContext(ctx, barePath); err != nil {
+				return out, err
+			}
+			if err := lose(barePath); err != nil {
+				return nil, err
+			}
+		}
+		return []byte("error: RPC failed; curl 56 Recv failure: Connection reset by peer\nfatal: early EOF\n"), errors.New("exit status 128")
+	}
+	t.Cleanup(func() { runGitFetchOutput = orig })
+}
+
+// createTrunkRepo creates a source repository whose default branch is trunk,
+// one commit ahead of a main branch, and returns it with trunk's commit.
+func createTrunkRepo(t *testing.T) (dir, trunk string) {
+	t.Helper()
+	dir = t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-b", "trunk", dir},
+		{"-C", dir, "commit", "--allow-empty", "-m", "first"},
+		{"-C", dir, "branch", "main"},
+		{"-C", dir, "commit", "--allow-empty", "-m", "second"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git setup failed: %s: %v", out, err)
+		}
+	}
+	out, err := runGitOutput("-C", dir, "rev-parse", "trunk")
+	if err != nil {
+		t.Fatalf("rev-parse: %v", err)
+	}
+	return dir, strings.TrimSpace(string(out))
+}
+
+// A complete clone is kept when the fetch that fills refs/remotes/origin/*
+// fails: it is retried once, and if that fails too the clone's default
+// branch is recorded, so a checkout whose own fetch fails still starts from
+// the remote's default branch. The remote's default is trunk and it also has
+// main, the branch the fallbacks would pick if the default were not recorded.
+func TestFetchFailureAfterCloneKeepsCache(t *testing.T) {
+	loseTrunk := func(barePath string) error {
+		return runGit("-C", barePath, "update-ref", "-d", "refs/remotes/origin/trunk")
+	}
+	for _, tc := range []struct {
+		name     string
+		failures int
+		lose     func(string) error
+	}{
+		{"retry succeeds", 1, nil},
+		{"retry fails", 2, nil},
+		{"checkout fetch fails too", 3, nil},
+		{"partial fetches, checkout fetch fails too", 3, loseTrunk},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			failCacheFetches(t, tc.failures, tc.lose)
+			source, trunk := createTrunkRepo(t)
+			cache := New(t.TempDir(), testLogger())
+
+			if err := cache.Sync("ws-1", []RepoInfo{{URL: source}}); err != nil {
+				t.Fatalf("Sync of a cold cache failed: %v", err)
+			}
+			barePath := cache.Lookup("ws-1", source)
+			if barePath == "" {
+				t.Fatal("the clone was discarded")
+			}
+			if refspec, err := readFetchRefspec(barePath); err != nil || refspec != modernFetchRefspec {
+				t.Fatalf("refspec = %q (%v), want %q", refspec, err, modernFetchRefspec)
+			}
+			if got := getRemoteDefaultBranch(barePath); got != "refs/remotes/origin/trunk" {
+				t.Fatalf("default branch = %q, want refs/remotes/origin/trunk", got)
+			}
+
+			result, err := cache.CreateWorktree(WorktreeParams{
+				WorkspaceID: "ws-1",
+				RepoURL:     source,
+				WorkDir:     t.TempDir(),
+				AgentName:   "tester",
+				TaskID:      "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+			})
+			if err != nil {
+				t.Fatalf("CreateWorktree failed: %v", err)
+			}
+			if got, err := resolveCommitContext(t.Context(), result.Path, "HEAD"); err != nil || got != trunk {
+				t.Fatalf("checkout HEAD = %s (%v), want trunk %s", got, err, trunk)
+			}
+		})
 	}
 }
 
@@ -344,12 +523,18 @@ func TestCloneTimeoutFromEnv(t *testing.T) {
 	}
 }
 
-// A listed repository gets a blobless cache that already holds the default
-// branch's files, so checkouts neither miss nor re-download them.
-func TestBloblessBuildPrefetchesDefaultBranch(t *testing.T) {
+// A listed repository gets a blobless cache that is published as soon as its
+// clone is done, before the default branch's files arrive. They follow in a
+// cache-owned download, which a checkout joins instead of starting another.
+func TestBloblessBuildPublishesBeforeFilesArrive(t *testing.T) {
+	slow := installSlowBlobFetch(t)
 	source := createFilterableTestRepo(t)
 	t.Setenv(BloblessEnv, source)
 	cache := New(t.TempDir(), testLogger())
+	var once sync.Once
+	gate := slow.closeGateLater()
+	release := func() { once.Do(gate) }
+	t.Cleanup(release)
 
 	if err := cache.Sync("ws-1", []RepoInfo{{URL: source}}); err != nil {
 		t.Fatalf("Sync failed: %v", err)
@@ -358,15 +543,15 @@ func TestBloblessBuildPrefetchesDefaultBranch(t *testing.T) {
 	if barePath == "" || !isPartialClone(barePath) {
 		t.Fatalf("expected a blobless cache at %q", barePath)
 	}
-	ref := getRemoteDefaultBranch(barePath)
-	out, err := runGitOutput("-C", barePath, "rev-list", "--objects", "--missing=print", "--no-walk", ref)
+	commit, err := resolveCommitContext(t.Context(), barePath, getRemoteDefaultBranch(barePath))
 	if err != nil {
-		t.Fatalf("rev-list: %v", err)
+		t.Fatalf("resolve default branch: %v", err)
 	}
-	if strings.Contains(string(out), "?") {
-		t.Fatalf("default branch files are missing from the cache:\n%s", out)
+	if missing, err := missingObjectsContext(t.Context(), barePath, commit); err != nil || len(missing) == 0 {
+		t.Fatalf("the build waited for the default branch's files (missing %v, %v)", missing, err)
 	}
 
+	release()
 	result, err := cache.CreateWorktree(WorktreeParams{
 		WorkspaceID: "ws-1",
 		RepoURL:     source,
@@ -378,6 +563,9 @@ func TestBloblessBuildPrefetchesDefaultBranch(t *testing.T) {
 		t.Fatalf("CreateWorktree failed: %v", err)
 	}
 	assertCheckoutIsComplete(t, result.Path)
+	if calls, _ := slow.stats(); calls != 1 {
+		t.Fatalf("file downloads = %d, want the build's one", calls)
+	}
 }
 
 // Existing full caches, and repositories that are not listed, keep full
@@ -485,6 +673,16 @@ func TestBloblessBuildDownloadsFilesWithinTheBuildLimit(t *testing.T) {
 	if err := cache.Sync("ws-1", []RepoInfo{{URL: source}}); err != nil {
 		t.Fatalf("Sync failed: %v", err)
 	}
+	// The download runs after the build; a checkout waits for it.
+	if _, err := cache.CreateWorktree(WorktreeParams{
+		WorkspaceID: "ws-1",
+		RepoURL:     source,
+		WorkDir:     t.TempDir(),
+		AgentName:   "tester",
+		TaskID:      "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+	}); err != nil {
+		t.Fatalf("CreateWorktree failed: %v", err)
+	}
 	calls, timeouts := slow.stats()
 	if calls != 1 || timeouts[0] != 3*time.Hour {
 		t.Fatalf("file download calls = %d with limits %v, want one with 3h", calls, timeouts)
@@ -580,5 +778,128 @@ func TestSlowFileDownloadOutlivesTheCheckoutRequest(t *testing.T) {
 	}
 	if _, timeouts := slow.stats(); !slices.ContainsFunc(timeouts, func(d time.Duration) bool { return d == cloneTimeout() }) {
 		t.Fatalf("checkout downloads ran with limits %v, want the build limit %s", timeouts, cloneTimeout())
+	}
+}
+
+func TestWaitContextTakesTheEarlierDeadline(t *testing.T) {
+	t.Parallel()
+	soon := time.Now().Add(time.Minute)
+	for name, tc := range map[string]struct {
+		ctx    context.Context
+		budget time.Duration
+		want   time.Time
+	}{
+		"no shared deadline":          {context.Background(), time.Hour, time.Now().Add(time.Hour)},
+		"shared deadline comes first": {WithWaitDeadline(context.Background(), soon), time.Hour, soon},
+		"budget comes first":          {WithWaitDeadline(context.Background(), soon), time.Second, time.Now().Add(time.Second)},
+	} {
+		ctx, cancel := WaitContext(tc.ctx, tc.budget)
+		deadline, ok := ctx.Deadline()
+		cancel()
+		if !ok || deadline.Sub(tc.want).Abs() > 5*time.Second {
+			t.Errorf("%s: deadline = %v (%v), want about %v", name, deadline, ok, tc.want)
+		}
+	}
+}
+
+// A checkout that already spent its request's wait on a cache build does not
+// wait the full file download budget on top of it.
+func TestCheckoutFileWaitSharesTheRequestDeadline(t *testing.T) {
+	slow := installSlowBlobFetch(t)
+	source := createFilterableTestRepo(t)
+	cache := New(t.TempDir(), testLogger())
+	seedBloblessCache(t, cache, "ws-1", source)
+	release := slow.closeGateLater()
+
+	ctx := WithWaitDeadline(t.Context(), time.Now().Add(50*time.Millisecond))
+	start := time.Now()
+	_, err := cache.CreateWorktreeContext(ctx, WorktreeParams{
+		WorkspaceID: "ws-1",
+		RepoURL:     source,
+		WorkDir:     t.TempDir(),
+		AgentName:   "tester",
+		TaskID:      "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+	})
+	elapsed := time.Since(start)
+	release()
+	waitForBlobJobs(t, cache)
+	var pending *BlobsPendingError
+	if !errors.As(err, &pending) {
+		t.Fatalf("expected a pending file download, got %v", err)
+	}
+	if elapsed > checkoutBlobWaitBudget/2 {
+		t.Fatalf("checkout waited %s, past the request's deadline", elapsed)
+	}
+}
+
+// waitForBlobJobs waits for the cache's file downloads to end, so none
+// outlives the test's temporary directories.
+func waitForBlobJobs(t *testing.T, cache *Cache) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		cache.builds.mu.Lock()
+		running := len(cache.builds.blobJobs)
+		cache.builds.mu.Unlock()
+		if running == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d file downloads still running", running)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Once a commit's files are all in the cache, later checkouts of it skip
+// listing its tree again.
+func TestCheckoutListsAFullCommitOnce(t *testing.T) {
+	source := createFilterableTestRepo(t)
+	cache := New(t.TempDir(), testLogger())
+	barePath := seedBloblessCache(t, cache, "ws-1", source)
+	var mu sync.Mutex
+	listed := 0
+	orig := listMissingObjects
+	listMissingObjects = func(ctx context.Context, barePath, commit string) ([]string, error) {
+		mu.Lock()
+		listed++
+		mu.Unlock()
+		return missingObjectsContext(ctx, barePath, commit)
+	}
+	t.Cleanup(func() { listMissingObjects = orig })
+	listings := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return listed
+	}
+	checkout := func(i int) {
+		t.Helper()
+		result, err := cache.CreateWorktree(WorktreeParams{
+			WorkspaceID: "ws-1",
+			RepoURL:     source,
+			WorkDir:     t.TempDir(),
+			AgentName:   "tester",
+			TaskID:      fmt.Sprintf("a1b2c3d4-e5f6-7890-abcd-ef123456789%d", i),
+		})
+		if err != nil {
+			t.Fatalf("CreateWorktree %d failed: %v", i, err)
+		}
+		assertCheckoutIsComplete(t, result.Path)
+	}
+
+	checkout(0)
+	first := listings()
+	if first == 0 {
+		t.Fatal("the first checkout did not look for missing files")
+	}
+	checkout(1)
+	checkout(2)
+	if more := listings() - first; more != 0 {
+		t.Fatalf("later checkouts listed the tree %d more times, want 0", more)
+	}
+
+	cache.forgetCompleteBlobs(barePath)
+	if commit, err := resolveCommitContext(t.Context(), barePath, getRemoteDefaultBranch(barePath)); err != nil || cache.hasCompleteBlobs(barePath, commit) {
+		t.Fatalf("a rebuilt cache must not inherit what was known about the old one (%v)", err)
 	}
 }
