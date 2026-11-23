@@ -4,7 +4,7 @@
 
 PR 上有两个工作流：
 
-- **`CI`**（`.github/workflows/ci.yml`）：上游的工作流，fork 不改它，同步上游时不会冲突。多数检查按改动路径选择，`backend`、`frontend` 两个汇总检查会核对「该跑的都跑过、跳过的确实不该跑」。
+- **`CI`**（`.github/workflows/ci.yml`）：上游的工作流，fork 原则上不改它。唯一的例外是 M-161 在 `macos-runtime` 最后一步加的一行（Owner 2026-11-19 批准），同步上游时这一处可能冲突。多数检查按改动路径选择，`backend`、`frontend` 两个汇总检查会核对「该跑的都跑过、跳过的确实不该跑」。
 - **`CI (fork)`**（`.github/workflows/ci-fork.yml`）：fork 补的检查，`migrations-roundtrip`、`backend-db-no-skip`，以及跑 fork 脚本测试和必需检查一致性的 `fork-ci-config`。每个 PR、每次推 `main` 都跑，不按路径跳过；每天定时跑一次，也可以手动触发。
 
 ## 本机验证项和对应的检查

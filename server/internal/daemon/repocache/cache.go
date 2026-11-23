@@ -182,6 +182,8 @@ type Cache struct {
 	// repo. Separate repos are independent and run concurrently.
 	repoLocks sync.Map // barePath -> *repoLock
 	caMu      sync.Mutex
+	// Modified for the mouse9527/multica fork: cache builds in flight (M-161).
+	builds buildRegistry
 }
 
 // ErrRepoBusy means a foreground checkout could not acquire its repository
@@ -430,15 +432,19 @@ func (c *Cache) SyncContext(ctx context.Context, workspaceID string, repos []Rep
 					firstErr = err
 				}
 			}
+			// Modified for the mouse9527/multica fork (M-161): a blobless
+			// cache fetches the moved default branch's files in the background.
+			c.prefetchDefaultBranchInBackground(ctx, barePath)
 		} else {
 			// Not cached — bare clone.
-			c.logger.Info("repo cache: cloning", "url", repo.URL, "path", barePath)
-			if err := gitCloneBareContext(ctx, repo.URL, barePath); err != nil {
-				c.logger.Error("repo cache: clone failed", "url", repo.URL, "error", err)
-				if firstErr == nil {
-					firstErr = err
-				}
+			// Modified for the mouse9527/multica fork (M-161): the clone runs in
+			// a build job that owns the repo lock and outlives ctx, so release
+			// the lock and wait for the job instead of cloning here.
+			unlock()
+			if err := c.BuildContext(ctx, workspaceID, repo.URL); err != nil && firstErr == nil {
+				firstErr = err
 			}
+			continue
 		}
 		unlock()
 	}
@@ -715,27 +721,10 @@ func isBareRepo(path string) bool {
 // refs and abort the entire fetch.
 const modernFetchRefspec = "+refs/heads/*:refs/remotes/origin/*"
 
+// Modified for the mouse9527/multica fork (M-161): the clone itself lives in
+// cloneBareContext (rebuild.go); caches are built through Cache.BuildContext.
 func gitCloneBareContext(ctx context.Context, url, dest string) error {
-	args := append(caCloneArgs(), "clone", "--bare", url, dest)
-	if out, err := runGitCombinedOutputContext(ctx, args...); err != nil {
-		// Clean up partial clone.
-		os.RemoveAll(dest)
-		return fmt.Errorf("git clone --bare: %s: %w", strings.TrimSpace(string(out)), err)
-	}
-	// Record the CA bundle before the refspec migration below fetches again.
-	if err := configureRepoCABundleContext(ctx, dest); err != nil {
-		os.RemoveAll(dest)
-		return err
-	}
-	// `git clone --bare` populates refs/heads/* as a snapshot and defaults to
-	// a mirror-style fetch refspec. Convert the bare repo to the standard
-	// remote-tracking layout immediately so subsequent fetches write to
-	// refs/remotes/origin/* and can't conflict with worktree-locked heads.
-	if err := ensureRemoteTrackingLayoutContext(ctx, dest); err != nil {
-		os.RemoveAll(dest)
-		return fmt.Errorf("configure fetch refspec: %w", err)
-	}
-	return nil
+	return cloneBareContext(ctx, url, dest, cloneOptions{timeout: repoCacheGitTimeout})
 }
 
 // gitFetch runs `git fetch origin` on a bare cache, migrating its fetch
@@ -751,12 +740,16 @@ func gitFetch(barePath string) error {
 	return gitFetchContext(context.Background(), barePath)
 }
 
+// Modified for the mouse9527/multica fork (M-161): a ref case conflict is
+// returned after the fetch's other work is done, as a warning for the caller
+// to report.
 func gitFetchContext(ctx context.Context, barePath string) error {
-	if err := ensureRemoteTrackingLayoutContext(ctx, barePath); err != nil {
+	if err := ensureRemoteTrackingLayoutContext(ctx, barePath); err != nil && !IsRefCaseConflict(err) {
 		return fmt.Errorf("ensure refspec: %w", err)
 	}
-	if err := runGitFetchContext(ctx, barePath); err != nil {
-		return err
+	fetchErr := runGitFetchContext(ctx, barePath)
+	if fetchErr != nil && !IsRefCaseConflict(fetchErr) {
+		return fetchErr
 	}
 	// Refresh refs/remotes/origin/HEAD after every successful fetch.
 	// set-head --auto is lightweight (a single ls-remote HEAD round-trip)
@@ -765,7 +758,7 @@ func gitFetchContext(ctx context.Context, barePath string) error {
 	// path (the only path that can't be recovered any other way) relies
 	// on this call.
 	_ = runGitContext(ctx, "-C", barePath, "remote", "set-head", "origin", "--auto")
-	return nil
+	return fetchErr
 }
 
 // runGitFetch is the raw `git fetch origin` wrapper. Callers should go through
@@ -775,8 +768,10 @@ func runGitFetch(barePath string) error {
 }
 
 func runGitFetchContext(ctx context.Context, barePath string) error {
-	if out, err := runGitCombinedOutputContext(ctx, "-C", barePath, "fetch", "origin"); err != nil {
-		return fmt.Errorf("git fetch: %s: %w", strings.TrimSpace(string(out)), err)
+	// Modified for the mouse9527/multica fork (M-161): recognize ref case
+	// conflicts (RefCaseConflictError) instead of reporting a plain failure.
+	if out, err := runGitFetchOutput(ctx, barePath); err != nil {
+		return classifyFetchError(out, err, func() []string { return storedRefNames(ctx, barePath) })
 	}
 	return nil
 }
@@ -806,13 +801,17 @@ func ensureRemoteTrackingLayoutContext(ctx context.Context, barePath string) err
 	// Backfill refs/remotes/origin/* by fetching with the new refspec. This
 	// writes to the origin/* namespace, so even worktree-locked refs/heads/*
 	// branches can't collide.
-	if err := runGitFetchContext(ctx, barePath); err != nil {
-		return fmt.Errorf("backfill fetch after refspec migration: %w", err)
+	// Modified for the mouse9527/multica fork (M-161): a ref case conflict
+	// still stored every other ref, so finish the migration and return it as
+	// a warning.
+	fetchErr := runGitFetchContext(ctx, barePath)
+	if fetchErr != nil && !IsRefCaseConflict(fetchErr) {
+		return fmt.Errorf("backfill fetch after refspec migration: %w", fetchErr)
 	}
 	// Set refs/remotes/origin/HEAD so getRemoteDefaultBranch can read it.
 	// Non-fatal: if this fails we fall back to origin/main, origin/master.
 	_ = runGitContext(ctx, "-C", barePath, "remote", "set-head", "origin", "--auto")
-	return nil
+	return fetchErr
 }
 
 // readFetchRefspec returns the current remote.origin.fetch config value, or
@@ -996,6 +995,12 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 	// default-branch case.
 	if baseRef == "" {
 		return nil, fmt.Errorf("cannot resolve default branch for %s: bare cache at %s has no usable refs (origin/* is empty or ambiguous and bare HEAD has no match). The cache may be corrupted; delete it and retry", params.RepoURL, barePath)
+	}
+	// Modified for the mouse9527/multica fork (M-161): a blobless cache gets
+	// the base's files from a cache-owned download, so a slow link does not
+	// end the request mid-checkout and restart the download on every retry.
+	if err := c.ensureCheckoutBlobsContext(ctx, params.RepoURL, barePath, baseRef); err != nil {
+		return nil, err
 	}
 
 	// Build branch name: agent/{sanitized-name}/{task-id}

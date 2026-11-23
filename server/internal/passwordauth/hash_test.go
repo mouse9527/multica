@@ -72,12 +72,19 @@ func TestValidatePassword(t *testing.T) {
 		{"at the byte limit", strings.Repeat("a", MaxPasswordBytes), nil},
 		{"over the byte limit", strings.Repeat("a", MaxPasswordBytes+1), ErrPasswordTooLong},
 	}
+	h := newTestHasher(t, cheapParams)
+	if got := h.MinPasswordRunes(); got != DefaultMinPasswordRunes {
+		t.Fatalf("MinPasswordRunes = %d, want %d", got, DefaultMinPasswordRunes)
+	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := ValidatePassword(tc.password); !errors.Is(err, tc.want) {
+			if err := h.ValidatePassword(tc.password); !errors.Is(err, tc.want) {
 				t.Fatalf("ValidatePassword = %v, want %v", err, tc.want)
 			}
 		})
+	}
+	if err := h.ValidatePassword("short"); err == nil || err.Error() != "passwordauth: password must be at least 12 characters" {
+		t.Fatalf("too short error = %v", err)
 	}
 }
 

@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), and no rate pause (M-111).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), no rate pause (M-111), self-contained owner decisions (M-162), the chat wakeup and batch split (M-164), what "subscribed" means (M-175), and own actions by run (M-193).
 
 package agentrouter
 
@@ -817,7 +817,28 @@ const routerBoundary = "You dispatch, track and relay; you do not do the work yo
 	"work worth tracking in the repository (a code change that will produce a PR, a design conclusion that needs a public record) " +
 	"also gets a GitHub issue, linked as `gh_issue` per the github-evidence skill; " +
 	"ops, environment and credential work stays a local issue only. " +
-	"The full guide, including the commands for this Super Agent's settings, is `multica router guide`.\n"
+	"The full guide, including the commands for this Super Agent's settings, is `multica router guide`.\n" +
+	routerSubscribedMeans +
+	routerWakeupSplit +
+	routerOwnerDecisions
+
+// routerWakeupSplit: the batch already reports issues in scope, so a chat
+// wakeup on them wakes the Super Agent twice for one change (M-164). The rule
+// and its examples are in `multica router guide`.
+const routerWakeupSplit = "Batches already report every issue in your scope: do not create a chat wakeup " +
+	"(`--until-*` condition or `--every` check) for an issue in scope, and never poll one with `--every`. " +
+	"A chat wakeup is still fine for issues outside the scope, one-off reminders (`--at` / `--after`), " +
+	"and what batches never carry, such as a PR merging or an Actions result. " +
+	"See \"chat wakeup 和事件批次的分工\" in `multica router guide`.\n"
+
+// routerOwnerDecisions: the owner often reads only the decision list at the
+// end of a reply, so each item has to be decidable on its own (M-162). The
+// rule and its examples are in `multica router guide`.
+const routerOwnerDecisions = "Every decision you ask of the owner must stand on its own: " +
+	"say in plain words what it is and why the owner has to decide, give each option with its consequence (never bare letters), " +
+	"your recommendation in one sentence, and what the approval does not cover; " +
+	"list every open decision, and only those, each time you reply. " +
+	"See \"请 Owner 决定的事\" in `multica router guide`.\n"
 
 // buildNote renders the run's context: the batch, the open issues in scope
 // and the subscription's state, with the CLI commands that reach further.
@@ -838,7 +859,8 @@ func buildNote(in noteInput) string {
 	if in.chat {
 		b.WriteString("The Super Agent dispatcher wrote this message into your chat with the owner; the owner did not. " +
 			"You are the Super Agent for this scope. Read the events, check current state where it matters, and act. " +
-			"Your own actions are left out and never start a batch. " +
+			"Your own actions are left out and never start a batch: those of your turns in this chat. " +
+			"What your agent does in issue tasks or other chats comes in like anyone else's, so work you hand to your own agent is reported here too. " +
 			"Any text you reply here notifies the owner: reply only when they need to know, decide or act, and say so plainly. " +
 			"When nothing needs them, finish without any text reply; the turn stays silent.\n" +
 			routerBoundary +
@@ -846,7 +868,8 @@ func buildNote(in noteInput) string {
 			"otherwise open an issue, hand it off and reply with one line naming the issue and who has it.\n\n")
 	} else {
 		b.WriteString("You are the Super Agent for this scope. Read the events, check current state where it matters, and act. " +
-			"Your own actions are left out and never start a run. " +
+			"Your own actions are left out and never start a run: those of your runs for this subscription. " +
+			"What your agent does in other tasks or chats comes in like anyone else's, so work you hand to your own agent is reported here too. " +
 			"When a person has to decide or act, tell them with `multica notify owner --subscription " + id + " --title ... --body ...`; do not rely on issue comments alone.\n" +
 			routerBoundary + "\n")
 	}

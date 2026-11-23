@@ -97,7 +97,9 @@ func (c InboxRulesConfig) Active() bool { return len(c.Rules) > 0 }
 
 // Normalize trims and lowercases every list, and rejects a list that could
 // misjudge: a "handle" rule must name its types, a gray type may only be
-// named by a gray rule, and to_statuses only applies to status_changed.
+// named by a gray rule and a gray rule may only name gray types (so no item
+// moves between the handle and gray samples by a slip of the verdict), and
+// to_statuses only applies to status_changed.
 func (c InboxRulesConfig) Normalize() (InboxRulesConfig, error) {
 	if len(c.Rules) > maxInboxRules {
 		return InboxRulesConfig{}, fmt.Errorf("at most %d rules", maxInboxRules)
@@ -127,11 +129,14 @@ func (c InboxRulesConfig) Normalize() (InboxRulesConfig, error) {
 		if n.Verdict == VerdictHandle && len(n.Types) == 0 {
 			return InboxRulesConfig{}, fmt.Errorf("rule %q: a %s rule must name its types", n.Name, VerdictHandle)
 		}
-		if n.Verdict != VerdictGray {
-			for _, t := range n.Types {
-				if slices.Contains(InboxGrayTypes, t) {
-					return InboxRulesConfig{}, fmt.Errorf("rule %q: %s is a gray type; only a %s rule may name it", n.Name, t, VerdictGray)
-				}
+		if n.Verdict == VerdictGray && len(n.Types) == 0 {
+			return InboxRulesConfig{}, fmt.Errorf("rule %q: a %s rule must name its types, all of them gray types (%s)", n.Name, VerdictGray, strings.Join(InboxGrayTypes, ", "))
+		}
+		for _, t := range n.Types {
+			if gray := slices.Contains(InboxGrayTypes, t); gray && n.Verdict != VerdictGray {
+				return InboxRulesConfig{}, fmt.Errorf("rule %q: %s is a gray type; only a %s rule may name it", n.Name, t, VerdictGray)
+			} else if !gray && n.Verdict == VerdictGray {
+				return InboxRulesConfig{}, fmt.Errorf("rule %q: %s is not a gray type; a %s rule may only name %s", n.Name, t, VerdictGray, strings.Join(InboxGrayTypes, ", "))
 			}
 		}
 		if len(n.ToStatuses) > 0 && !slices.Equal(n.Types, []string{"status_changed"}) {
@@ -173,29 +178,42 @@ func DefaultInboxRules(waitingStatuses []string) InboxRulesConfig {
 	}}
 }
 
+// ErrInboxRulesInvalid is returned for a stored rule list that does not
+// pass Normalize (written past the API, or valid under an older, looser
+// check). The workspace does not classify until the list is fixed.
+var ErrInboxRulesInvalid = errors.New("stored inbox rules are invalid")
+
 // ParseInboxRulesConfig reads the rule list out of a workspace's settings.
 // Anything unreadable or invalid is the zero, inactive config.
 func ParseInboxRulesConfig(settings []byte) InboxRulesConfig {
+	c, _ := parseInboxRulesConfig(settings)
+	return c
+}
+
+// parseInboxRulesConfig is ParseInboxRulesConfig that also says why a stored
+// list is off: an ErrInboxRulesInvalid error, nil when there is no list.
+func parseInboxRulesConfig(settings []byte) (InboxRulesConfig, error) {
 	var values map[string]json.RawMessage
-	if json.Unmarshal(settings, &values) != nil {
-		return InboxRulesConfig{}
+	if err := json.Unmarshal(settings, &values); err != nil {
+		return InboxRulesConfig{}, fmt.Errorf("%w: read settings: %v", ErrInboxRulesInvalid, err)
 	}
 	raw, ok := values[WorkspaceSettingInboxRules]
 	if !ok {
-		return InboxRulesConfig{}
+		return InboxRulesConfig{}, nil
 	}
 	var c InboxRulesConfig
-	if json.Unmarshal(raw, &c) != nil {
-		return InboxRulesConfig{}
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return InboxRulesConfig{}, fmt.Errorf("%w: %v", ErrInboxRulesInvalid, err)
 	}
 	out, err := c.Normalize()
 	if err != nil {
-		return InboxRulesConfig{}
+		return InboxRulesConfig{}, fmt.Errorf("%w: %v", ErrInboxRulesInvalid, err)
 	}
-	return out
+	return out, nil
 }
 
-// LoadInboxRulesConfig reads a workspace's rule list.
+// LoadInboxRulesConfig reads a workspace's rule list. A stored list that is
+// invalid comes back as the inactive config with ErrInboxRulesInvalid.
 func LoadInboxRulesConfig(ctx context.Context, q Querier, workspaceID string) (InboxRulesConfig, error) {
 	var settings []byte
 	err := q.QueryRow(ctx, `SELECT settings FROM workspace WHERE id = $1`, workspaceID).Scan(&settings)
@@ -205,7 +223,7 @@ func LoadInboxRulesConfig(ctx context.Context, q Querier, workspaceID string) (I
 	if err != nil {
 		return InboxRulesConfig{}, err
 	}
-	return ParseInboxRulesConfig(settings), nil
+	return parseInboxRulesConfig(settings)
 }
 
 // rulesConfigGeneration moves when this process changes a workspace's rule
@@ -317,12 +335,16 @@ type inboxRules struct {
 	// rule is ClassifyInboxItem; tests replace it to make it fail.
 	rule func(InboxRulesConfig, db.CreateInboxItemParams) (InboxVerdict, error)
 
-	verdicts sync.Map // verdict -> *atomic.Int64
-	failures atomic.Int64
+	verdicts      sync.Map // verdict -> *atomic.Int64
+	failures      atomic.Int64
+	configInvalid atomic.Int64
 }
 
 type rulesConfigEntry struct {
-	cfg      InboxRulesConfig
+	cfg InboxRulesConfig
+	// invalid is the ErrInboxRulesInvalid error of a stored list that does
+	// not pass Normalize; cached like the list so it is read once per TTL.
+	invalid  error
 	gen      int64
 	loadedAt time.Time
 }
@@ -337,32 +359,45 @@ func (r *inboxRules) config(ctx context.Context, q Querier, workspaceID string) 
 	entry, ok := r.configs[workspaceID]
 	r.mu.Unlock()
 	if ok && entry.gen == gen && time.Since(entry.loadedAt) < rulesConfigTTL {
-		return entry.cfg, nil
+		return entry.cfg, entry.invalid
 	}
 	cfg, err := LoadInboxRulesConfig(ctx, q, workspaceID)
+	var invalid error
+	if errors.Is(err, ErrInboxRulesInvalid) {
+		invalid, err = err, nil
+	}
 	if err != nil {
 		return InboxRulesConfig{}, err
 	}
 	r.mu.Lock()
-	r.configs[workspaceID] = rulesConfigEntry{cfg: cfg, gen: gen, loadedAt: time.Now()}
+	r.configs[workspaceID] = rulesConfigEntry{cfg: cfg, invalid: invalid, gen: gen, loadedAt: time.Now()}
 	r.mu.Unlock()
-	return cfg, nil
+	return cfg, invalid
 }
 
 // classify returns the decision note for p, or nil when the workspace has no
 // rules or classifying failed. A failure is counted and returned for the
 // log; the caller records the shadow row without a verdict and the inbox
-// write is not affected either way.
+// write is not affected either way. An invalid stored list is counted apart
+// (config_invalid) and returned as ErrInboxRulesInvalid: it is not this item
+// that failed, and it would otherwise look like the workspace being off.
 func (r *inboxRules) classify(ctx context.Context, q Querier, p db.CreateInboxItemParams) (note *string, err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			note, err = nil, fmt.Errorf("inbox rules: panic: %v", rec)
 		}
-		if err != nil {
+		switch {
+		case err == nil:
+		case errors.Is(err, ErrInboxRulesInvalid):
+			r.configInvalid.Add(1)
+		default:
 			r.failures.Add(1)
 		}
 	}()
 	cfg, err := r.config(ctx, q, util.UUIDToString(p.WorkspaceID))
+	if errors.Is(err, ErrInboxRulesInvalid) {
+		return nil, fmt.Errorf("inbox rules: %w", err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("inbox rules: load: %w", err)
 	}
@@ -380,16 +415,19 @@ func (r *inboxRules) classify(ctx context.Context, q Querier, p db.CreateInboxIt
 }
 
 // InboxRulesStats are this process's classification counts since it started.
+// ConfigInvalid counts the items left unclassified because their workspace's
+// stored rule list is invalid.
 type InboxRulesStats struct {
-	Verdicts map[string]int64 `json:"verdicts"`
-	Failures int64            `json:"failures"`
+	Verdicts      map[string]int64 `json:"verdicts"`
+	Failures      int64            `json:"failures"`
+	ConfigInvalid int64            `json:"config_invalid"`
 }
 
 func (r *inboxRules) stats() *InboxRulesStats {
 	if r == nil {
 		return nil
 	}
-	out := &InboxRulesStats{Verdicts: map[string]int64{}, Failures: r.failures.Load()}
+	out := &InboxRulesStats{Verdicts: map[string]int64{}, Failures: r.failures.Load(), ConfigInvalid: r.configInvalid.Load()}
 	r.verdicts.Range(func(k, v any) bool {
 		out.Verdicts[k.(string)] = v.(*atomic.Int64).Load()
 		return true
@@ -412,8 +450,9 @@ const RulesReportDefinition = "The owner acted on an item when, from the item's 
 	"the next inbox item for the owner on the same issue arrives (whichever is first), the owner commented on " +
 	"the issue or changed it (any activity_log row the owner is the actor of: status, assignee, priority, dates, " +
 	"and so on). Reading or archiving the item does not count, nor does a reply given elsewhere (in a chat) " +
-	"that someone else carries to the issue. An item counts once its window has passed; items still inside it " +
-	"are pending. Items that never reached the inbox are left out."
+	"that someone else carries to the issue. An item counts once its window has ended: the window has passed or " +
+	"the next item on the issue has arrived; items still inside it are pending. Items that never reached the " +
+	"inbox are left out."
 
 // RuleReport is one rule's row in the report. Rate is Acted / Samples, nil
 // without samples; for a "handle" rule it is the mis-hold rate.
@@ -474,7 +513,8 @@ func (s *Store) InboxRulesReport(ctx context.Context, f RulesReportFilter) (Rule
 		      AND ($4 = '' OR h.agent_id = NULLIF($4, '')::uuid)
 		), judged AS (
 		    SELECT h.decision_note,
-		           h.item_at + make_interval(secs => $5) <= now() AS mature,
+		           -- The next item on the issue ends the window early.
+		           w.until <= now() AS mature,
 		           EXISTS (
 		               SELECT 1 FROM comment c
 		               WHERE c.issue_id = h.issue_id AND c.author_type = 'member' AND c.author_id = h.recipient_user_id

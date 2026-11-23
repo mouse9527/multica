@@ -96,6 +96,7 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 | `multica router delete <id>` | `DELETE /api/router/subscriptions/{id}` |
 | `multica router events [--subscription] [--since 2h\|RFC3339] [--state pending\|consumed] [--source bus\|reconcile]` | `GET /api/router/events` |
 | `multica router scope <id> [--all]` | `GET /api/router/subscriptions/{id}/scope` |
+| `multica router covering <issue>` | `GET /api/router/issues/{id}/covering`（M-194） |
 | `multica router update <id> [--anchor] [--events] [--debounce] [--max-wait] [--max-runs-per-hour]` | `PATCH /api/router/subscriptions/{id}` |
 | `multica router changes <id>` | `GET /api/router/subscriptions/{id}/changes` |
 | `multica router release --chat <current\|会话> [--keep]` | 多次 `DELETE`，或 `pause` 后 `PATCH anchor_chat_session_id=none` |
@@ -359,6 +360,7 @@ Super Agent 的使用说明不再作为 skill 维护（手工导入的 skill 不
 - **怎么找到它**：`multica --help` 把 `router` 列为 Super Agent 命令（M-148）；`multica router --help` 的 EXAMPLES 第一条就是 `multica router guide`，写明设置、修改、解除 Super Agent 之前和作为 Super Agent 运行时先读它。
 - **Mika 的提示词**：`router_v1` 打开时，领任务组装 Mika 的提示词，在随二进制发布的系统部分之后、工作区备注之前加一小段「## Super Agent」，只有一句话：遇到 Super Agent 相关的请求先跑 `multica router guide`。整份说明不进提示词，平常的运行不多花 token。`router_v1` 关闭时这段不出现，Mika 的提示词与上游一致。智能体设置页只读展示的系统提示词里不显示这一段。
 - **Super Agent 批次**：每个批次里的边界说明（M-112）末尾加一句，指向 `multica router guide`。批次只在 Router 开关打开时存在。
+- **Super Agent chat 的每一轮（M-175）**：`router_chat` 生效时，领任务发现这一轮所在的 chat 绑定了订阅（Owner 直接发消息的那一轮也算），就在智能体说明末尾加一小段「## Super Agent」：这个 chat 是 Super Agent、它的每个范围（任务树编号或项目名、订阅 ID、是否在运行），以及「订阅」只指这些范围：自己新建的 issue 只有挂在订阅的任务树下或建在订阅的项目里才在范围内，要用 `router scope` 核对；issue 订阅者（含建 issue 时自动成为的 `creator`）和 chat wakeup 都不是订阅；不在范围就照实说，问 Owner 要不要加，同意后才 `router subscribe --issue <id> --anchor-chat current`。批次的边界说明里也有同一段。没有绑定订阅的 chat、issue 上的运行、`router_chat` 关闭时都不加，与上游一致；读订阅失败时也不加，照常领任务。逻辑在 `server/internal/agentrouter/chat_turn.go` 和 `server/internal/handler/agent_router_chat_turn.go`，`daemon.go` 只加一行调用。`multica router guide` 对应一节「自己新建的 issue 在不在范围里」，`issue subscriber list|add --help` 也写明 `creator` 订阅不是 Super Agent 的范围。
 
 上线步骤（运维或 Owner 执行；本任务不改线上数据）：
 
@@ -373,6 +375,14 @@ Super Agent 的使用说明不再作为 skill 维护（手工导入的 skill 不
 
 - 前端：`packages/core/router/`（API、zod 校验、查询与变更、分组）；`packages/views/router/`（对话框、范围选择、列表页、两个挂载钩子）；文案在 `packages/views/locales/*/router.json`。
 - 上游触点：`packages/core/package.json` 导出 `./router`（API 调用用上游 `cd969f848` 起提供的 `ApiClient.request`，原先 fork 加在 `client.ts` 的 `forkRequest` 已在 M-131 同步时去掉），`chat-session-header.tsx` 与 `settings-page.tsx` 各加一个挂载钩子，8 个语言入口和 `resources-types.ts` 登记 `router` 命名空间，`featureflags/keys.go` 公开 `router_chat`；`packages/core/realtime/use-realtime-sync.ts` 的前缀刷新表加一项 `router`（M-147）。见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。
+
+## 覆盖、建 issue 时的范围检查与重叠提醒（M-194）
+
+同一个智能体的订阅重叠时，事件只进最窄的那条（见上文）；不同智能体的订阅覆盖同一个 issue 时，各自都会收到。下面三处都按这条规则回答，逻辑在 `server/internal/agentrouter/covering.go`，HTTP 在 `server/internal/handler/agent_router_covering.go`，CLI 在 `server/cmd/multica/cmd_router_covering.go`。不新增表，也不改表。
+
+- **谁覆盖一个 issue**：`GET /api/router/issues/{id}/covering`（`multica router covering <issue>`）列出范围包含这个 issue 的每条订阅（暂停的也列）：智能体、范围类型和名字、是否绑定 chat、是否暂停、`effective`（是否真正收这个 issue 的事件），以及被同一智能体更窄的订阅取代时的 `superseded_by`。chat 只对它的创建者显示 id 和标题（智能体调用时按这次运行的发起人判断），别人只看到 `chat_bound`；调用者看不到的私有项目里的范围不显示名字。issue 详情页「详情」区加一行「Super Agent」显示同一份信息（`packages/views/router/issue-super-agents.tsx`），没有覆盖时显示「无」；`router_chat` 关闭时这一行不出现，也不发请求。
+- **Super Agent chat 里建 issue**：`router_chat` 生效、请求来自智能体的 chat 运行（`X-Task-ID` 指向这个智能体的 chat 任务）、这个 chat 绑定了订阅时，`POST /api/issues` 的响应多一个 `super_agent_scope`：`in_scope`、收这个 issue 事件的订阅、它绑定在别的 chat 时的 `other_chat_session_id`，以及不在范围时的 `hint`（不在任何范围，或被这个智能体的另一个 chat 接走）。CLI 的 `issue create` 把 `hint` 以「Super Agent:」开头打印到 stderr。不自动加入范围：加不加仍由 Owner 决定（Owner 2026-11-23 选定 1A）。其他请求（成员、issue 上的运行、普通 chat、开关关闭）和读失败时都没有这个字段，与上游一致。上游触点：`issue.go` 的 `CreateIssueResponse` 加一个字段、`CreateIssue` 的写响应处加一次调用，`cmd_issue.go` 加一行打印。
+- **订阅重叠**：`POST /api/router/subscriptions` 发现新范围里的 issue 已经有**其他智能体**的运行中订阅在收事件（或同一个项目已被其他智能体订阅）时，返回 409，`code` 为 `router_scope_overlap`，`overlaps` 列出每条重叠的订阅、重叠的 issue 数和最多 10 个调用者看得到的编号（未关闭的在前）。请求带 `allow_overlap: true`（CLI `--allow-overlap`）才建立。同一智能体的重叠不拒绝。Super Agent 设置对话框收到这个 409 时不弹错误，而是在范围下方列出重叠的 Super Agent，并保留这些范围；再点一次「设为 Super Agent」或「保存」就带上 `allow_overlap` 添加。检查只发生在新建订阅时：恢复暂停的订阅（例如 A 暂停期间 B 订阅了同一批 issue，A 再恢复）、设置页接管保留的订阅，以及之后 issue 换了项目或父任务，都不会再检查，仍可能出现重叠，用 `covering` 或详情页那一行查看。
 
 ## 聊天列表的 Super Agent 标记（M-108）
 
@@ -493,6 +503,7 @@ M-133，设计见 M-117 的 S3b（Owner 2026-11-18 放行，只做 mouse 工作�
 
 - 规则按顺序匹配，第一条命中的决定。每条规则可以限定 `types`（条目类型）、`severities`、`to_statuses`（只用于 `status_changed`，比的是 details 里的 `to`）；不写的维度匹配任何值。
 - **灰区类型固定**：`mentioned`、`task_failed`、`agent_blocked`（M-117 D1）永远判 `gray`，只有 `gray` 规则能点名它们，用来给它们起规则名；没有 `gray` 规则点名时规则名是 `gray_default`。
+- 反过来，`gray` 规则也**只能**点名这三种灰区类型，并且必须写明 `types`（M-142）。否则把 `handle` 误写成 `gray`，难判的条目会从 `handle` 的样本里挪到 `gray`，误扣率会偏好看。
 - 没有任何规则命中：判 `owner`，规则名 `unmatched`。清单漏了的类型只会多放行，不会算成规则处理。
 - `handle` 规则必须写明 `types`，不能当通配。
 - 每条判定都带规则名，写在影子行的 `decision_note`，格式 `rule:<判定>:<规则名>`（例如 `rule:handle:status_progress`），同时写 `decided_at`。`status` / `mode` 仍是 `shadow`，批次里的清单、30 天清理都照旧。
@@ -512,6 +523,7 @@ M-133，设计见 M-117 的 S3b（Owner 2026-11-18 放行，只做 mouse 工作�
 - `multica router inbox-rules set --defaults --waiting-status started_2`：写入默认清单（M-117 Q1 的规则）；之后可以导出 `--output json` 的 `config` 修改，再用 `--file rules.json`（`{"rules": [...]}`）写回；`--off` 删除。只有工作区 owner/admin 能改，`to_statuses` 里的状态要在工作区状态目录里存在。
 - 默认清单（按顺序）：`mention`（`mentioned` → gray）、`failure`（`task_failed`、`agent_blocked` → gray）、`enter_waiting_status`（进入等待状态的 `status_changed` → owner）、`action_required`（`severity=action_required` → owner，例如指派给 Owner）、`status_progress`（其余 `status_changed` → handle）、`field_update`（优先级、开始/截止日期 → handle）、`assignment_churn`（`assignee_changed`、`unassigned` → handle）、`subscribed`（`issue_subscribed` → handle）、`comment`（`new_comment` → handle；评论里 @ 了 Owner 时另有一条 `mentioned`，由 `mention` 判）。
 - 设置改了，本进程立即生效；其他副本最多 30 秒。
+- 存进设置的清单如果不合法（绕过 API 写入，或按旧的、更宽的校验写入，比如 M-142 之前点名了非灰区类型的 `gray` 规则），这个工作区就不再分类。这种情况不是静默的（M-142）：`multica router inbox-rules` 会显示「invalid」和原因（API 字段 `config_error`）；每条没分类的条目计入 `config_invalid`（第一次和每 100 次记一条 warn）。用 `set` 重新写入一次就恢复。
 - 只在 mouse 工作区设置；BIPO 不设。
 
 ### 「Owner 事后有动作」的口径（M-117 未知项 ④）
@@ -521,7 +533,7 @@ M-133，设计见 M-117 的 S3b（Owner 2026-11-18 放行，只做 mouse 工作�
 - 发了评论（`comment`，作者是 Owner 本人）；或
 - 改了这个 issue（`activity_log` 里 Owner 本人为 actor 的任何一行：状态、指派、优先级、日期等）。
 
-不算：读了、归档了条目（M-82 里 Owner 已读 100%，归档是清理）；Owner 在 chat 里回复、由别人写回 issue 的（M-82：40 次交还里 39 次走 chat）。「下一条条目」的截止让一次动作只算给它之前最近的那一条，避免把对「待你决定」的回复算到前面的状态变化上。条目过了窗口才计入样本，窗口内的计为 pending；从没进收件箱的不计。
+不算：读了、归档了条目（M-82 里 Owner 已读 100%，归档是清理）；Owner 在 chat 里回复、由别人写回 issue 的（M-82：40 次交还里 39 次走 chat）。「下一条条目」的截止让一次动作只算给它之前最近的那一条，避免把对「待你决定」的回复算到前面的状态变化上。条目的观察期结束才计入样本：满了窗口，**或者同一 issue 的下一条条目已经到了**（M-142，观察期已被截断，不再等满窗口）；观察期内的计为 pending；从没进收件箱的不计。
 
 ### 报告
 
@@ -532,7 +544,7 @@ M-133，设计见 M-117 的 S3b（Owner 2026-11-18 放行，只做 mouse 工作�
 - `unclassified`（期间没有判定的影子行，例如开关打开前、分类失败）和 `not_delivered`；
 - 输出里写明「有动作」的口径。
 
-成员看到发给自己的条目，智能体看到自己订阅的条目（与 `router holds` 相同）。`--window` 1 到 168 小时，`--since` 不小于窗口、不超过 30 天（影子行的保留期）。`multica router holds` 多了 `VERDICT` 列；`multica router inbox-rules` 显示规则清单和回答请求的进程自启动以来的判定计数、失败数（`router holds --stats` 的 `rules` 字段同样有）。
+成员看到发给自己的条目，智能体看到自己订阅的条目（与 `router holds` 相同）。`--window` 1 到 168 小时，`--since` 不小于窗口、不超过 30 天（影子行的保留期）。`multica router holds` 多了 `VERDICT` 列；`multica router inbox-rules` 显示规则清单和回答请求的进程自启动以来的判定计数、失败数、`config_invalid`（`router holds --stats` 的 `rules` 字段同样有）。
 
 ## 已知局限（S3b）
 
@@ -545,7 +557,7 @@ M-133，设计见 M-117 的 S3b（Owner 2026-11-18 放行，只做 mouse 工作�
 1. 没有迁移。更新 daemon 用的 CLI（`router inbox-rules`）。
 2. 部署后先保持 `router_inbox_rules` 关闭，确认行为不变。
 3. 在 mouse 工作区执行 `multica router inbox-rules set --defaults --waiting-status started_2`（Owner 本人或 admin）；关闭开关时这一步不改变任何行为。
-4. 打开 `FF_ROUTER_INBOX_RULES=true`（需要重启，`router_hold_shadow` 已打开）。`multica router holds` 的新条目应带 `VERDICT`，`multica router inbox-rules` 的失败数为 0。
+4. 打开 `FF_ROUTER_INBOX_RULES=true`（需要重启，`router_hold_shadow` 已打开）。`multica router holds` 的新条目应带 `VERDICT`，`multica router inbox-rules` 的失败数和 `invalid stored rules` 都为 0，规则清单不显示 invalid。
 5. 攒够样本后用 `multica router inbox-rules report` 给 Owner 报误扣率；达到 Owner 定的阈值才开 S3c。
 
 ## 已知局限（S3a）

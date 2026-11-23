@@ -19,37 +19,20 @@ import (
 // Algo is the only algorithm user_credential.algo accepts.
 const Algo = "argon2id"
 
-const (
-	// MinPasswordRunes is the minimum password length, counted in characters.
-	MinPasswordRunes = 12
-	// MaxPasswordBytes caps the input to argon2id so a huge request body
-	// cannot be used to burn CPU. No real password comes near it.
-	MaxPasswordBytes = 1024
-)
+// MaxPasswordBytes caps the input to argon2id so a huge request body cannot be
+// used to burn CPU. No real password comes near it.
+const MaxPasswordBytes = 1024
 
 // Errors returned by this package. They are fixed values and never carry the
 // password or the hash.
 var (
-	ErrPasswordTooShort = fmt.Errorf("passwordauth: password must be at least %d characters", MinPasswordRunes)
-	ErrPasswordTooLong  = fmt.Errorf("passwordauth: password must be at most %d bytes", MaxPasswordBytes)
-	ErrMalformedHash    = errors.New("passwordauth: stored hash is malformed")
-	ErrUnsupportedHash  = errors.New("passwordauth: stored hash uses an unsupported algorithm or version")
+	ErrPasswordTooLong = fmt.Errorf("passwordauth: password must be at most %d bytes", MaxPasswordBytes)
+	ErrMalformedHash   = errors.New("passwordauth: stored hash is malformed")
+	ErrUnsupportedHash = errors.New("passwordauth: stored hash uses an unsupported algorithm or version")
 	// ErrHashOverBudget means a stored hash was made with more memory than
 	// the whole hashing budget, so it is not verified at all.
 	ErrHashOverBudget = errors.New("passwordauth: stored hash needs more memory than the hashing budget")
 )
-
-// ValidatePassword checks a new password against the length rules. Login does
-// not call it: a stored password is checked as is.
-func ValidatePassword(password string) error {
-	if len(password) > MaxPasswordBytes {
-		return ErrPasswordTooLong
-	}
-	if utf8.RuneCountInString(password) < MinPasswordRunes {
-		return ErrPasswordTooShort
-	}
-	return nil
-}
 
 // Params are the argon2id cost parameters. The JSON form is what
 // user_credential.params stores.
@@ -108,8 +91,9 @@ const (
 	maxMemoryBudgetKiB     = 64 * 1024 * 1024
 )
 
-// HasherFromEnv returns a Hasher with ParamsFromEnv's parameters and the
-// memory budget from EnvMemoryBudgetKiB (DefaultMemoryBudgetKiB when unset).
+// HasherFromEnv returns a Hasher with ParamsFromEnv's parameters, the memory
+// budget from EnvMemoryBudgetKiB (DefaultMemoryBudgetKiB when unset) and the
+// minimum password length from MinPasswordRunesFromEnv.
 func HasherFromEnv(getenv func(string) string) (*Hasher, error) {
 	p, err := ParamsFromEnv(getenv)
 	if err != nil {
@@ -122,7 +106,12 @@ func HasherFromEnv(getenv func(string) string) (*Hasher, error) {
 			return nil, fmt.Errorf("passwordauth: %s must be an integer from %d to %d", EnvMemoryBudgetKiB, minMemoryKiB, maxMemoryBudgetKiB)
 		}
 	}
-	return NewHasherWithBudget(p, uint32(budget))
+	h, err := NewHasherWithBudget(p, uint32(budget))
+	if err != nil {
+		return nil, err
+	}
+	h.minRunes = MinPasswordRunesFromEnv(getenv, nil)
+	return h, nil
 }
 
 // ParamsFromEnv returns DefaultParams with the environment overrides applied.
@@ -177,10 +166,11 @@ func (p Params) validate() error {
 }
 
 // Hasher hashes and verifies passwords with one set of current parameters,
-// within a memory budget.
+// within a memory budget, and holds the length rules for new passwords.
 type Hasher struct {
 	params    Params
 	budgetKiB uint32
+	minRunes  int
 	memory    *semaphore.Weighted
 	// Counters for tests: reserved memory now and at peak, reservations
 	// being waited for, and argon2id computations run.
@@ -194,13 +184,14 @@ type Hasher struct {
 }
 
 // NewHasher returns a Hasher producing hashes with p, within
-// DefaultMemoryBudgetKiB.
+// DefaultMemoryBudgetKiB, that requires DefaultMinPasswordRunes.
 func NewHasher(p Params) (*Hasher, error) {
 	return NewHasherWithBudget(p, DefaultMemoryBudgetKiB)
 }
 
 // NewHasherWithBudget returns a Hasher producing hashes with p that never has
-// more than budgetKiB of argon2id memory in use at once.
+// more than budgetKiB of argon2id memory in use at once, and requires
+// DefaultMinPasswordRunes.
 func NewHasherWithBudget(p Params, budgetKiB uint32) (*Hasher, error) {
 	if err := p.validate(); err != nil {
 		return nil, err
@@ -208,7 +199,7 @@ func NewHasherWithBudget(p Params, budgetKiB uint32) (*Hasher, error) {
 	if p.MemoryKiB > budgetKiB {
 		return nil, fmt.Errorf("passwordauth: argon2id memory %d KiB exceeds the hashing budget of %d KiB (%s)", p.MemoryKiB, budgetKiB, EnvMemoryBudgetKiB)
 	}
-	h := &Hasher{params: p, budgetKiB: budgetKiB, memory: semaphore.NewWeighted(int64(budgetKiB))}
+	h := &Hasher{params: p, budgetKiB: budgetKiB, minRunes: DefaultMinPasswordRunes, memory: semaphore.NewWeighted(int64(budgetKiB))}
 	random := make([]byte, 32)
 	if _, err := rand.Read(random); err != nil {
 		return nil, fmt.Errorf("passwordauth: read random: %w", err)
@@ -224,11 +215,27 @@ func NewHasherWithBudget(p Params, budgetKiB uint32) (*Hasher, error) {
 // Params returns the parameters new hashes are made with.
 func (h *Hasher) Params() Params { return h.params }
 
+// MinPasswordRunes returns the minimum length of a new password, in
+// characters.
+func (h *Hasher) MinPasswordRunes() int { return h.minRunes }
+
+// ValidatePassword checks a new password against the length rules. Login does
+// not call it: a stored password is checked as is.
+func (h *Hasher) ValidatePassword(password string) error {
+	if len(password) > MaxPasswordBytes {
+		return ErrPasswordTooLong
+	}
+	if utf8.RuneCountInString(password) < h.minRunes {
+		return tooShortError{min: h.minRunes}
+	}
+	return nil
+}
+
 // Hash validates password and returns its PHC-format argon2id hash:
 // $argon2id$v=19$m=<KiB>,t=<passes>,p=<lanes>$<salt>$<key>, with the salt and
 // key in unpadded standard base64.
 func (h *Hasher) Hash(password string) (string, error) {
-	if err := ValidatePassword(password); err != nil {
+	if err := h.ValidatePassword(password); err != nil {
 		return "", err
 	}
 	return h.hash(password)

@@ -125,7 +125,9 @@ func printInboxRules(cmd *cobra.Command, out map[string]any) error {
 	fmt.Fprintf(os.Stdout, "Classifying in the answering server: %v\n", enabled)
 	cfg, _ := out["config"].(map[string]any)
 	rules, _ := cfg["rules"].([]any)
-	if len(rules) == 0 {
+	if msg, _ := out["config_error"].(string); msg != "" {
+		fmt.Fprintf(os.Stdout, "Workspace rules: invalid, items are not classified until they are set again (%s)\n", msg)
+	} else if len(rules) == 0 {
 		fmt.Fprintln(os.Stdout, "Workspace rules: none (items are not classified in this workspace)")
 	} else {
 		fmt.Fprintln(os.Stdout, "Workspace rules (first match decides; gray types are always gray):")
@@ -140,8 +142,8 @@ func printInboxRules(cmd *cobra.Command, out map[string]any) error {
 		cli.PrintTable(os.Stdout, []string{"#", "RULE", "VERDICT", "TYPES", "SEVERITIES", "TO STATUSES"}, table)
 	}
 	if stats, _ := out["stats"].(map[string]any); stats != nil {
-		fmt.Fprintf(os.Stdout, "This server since it started: verdicts %s, failures %s\n",
-			countsVal(stats["verdicts"]), countVal(stats["failures"]))
+		fmt.Fprintf(os.Stdout, "This server since it started: verdicts %s, failures %s, invalid stored rules %s\n",
+			countsVal(stats["verdicts"]), countVal(stats["failures"]), countVal(stats["config_invalid"]))
 	}
 	return nil
 }

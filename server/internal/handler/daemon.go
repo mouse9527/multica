@@ -3158,6 +3158,8 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	}
 	// mouse9527/multica fork (M-150): Mika's one-line pointer to `multica router guide`, only with router_v1 on.
 	resp.Agent.Instructions = h.TaskService.WithMikaRouterGuide(r.Context(), agent.SystemKey.String, agent.Name, resp.Agent.Instructions)
+	// mouse9527/multica fork (M-175): every turn in a Super Agent chat is told it is one, its scopes, and what "subscribed" means.
+	resp.Agent.Instructions = h.withSuperAgentChatNote(r.Context(), task, agent.WorkspaceID, resp.Agent.Instructions)
 	if useSkillRefs {
 		_, skillRefs, err := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID, agent.SystemKey.String, legacySkillRedirects)
 		if err != nil {

@@ -921,6 +921,8 @@ jobs:
       # Runs even when a Cursor step above failed, since it shares nothing with
       # them. -race reuses the objects those steps already built.
       # -v so a silent skip or a -run pattern that stops matching is visible.
+      # The repocache line (mouse9527/multica fork, M-161) needs APFS's
+      # case-insensitive names to reproduce a ref case conflict.
       - name: Test macOS Pi cleanup, local environments, and autostart
         if: ${{ !cancelled() }}
         shell: bash
@@ -930,6 +932,7 @@ jobs:
           go test -race ./internal/daemon -v -run '^TestPiCleanup' -count=1 -timeout=10m
           go test -race ./internal/daemon/localenv -v -count=1 -timeout=10m
           go test -race ./cmd/multica -v -run 'Autostart|LaunchAgent' -count=1 -timeout=10m
+          go test -race ./internal/daemon/repocache -v -run 'CaseConflict' -count=1 -timeout=10m
 
   # MUL-9162: Darwin's kill(-pgid) skips group members that are exiting or
   # zombies and returns EPERM instead of ESRCH while the group drains, so

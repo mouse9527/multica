@@ -21,7 +21,8 @@ var (
 	// ErrInvalidCredentials covers an unknown email, an account without a
 	// password and a wrong password alike, so the answer does not tell which.
 	ErrInvalidCredentials = errors.New("passwordauth: invalid email or password")
-	// ErrThrottled covers both the account lockout and the per-IP limit.
+	// ErrThrottled covers both the account lockout and, when it is on, the
+	// per-IP limit.
 	ErrThrottled = errors.New("passwordauth: too many attempts")
 	// ErrCurrentPasswordRequired: changing an existing password needs it.
 	ErrCurrentPasswordRequired = errors.New("passwordauth: current password is required")
@@ -36,7 +37,7 @@ type Service struct {
 	store    *Store
 	logger   *slog.Logger
 	now      func() time.Time
-	ips      *ipLimiter
+	ips      *ipLimiter // nil when the per-IP limit is off
 	phantoms *phantomLocks
 }
 
@@ -52,6 +53,12 @@ func NewService(store *Store, logger *slog.Logger) *Service {
 		ips:      newIPLimiter(),
 		phantoms: newPhantomLocks(),
 	}
+}
+
+// DisableIPLimit turns the per-IP limit off (EnvIPLimit); the account lockout
+// still applies. Call it before s handles any request.
+func (s *Service) DisableIPLimit() {
+	s.ips = nil
 }
 
 // NormalizeEmail is how emails are compared, as in verification-code login.
@@ -70,7 +77,7 @@ func NormalizeEmail(email string) string {
 // timing does not separate the cases either. The one exception is a password
 // changed while the attempt waited, which is refused without hashing.
 func (s *Service) Login(ctx context.Context, email, password, ip string) (db.User, error) {
-	if !s.ips.allow(ip, s.now()) {
+	if s.ips != nil && !s.ips.allow(ip, s.now()) {
 		s.logger.WarnContext(ctx, "password login: rate limited", "ip", ip)
 		return db.User{}, ErrThrottled
 	}
@@ -247,6 +254,10 @@ func (s *Service) recordFailure(ctx context.Context, userID pgtype.UUID) error {
 	return nil
 }
 
+// MinPasswordRunes returns the minimum length of a new password, in
+// characters, for clients to show and pre-check.
+func (s *Service) MinPasswordRunes() int { return s.store.hasher.MinPasswordRunes() }
+
 // HasPassword reports whether the user has set a password.
 func (s *Service) HasPassword(ctx context.Context, userID pgtype.UUID) (bool, error) {
 	_, err := s.store.Get(ctx, userID)
@@ -260,7 +271,7 @@ func (s *Service) HasPassword(ctx context.Context, userID pgtype.UUID) (bool, er
 // has checked both. The first password needs nothing more. Replacing one
 // needs the current password, whose failures count towards the lockout.
 func (s *Service) SetPassword(ctx context.Context, userID pgtype.UUID, current, next string) error {
-	if err := ValidatePassword(next); err != nil {
+	if err := s.store.hasher.ValidatePassword(next); err != nil {
 		return err
 	}
 

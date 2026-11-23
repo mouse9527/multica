@@ -1,7 +1,11 @@
 // Fork of mouse9527/multica: password login (M-43).
 export { passwordLogin, getPasswordStatus, setPassword } from "./api";
 export type { PasswordStatus, SetPasswordRequest } from "./api";
-export { passwordAuthConfigStore, usePasswordLoginEnabled } from "./config";
+export {
+  passwordAuthConfigStore,
+  usePasswordLoginEnabled,
+  usePasswordMinLength,
+} from "./config";
 export {
   checkNewPassword,
   passwordCharCount,

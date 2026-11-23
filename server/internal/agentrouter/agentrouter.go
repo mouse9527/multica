@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slice 1 (M-96), Router parallelism (M-104), and no rate pause (M-111).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slice 1 (M-96), Router parallelism (M-104), no rate pause (M-111), and own actions by run (M-193).
 
 // Package agentrouter captures issue events for agents that subscribe to an
 // issue tree or a project (the "Router" of the fork's Super-agent design), and
@@ -248,6 +248,9 @@ func levelChangeKey(issueID, kind string, updatedAt time.Time) string {
 	return "issue:" + issueID + ":" + kind + ":" + updatedAt.UTC().Format("20060102T150405.000000Z")
 }
 
-func isSelf(actorType, actorID *string, agentID string) bool {
+// actedAsAgent reports whether the actor is the subscribed agent. Its action
+// is the Super Agent's own only when it also came from one of the Super
+// Agent's runs (ownRunSQL).
+func actedAsAgent(actorType, actorID *string, agentID string) bool {
 	return actorType != nil && actorID != nil && *actorType == "agent" && *actorID == agentID
 }

@@ -15,8 +15,8 @@ import {
   checkNewPassword,
   passwordCharCount,
   passwordStatusOptions,
-  PASSWORD_MIN_CHARS,
   usePasswordLoginEnabled,
+  usePasswordMinLength,
   useSetPassword,
   type NewPasswordProblem,
 } from "@multica/core/passwordauth";
@@ -34,6 +34,7 @@ function PasswordSettingsForm() {
   const email = useAuthStore((s) => s.user?.email ?? "");
   const status = useQuery(passwordStatusOptions());
   const setPassword = useSetPassword();
+  const minChars = usePasswordMinLength();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -44,7 +45,7 @@ function PasswordSettingsForm() {
   const problemMessage = (problem: NewPasswordProblem) => {
     switch (problem) {
       case "too_short":
-        return t(($) => $.settings.errors.too_short);
+        return t(($) => $.settings.errors.too_short, { min: minChars });
       case "too_long":
         return t(($) => $.settings.errors.too_long);
       case "mismatch":
@@ -55,8 +56,8 @@ function PasswordSettingsForm() {
   const serverMessage = (err: unknown) => {
     switch (errorCode(err)) {
       case "invalid_password":
-        return passwordCharCount(newPassword) < PASSWORD_MIN_CHARS
-          ? t(($) => $.settings.errors.too_short)
+        return passwordCharCount(newPassword) < minChars
+          ? t(($) => $.settings.errors.too_short, { min: minChars })
           : t(($) => $.settings.errors.too_long);
       case "current_password_required":
         return t(($) => $.settings.errors.current_password_required);
@@ -77,7 +78,7 @@ function PasswordSettingsForm() {
       setError(t(($) => $.settings.errors.current_password_required));
       return;
     }
-    const problem = checkNewPassword(newPassword, confirmPassword);
+    const problem = checkNewPassword(newPassword, confirmPassword, minChars);
     if (problem) {
       setError(problemMessage(problem));
       return;
@@ -153,7 +154,7 @@ function PasswordSettingsForm() {
           )}
           <SettingsRow
             label={t(($) => $.settings.new_password)}
-            description={t(($) => $.settings.new_password_hint)}
+            description={t(($) => $.settings.new_password_hint, { min: minChars })}
             size="text"
           >
             <Input

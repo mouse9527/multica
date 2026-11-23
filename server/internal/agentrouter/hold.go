@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router v6, slice 2 (M-97), and Router inbox S3b (M-133).
+// Modified for the mouse9527/multica fork: Router v6, slice 2 (M-97), Router inbox S3b (M-133), and own actions by run (M-193).
 
 package agentrouter
 
@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/multica-ai/multica/server/internal/inbox"
@@ -136,7 +137,9 @@ func (h *HoldShadow) Intercept(ctx context.Context, p db.CreateInboxItemParams) 
 	var note *string
 	if h.rules != nil {
 		var ruleErr error
-		if note, ruleErr = h.rules.classify(ctx, h.Store.DB, p); ruleErr != nil {
+		if note, ruleErr = h.rules.classify(ctx, h.Store.DB, p); errors.Is(ruleErr, ErrInboxRulesInvalid) {
+			h.logRulesConfigInvalid(p, ruleErr)
+		} else if ruleErr != nil {
 			h.logRuleFailure(p, ruleErr)
 		}
 	}
@@ -167,9 +170,31 @@ func (h *HoldShadow) decide(ctx context.Context, p db.CreateInboxItemParams) (ho
 		return holdSub{}, false, nil
 	}
 	if p.ActorType.String == "agent" && util.UUIDToString(p.ActorID) == sub.AgentID {
-		return holdSub{}, false, nil
+		own, err := h.ownAction(ctx, sub, p)
+		if err != nil || own {
+			return holdSub{}, false, err
+		}
 	}
 	return sub, true, nil
+}
+
+// ownAction reports whether an item the subscribed agent caused came from one
+// of the Super Agent's own runs (ownRunSQL). Only a comment records its run,
+// so an item without a comment_id stays the Super Agent's own (M-193).
+func (h *HoldShadow) ownAction(ctx context.Context, sub holdSub, p db.CreateInboxItemParams) (bool, error) {
+	var details struct {
+		CommentID string `json:"comment_id"`
+	}
+	var commentID *string
+	if json.Unmarshal(p.Details, &details) == nil {
+		if _, err := uuid.Parse(details.CommentID); err == nil {
+			commentID = &details.CommentID
+		}
+	}
+	var own bool
+	err := h.Store.DB.QueryRow(ctx, `SELECT `+ownRunSQL("$1::uuid", "$2::uuid",
+		"(SELECT source_task_id FROM comment WHERE id = $3::uuid)"), sub.ID, sub.AgentID, commentID).Scan(&own)
+	return own, err
 }
 
 // narrowestHold picks, among one member's subscriptions, the one that covers
@@ -339,6 +364,17 @@ func (h *HoldShadow) logRuleFailure(p db.CreateInboxItemParams, err error) {
 	if n == 1 || n%100 == 0 {
 		h.Logger.Warn("router hold: inbox rules failed; recorded the item without a verdict",
 			"type", p.Type, "failures_total", n, "error", err)
+	}
+}
+
+// logRulesConfigInvalid logs, the same way, an item left unclassified because
+// its workspace's stored rule list is invalid: only the process sees it, and
+// the report alone would read like the workspace being off.
+func (h *HoldShadow) logRulesConfigInvalid(p db.CreateInboxItemParams, err error) {
+	n := h.rules.configInvalid.Load()
+	if n == 1 || n%100 == 0 {
+		h.Logger.Warn("router hold: stored inbox rules are invalid; recorded the item without a verdict",
+			"workspace_id", util.UUIDToString(p.WorkspaceID), "config_invalid_total", n, "error", err)
 	}
 }
 

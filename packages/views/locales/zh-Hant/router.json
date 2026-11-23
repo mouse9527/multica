@@ -119,5 +119,16 @@
     "scope_paused": "{{scope}}（已暫停）",
     "paused": "已暫停（{{reasons}}）",
     "separator": "、"
+  },
+  "overlap": {
+    "title": "其他 Super Agent 已經在接收這些範圍的事件",
+    "item": "{{scope}}：{{agent}}（{{other}}）已接收其中 {{n}} 個任務的事件。",
+    "examples": "例如 {{issues}}。",
+    "hint": "兩個 Super Agent 會各自處理同一批任務。仍要新增，再點一次「{{action}}」。"
+  },
+  "covering": {
+    "label": "Super Agent",
+    "none": "無",
+    "superseded": "事件由這個 AI 代理更窄的範圍接收"
   }
 }

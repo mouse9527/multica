@@ -1,5 +1,5 @@
 // @vitest-environment node
-// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136).
+// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-137).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClient, setApiInstance } from "../api";
 import { enableEvolution, getEvolution, getEvolutionConfig, saveEvolutionConfig, startsChatReading } from ".";
@@ -101,6 +101,8 @@ describe("getEvolutionConfig", () => {
     expect(calls[0]).toMatchObject({ url: "https://api.example.test/api/evolution/config", headers: { "X-Workspace-ID": "ws-1" } });
     expect(state.config.schedule).toEqual({ time: "04:30", timezone: "UTC", interval_days: 2 });
     expect(state.config.exclude_agents).toEqual([]);
+    // An older server sends no P3 fields: the defaults fill in.
+    expect(state.config).toMatchObject({ max_proposals_per_run: 5, min_evidence_count: 2, rejected_cooldown_days: 30 });
     expect(state.chat_active).toBe(true);
     expect(state.runs[0]).toMatchObject({ id: "r1", status: "succeeded", finished_at: null, served_items: 0 });
   });
@@ -132,6 +134,9 @@ describe("saveEvolutionConfig", () => {
     max_items_per_window: 2000,
     max_window_days: 7,
     max_runs_per_day: 3,
+    max_proposals_per_run: 5,
+    min_evidence_count: 2,
+    rejected_cooldown_days: 30,
   };
 
   it("puts the whole config and the member-notice confirmation", async () => {

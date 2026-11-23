@@ -1903,6 +1903,7 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 	if err := verifyIssueCreateProperties(createProperties, result); err != nil {
 		return fmt.Errorf("issue %s was created, but the server did not confirm its custom properties; review it before retrying: %w", issueDisplayKey(result), err)
 	}
+	printSuperAgentScopeHint(os.Stderr, result) // mouse9527/multica fork (M-194)
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {

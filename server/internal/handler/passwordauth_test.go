@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -70,8 +71,28 @@ type passwordTestServer struct {
 	t      *testing.T
 	router chi.Router
 	svc    *passwordauth.Service
-	logs   *bytes.Buffer
+	logs   *syncBuffer
 	ip     atomic.Int32
+}
+
+// syncBuffer is a bytes.Buffer safe for concurrent use. The password tests
+// make it the default logger's output, and goroutines other tests in this
+// package leave running log through the default logger too.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // pwCheapParams keeps hashing fast in tests.
@@ -88,7 +109,7 @@ func newPasswordTestServer(t *testing.T) *passwordTestServer {
 
 func newPasswordTestServerWith(t *testing.T, hasher *passwordauth.Hasher) *passwordTestServer {
 	t.Helper()
-	logs := &bytes.Buffer{}
+	logs := &syncBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	prev := slog.Default()
 	slog.SetDefault(logger)
@@ -209,8 +230,10 @@ func TestPasswordAuthSwitch(t *testing.T) {
 				t.Fatalf("switch %q: %s %s = %d, want 404", value, route[0], route[1], got)
 			}
 		}
-		if _, ok := getConfigJSON(t)["password_login_enabled"]; ok {
-			t.Fatalf("switch %q: /api/config mentions password login", value)
+		for _, field := range []string{"password_login_enabled", "password_min_length"} {
+			if _, ok := getConfigJSON(t)[field]; ok {
+				t.Fatalf("switch %q: /api/config has %s", value, field)
+			}
 		}
 	}
 
@@ -234,6 +257,97 @@ func TestPasswordAuthSwitch(t *testing.T) {
 	}
 	if v := getConfigJSON(t)["password_login_enabled"]; v != true {
 		t.Fatalf("on: password_login_enabled = %v", v)
+	}
+	if v := getConfigJSON(t)["password_min_length"]; v != float64(passwordauth.DefaultMinPasswordRunes) {
+		t.Fatalf("on: password_min_length = %v, want the default", v)
+	}
+}
+
+// MULTICA_PASSWORD_MIN_LENGTH reaches /api/config and the set-password
+// route; a value below the floor is raised to it.
+func TestPasswordMinLengthFromEnv(t *testing.T) {
+	t.Cleanup(func() { testHandler.PasswordAuth = nil })
+	t.Setenv(passwordauth.EnvEnabled, "true")
+	// The cheapest parameters ParamsFromEnv accepts.
+	t.Setenv(passwordauth.EnvMemoryKiB, "19456")
+	t.Setenv(passwordauth.EnvIterations, "2")
+	t.Setenv(passwordauth.EnvParallelism, "1")
+
+	for _, tc := range []struct {
+		value string
+		want  int
+	}{
+		{value: "8", want: 8},
+		{value: "3", want: passwordauth.MinPasswordRunesFloor},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv(passwordauth.EnvMinLength, tc.value)
+			r := chi.NewRouter()
+			testHandler.MountPasswordAuth(r, realAuth(), nil)
+			if v := getConfigJSON(t)["password_min_length"]; v != float64(tc.want) {
+				t.Fatalf("password_min_length = %v, want %d", v, tc.want)
+			}
+
+			userID, _ := pwTestUser(t, "minlen")
+			session := pwSession(t, userID)
+			set := func(password string) *httptest.ResponseRecorder {
+				body, _ := json.Marshal(SetPasswordRequest{NewPassword: password})
+				req := httptest.NewRequest(http.MethodPost, "/api/me/password", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer "+session)
+				rec := httptest.NewRecorder()
+				r.ServeHTTP(rec, req)
+				return rec
+			}
+			rec := set(strings.Repeat("a", tc.want-1))
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), passwordCodeInvalidPassword) ||
+				!strings.Contains(rec.Body.String(), fmt.Sprintf("at least %d characters", tc.want)) {
+				t.Fatalf("%d characters: %d %s", tc.want-1, rec.Code, rec.Body)
+			}
+			if rec := set(strings.Repeat("a", tc.want)); rec.Code != http.StatusOK {
+				t.Fatalf("%d characters: %d %s", tc.want, rec.Code, rec.Body)
+			}
+		})
+	}
+}
+
+// MULTICA_PASSWORD_IP_LIMIT reaches the service MountPasswordAuth builds:
+// unset, one address gets 429 after IPLimit attempts; "0", it keeps getting
+// 401 and the startup log says the limit is off.
+func TestPasswordIPLimitSwitch(t *testing.T) {
+	t.Cleanup(func() { testHandler.PasswordAuth = nil })
+	t.Setenv(passwordauth.EnvEnabled, "true")
+	logs := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	lastOfSpray := func(value string) int {
+		t.Setenv(passwordauth.EnvIPLimit, value)
+		r := chi.NewRouter()
+		testHandler.MountPasswordAuth(r, realAuth(), nil)
+		var rec *httptest.ResponseRecorder
+		for i := 0; i <= passwordauth.IPLimit; i++ {
+			req := httptest.NewRequest(http.MethodPost, "/auth/password-login",
+				strings.NewReader(fmt.Sprintf(`{"email":"pw-ipswitch-%s-%d@example.test","password":"x"}`, value, i)))
+			req.RemoteAddr = "203.0.113.60:999"
+			rec = httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+		}
+		return rec.Code
+	}
+
+	if got := lastOfSpray(""); got != http.StatusTooManyRequests {
+		t.Fatalf("unset: attempt %d from one address = %d, want 429", passwordauth.IPLimit+1, got)
+	}
+	if strings.Contains(logs.String(), "per-IP limit off") {
+		t.Fatalf("unset: logged the limit as off: %s", logs)
+	}
+	if got := lastOfSpray("0"); got != http.StatusUnauthorized {
+		t.Fatalf("off: attempt %d from one address = %d, want 401", passwordauth.IPLimit+1, got)
+	}
+	if !strings.Contains(logs.String(), "per-IP limit off") {
+		t.Fatalf("off: startup did not log the limit as off: %s", logs)
 	}
 }
 

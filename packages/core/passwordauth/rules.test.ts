@@ -28,6 +28,13 @@ describe("checkNewPassword", () => {
     expect(checkNewPassword(max, max)).toBeNull();
   });
 
+  it("uses the minimum the server configured", () => {
+    expect(checkNewPassword("abcdefg", "abcdefg", 8)).toBe("too_short");
+    expect(checkNewPassword("abcdefgh", "abcdefgh", 8)).toBeNull();
+    expect(checkNewPassword("密码密码密码", "密码密码密码", 6)).toBeNull();
+    expect(checkNewPassword("abcdefghijklm", "abcdefghijklm", 16)).toBe("too_short");
+  });
+
   it("rejects a confirmation that differs", () => {
     expect(checkNewPassword("abcdefghijkl", "abcdefghijkm")).toBe("mismatch");
   });

@@ -967,7 +967,10 @@ func runDaemonForeground(cmd *cobra.Command) error {
 	// entry, never touches one without our marker, and never runs under an
 	// external supervisor (see syncDaemonAutostartDefault). The hint is
 	// announced only to a watching human (stderr is a terminal).
-	syncDaemonAutostart(profile, logger_pkg.StderrIsTerminal())
+	// Modified by the mouse9527/multica fork: a stderr on the null device
+	// (launchd) logs to daemon.log, see daemonLogsToTerminal.
+	logsToTerminal := daemonLogsToTerminal(profile)
+	syncDaemonAutostart(profile, logsToTerminal)
 
 	// Load the profile config once — several daemon knobs fall back to
 	// values persisted here when both the CLI flag and the env var are
@@ -985,7 +988,7 @@ func runDaemonForeground(cmd *cobra.Command) error {
 		logger     *slog.Logger
 		logRotator *lumberjack.Logger
 	)
-	if logger_pkg.StderrIsTerminal() {
+	if logsToTerminal {
 		logger = logger_pkg.NewLogger("daemon")
 	} else {
 		// An older self-update launcher may have handed this process daemon.log

@@ -59,9 +59,11 @@ type AppConfig struct {
 	// so the app shows no Browse entry and makes no store requests.
 	ThemeStoreEnabled bool `json:"theme_store_enabled,omitempty"`
 
-	// Modified for the mouse9527/multica fork: password login (M-41).
-	// Omitted unless its routes are registered.
+	// Modified for the mouse9527/multica fork: password login (M-41) and its
+	// configured minimum length in characters (M-184). Omitted unless its
+	// routes are registered.
 	PasswordLoginEnabled bool `json:"password_login_enabled,omitempty"`
+	PasswordMinLength    int  `json:"password_min_length,omitempty"`
 
 	// PostHog public config for the frontend. The key is the same Project
 	// API Key the backend uses; returning it here (instead of baking it
@@ -157,7 +159,10 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	config.DaemonSetupTarget = "self_host"
 	config.VCSIntegrationAvailable = h.cfg.VCSIntegrationEnabled
 	config.ThemeStoreEnabled = h.ThemeStore != nil
-	config.PasswordLoginEnabled = h.PasswordAuth != nil
+	if h.PasswordAuth != nil {
+		config.PasswordLoginEnabled = true
+		config.PasswordMinLength = h.PasswordAuth.MinPasswordRunes()
+	}
 	config.FeatureFlags = featureflags.EvaluateFrontendPublicFlags(r.Context(), h.FeatureFlags)
 	// Only surface the build version on self-hosted deployments. The managed
 	// cloud is continuously deployed and its users can't choose the build, so

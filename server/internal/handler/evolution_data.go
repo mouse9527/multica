@@ -1,5 +1,5 @@
 // Added by the mouse9527/multica fork: Evolution P2, configuration and the
-// signal channel (M-136).
+// signal channel (M-136); P3 shares the run gate with proposals (M-137).
 
 package handler
 
@@ -17,6 +17,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 type evolutionDatabase struct {
@@ -149,38 +150,11 @@ func (h *Handler) writeEvolutionConfig(w http.ResponseWriter, r *http.Request, w
 // projects and agents and private agents' chats. Run logs and task messages
 // are not a source.
 func (h *Handler) GetEvolutionSignals(w http.ResponseWriter, r *http.Request) {
-	workspaceID := ctxWorkspaceID(r.Context())
-	if workspaceID == "" {
-		writeError(w, http.StatusBadRequest, "workspace_id is required")
-		return
-	}
-	if r.Header.Get("X-Actor-Source") != "task_token" {
-		writeError(w, http.StatusForbidden, "only the Evolution agent's analysis run can read signals")
+	workspaceID, agent, task, ok := h.evolutionRunTask(w, r, "read signals")
+	if !ok {
 		return
 	}
 	ctx := r.Context()
-	agentID, err := util.ParseUUID(r.Header.Get("X-Agent-ID"))
-	if err != nil {
-		writeError(w, http.StatusForbidden, "only the Evolution agent's analysis run can read signals")
-		return
-	}
-	agent, err := h.Queries.GetAgent(ctx, agentID)
-	if err != nil || uuidToString(agent.WorkspaceID) != workspaceID ||
-		!agent.SystemKey.Valid || agent.SystemKey.String != service.EvolutionSystemKey {
-		writeError(w, http.StatusForbidden, "only the Evolution agent's analysis run can read signals")
-		return
-	}
-	taskID, err := util.ParseUUID(r.Header.Get("X-Task-ID"))
-	if err != nil {
-		writeError(w, http.StatusForbidden, "only the Evolution agent's analysis run can read signals")
-		return
-	}
-	task, err := h.Queries.GetAgentTask(ctx, taskID)
-	if err != nil || task.AgentID != agent.ID || !task.IssueID.Valid ||
-		(task.Status != "dispatched" && task.Status != "running") {
-		writeError(w, http.StatusForbidden, "only a live task of the Evolution agent can read signals")
-		return
-	}
 
 	q := r.URL.Query()
 	source := q.Get("source")
@@ -231,6 +205,45 @@ func (h *Handler) GetEvolutionSignals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, page)
+}
+
+// evolutionRunTask admits only a task token whose agent is this workspace's
+// Evolution agent and whose task is live on an issue. Whether that issue is
+// the open run's is checked by the caller's evolution call (ErrNoOpenRun).
+func (h *Handler) evolutionRunTask(w http.ResponseWriter, r *http.Request, what string) (string, db.Agent, db.AgentTaskQueue, bool) {
+	workspaceID := ctxWorkspaceID(r.Context())
+	if workspaceID == "" {
+		writeError(w, http.StatusBadRequest, "workspace_id is required")
+		return "", db.Agent{}, db.AgentTaskQueue{}, false
+	}
+	denied := func(msg string) (string, db.Agent, db.AgentTaskQueue, bool) {
+		writeError(w, http.StatusForbidden, msg)
+		return "", db.Agent{}, db.AgentTaskQueue{}, false
+	}
+	onlyRun := "only the Evolution agent's analysis run can " + what
+	if r.Header.Get("X-Actor-Source") != "task_token" {
+		return denied(onlyRun)
+	}
+	ctx := r.Context()
+	agentID, err := util.ParseUUID(r.Header.Get("X-Agent-ID"))
+	if err != nil {
+		return denied(onlyRun)
+	}
+	agent, err := h.Queries.GetAgent(ctx, agentID)
+	if err != nil || uuidToString(agent.WorkspaceID) != workspaceID ||
+		!agent.SystemKey.Valid || agent.SystemKey.String != service.EvolutionSystemKey {
+		return denied(onlyRun)
+	}
+	taskID, err := util.ParseUUID(r.Header.Get("X-Task-ID"))
+	if err != nil {
+		return denied(onlyRun)
+	}
+	task, err := h.Queries.GetAgentTask(ctx, taskID)
+	if err != nil || task.AgentID != agent.ID || !task.IssueID.Valid ||
+		(task.Status != "dispatched" && task.Status != "running") {
+		return denied("only a live task of the Evolution agent can " + what)
+	}
+	return workspaceID, agent, task, true
 }
 
 func (h *Handler) evolutionFail(w http.ResponseWriter, r *http.Request, err error) {

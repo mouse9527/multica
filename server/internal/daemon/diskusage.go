@@ -257,6 +257,13 @@ func repoCacheSize(reposRoot string) (sizeBytes int64, repoCount int) {
 		if !wsEntry.IsDir() {
 			continue
 		}
+		// Modified for the mouse9527/multica fork (M-168): dot directories
+		// such as .partial hold in-progress clones, not a workspace's caches.
+		// Their bytes are on disk all the same.
+		if strings.HasPrefix(wsEntry.Name(), ".") {
+			sizeBytes += dirSize(filepath.Join(reposRoot, wsEntry.Name()))
+			continue
+		}
 		wsDir := filepath.Join(reposRoot, wsEntry.Name())
 		repoEntries, err := os.ReadDir(wsDir)
 		if err != nil {
