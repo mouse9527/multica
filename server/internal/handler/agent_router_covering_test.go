@@ -5,6 +5,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -108,9 +109,12 @@ func TestIssueCreateInSuperAgentChatReportsScope(t *testing.T) {
 	cleanupRouterChat(t, sub["id"].(string))
 	run := chatRun(t, f, chat, testUserID)
 
+	created := 0
 	create := func(task string, body map[string]any) map[string]any {
 		t.Helper()
-		body["title"] = "router created issue"
+		// Distinct titles: an identical open title is refused as a duplicate.
+		created++
+		body["title"] = fmt.Sprintf("router created issue %d", created)
 		req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, body)
 		if task != "" {
 			req = asAgent(req, f.agentA, task)
