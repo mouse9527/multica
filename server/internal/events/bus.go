@@ -40,6 +40,11 @@ type Event struct {
 	// realtime layer delivers it only to that user's connections bound to
 	// WorkspaceID.
 	MemberPrivateUserID string
+
+	// ActorTaskID is the run an agent actor acted from (its X-Task-ID), when
+	// the publisher knows it. The Super Agent capture reads it to tell the
+	// Super Agent's own runs from its agent's other work.
+	ActorTaskID string `json:"-"` // mouse9527/multica fork (M-193)
 }
 
 // Handler is a function that processes an event.
