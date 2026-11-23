@@ -3,6 +3,7 @@
 package agentrouter
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -89,6 +90,9 @@ func TestInboxRulesNormalizeRejects(t *testing.T) {
 		"handle without types":      {[]InboxRule{{Name: "all", Verdict: VerdictHandle}}, "must name its types"},
 		"gray type handled":         {[]InboxRule{{Name: "m", Types: []string{"mentioned"}, Verdict: VerdictHandle}}, "gray type"},
 		"gray type to the owner":    {[]InboxRule{{Name: "f", Types: []string{"Task_Failed"}, Verdict: VerdictOwner}}, "gray type"},
+		"gray rule on a comment":    {[]InboxRule{{Name: "c", Types: []string{"new_comment"}, Verdict: VerdictGray}}, "not a gray type"},
+		"gray rule, mixed types":    {[]InboxRule{{Name: "m", Types: []string{"mentioned", "Status_Changed"}, Verdict: VerdictGray}}, "not a gray type"},
+		"gray rule without types":   {[]InboxRule{{Name: "g", Severities: []string{"action_required"}, Verdict: VerdictGray}}, "must name its types"},
 		"unknown verdict":           {[]InboxRule{{Name: "x", Types: []string{"new_comment"}, Verdict: "drop"}}, "verdict must be"},
 		"bad name":                  {[]InboxRule{{Name: "Bad Name", Types: []string{"new_comment"}, Verdict: VerdictHandle}}, "name must be"},
 		"reserved name":             {[]InboxRule{{Name: RuleUnmatched, Types: []string{"new_comment"}, Verdict: VerdictOwner}}, "name must be"},
@@ -112,6 +116,21 @@ func TestInboxRulesNormalizeRejects(t *testing.T) {
 func TestParseInboxRulesConfig(t *testing.T) {
 	if c := ParseInboxRulesConfig([]byte(`{"other":1}`)); c.Active() {
 		t.Fatalf("no key: %+v", c)
+	}
+	// No list, or one removed (null), is off without an error; a stored list
+	// that fails the check is off with ErrInboxRulesInvalid.
+	for _, settings := range []string{`{"other":1}`, `{"router_inbox_rules":null}`} {
+		if c, err := parseInboxRulesConfig([]byte(settings)); c.Active() || err != nil {
+			t.Fatalf("%s: %+v (%v), want off without an error", settings, c, err)
+		}
+	}
+	for _, settings := range []string{
+		`{"router_inbox_rules":{"rules":[{"name":"c","types":["new_comment"],"verdict":"gray"}]}}`,
+		`{"router_inbox_rules":{"rules":"all"}}`,
+	} {
+		if c, err := parseInboxRulesConfig([]byte(settings)); c.Active() || !errors.Is(err, ErrInboxRulesInvalid) {
+			t.Fatalf("%s: %+v (%v), want off with ErrInboxRulesInvalid", settings, c, err)
+		}
 	}
 	if c := ParseInboxRulesConfig([]byte(`{"router_inbox_rules":{"rules":[{"name":"m","types":["mentioned"],"verdict":"handle"}]}}`)); c.Active() {
 		t.Fatalf("an invalid stored list must be off, got %+v", c)

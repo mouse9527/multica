@@ -221,6 +221,47 @@ func TestInboxRulesFailureOnlyCounts(t *testing.T) {
 	}
 }
 
+// A stored list that does not pass the check (written past the API, or valid
+// under an older check) is counted and logged as invalid, not taken for a
+// workspace without rules; the items still reach the inbox.
+func TestInboxRulesInvalidStoredList(t *testing.T) {
+	e, root := newRuleEnv(t)
+	e.fx.Exec(t, `UPDATE workspace SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), ARRAY[$2::text], $3::jsonb) WHERE id = $1`,
+		e.ws, WorkspaceSettingInboxRules, `{"rules":[{"name":"comment","types":["new_comment"],"verdict":"gray"}]}`)
+	rulesConfigGeneration.Add(1)
+	h := e.shadowHold()
+	h.ClassifyByRules()
+	e.writeRuleItem(e.user, ruleWrite{issue: root, typ: "new_comment", severity: "info", details: `{}`})
+	e.writeRuleItem(e.user, ruleWrite{issue: root, typ: "issue_created", severity: "info", details: `{}`})
+
+	got := e.holds()
+	if len(got) != 2 {
+		t.Fatalf("holds = %+v, want both items recorded", got)
+	}
+	for _, x := range got {
+		if x.Verdict != "" || !x.InInbox {
+			t.Fatalf("hold = %+v, want in the inbox without a verdict", x)
+		}
+	}
+	st := h.Stats()
+	if st.Rules.ConfigInvalid != 2 || st.Rules.Failures != 0 || len(st.Rules.Verdicts) != 0 || st.Errors != 0 {
+		t.Fatalf("stats = %+v rules = %+v, want 2 config_invalid and nothing else", st, st.Rules)
+	}
+	if _, err := LoadInboxRulesConfig(e.ctx, pool, e.ws); !errors.Is(err, ErrInboxRulesInvalid) {
+		t.Fatalf("LoadInboxRulesConfig err = %v, want ErrInboxRulesInvalid", err)
+	}
+
+	// Set again through the store, it classifies at once.
+	e.setDefaultRules()
+	item := e.writeRuleItem(e.user, ruleWrite{issue: root, typ: "new_comment", severity: "info", details: `{}`})
+	if x := e.holdByItem()[item]; x.Verdict != VerdictHandle || x.Rule != "comment" {
+		t.Fatalf("after setting the defaults: hold = %+v", x)
+	}
+	if st := h.Stats().Rules; st.ConfigInvalid != 2 {
+		t.Fatalf("config_invalid = %d, want it to stay 2", st.ConfigInvalid)
+	}
+}
+
 func TestInboxRulesConfigChangeTakesEffectAtOnce(t *testing.T) {
 	e, root := newRuleEnv(t)
 	e.setDefaultRules()
@@ -250,7 +291,7 @@ func TestInboxRulesReport(t *testing.T) {
 	other := e.fx.User(t, "rules other", fmt.Sprintf("rules-other-%d@example.test", time.Now().UnixNano()))
 	e.fx.Member(t, e.ws, other, "member")
 
-	issues := make([]string, 6)
+	issues := make([]string, 7)
 	for i := range issues {
 		issues[i] = e.issue(fmt.Sprintf("rules %d", i), testutil.Cols{"parent_issue_id": root})
 	}
@@ -291,6 +332,12 @@ func TestInboxRulesReport(t *testing.T) {
 	ownerComment(issues[4], 0)
 	// 5: a gray mention, no action.
 	at(e.writeRuleItem(e.user, ruleWrite{issues[5], "mentioned", "info", `{}`}), 30)
+	// 6: a handled comment the owner answered, well inside the window, but
+	// the next item on the issue has already ended its window: it counts
+	// now instead of waiting out the 24 hours. The next item is pending.
+	at(e.writeRuleItem(e.user, ruleWrite{issues[6], "new_comment", "info", `{}`}), 5)
+	ownerComment(issues[6], 4)
+	at(e.writeRuleItem(e.user, ruleWrite{issues[6], "status_changed", "info", statusTo("in_review")}), 3)
 	// Another member commenting is not the owner acting.
 	e.comment(issues[1], testutil.Cols{"author_type": "member", "author_id": other,
 		"created_at": testutil.Raw("now() - interval '47 hours'")})
@@ -316,8 +363,8 @@ func TestInboxRulesReport(t *testing.T) {
 		got[r.Verdict+":"+r.Rule] = r
 	}
 	for key, want := range map[string][3]int64{ // samples, acted, pending
-		"handle:status_progress":     {1, 1, 0},
-		"handle:comment":             {2, 0, 1},
+		"handle:status_progress":     {1, 1, 1},
+		"handle:comment":             {3, 1, 1},
 		"handle:field_update":        {1, 0, 0},
 		"owner:enter_waiting_status": {1, 1, 0},
 		"gray:mention":               {1, 0, 0},
@@ -330,9 +377,10 @@ func TestInboxRulesReport(t *testing.T) {
 	if len(rep.Rules) != 5 {
 		t.Errorf("rules = %+v, want 5", rep.Rules)
 	}
-	if len(rep.Verdicts) == 0 || rep.Verdicts[0].Verdict != VerdictHandle || rep.Verdicts[0].Samples != 4 ||
-		rep.Verdicts[0].Acted != 1 || rep.Verdicts[0].Rate == nil || *rep.Verdicts[0].Rate != 0.25 {
-		t.Errorf("verdicts = %+v, want handle 1 of 4 first", rep.Verdicts)
+	if len(rep.Verdicts) == 0 || rep.Verdicts[0].Verdict != VerdictHandle || rep.Verdicts[0].Samples != 5 ||
+		rep.Verdicts[0].Acted != 2 || rep.Verdicts[0].Rate == nil || *rep.Verdicts[0].Rate != 0.4 ||
+		rep.Verdicts[0].Pending != 2 {
+		t.Errorf("verdicts = %+v, want handle 2 of 5 first, 2 pending", rep.Verdicts)
 	}
 	if rep.NotDelivered != 1 || rep.Unclassified != 0 || rep.Definition == "" || rep.Window != "24h0m0s" {
 		t.Errorf("report = %+v", rep)
@@ -349,8 +397,8 @@ func TestInboxRulesReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, r := range wide.Rules {
-		if r.Rule == "comment" && (r.Samples != 2 || r.Acted != 1) {
-			t.Fatalf("comment with a 30h window = %+v, want 1 of 2", r)
+		if r.Rule == "comment" && (r.Samples != 3 || r.Acted != 2) {
+			t.Fatalf("comment with a 30h window = %+v, want 2 of 3", r)
 		}
 	}
 	for _, f := range []RulesReportFilter{
