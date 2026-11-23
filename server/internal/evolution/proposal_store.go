@@ -113,6 +113,14 @@ func (s *Proposals) File(ctx context.Context, req FileRequest) (FileResult, erro
 		if !ok {
 			return FileResult{}, reject(RejectTarget, "agent %s is not listed on this condense review", p.Target.ID)
 		}
+		// The agent may have been made private since the review listed it.
+		visible, err := agentVisibleToWorkspace(ctx, s.DB, req.WorkspaceID, p.Target.ID)
+		if err != nil {
+			return FileResult{}, err
+		}
+		if !visible {
+			return FileResult{}, reject(RejectTarget, "agent %s is no longer visible to the whole workspace; a condense review proposes only for agents every member can see", p.Target.ID)
+		}
 		measure = &c
 	} else if err := p.Validate(); err != nil {
 		return FileResult{}, err

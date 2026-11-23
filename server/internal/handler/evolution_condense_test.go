@@ -18,6 +18,9 @@ import (
 type condenseFixture struct {
 	evo, target, reviewID, reviewIssueID, taskID string
 	instructions                                 string
+	// private and memberOnly have long instructions but are not visible to
+	// every member, so the review never lists them.
+	private, memberOnly string
 }
 
 // longInstructions has n distinct lines, comfortably over the lowest
@@ -42,13 +45,34 @@ func cleanupProposalIssues(t *testing.T) {
 	})
 }
 
+// visibleAgent is an agent every member can see: public_to with the whole
+// workspace as its target.
+func visibleAgent(t *testing.T, name, instructions string) string {
+	t.Helper()
+	id := dbfx.Agent(t, name, handlerTestRuntimeID(t), testutil.Cols{
+		"instructions": instructions, "visibility": "workspace", "permission_mode": "public_to",
+	})
+	dbfx.Insert(t, "agent_invocation_target", testutil.Cols{
+		"agent_id": id, "target_type": "workspace", "target_id": testWorkspaceID,
+	})
+	return id
+}
+
 func newCondenseFixture(t *testing.T) condenseFixture {
 	t.Helper()
 	var f condenseFixture
 	f.evo = enableEvolutionAgent(t)
 	cleanupProposalIssues(t)
 	f.instructions = longInstructions(20)
-	f.target = dbfx.Agent(t, "evolution condense target", handlerTestRuntimeID(t), testutil.Cols{"instructions": f.instructions})
+	f.target = visibleAgent(t, "evolution condense target", f.instructions)
+	// Long instructions too, but not every member can see these agents.
+	f.private = dbfx.Agent(t, "evolution condense private", handlerTestRuntimeID(t), testutil.Cols{"instructions": f.instructions})
+	f.memberOnly = dbfx.Agent(t, "evolution condense member only", handlerTestRuntimeID(t), testutil.Cols{
+		"instructions": f.instructions, "visibility": "workspace", "permission_mode": "public_to",
+	})
+	dbfx.Insert(t, "agent_invocation_target", testutil.Cols{
+		"agent_id": f.memberOnly, "target_type": "member", "target_id": testUserID,
+	})
 
 	cfg := evolution.DefaultConfig()
 	cfg.Enabled = true
@@ -176,6 +200,45 @@ func TestEvolutionCondenseReviewRejections(t *testing.T) {
 
 	if n := countProposals(t); n != 0 {
 		t.Fatalf("rejected proposals opened %d issues", n)
+	}
+}
+
+// TestEvolutionCondenseReviewListsOnlyWorkspaceVisibleAgents: a private
+// agent and one shared with only some members never appear in the review
+// issue, which every member reads, and cannot be proposed for; nor can a
+// listed agent made private after the review opened.
+func TestEvolutionCondenseReviewListsOnlyWorkspaceVisibleAgents(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	f := newCondenseFixture(t)
+
+	var candidates, body string
+	dbfx.QueryRow(t, `SELECT candidates::text FROM evolution_review WHERE id = $1`, f.reviewID).Scan(&candidates)
+	dbfx.QueryRow(t, `SELECT description FROM issue WHERE id = $1`, f.reviewIssueID).Scan(&body)
+	for _, hidden := range []string{f.private, f.memberOnly} {
+		if strings.Contains(candidates, hidden) || strings.Contains(body, hidden) {
+			t.Errorf("agent %s is not visible to every member but is on the review", hidden)
+		}
+	}
+	for _, name := range []string{"evolution condense private", "evolution condense member only"} {
+		if strings.Contains(body, name) {
+			t.Errorf("the review issue names %q", name)
+		}
+	}
+
+	for _, hidden := range []string{f.private, f.memberOnly} {
+		p := f.proposal()
+		p["target"] = map[string]any{"type": "agent", "id": hidden}
+		wantRejected(t, propose(t, f.evo, f.taskID, p), http.StatusUnprocessableEntity, evolution.RejectTarget)
+	}
+
+	// Made private after the review listed it.
+	dbfx.Exec(t, `DELETE FROM agent_invocation_target WHERE agent_id = $1`, f.target)
+	dbfx.Exec(t, `UPDATE agent SET permission_mode = 'private' WHERE id = $1`, f.target)
+	wantRejected(t, propose(t, f.evo, f.taskID, f.proposal()), http.StatusUnprocessableEntity, evolution.RejectTarget)
+	if n := countProposals(t); n != 0 {
+		t.Fatalf("%d proposal issues for agents not every member can see", n)
 	}
 }
 

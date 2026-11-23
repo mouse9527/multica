@@ -210,7 +210,7 @@ P4 起，新建提案时服务端同时在 `evolution_proposal` 表里存下这�
 
 **精简检查**：定时任务 `evolution_tick` 每月一次（`condense_day_of_month` 那天的 `schedule.time`，时区同 `schedule`）对工作区的 agent 量指令：
 
-- 量哪些 agent：提案能指向的 agent（不含进化自己、内部系统 agent、已归档的、被排除的）。
+- 量哪些 agent：提案能指向的、**全体成员都可见**的 agent（`permission_mode=public_to` 且调用目标含整个工作区，与数据通道读 chat 的边界相同；不含进化自己、内部系统 agent、已归档的、被排除的）。检查 issue 和提案全体成员可读，所以私有 agent、只对部分成员可见的 agent 不会出现在里面；提交精简提案时服务端再核对一次，检查开始后被改成私有的 agent 返回 `target_not_allowed`。
 - 量什么：指令字数；与前面某一行重复的行数（比较时去掉列表和标题记号、忽略大小写和空白；不足 12 字的行和代码围栏不算）。
 - 列入名单：字数达到 `condense_min_runes`，或重复行至少 2 行且占比达到 `condense_repeat_percent`。名单最多 20 个，按字数从长到短。
 - 有名单时建一个指派给进化 agent 的「进化精简 · 年-月」issue，正文列出名单和测量值；没有就记为 `skipped`，不建 issue。每个工作区每月最多一次（工作区级 advisory lock 下检查）；服务停机错过的当月，恢复后补上；更早的月份不补。检查失败不重试，等下个月。

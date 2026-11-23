@@ -217,16 +217,26 @@ func finishReview(ctx context.Context, q Querier, reviewID, status, reason strin
 	return err
 }
 
+// workspaceVisibleAgent is the SQL condition (over agent a) for an agent
+// every member can see: public_to with the whole workspace as a target, the
+// same boundary the signal channel applies to chats. A review issue and its
+// proposals are read by every member, so a private agent, or one shared with
+// only some members, never appears in them.
+const workspaceVisibleAgent = `a.permission_mode = 'public_to'
+		  AND EXISTS (SELECT 1 FROM agent_invocation_target t
+		              WHERE t.agent_id = a.id AND t.target_type = 'workspace')`
+
 // condenseCandidates measures every agent a proposal may target (not
-// Evolution, not internal system agents, not archived, not excluded) and
-// returns those over a threshold, longest first.
+// Evolution, not internal system agents, not archived, not excluded) that
+// every member can see, and returns those over a threshold, longest first.
 func condenseCandidates(ctx context.Context, q Querier, workspaceID string, cfg Config) ([]CondenseCandidate, error) {
 	rows, err := q.Query(ctx, `
-		SELECT id::text, name, instructions FROM agent
-		WHERE workspace_id = $1::uuid AND archived_at IS NULL AND kind <> 'system'
-		  AND COALESCE(system_key, '') <> $2
-		  AND NOT (id = ANY(COALESCE($3::uuid[], '{}')))
-		ORDER BY id`, workspaceID, service.EvolutionSystemKey, cfg.ExcludeAgents)
+		SELECT a.id::text, a.name, a.instructions FROM agent a
+		WHERE a.workspace_id = $1::uuid AND a.archived_at IS NULL AND a.kind <> 'system'
+		  AND COALESCE(a.system_key, '') <> $2
+		  AND NOT (a.id = ANY(COALESCE($3::uuid[], '{}')))
+		  AND `+workspaceVisibleAgent+`
+		ORDER BY a.id`, workspaceID, service.EvolutionSystemKey, cfg.ExcludeAgents)
 	if err != nil {
 		return nil, err
 	}
@@ -251,6 +261,17 @@ func condenseCandidates(ctx context.Context, q Querier, workspaceID string, cfg 
 		out = out[:MaxCondenseCandidates]
 	}
 	return out, nil
+}
+
+// agentVisibleToWorkspace reports whether every member of the workspace can
+// see the agent (workspaceVisibleAgent).
+func agentVisibleToWorkspace(ctx context.Context, q Querier, workspaceID, agentID string) (bool, error) {
+	var visible bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM agent a
+		               WHERE a.id = $1::uuid AND a.workspace_id = $2::uuid AND `+workspaceVisibleAgent+`)`,
+		agentID, workspaceID).Scan(&visible)
+	return visible, err
 }
 
 // sortCandidates puts the longest instructions first, ties by id so the
