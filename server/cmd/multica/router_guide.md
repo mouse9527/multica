@@ -1,6 +1,6 @@
 # Super Agent 使用说明（multica router guide）
 
-什么时候读：Owner 在 chat 里让你把这个 chat 设为 Super Agent、改它的范围或设置、暂停或恢复、解除，或者问这个 Super Agent 现在怎么样时，先读这份说明再动手；你是 Super Agent 时，也按这里的边界判断哪些事自己做、哪些开 issue 交给 worker，按「chat wakeup 和事件批次的分工」一节决定要不要建 chat wakeup，按「自己新建的 issue 在不在范围里」一节说清新 issue 有没有人跟进，并按「请 Owner 决定的事」一节写每一条待决事项。这份说明随 multica CLI 发布，版本和你用的 CLI 一致。
+什么时候读：Owner 在 chat 里让你把这个 chat 设为 Super Agent、改它的范围或设置、暂停或恢复、解除，或者问这个 Super Agent 现在怎么样时，先读这份说明再动手；你是 Super Agent 时，也按这里的边界判断哪些事自己做、哪些开 issue 交给 worker，按「chat wakeup 和事件批次的分工」一节决定要不要建 chat wakeup，按「没事可报的批次」一节决定这一轮要不要通知 Owner，按「自己新建的 issue 在不在范围里」一节说清新 issue 有没有人跟进，并按「请 Owner 决定的事」一节写每一条待决事项。这份说明随 multica CLI 发布，版本和你用的 CLI 一致。
 
 Super Agent（技术名 router）= 一个 chat 会话 + 绑定到它的订阅。你就是这个 chat 的智能体；Owner 在这个 chat 里说「把这个 chat 设为 Super Agent」时，「这个 chat」用 `current` 表示，CLI 会自己解析成本次运行所在的会话。
 
@@ -48,6 +48,27 @@ chat 的通用说明会让你在替 Owner 找人做事、或答应回来汇报�
 > 把 M-20 交给了开发，在 chat 里回一句「已交给开发：M-20，有进展会在这里说」，不建 wakeup；M-20 的进展等批次来报。
 > Owner 又说「上游那个 PR `upstream/repo#900` 合并了告诉我」：它不挂在任何订阅范围内的 issue 上，批次收不到，才建：
 > `multica chat wakeup create --title "上游 PR #900 合并后汇报" --until-pr upstream/repo#900:merged --instruction "PR 合并后告诉 Owner"`
+
+## 没事可报的批次
+
+chat 里的每一条文字回复都会给 Owner 弹一次通知；批次那一轮又不能不写字就结束（运行环境会要求补一句可见的回复）。所以服务端开了 `router_chat_quiet` 时，批次说明里会写明这条约定：
+
+- **这一批没有需要 Owner 新决定或新操作的事**：回复第一行只写 `[无需你处理]`，后面最多再写一行发生了什么。这条回复照样留在 chat 里，Owner 打开就能看到，但不弹通知；也不用把未结的决定事项再列一遍。
+- **有需要 Owner 决定或操作的事**（决定卡、批准合并、要他亲自处理的报错）：不要写这一行，照常回复，Owner 会收到通知。拿不准时按需要通知处理。
+- 只对批次那一轮生效。Owner 自己发起的轮次，第一行写了它也照常通知。
+- 运行出错、回复只剩运行环境的报错（以「API Error:」开头）时，这条回复也不弹通知，只留在 chat 里。
+
+批次说明里没有这条约定时（`router_chat_quiet` 没开），照旧：有文字就通知，没事可报就不写回复。
+
+正例（批次里只是 worker 发了进度评论）：
+
+> [无需你处理]
+> M-20 开发在推进，PR 还没开。
+
+反例（有事要 Owner 拍板，却写了静默行，Owner 收不到通知）：
+
+> [无需你处理]
+> M-20 验收通过，请批准合并……
 
 ## 请 Owner 决定的事：每一条单独看也能拍板
 
