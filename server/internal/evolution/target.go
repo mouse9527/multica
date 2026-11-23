@@ -23,6 +23,9 @@ type TargetState struct {
 	Archived  bool
 	// IsDefault marks the workspace's Default workflow, whose name is fixed.
 	IsDefault bool
+	// Bindings are the agent's skill bindings (skill id → enabled) as locked
+	// by a locking read: the only bindings a write may touch.
+	Bindings map[string]bool
 }
 
 // ReadTarget reads a target's whitelisted fields, the snapshot a proposal's
@@ -54,9 +57,11 @@ func ReadTarget(ctx context.Context, q Querier, workspaceID, targetType, targetI
 			// agent row. Locking the agent's bindings makes their updates and
 			// deletes wait for this transaction (or this one wait for theirs),
 			// and the read below, a new statement, sees what they committed.
-			// A binding added meanwhile is never removed here: writes touch
-			// only rows this read saw.
-			if _, err := q.Exec(ctx, `SELECT 1 FROM agent_skill WHERE agent_id = $1::uuid FOR UPDATE`, targetID); err != nil {
+			// A row lock cannot cover a binding added later, so writes touch
+			// only the bindings locked here (st.Bindings): a binding added
+			// meanwhile is never removed, and the caller's re-read finds it.
+			st.Bindings, err = lockBindings(ctx, q, targetID)
+			if err != nil {
 				return snap, st, err
 			}
 		}
@@ -111,6 +116,24 @@ func ReadTarget(ctx context.Context, q Querier, workspaceID, targetType, targetI
 		return snap, st, ErrTargetNotFound
 	}
 	return snap, st, nil
+}
+
+func lockBindings(ctx context.Context, q Querier, agentID string) (map[string]bool, error) {
+	rows, err := q.Query(ctx, `SELECT skill_id::text, enabled FROM agent_skill WHERE agent_id = $1::uuid FOR UPDATE`, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		var enabled bool
+		if err := rows.Scan(&id, &enabled); err != nil {
+			return nil, err
+		}
+		out[id] = enabled
+	}
+	return out, rows.Err()
 }
 
 // PrettySteps is a workflow's stored steps as the snapshot shows them:

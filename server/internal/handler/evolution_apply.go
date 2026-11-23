@@ -294,7 +294,7 @@ func (h *Handler) changeEvolutionProposal(w http.ResponseWriter, r *http.Request
 		want = rec.ProposedValue
 	}
 
-	published, err := h.writeEvolutionField(ctx, r, qtx, tx, member, rec, want)
+	published, err := h.writeEvolutionField(ctx, r, qtx, tx, member, rec, st, want)
 	if err != nil {
 		h.writeEvolutionChangeError(w, r, err)
 		return
@@ -400,7 +400,7 @@ func (h *Handler) markEvolutionProposalStale(ctx context.Context, note evolution
 // writeEvolutionField writes one whitelisted field through the queries the
 // agent and workflow endpoints use, with their checks. It returns what to
 // publish once the transaction commits.
-func (h *Handler) writeEvolutionField(ctx context.Context, r *http.Request, qtx *db.Queries, tx evolution.Querier, member db.Member, rec evolution.ProposalRecord, value string) (func(), error) {
+func (h *Handler) writeEvolutionField(ctx context.Context, r *http.Request, qtx *db.Queries, tx evolution.Querier, member db.Member, rec evolution.ProposalRecord, st evolution.TargetState, value string) (func(), error) {
 	workspaceID := rec.WorkspaceID
 	actorID := uuidToString(member.UserID)
 	switch rec.TargetType {
@@ -416,7 +416,7 @@ func (h *Handler) writeEvolutionField(ctx context.Context, r *http.Request, qtx 
 			}
 			_, err = qtx.UpdateAgent(ctx, db.UpdateAgentParams{ID: agentID, Description: pgtype.Text{String: value, Valid: true}})
 		case "skills":
-			err = h.writeEvolutionSkills(ctx, r, qtx, tx, workspaceID, agentID, value)
+			err = h.writeEvolutionSkills(ctx, r, qtx, tx, workspaceID, agentID, st.Bindings, value)
 		default:
 			return nil, evolution.CheckApplyField(rec.TargetType, rec.Field)
 		}
@@ -433,11 +433,21 @@ func (h *Handler) writeEvolutionField(ctx context.Context, r *http.Request, qtx 
 	return nil, evolution.CheckApplyField(rec.TargetType, rec.Field)
 }
 
-// writeEvolutionSkills makes the agent's enabled skills the named ones:
-// bindings to other skills are removed, missing ones added, disabled ones
-// re-enabled. Disabled bindings outside the list are left alone; the
-// snapshot does not show them.
-func (h *Handler) writeEvolutionSkills(ctx context.Context, r *http.Request, qtx *db.Queries, tx evolution.Querier, workspaceID string, agentID pgtype.UUID, value string) error {
+// evolutionSkillWriteHook is nil outside tests. A test sets it to pause a
+// skills write after the bindings were locked and read and before they are
+// written, the window a concurrent skill edit has to land in.
+var evolutionSkillWriteHook func()
+
+// writeEvolutionSkills makes the agent's enabled skills the named ones,
+// changing only the bindings ReadTarget locked (bound): bindings to other
+// skills are removed, missing ones added, disabled ones re-enabled. Disabled
+// bindings outside the list are left alone; the snapshot does not show them.
+// A binding someone added after the lock is not in bound, so it is never
+// removed; the caller's re-read sees it and refuses the change.
+func (h *Handler) writeEvolutionSkills(ctx context.Context, r *http.Request, qtx *db.Queries, tx evolution.Querier, workspaceID string, agentID pgtype.UUID, bound map[string]bool, value string) error {
+	if evolutionSkillWriteHook != nil {
+		evolutionSkillWriteHook()
+	}
 	names := evolution.SkillNames(value)
 	want := map[string]bool{}
 	if len(names) > 0 {
@@ -473,24 +483,6 @@ func (h *Handler) writeEvolutionSkills(ctx context.Context, r *http.Request, qtx
 		if provider, ok := h.resolveAgentProvider(r, agent.WorkspaceID, agent.RuntimeID); ok && provider == "qoder_cloud" {
 			return applyRefused(evolution.ApplyFailed, "%v", qoderOverrides{skills: len(want)}.validate())
 		}
-	}
-	rows, err := tx.Query(ctx, `SELECT skill_id::text, enabled FROM agent_skill WHERE agent_id = $1`, agentID)
-	if err != nil {
-		return err
-	}
-	bound := map[string]bool{}
-	for rows.Next() {
-		var id string
-		var enabled bool
-		if err := rows.Scan(&id, &enabled); err != nil {
-			rows.Close()
-			return err
-		}
-		bound[id] = enabled
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
 	}
 	for id, enabled := range bound {
 		if enabled && !want[id] {

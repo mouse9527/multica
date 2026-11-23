@@ -340,11 +340,12 @@ func TestEvolutionApplyWorkflow(t *testing.T) {
 	}
 }
 
-// skillsFixture is a target agent with skill "review" bound and enabled, a
-// second skill "tests", and a filed proposal that swaps review for tests.
+// skillsFixture is a target agent with skill "review" bound and enabled,
+// skills "tests" and "extra" not bound, and a filed proposal that swaps
+// review for tests.
 type skillsFixture struct {
 	proposalFixture
-	review, tests, issueID string
+	review, tests, extra, issueID string
 }
 
 func newSkillsFixture(t *testing.T) skillsFixture {
@@ -362,7 +363,7 @@ func newSkillsFixture(t *testing.T) skillsFixture {
 		return id
 	}
 	reviewName, testsName := "evo-review-"+suffix, "evo-tests-"+suffix
-	sf.review, sf.tests = skill(reviewName), skill(testsName)
+	sf.review, sf.tests, sf.extra = skill(reviewName), skill(testsName), skill("evo-extra-"+suffix)
 	dbfx.Exec(t, `INSERT INTO agent_skill (agent_id, skill_id) VALUES ($1, $2)`, sf.target, sf.review)
 
 	body := sf.proposal()
@@ -520,5 +521,83 @@ func TestEvolutionProposalInPrivateProject(t *testing.T) {
 	changeProposal(t, member, issueID, "rollback").Want(http.StatusForbidden)
 	if state := proposalState(t, testUserID, issueID); !state.CanApply {
 		t.Fatalf("owner state: %+v", state)
+	}
+}
+
+// changeProposalWhileAdding runs apply or rollback and, between its locked
+// read of the agent's skill bindings and its write, has a person bind the
+// extra skill (as AddAgentSkills does) and commit. A row lock cannot cover
+// that new binding, so this is the window review R2 named.
+func changeProposalWhileAdding(t *testing.T, sf skillsFixture, action string) *testutil.Response {
+	t.Helper()
+	paused, release := make(chan struct{}), make(chan struct{})
+	evolutionSkillWriteHook = func() {
+		paused <- struct{}{}
+		<-release
+	}
+	t.Cleanup(func() { evolutionSkillWriteHook = nil })
+	done := make(chan *testutil.Response, 1)
+	go func() { done <- changeProposal(t, testUserID, sf.issueID, action) }()
+	select {
+	case <-paused:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s never reached the skills write", action)
+	}
+	dbfx.Exec(t, `INSERT INTO agent_skill (agent_id, skill_id) VALUES ($1, $2)`, sf.target, sf.extra)
+	close(release)
+	select {
+	case resp := <-done:
+		evolutionSkillWriteHook = nil
+		return resp
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s did not finish", action)
+		return nil
+	}
+}
+
+// TestEvolutionApplyKeepsSkillsAddedMeanwhile: a skill a person binds while
+// apply runs is not removed; the apply answers 409 and writes nothing.
+func TestEvolutionApplyKeepsSkillsAddedMeanwhile(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	sf := newSkillsFixture(t)
+	wantRejected(t, changeProposalWhileAdding(t, sf, "apply"), http.StatusConflict, evolution.ApplyStale)
+
+	if _, enabled := sf.binding(t, sf.extra); !enabled {
+		t.Fatal("the skill added meanwhile was removed")
+	}
+	if _, enabled := sf.binding(t, sf.review); !enabled {
+		t.Fatal("a refused apply removed the review skill")
+	}
+	if bound, _ := sf.binding(t, sf.tests); bound {
+		t.Fatal("a refused apply bound the tests skill")
+	}
+	if n := countVersions(t, sf.issueID); n != 0 {
+		t.Fatalf("a refused apply wrote %d versions", n)
+	}
+}
+
+// TestEvolutionRollbackKeepsSkillsAddedMeanwhile is the same race for a
+// rollback.
+func TestEvolutionRollbackKeepsSkillsAddedMeanwhile(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	sf := newSkillsFixture(t)
+	changeProposal(t, testUserID, sf.issueID, "apply").Want(http.StatusOK)
+	wantRejected(t, changeProposalWhileAdding(t, sf, "rollback"), http.StatusConflict, evolution.ApplyChangedSinceApply)
+
+	if _, enabled := sf.binding(t, sf.extra); !enabled {
+		t.Fatal("the skill added meanwhile was removed")
+	}
+	if _, enabled := sf.binding(t, sf.tests); !enabled {
+		t.Fatal("a refused rollback removed the tests skill")
+	}
+	if bound, _ := sf.binding(t, sf.review); bound {
+		t.Fatal("a refused rollback bound the review skill again")
+	}
+	if n := countVersions(t, sf.issueID); n != 1 {
+		t.Fatalf("%d version rows, want 1", n)
 	}
 }
