@@ -59,7 +59,7 @@ func evolutionEffect(t *testing.T, issueID string) (effectRow, int) {
 	return e, n
 }
 
-func agentComments(t *testing.T, issueID, agentID string) int {
+func effectAgentComments(t *testing.T, issueID, agentID string) int {
 	t.Helper()
 	return dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2`, issueID, agentID)
 }
@@ -89,7 +89,7 @@ func TestEvolutionEffectSuggestsRollback(t *testing.T) {
 	if n != 1 || e.verdict != evolution.EffectRegressed || !e.notified || e.sampleBefore != 10 || e.after != 10 {
 		t.Fatalf("effect: %d rows, %+v", n, e)
 	}
-	if got := agentComments(t, issueID, f.evo); got != 1 {
+	if got := effectAgentComments(t, issueID, f.evo); got != 1 {
 		t.Fatalf("Evolution left %d comments on the proposal", got)
 	}
 	var body string
@@ -121,7 +121,7 @@ func TestEvolutionEffectSuggestsRollback(t *testing.T) {
 	if _, n := evolutionEffect(t, issueID); n != 1 {
 		t.Errorf("measured again: %d rows", n)
 	}
-	if got := agentComments(t, issueID, f.evo); got != 1 {
+	if got := effectAgentComments(t, issueID, f.evo); got != 1 {
 		t.Errorf("commented again: %d", got)
 	}
 }
@@ -143,7 +143,7 @@ func TestEvolutionEffectBelowSampleDrawsNoConclusion(t *testing.T) {
 	if n != 1 || e.verdict != evolution.EffectInsufficient || e.notified {
 		t.Fatalf("effect: %d rows, %+v", n, e)
 	}
-	if got := agentComments(t, issueID, f.evo); got != 0 {
+	if got := effectAgentComments(t, issueID, f.evo); got != 0 {
 		t.Errorf("Evolution commented %d times without enough data", got)
 	}
 	if got := regressionInbox(t, issueID); got != 0 {
@@ -176,7 +176,7 @@ func TestEvolutionEffectJudgesEachMetricOnItsOwnSample(t *testing.T) {
 	if judged != 0 {
 		t.Error("the duration of one run per window was judged")
 	}
-	if got := agentComments(t, issueID, f.evo); got != 0 {
+	if got := effectAgentComments(t, issueID, f.evo); got != 0 {
 		t.Errorf("Evolution commented %d times", got)
 	}
 	if got := regressionInbox(t, issueID); got != 0 {
@@ -204,7 +204,7 @@ func TestEvolutionEffectNotMeasuredAfterRollback(t *testing.T) {
 	if n != 1 || e.verdict != evolution.EffectNotMeasured || e.reason != evolution.NotMeasuredRolledBack || e.notified {
 		t.Fatalf("effect: %d rows, %+v", n, e)
 	}
-	if got := agentComments(t, issueID, f.evo); got != 0 {
+	if got := effectAgentComments(t, issueID, f.evo); got != 0 {
 		t.Errorf("Evolution commented %d times on a rolled-back proposal", got)
 	}
 }
