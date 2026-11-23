@@ -3675,6 +3675,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		PRAutoCompleteDisabled: req.PRAutoCompleteDisabled,
 	}, service.IssueCreateOpts{
 		ActorID:          actualCreatorID,
+		ActorTaskID:      actorTaskID(r, creatorType), // mouse9527/multica fork (M-193)
 		AnalyticsAgentID: analyticsAgentID,
 		Platform:         func() string { p, _, _ := middleware.ClientMetadataFromContext(r.Context()); return p }(),
 		BroadcastPayload: func(issue db.Issue, atts []db.Attachment, labels []db.IssueLabel) map[string]any {
@@ -4397,7 +4398,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if handoff != nil {
 		updatedPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun)
 	}
-	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload)
+	h.publishWithActorTask(r, protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload) // mouse9527/multica fork (M-193)
 	if attachmentsChanged {
 		// The full owner snapshot must be admitted before an auxiliary event at
 		// the same revision. Otherwise clients advance only the revision here and
@@ -5250,7 +5251,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				batchPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun)
 			}
 			agentrouter.AnnotateBatchUpdate(batchPayload, textToPtr(prevIssue.AssigneeType), uuidToPtr(prevIssue.AssigneeID)) // mouse9527/multica fork (M-118)
-			h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, batchPayload)
+			h.publishWithActorTask(r, protocol.EventIssueUpdated, workspaceID, actorType, actorID, batchPayload) // mouse9527/multica fork (M-193)
 
 			// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
 			// mirrors UpdateIssue. See that handler for the rationale.
