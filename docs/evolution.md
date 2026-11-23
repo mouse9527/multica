@@ -1,8 +1,8 @@
 # 进化（Evolution）：内置系统 agent
 
-本文件属于 `mouse9527/multica` fork（M-135、M-136、M-137、M-138，设计见 M-132）。「进化」是和上游 Mika 同一机制的内置系统 agent：定期分析工作区里的对话和评论，针对 agent、工作流、团队提出改进提案，由所有者或管理员批准后再执行。
+本文件属于 `mouse9527/multica` fork（M-135、M-136、M-137、M-138、M-139，设计见 M-132）。「进化」是和上游 Mika 同一机制的内置系统 agent：定期分析工作区里的对话和评论，针对 agent、工作流、团队提出改进提案，由所有者或管理员批准后再执行。
 
-**当前阶段是 P4**：P1 的身份与一键启用、P2 的配置、游标、每日调度和数据通道、P3 的提案接口之上，所有者或管理员可以在提案 issue 上**应用**提案、再**回滚**，每次都追加一条版本记录。提案本身仍不会改动任何配置，进化 agent 也调不了 apply；效果度量（P5）在后续任务里做。
+**当前阶段是 P5**：P1 的身份与一键启用、P2 的配置、游标、每日调度和数据通道、P3 的提案接口、P4 的**应用**与**回滚**（每次追加一条版本记录）之上，定时任务在应用满一个观察窗口后**度量效果**，变差时提示所有者回滚，但**从不自动回滚**。提案本身仍不会改动任何配置，进化 agent 也调不了 apply。
 
 ## 开关
 
@@ -65,8 +65,11 @@
 | `max_proposals_per_run`（一次运行最多新开几条提案；合并到已有提案不计） | 5 | 1–20 |
 | `min_evidence_count`（一条提案至少要几个独立来源：不同 issue 或不同会话） | 2 | 1–10 |
 | `rejected_cooldown_days`（同一提案被取消后多少天内不再提） | 30 | 1–365 |
+| `effect_window_days`（应用后观察几天，和应用前同样天数比较） | 7 | 1–30 |
+| `regression_threshold_percent`（指标比应用前差多少算变差） | 20 | 5–200 |
+| `min_effect_sample`（前后每个窗口至少几次运行 / 几个 issue 才下结论） | 5 | 1–100 |
 
-P3 的三项设置页暂不展示，用 `PUT /api/evolution/config` 修改；设置页保存时原样带回这三项；请求里不带或为 0 时取默认值。
+P3、P5 的这几项设置页暂不展示，用 `PUT /api/evolution/config` 修改；设置页保存时原样带回；请求里不带或为 0 时取默认值。
 
 `workspace.settings` 也能经上游的工作区更新接口整块写入，所以读取时一律按上限夹紧，写入时超限直接拒绝。
 
@@ -198,6 +201,33 @@ P4 起，新建提案时服务端同时在 `evolution_proposal` 表里存下这�
 - **两处状态码不精确。** 加载提案之后、加锁之前，如果提案 issue 被删掉，返回 500 而不是 404；目标工作流存的 `steps` 本身是坏 JSON 时，返回 500 而不是 422。都是极端情况，什么都不会写入。
 - **提案 issue 删除后，`evolution_proposal` 里的行不会回收。** 这些行只在删除工作区时一起清掉。孤立的行读不到，也不再用到，只占空间。
 
+## 效果度量（P5）
+
+定时任务 `evolution_tick` 每次运行时，对每条**应用满 `effect_window_days` 天、还没度量过**的 apply（每个工作区每次最多 20 条），比较同一目标在应用前后两个等长窗口里的指标，写一行 `evolution_effect`（迁移 `9021_evolution_effect`：只新增这一张表，DO 块建表，含 down，无外键，随工作区删除清理）。每条 apply 只度量一次。定时分析关闭（`enabled=false`）时照样度量：已应用的改动变差了，所有者仍应知道。
+
+**指标**（全部越低越好；某个窗口算不出的指标不参与比较）：
+
+| 目标 | 样本 | 比较的指标 | 绝对差下限 |
+|---|---|---|---|
+| agent | 窗口内排队、已结束（`completed` / `failed`）的运行数 | 运行失败率（`failed` 占比）；重试率（`attempt > 1` 占比）；平均运行时长（`completed` 的 `completed_at − started_at`） | 5 个百分点；5 个百分点；60 秒 |
+| workflow | 窗口内状态有变化、所在项目用这个工作流的 issue 数（默认工作流也算没设工作流的项目；项目外的 issue 不算） | 每个 issue 被退回次数；各步平均停留时长 | 0.1 次；1 小时 |
+
+- **被退回**的定义：issue 从某一步移到**这一步的 `back_status_key`**（工作流里「Needs changes」命令的去向）。人手动移到同一个状态也算；移到别的状态不算（比如从「待你决定」到「执行」）。按各窗口当时的 `steps`（版本行里的前后快照）判断；工作流没有任何一步设置退回去向时不度量这一项。
+- **停留时长**：每次状态变化到上一次状态变化（或 issue 创建）的时间；停在 backlog、done、cancelled 分类的时间不算。每一步的平均停留也记在 `metrics_*` 里（`step_dwell_hours.<状态>`）供人看，不参与判断。
+- 只读 `agent_task_queue` 的状态和时间戳、`activity_log` 的状态变更，不读运行日志、`task_message`、工具调用。工作流的统计包括私有项目里的 issue，但只出现在聚合数字里。
+
+**结论**（`verdict`）：
+
+1. 应用后窗口内同一目标又被进化改过（apply 或回滚）：`not_measured`，`reason` 写原因，不比较。
+2. 前后任一窗口的样本低于 `min_effect_sample`：`insufficient_data`，**不下结论**。
+   每项指标还要用**它自己的有效样本**再过一次下限，不够的那项不参与比较：失败率、重试率的样本是已结束的运行数，平均时长的样本是有时间戳的 `completed` 运行数，退回次数的样本是有状态变化的 issue 数，停留时长的样本是有计入停留的 issue 数。例如前后各 10 次运行、各 9 次失败时，平均时长只基于 1 次运行，不比较。没有一项指标够样本时也是 `insufficient_data`。各项样本数记在 `metrics_*` 的 `sample.<指标>` 里。
+3. 任一（够样本的）指标比应用前差超过 `regression_threshold_percent`（相对值）且超过绝对差下限：`regressed`。
+4. 有指标变好、没有变差：`improved`；否则 `unchanged`。
+
+结论同时写进提案 issue 的扁平键 `evolution_effect`，便于过滤。
+
+**变差时**（`regressed`，且这次 apply 还没被回滚）：同一个事务里，以进化 agent 的身份在提案 issue 上留一条「建议回滚」评论（列出变差的指标前后值和样本数，按 agent 启用时的语言），并给工作区每位所有者（`role=owner`）发一条 `evolution_regression` 收件箱通知（`attention`，指向提案 issue）；`evolution_effect.notified=true`。**不自动回滚**：是否回滚由人点提案上的「回滚」。前后对比排除不了同期其他改动的影响，结论只作参考，评论里也这样写。
+
 ## 前端
 
 设置 → 工作区 →「进化」（只在 `evolution_v1` 打开时出现，标记为管理员页）。所有者和管理员选 runtime（和可选的模型）后点「启用进化」；已启用时显示 agent 并链接到它的详情页；普通成员只看到「请联系所有者或管理员启用」。
@@ -214,6 +244,6 @@ P4：提案 issue 的侧栏属性里多一行「提案」：显示未应用 / �
 
 ## 上游触点
 
-见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。P4 没有新增上游文件：在已是触点的 `issue-detail.tsx` 里，紧挨 M-194 的两处 fork 行（导入块后的 fork 导入、侧栏属性里的 Super Agent 行）各加一行，不新增独立冲突块；后端路由仍在 fork 文件 `evolution_agent.go`，`workspace_delete_manifest_test.go` 在 P2 那块里登记两张新表。迁移 `9020_evolution_apply`（两张新表，DO 块建表，含 down）。P3 没有新的上游触点：路由加在 fork 文件 `evolution_agent.go` 的 `MountEvolution` 里，其余都是 fork 新文件。P2 没有新的上游文件，在已有 fork 改动的 3 个上游文件上各追加一块：`main.go` 一行注册定时任务（紧挨 `agentrouter.Register`）；`workspace.go` 的删除步骤（紧挨 Router 那块）；`workspace_delete_manifest_test.go` 登记两张新表。前端没有新的上游触点（只改 fork 自己的文件）。
+见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。P5 没有新的上游触点：度量挂在 fork 文件 `internal/evolution/job.go` 的定时任务里，`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9021_evolution_effect`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认三个配置项。P4 没有新增上游文件：在已是触点的 `issue-detail.tsx` 里，紧挨 M-194 的两处 fork 行（导入块后的 fork 导入、侧栏属性里的 Super Agent 行）各加一行，不新增独立冲突块；后端路由仍在 fork 文件 `evolution_agent.go`，`workspace_delete_manifest_test.go` 在 P2 那块里登记两张新表。迁移 `9020_evolution_apply`（两张新表，DO 块建表，含 down）。P3 没有新的上游触点：路由加在 fork 文件 `evolution_agent.go` 的 `MountEvolution` 里，其余都是 fork 新文件。P2 没有新的上游文件，在已有 fork 改动的 3 个上游文件上各追加一块：`main.go` 一行注册定时任务（紧挨 `agentrouter.Register`）；`workspace.go` 的删除步骤（紧挨 Router 那块）；`workspace_delete_manifest_test.go` 登记两张新表。前端没有新的上游触点（只改 fork 自己的文件）。
 
 P1：后端 5 个上游文件各 1 块：`daemon.go` 拼接提示词、`mika_agent.go` 的 `systemInstructionsFor` 展示提示词（两处都调用 fork 的 `service.ComposeForkSystemInstructions` / `ForkSystemInstructions`，以后新增 fork 系统 agent 不用再改这两个文件）、`builtin_skills.go` 的技能映射、`router.go` 挂载路由、`keys.go` 发布开关。前端 11 个上游文件：`package.json` 导出、设置页 3 块、i18n 类型和 8 个语言入口各 2 块，除设置页工作区分组那一处外都紧挨着 Router 已有的 fork 行。

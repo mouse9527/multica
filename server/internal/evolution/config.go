@@ -1,5 +1,5 @@
 // Added by the mouse9527/multica fork: Evolution P2, configuration (M-136);
-// P3 proposal bounds (M-137).
+// P3 proposal bounds (M-137); P5 effect measurement (M-139).
 
 package evolution
 
@@ -51,6 +51,19 @@ const (
 	MaxRejectedCooldownDays     = 365
 	DefaultRejectedCooldownDays = 30
 
+	// P5 (M-139): effect measurement.
+	MinEffectWindowDays     = 1
+	MaxEffectWindowDays     = 30
+	DefaultEffectWindowDays = 7
+
+	MinRegressionThresholdPercent     = 5
+	MaxRegressionThresholdPercent     = 200
+	DefaultRegressionThresholdPercent = 20
+
+	MinEffectSampleLowerBound = 1
+	MaxEffectSampleLowerBound = 100
+	DefaultMinEffectSample    = 5
+
 	DefaultScheduleTime     = "03:00"
 	DefaultScheduleTimezone = "Asia/Shanghai"
 )
@@ -87,6 +100,18 @@ type Config struct {
 	// RejectedCooldownDays: a proposal like one an owner cancelled within
 	// this many days is not filed again.
 	RejectedCooldownDays int `json:"rejected_cooldown_days"`
+
+	// P5 (M-139). As with the P3 fields, missing or zero means the default.
+
+	// EffectWindowDays is how long after an apply its effect is measured,
+	// against the same length of time before it.
+	EffectWindowDays int `json:"effect_window_days"`
+	// RegressionThresholdPercent is how much worse a metric must get, relative
+	// to before the apply, to count as a regression.
+	RegressionThresholdPercent int `json:"regression_threshold_percent"`
+	// MinEffectSample is the fewest runs (agent) or issues (workflow) each
+	// window needs before a verdict is drawn.
+	MinEffectSample int `json:"min_effect_sample"`
 }
 
 // Schedule is when the daily analysis starts: at Time in Timezone, every
@@ -123,6 +148,10 @@ func DefaultConfig() Config {
 		MaxProposalsPerRun:   DefaultProposalsPerRun,
 		MinEvidenceCount:     DefaultMinEvidence,
 		RejectedCooldownDays: DefaultRejectedCooldownDays,
+
+		EffectWindowDays:           DefaultEffectWindowDays,
+		RegressionThresholdPercent: DefaultRegressionThresholdPercent,
+		MinEffectSample:            DefaultMinEffectSample,
 	}
 }
 
@@ -137,6 +166,10 @@ type Limits struct {
 	ProposalsPerRun      [2]int `json:"proposals_per_run"`
 	MinEvidenceCount     [2]int `json:"min_evidence_count"`
 	RejectedCooldownDays [2]int `json:"rejected_cooldown_days"`
+
+	EffectWindowDays           [2]int `json:"effect_window_days"`
+	RegressionThresholdPercent [2]int `json:"regression_threshold_percent"`
+	MinEffectSample            [2]int `json:"min_effect_sample"`
 }
 
 func CurrentLimits() Limits {
@@ -150,6 +183,10 @@ func CurrentLimits() Limits {
 		ProposalsPerRun:      [2]int{MinProposalsPerRun, MaxProposalsPerRun},
 		MinEvidenceCount:     [2]int{MinEvidenceLowerBound, MaxEvidenceLowerBound},
 		RejectedCooldownDays: [2]int{MinRejectedCooldownDays, MaxRejectedCooldownDays},
+
+		EffectWindowDays:           [2]int{MinEffectWindowDays, MaxEffectWindowDays},
+		RegressionThresholdPercent: [2]int{MinRegressionThresholdPercent, MaxRegressionThresholdPercent},
+		MinEffectSample:            [2]int{MinEffectSampleLowerBound, MaxEffectSampleLowerBound},
 	}
 }
 
@@ -186,6 +223,9 @@ func (c Config) clamped() Config {
 	c.MaxProposalsPerRun = clampInt(c.MaxProposalsPerRun, MinProposalsPerRun, MaxProposalsPerRun)
 	c.MinEvidenceCount = clampInt(c.MinEvidenceCount, MinEvidenceLowerBound, MaxEvidenceLowerBound)
 	c.RejectedCooldownDays = clampInt(c.RejectedCooldownDays, MinRejectedCooldownDays, MaxRejectedCooldownDays)
+	c.EffectWindowDays = clampInt(c.EffectWindowDays, MinEffectWindowDays, MaxEffectWindowDays)
+	c.RegressionThresholdPercent = clampInt(c.RegressionThresholdPercent, MinRegressionThresholdPercent, MaxRegressionThresholdPercent)
+	c.MinEffectSample = clampInt(c.MinEffectSample, MinEffectSampleLowerBound, MaxEffectSampleLowerBound)
 	if !scheduleTimePattern.MatchString(c.Schedule.Time) {
 		c.Schedule.Time = d.Schedule.Time
 	}
@@ -213,8 +253,8 @@ func invalidf(format string, args ...any) error {
 	return &InvalidConfigError{Message: fmt.Sprintf(format, args...)}
 }
 
-// withProposalDefaults fills the P3 fields a client left out (zero) with
-// their defaults, so a settings page that predates them keeps working.
+// withProposalDefaults fills the P3 and P5 fields a client left out (zero)
+// with their defaults, so a settings page that predates them keeps working.
 func (c Config) withProposalDefaults() Config {
 	if c.MaxProposalsPerRun == 0 {
 		c.MaxProposalsPerRun = DefaultProposalsPerRun
@@ -225,11 +265,21 @@ func (c Config) withProposalDefaults() Config {
 	if c.RejectedCooldownDays == 0 {
 		c.RejectedCooldownDays = DefaultRejectedCooldownDays
 	}
+	if c.EffectWindowDays == 0 {
+		c.EffectWindowDays = DefaultEffectWindowDays
+	}
+	if c.RegressionThresholdPercent == 0 {
+		c.RegressionThresholdPercent = DefaultRegressionThresholdPercent
+	}
+	if c.MinEffectSample == 0 {
+		c.MinEffectSample = DefaultMinEffectSample
+	}
 	return c
 }
 
 // Validate rejects a configuration a client sent that is outside the bounds.
-// It returns a client-facing message. Zero P3 fields mean their defaults.
+// It returns a client-facing message. Zero P3 and P5 fields mean their
+// defaults.
 func (c Config) Validate() error {
 	c = c.withProposalDefaults()
 	if c.MaxProposalsPerRun < MinProposalsPerRun || c.MaxProposalsPerRun > MaxProposalsPerRun {
@@ -240,6 +290,15 @@ func (c Config) Validate() error {
 	}
 	if c.RejectedCooldownDays < MinRejectedCooldownDays || c.RejectedCooldownDays > MaxRejectedCooldownDays {
 		return invalidf("rejected_cooldown_days must be between %d and %d", MinRejectedCooldownDays, MaxRejectedCooldownDays)
+	}
+	if c.EffectWindowDays < MinEffectWindowDays || c.EffectWindowDays > MaxEffectWindowDays {
+		return invalidf("effect_window_days must be between %d and %d", MinEffectWindowDays, MaxEffectWindowDays)
+	}
+	if c.RegressionThresholdPercent < MinRegressionThresholdPercent || c.RegressionThresholdPercent > MaxRegressionThresholdPercent {
+		return invalidf("regression_threshold_percent must be between %d and %d", MinRegressionThresholdPercent, MaxRegressionThresholdPercent)
+	}
+	if c.MinEffectSample < MinEffectSampleLowerBound || c.MinEffectSample > MaxEffectSampleLowerBound {
+		return invalidf("min_effect_sample must be between %d and %d", MinEffectSampleLowerBound, MaxEffectSampleLowerBound)
 	}
 	if c.MaxItemsPerWindow < MinItemsPerWindow || c.MaxItemsPerWindow > MaxItemsPerWindow {
 		return invalidf("max_items_per_window must be between %d and %d", MinItemsPerWindow, MaxItemsPerWindow)

@@ -1,5 +1,5 @@
 // Added by the mouse9527/multica fork: Evolution P4, apply and rollback
-// (M-138).
+// (M-138); version reads shared with P5 (M-139).
 
 package evolution
 
@@ -227,13 +227,19 @@ type Version struct {
 
 // ProposalVersions lists the version rows a proposal wrote, oldest first.
 func ProposalVersions(ctx context.Context, q Querier, workspaceID, issueID string) ([]Version, error) {
+	return queryVersions(ctx, q, `
+		WHERE workspace_id = $1::uuid AND proposal_issue_id = $2::uuid
+		ORDER BY version, created_at`, workspaceID, issueID)
+}
+
+// queryVersions reads version rows; where is the query's WHERE clause and
+// everything after it.
+func queryVersions(ctx context.Context, q Querier, where string, args ...any) ([]Version, error) {
 	rows, err := q.Query(ctx, `
 		SELECT id::text, workspace_id::text, target_type, target_id::text, version, action, field,
 		       proposal_issue_id::text, COALESCE(reverted_of::text, ''), before_hash, after_hash,
 		       before_snapshot, after_snapshot, actor_id::text, created_at
-		FROM evolution_config_version
-		WHERE workspace_id = $1::uuid AND proposal_issue_id = $2::uuid
-		ORDER BY version, created_at`, workspaceID, issueID)
+		FROM evolution_config_version `+where, args...)
 	if err != nil {
 		return nil, err
 	}

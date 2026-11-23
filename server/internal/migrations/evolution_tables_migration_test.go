@@ -1,4 +1,5 @@
-// Added by the mouse9527/multica fork: Evolution P2 (M-136), P4 (M-138).
+// Added by the mouse9527/multica fork: Evolution P2 (M-136), P4 (M-138), P5
+// (M-139).
 
 package migrations
 
@@ -10,7 +11,7 @@ import (
 	"testing"
 )
 
-var evolutionTables = []string{"evolution_cursor", "evolution_run", "evolution_proposal", "evolution_config_version"}
+var evolutionTables = []string{"evolution_cursor", "evolution_run", "evolution_proposal", "evolution_config_version", "evolution_effect"}
 
 // TestEvolutionTablesMigrationRoundTrip: tables on up, re-runnable up,
 // nothing left on down, and up again after a rollback.
@@ -19,23 +20,31 @@ func TestEvolutionTablesMigrationRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	pool := newGithubIssueSandbox(t, schema)
 
-	up := []string{"9019_evolution_tables.up.sql", "9020_evolution_apply.up.sql"}
-	down := []string{"9020_evolution_apply.down.sql", "9019_evolution_tables.down.sql"}
+	up := []string{"9019_evolution_tables.up.sql", "9020_evolution_apply.up.sql", "9021_evolution_effect.up.sql"}
+	down := []string{"9021_evolution_effect.down.sql", "9020_evolution_apply.down.sql", "9019_evolution_tables.down.sql"}
 	for round := 1; round <= 2; round++ {
 		applyGithubIssueMigrations(t, ctx, pool, up)
 		if got := sandboxRelationCount(t, ctx, pool, schema, evolutionTables); got != len(evolutionTables) {
 			t.Fatalf("round %d up: %d of %d tables exist", round, got, len(evolutionTables))
 		}
 		applyGithubIssueMigrations(t, ctx, pool, up)
-		// Rolling back P4 alone leaves P2's tables in place.
+		// Rolling back P5 alone leaves P2's and P4's tables in place.
 		applyGithubIssueMigrations(t, ctx, pool, down[:1])
+		if got := sandboxRelationCount(t, ctx, pool, schema, evolutionTables[:4]); got != 4 {
+			t.Fatalf("round %d: rolling back 9021 removed earlier tables (%d of 4 left)", round, got)
+		}
+		if got := sandboxRelationCount(t, ctx, pool, schema, evolutionTables[4:]); got != 0 {
+			t.Fatalf("round %d: rolling back 9021 left the P5 table", round)
+		}
+		// Rolling back P4 alone leaves P2's tables in place.
+		applyGithubIssueMigrations(t, ctx, pool, down[1:2])
 		if got := sandboxRelationCount(t, ctx, pool, schema, evolutionTables[:2]); got != 2 {
 			t.Fatalf("round %d: rolling back 9020 removed P2 tables (%d of 2 left)", round, got)
 		}
 		if got := sandboxRelationCount(t, ctx, pool, schema, evolutionTables[2:]); got != 0 {
 			t.Fatalf("round %d: rolling back 9020 left %d P4 tables", round, got)
 		}
-		applyGithubIssueMigrations(t, ctx, pool, down[1:])
+		applyGithubIssueMigrations(t, ctx, pool, down[2:])
 		if got := sandboxRelationCount(t, ctx, pool, schema, evolutionTables); got != 0 {
 			t.Fatalf("round %d down: %d tables left behind", round, got)
 		}
