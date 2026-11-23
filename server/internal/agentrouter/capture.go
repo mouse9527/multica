@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S1 (M-85).
+// Modified for the mouse9527/multica fork: Router MVP, slice S1 (M-85), and own actions by run (M-193).
 
 package agentrouter
 
@@ -90,6 +90,9 @@ type trigger struct {
 	taskID    string
 	actorType string
 	actorID   string
+	// actorTaskID is the run the actor acted from, when the publisher knew
+	// it (M-193).
+	actorTaskID string
 	// issueState is the issue as the publisher saw it, for issue events.
 	issueState *payloadIssue
 }
@@ -208,6 +211,9 @@ func parseTrigger(e events.Event) (trigger, bool) {
 	t := trigger{eventType: e.Type}
 	if _, err := uuid.Parse(e.ActorID); err == nil && e.ActorType != "" {
 		t.actorType, t.actorID = e.ActorType, e.ActorID
+		if _, err := uuid.Parse(e.ActorTaskID); err == nil {
+			t.actorTaskID = e.ActorTaskID
+		}
 	}
 	switch e.Type {
 	case protocol.EventIssueCreated, protocol.EventIssueUpdated:
@@ -312,6 +318,9 @@ type pendingEvent struct {
 	ActorID    *string
 	Payload    map[string]any
 	OccurredAt time.Time
+	// TaskID is the run the actor acted from; nil when unknown. It decides
+	// whether an action of the subscribed agent is the Super Agent's own.
+	TaskID *string
 }
 
 func (c *Capturer) capture(ctx context.Context, workspaceID string, subs []scopeSub, t trigger) error {
@@ -322,12 +331,13 @@ func (c *Capturer) capture(ctx context.Context, workspaceID string, subs []scope
 		AuthorID   string
 		ParentID   *string
 		CreatedAt  time.Time
+		SourceTask *string
 	}
 	if t.commentID != "" {
 		err := q.QueryRow(ctx, `
-			SELECT issue_id::text, author_type, author_id::text, parent_id::text, created_at
+			SELECT issue_id::text, author_type, author_id::text, parent_id::text, created_at, source_task_id::text
 			FROM comment WHERE id = $1::uuid AND workspace_id = $2::uuid`, t.commentID, workspaceID,
-		).Scan(&comment.IssueID, &comment.AuthorType, &comment.AuthorID, &comment.ParentID, &comment.CreatedAt)
+		).Scan(&comment.IssueID, &comment.AuthorType, &comment.AuthorID, &comment.ParentID, &comment.CreatedAt, &comment.SourceTask)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -392,9 +402,10 @@ func (c *Capturer) capture(ctx context.Context, workspaceID string, subs []scope
 			evs = append(evs, pendingEvent{
 				Key: commentKey(t.commentID), Kind: KindCommentCreated, IssueID: issue.ID,
 				ActorType: &at, ActorID: &aid, Payload: payload, OccurredAt: comment.CreatedAt,
+				TaskID: comment.SourceTask,
 			})
 		case t.taskID != "":
-			at, aid := "agent", task.AgentID
+			at, aid, tid := "agent", task.AgentID, t.taskID
 			payload := map[string]any{"task_id": t.taskID}
 			if task.FailureReason != nil {
 				payload["failure_reason"] = *task.FailureReason
@@ -406,15 +417,21 @@ func (c *Capturer) capture(ctx context.Context, workspaceID string, subs []scope
 			evs = append(evs, pendingEvent{
 				Key: taskFailedKey(t.taskID), Kind: KindTaskFailed, IssueID: issue.ID,
 				ActorType: &at, ActorID: &aid, Payload: payload, OccurredAt: occurred,
+				TaskID: &tid,
 			})
 		}
 
 		issueTriggered := t.eventType == protocol.EventIssueCreated || t.eventType == protocol.EventIssueUpdated
 		if t.eventType == protocol.EventIssueCreated {
 			ct, cid := issue.CreatorType, issue.CreatorID
+			var creatorTask *string
+			if t.actorTaskID != "" && t.actorType == ct && t.actorID == cid {
+				creatorTask = &t.actorTaskID
+			}
 			evs = append(evs, pendingEvent{
 				Key: issueCreatedKey(issue.ID), Kind: KindIssueCreated, IssueID: issue.ID,
 				ActorType: &ct, ActorID: &cid, Payload: map[string]any{}, OccurredAt: issue.CreatedAt,
+				TaskID: creatorTask,
 			})
 		}
 		levelEvents, err := recordLevel(ctx, tx, workspaceID, sub, issue.ID, levelInput{
@@ -432,15 +449,26 @@ func (c *Capturer) capture(ctx context.Context, workspaceID string, subs []scope
 	return tx.Commit(ctx)
 }
 
+// levelActor is who made a level change and the run they made it from; a nil
+// field is unknown.
+type levelActor struct {
+	Type, ID, TaskID *string
+}
+
 // attribute credits a level change to the event's actor only when the event
 // describes the state the change was found in; otherwise the actor is
 // unknown.
-func (t trigger) attribute(cur issueRow) (*string, *string) {
+func (t trigger) attribute(cur issueRow) levelActor {
 	if t.actorType == "" || t.actorID == "" || !t.issueState.describes(cur) {
-		return nil, nil
+		return levelActor{}
 	}
 	actorType, actorID := t.actorType, t.actorID
-	return &actorType, &actorID
+	a := levelActor{Type: &actorType, ID: &actorID}
+	if t.actorTaskID != "" {
+		taskID := t.actorTaskID
+		a.TaskID = &taskID
+	}
+	return a
 }
 
 type levelInput struct {
@@ -451,7 +479,7 @@ type levelInput struct {
 	update bool
 	// attribute names who made a change found under the lock; nil means
 	// unknown.
-	attribute func(issueRow) (*string, *string)
+	attribute func(issueRow) levelActor
 	// before, when set, leaves alone an issue updated at or after it.
 	before time.Time
 }
@@ -509,11 +537,11 @@ func recordLevel(ctx context.Context, tx pgx.Tx, workspaceID string, sub scopeSu
 	if !in.before.IsZero() && !issue.UpdatedAt.Before(in.before) {
 		return nil, nil
 	}
-	var actorType, actorID *string
+	var actor levelActor
 	if in.attribute != nil {
-		actorType, actorID = in.attribute(issue)
+		actor = in.attribute(issue)
 	}
-	changes := levelChanges(issue, seenStatus, seenAssigneeType, seenAssigneeID, actorType, actorID)
+	changes := levelChanges(issue, seenStatus, seenAssigneeType, seenAssigneeID, actor)
 	if len(changes) == 0 {
 		return nil, nil
 	}
@@ -525,19 +553,19 @@ func recordLevel(ctx context.Context, tx pgx.Tx, workspaceID string, sub scopeSu
 	return changes, err
 }
 
-func levelChanges(issue issueRow, seenStatus string, seenAssigneeType, seenAssigneeID *string, actorType, actorID *string) []pendingEvent {
+func levelChanges(issue issueRow, seenStatus string, seenAssigneeType, seenAssigneeID *string, actor levelActor) []pendingEvent {
 	var out []pendingEvent
 	if seenStatus != issue.Status {
 		out = append(out, pendingEvent{
 			Key: levelChangeKey(issue.ID, KindStatusChanged, issue.UpdatedAt), Kind: KindStatusChanged,
-			IssueID: issue.ID, ActorType: actorType, ActorID: actorID, OccurredAt: issue.UpdatedAt,
+			IssueID: issue.ID, ActorType: actor.Type, ActorID: actor.ID, TaskID: actor.TaskID, OccurredAt: issue.UpdatedAt,
 			Payload: map[string]any{"from": seenStatus, "to": issue.Status},
 		})
 	}
 	if !sameRef(seenAssigneeType, issue.AssigneeType) || !sameRef(seenAssigneeID, issue.AssigneeID) {
 		out = append(out, pendingEvent{
 			Key: levelChangeKey(issue.ID, KindAssigneeChanged, issue.UpdatedAt), Kind: KindAssigneeChanged,
-			IssueID: issue.ID, ActorType: actorType, ActorID: actorID, OccurredAt: issue.UpdatedAt,
+			IssueID: issue.ID, ActorType: actor.Type, ActorID: actor.ID, TaskID: actor.TaskID, OccurredAt: issue.UpdatedAt,
 			Payload: map[string]any{
 				"from": assigneeRef(seenAssigneeType, seenAssigneeID),
 				"to":   assigneeRef(issue.AssigneeType, issue.AssigneeID),
@@ -587,11 +615,13 @@ func insertEvents(ctx context.Context, tx pgx.Tx, workspaceID string, sub scopeS
 			    workspace_id, subscription_id, agent_id, event_key, kind, issue_id,
 			    actor_type, actor_id, source, is_self, payload, occurred_at
 			)
-			SELECT $1::uuid, $2::uuid, $3::uuid, $4, $5, $6::uuid, $7, $8::uuid, $9, $10, $11, $12
+			SELECT $1::uuid, $2::uuid, $3::uuid, $4, $5, $6::uuid, $7, $8::uuid, $9,
+			       $10 AND `+ownRunSQL("$2::uuid", "$3::uuid", "$13::uuid")+`, $11, $12
 			WHERE EXISTS (SELECT 1 FROM router_subscription WHERE id = $2::uuid AND enabled)
 			ON CONFLICT (agent_id, event_key) DO NOTHING`,
 			workspaceID, sub.ID, sub.AgentID, ev.Key, ev.Kind, ev.IssueID,
-			ev.ActorType, ev.ActorID, source, isSelf(ev.ActorType, ev.ActorID, sub.AgentID), payload, ev.OccurredAt)
+			ev.ActorType, ev.ActorID, source, actedAsAgent(ev.ActorType, ev.ActorID, sub.AgentID), payload, ev.OccurredAt,
+			ev.TaskID)
 		if err != nil {
 			return inserted, err
 		}

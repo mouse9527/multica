@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S1 (M-85).
+// Modified for the mouse9527/multica fork: Router MVP, slice S1 (M-85), and own actions by run (M-193).
 
 package agentrouter
 
@@ -130,8 +130,15 @@ type edgeKind struct {
 	ts    string // the event time the window and keyset order by
 	item  string // the source row id, breaking ties within ts
 	// cols yields event_key, kind, issue_id, actor_type, actor_id, is_self,
-	// payload, occurred_at.
+	// payload, occurred_at. is_self is computed by reconcileSelfSQL.
 	cols string
+}
+
+// reconcileSelfSQL is is_self for an edge row: the subscribed agent acted, from
+// one of the Super Agent's own runs (ownRunSQL). taskID is the run the row
+// came from, NULL when the row does not record it.
+func reconcileSelfSQL(actedAsAgent, taskID string) string {
+	return "(" + actedAsAgent + " AND " + ownRunSQL("m.sub_id", "m.agent_id", taskID) + ") AS is_self"
 }
 
 var edgeKinds = []edgeKind{
@@ -140,7 +147,7 @@ var edgeKinds = []edgeKind{
 		join: "JOIN issue i ON i.id = m.issue_id", ts: "i.created_at", item: "i.id",
 		cols: `'issue:' || i.id::text || ':created' AS event_key, 'issue_created'::text AS kind,
 		       i.id AS issue_id, i.creator_type AS actor_type, i.creator_id AS actor_id,
-		       (i.creator_type = 'agent' AND i.creator_id = m.agent_id) AS is_self,
+		       ` + reconcileSelfSQL("i.creator_type = 'agent' AND i.creator_id = m.agent_id", "NULL::uuid") + `,
 		       '{}'::jsonb AS payload, i.created_at AS occurred_at`,
 	},
 	{
@@ -149,7 +156,7 @@ var edgeKinds = []edgeKind{
 		ts: "c.created_at", item: "c.id",
 		cols: `'comment:' || c.id::text AS event_key, 'comment_created'::text AS kind,
 		       c.issue_id AS issue_id, c.author_type AS actor_type, c.author_id AS actor_id,
-		       (c.author_type = 'agent' AND c.author_id = m.agent_id) AS is_self,
+		       ` + reconcileSelfSQL("c.author_type = 'agent' AND c.author_id = m.agent_id", "c.source_task_id") + `,
 		       jsonb_strip_nulls(jsonb_build_object('comment_id', c.id::text, 'parent_id', c.parent_id::text)) AS payload,
 		       c.created_at AS occurred_at`,
 	},
@@ -165,7 +172,7 @@ var edgeKinds = []edgeKind{
 		ts: "t.completed_at", item: "t.id",
 		cols: `'task:' || t.id::text || ':failed' AS event_key, 'task_failed'::text AS kind,
 		       t.issue_id AS issue_id, 'agent'::text AS actor_type, t.agent_id AS actor_id,
-		       t.agent_id = m.agent_id AS is_self,
+		       ` + reconcileSelfSQL("t.agent_id = m.agent_id", "t.id") + `,
 		       jsonb_strip_nulls(jsonb_build_object('task_id', t.id::text, 'failure_reason', t.failure_reason)) AS payload,
 		       t.completed_at AS occurred_at`,
 	},

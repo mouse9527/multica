@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router v6, slice 2 (M-97).
+// Modified for the mouse9527/multica fork: Router v6, slice 2 (M-97), and own actions by run (M-193).
 
 package agentrouter
 
@@ -34,6 +34,8 @@ func (e *env) shadowHold() *HoldShadow {
 
 type inboxWrite struct {
 	recipient, issue, typ, actorType, actorID string
+	// details is the item's details JSON; empty writes {"k":"v"}.
+	details string
 }
 
 // writeInbox writes one inbox item through CreateAndAnnounce and returns its
@@ -44,6 +46,9 @@ func (e *env) writeInbox(w inboxWrite) string {
 		ID: dbid.NewV7(), WorkspaceID: util.MustParseUUID(e.ws), RecipientType: "member",
 		RecipientID: util.MustParseUUID(w.recipient), Type: w.typ, Severity: "info", Title: "item " + w.typ,
 		Details: []byte(`{"k":"v"}`),
+	}
+	if w.details != "" {
+		p.Details = []byte(w.details)
 	}
 	if w.issue != "" {
 		p.IssueID = util.MustParseUUID(w.issue)
