@@ -392,7 +392,7 @@ Daemon behavior is configured via flags or environment variables:
 | Device name | `--device-name` | `MULTICA_DAEMON_DEVICE_NAME` | hostname |
 | Runtime name | `--runtime-name` | `MULTICA_AGENT_RUNTIME_NAME` | `Local Agent` |
 | Workspaces root | — | `MULTICA_WORKSPACES_ROOT` | `~/multica_workspaces` |
-| Blobless repo caches | — | `MULTICA_REPO_CACHE_BLOBLESS` | unset (full clones). Comma-separated repository URLs, or `*`: new caches for them are cloned without file contents (`--filter=blob:none`). A blobless cache downloads the files a checkout needs (and the default branch's after each sync) in the background; a checkout waits up to 3 minutes for them, then gets a "still being downloaded" error and can retry. Existing caches keep their kind |
+| Blobless repo caches | — | `MULTICA_REPO_CACHE_BLOBLESS` | unset (full clones). Comma-separated repository URLs, or `*`: new caches for them are cloned without file contents (`--filter=blob:none`) and are usable as soon as that clone is done. A blobless cache downloads the files a checkout needs (the default branch's right after the clone and after each sync) in the background; a checkout waits for them up to 3 minutes, and at most 4 minutes together with a cache build, then gets a "still being downloaded" error and can retry. Existing caches keep their kind |
 | Repo cache build limit | — | `MULTICA_REPO_CACHE_CLONE_TIMEOUT` | `2h`. Total time a cache clone may take; it runs in the background, so a `multica repo checkout` that waits longer than 4 minutes gets a "still being built" error and can retry. A transfer below 1 KB/s for 5 minutes is aborted as stalled |
 | GC enabled | — | `MULTICA_GC_ENABLED` | `true` (set `false`/`0` to disable) |
 | GC scan interval | — | `MULTICA_GC_INTERVAL` | `2h` |
@@ -406,6 +406,8 @@ Daemon behavior is configured via flags or environment variables:
 | GC Hermes memory TTL (per-agent `memories/`) | — | `MULTICA_GC_HERMES_MEMORY_TTL` | `2160h` (90d; set `0` to disable) |
 | GC Hermes session TTL (per-conversation `state.db`) | — | `MULTICA_GC_HERMES_SESSION_TTL` | `336h` (14d; set `0` to disable) |
 | GC task temp legacy TTL (pre-lock `multica-task-*`) | — | `MULTICA_GC_TASK_TEMP_LEGACY_TTL` | `0` (disabled; set a duration to opt in) |
+
+On a case-insensitive filesystem (macOS, Windows) a repository cannot cache two branches whose names differ only in letter case, such as `feature/Dup` and `feature/dup`. The daemon keeps one of them, logs the other as skipped, and the cache stays usable. Checking out the skipped name resolves to the kept branch, so you get that branch's commit. To use both, rename one of the pair on the remote.
 
 #### Workspace garbage collection
 

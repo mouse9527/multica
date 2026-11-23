@@ -5,12 +5,16 @@ package daemon
 import (
 	"context"
 	"time"
+
+	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 )
 
-// repoCacheBuildWaitBudget is how long a checkout request waits for a missing
-// cache. `multica repo checkout` gives the whole request 5 minutes; answering
-// before that lets the agent see why instead of a client timeout, and the
-// build keeps running for the retry.
+// repoCacheBuildWaitBudget is how long a checkout request waits, in total,
+// for work the cache runs in the background: a missing cache's build, then a
+// blobless cache's file download (the request sets it as the shared deadline
+// with repocache.WithWaitDeadline). `multica repo checkout` gives the whole
+// request 5 minutes; answering before that lets the agent see why instead of
+// a client timeout, and the work keeps running for the retry.
 var repoCacheBuildWaitBudget = 4 * time.Minute
 
 type repoCacheBuilder interface {
@@ -25,7 +29,7 @@ func (d *Daemon) buildRepoCacheContext(ctx context.Context, workspaceID, repoURL
 	if !ok {
 		return d.syncWorkspaceReposContext(ctx, workspaceID, repos)
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, repoCacheBuildWaitBudget)
+	waitCtx, cancel := repocache.WaitContext(ctx, repoCacheBuildWaitBudget)
 	defer cancel()
 	err := builder.BuildContext(waitCtx, workspaceID, repoURL)
 	if err != nil && ctx.Err() == nil {
