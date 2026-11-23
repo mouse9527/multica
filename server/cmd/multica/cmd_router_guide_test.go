@@ -1,4 +1,4 @@
-// Added by the mouse9527/multica fork: the Super Agent guide in the CLI (M-150), issues a Super Agent creates (M-175), and quiet batch replies (M-210).
+// Added by the mouse9527/multica fork: the Super Agent guide in the CLI (M-150), issues a Super Agent creates (M-175), quiet batch replies (M-210), the reply format (M-206), and wakeups on issues in scope (M-208).
 
 package main
 
@@ -78,6 +78,10 @@ func TestRouterGuideSplitsChatWakeupsFromBatches(t *testing.T) {
 		"这些仍然可以建 wakeup",
 		"`--at` / `--after`",
 		"`--until-pr",
+		// M-208: a timed wakeup on an issue in scope looked like a duplicate.
+		"在回复里说清是哪一类提醒",
+		"不是 M-206 的事件重复",
+		"wakeup 触发的那一轮，先读 issue 当前状态再汇报",
 		"反例",
 		"正例",
 	} {
@@ -114,6 +118,56 @@ func TestRouterGuideSaysWhetherACreatedIssueIsInScope(t *testing.T) {
 	} {
 		if !strings.Contains(section, want) {
 			t.Errorf("the created-issue section lacks %q", want)
+		}
+	}
+}
+
+// The reporting format came from one workspace's notes and the agent's memory,
+// so it was lost in another workspace; the guide now carries it for all
+// (M-206), and the decision section no longer drops the list when it is empty.
+func TestRouterGuideStatesTheReplyFormat(t *testing.T) {
+	guide := runRouterGuide(t)
+	start := strings.Index(guide, "## 每次回复的格式")
+	if start < 0 {
+		t.Fatal("`multica router guide` lacks the reply format section")
+	}
+	section := guide[start:]
+	if end := strings.Index(section[1:], "\n## "); end >= 0 {
+		section = section[:end+1]
+	}
+	for _, want := range []string{
+		"末尾单独一节「需要你处理」",
+		"目前没有",
+		"事件批次里没有新东西要告诉 Owner",
+		"不写回复（这一轮不输出文字）",
+		"只为了把旧的未结事项再列一遍也不行",
+		"包括 `[无需你处理]` 开头的静默回复",
+		"跟 Owner 用的语言走",
+		"Owner 所在时区",
+		"`…Z` 时间是 UTC",
+		"写明是哪个时区",
+		"合并了不等于修好了",
+		"已合并，未上线，线上仍会出现",
+		"把「是否部署」列进「需要你处理」",
+		"已合并，未确认是否已上线",
+		"列出**全部**未结事项",
+		"`multica notify owner`",
+		"转述前先核对",
+		"反例",
+		"正例",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("the reply format section lacks %q", want)
+		}
+	}
+	if strings.Contains(guide, "没有未结事项时，不写这一段") {
+		t.Error("the decision section still drops the list when nothing is open; it should say 目前没有")
+	}
+	// A quiet batch must not become a reason to leave open items off a reply
+	// that is sent: the owner reads only the list at the end (M-162).
+	for _, banned := range []string{"再发一遍", "等下次有话要说时一起列", "按未上线说", "默认不回复"} {
+		if strings.Contains(section, banned) {
+			t.Errorf("the reply format section still says %q", banned)
 		}
 	}
 }
@@ -165,9 +219,15 @@ func TestRouterGuideExplainsQuietBatchReplies(t *testing.T) {
 		"API Error:",
 		"反例",
 		"正例",
+		// M-206: quiet skips the alert, never the open items.
+		"末尾照样按「每次回复的格式」列出全部未结事项",
+		"静默只表示不弹通知",
 	} {
 		if !strings.Contains(section, want) {
 			t.Errorf("the quiet batch section lacks %q:\n%s", want, section)
 		}
+	}
+	if strings.Contains(section, "也不用把未结的决定事项再列一遍") {
+		t.Error("the quiet batch section still lets a quiet reply drop the open items")
 	}
 }

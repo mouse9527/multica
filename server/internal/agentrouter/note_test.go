@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), the Router's boundary (M-112), self-contained owner decisions (M-162), the chat wakeup and batch split (M-164), and what "subscribed" means (M-175).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), the Router's boundary (M-112), self-contained owner decisions (M-162), the chat wakeup and batch split (M-164), and what "subscribed" means (M-175), the reply format (M-206), and wakeups on issues in scope (M-208).
 
 package agentrouter
 
@@ -51,10 +51,20 @@ func TestBuildNote(t *testing.T) {
 	if strings.Contains(note, "comment own") || strings.Contains(note, "by agent Router") {
 		t.Error("note lists the agent's own event")
 	}
-	// 6 KiB of events plus the fixed rules (boundary, wakeup split, owner
-	// decisions, what "subscribed" means) and the in-flight and state parts.
-	if len(note) > 10*1024 {
-		t.Errorf("note is %d bytes; the event list should be capped", len(note))
+	// The event list is capped on its own; the fixed rules around it grow as
+	// rules are added, so measure only the list.
+	start := strings.Index(note, "Events, oldest first:\n")
+	if start < 0 {
+		t.Fatal("note lacks the event list header")
+	}
+	events := note[start:]
+	end := strings.Index(events, "\nOpen issues in scope")
+	if end < 0 {
+		t.Fatal("note lacks the open issues header after the event list")
+	}
+	events = events[:end]
+	if len(events) > maxNoteEventsBytes+256 {
+		t.Errorf("event list is %d bytes; it should be capped near %d", len(events), maxNoteEventsBytes)
 	}
 }
 
@@ -78,9 +88,15 @@ func TestBuildNoteStatesRouterBoundary(t *testing.T) {
 			// M-164: batches, not chat wakeups, report issues in scope.
 			"do not create a chat wakeup (`--until-*` condition or `--every` check) for an issue in scope",
 			"A chat wakeup is still fine for issues outside the scope",
+			// M-208: a wakeup on an issue in scope says what kind it is, and its turn reads current state.
+			"say in your reply what kind it is",
+			"a timed retry, not a repeat of the issue's events",
+			"In a turn a wakeup starts, read the issue's current status and latest comments before reporting",
 			// M-175: "subscribed" means a scope, not an issue subscriber.
 			"\"subscribed\" (订阅) means only a scope of this Super Agent",
 			"`multica router scope <subscription-id>`",
+			// M-206: the reply format ships with the product, not the workspace.
+			"\"每次回复的格式\" in `multica router guide`",
 		} {
 			if !strings.Contains(note, want) {
 				t.Errorf("chat=%v: note lacks %q", chat, want)
@@ -88,6 +104,74 @@ func TestBuildNoteStatesRouterBoundary(t *testing.T) {
 		}
 		if got := strings.Contains(note, "When the owner asks you something here"); got != chat {
 			t.Errorf("chat=%v: owner-question rule present=%v", chat, got)
+		}
+		// M-206: an anchor run reports through `multica notify owner`, so its body
+		// follows the reply format; a chat batch replies in the chat and must not
+		// be pointed at notify (TestChatBoundSubscriptionDispatchesIntoItsChat).
+		if got := strings.Contains(note, "Write that body as you would a reply to the owner"); got == chat {
+			t.Errorf("chat=%v: notify body format rule present=%v", chat, got)
+		}
+		if chat && strings.Contains(note, "multica notify owner") {
+			t.Error("chat batch note names `multica notify owner`")
+		}
+	}
+}
+
+// The reporting format came only from one workspace's notes and the agent's
+// memory, so a Super Agent elsewhere answered in another format (M-206). Both
+// carriers now state it.
+func TestBuildNoteStatesReplyFormat(t *testing.T) {
+	member := "member"
+	evs := []batchEvent{{ID: "1", Kind: KindCommentCreated, IssueKey: "RT-2", ActorType: &member, ActorName: "Mouse",
+		Payload: map[string]any{"comment_id": "c1"}, OccurredAt: time.Now()}}
+	for _, chat := range []bool{false, true} {
+		note := buildNote(noteInput{sub: dispatchSub{ID: "sub-1"}, batch: batch{events: evs}, anchorKey: "RT-1",
+			scopeLabel: "issue tree RT-1", now: time.Now(), chat: chat})
+		for _, want := range replyFormatRules {
+			if !strings.Contains(note, want) {
+				t.Errorf("chat=%v: note lacks %q", chat, want)
+			}
+		}
+	}
+}
+
+// replyFormatRules are the M-206 rules every Super Agent turn is told.
+var replyFormatRules = []string{
+	"in the owner's language",
+	"end it with a separate, numbered section of what needs the owner",
+	"(「需要你处理」 in Chinese)",
+	"repeat every open item each time",
+	"\"none for now\" (目前没有)",
+	"in the owner's time zone",
+	"convert the UTC (`...Z`) times",
+	"name the zone when you do not know theirs",
+	"Merged is not fixed",
+	"merged, not live, and still happens in production",
+	"list whether to deploy as an item for the owner",
+	"read its current status and latest comments",
+	"A batch with nothing new for the owner must not alert them, not even to repeat open items",
+	"every reply you do write, a quiet one included, still ends with all open items",
+	"\"每次回复的格式\" in `multica router guide`",
+}
+
+// A quiet batch reply (router_chat_quiet, M-210) only skips the alert; it
+// still ends with every open item, because the owner reads only the end of
+// the last reply (M-162). The owner chose this over dropping them (M-206).
+func TestQuietChatBatchStillListsOpenItems(t *testing.T) {
+	in := noteInput{sub: dispatchSub{ID: "sub-1"}, anchorKey: "RT-1", scopeLabel: "issue tree RT-1", now: time.Now(), chat: true, quiet: true}
+	note := buildNote(in)
+	for _, want := range []string{
+		"then end it with every open item as in any reply",
+		"Quiet means no alert, never fewer open items",
+		"a quiet one included, still ends with all open items",
+	} {
+		if !strings.Contains(note, want) {
+			t.Errorf("quiet chat batch note lacks %q:\n%s", want, note)
+		}
+	}
+	for _, banned := range []string{"does not repeat", "gets no reply"} {
+		if strings.Contains(note, banned) {
+			t.Errorf("quiet chat batch note still says %q:\n%s", banned, note)
 		}
 	}
 }
