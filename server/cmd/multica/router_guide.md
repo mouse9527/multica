@@ -109,6 +109,7 @@ Owner 回复时往往只看你回复末尾的「需要你处理」，前面的�
 | 「把这个 chat 设为 Super Agent，订阅 X 项目」 | 复述并等确认 | `multica router subscribe --project <项目ID> --anchor-chat current` |
 | 「订阅 M-12 这棵任务树」 | 复述并等确认 | `multica router subscribe --issue M-12 --anchor-chat current` |
 | 「再加一个范围：Y」 | 复述并等确认 | 同上，一个范围一条命令 |
+| 「M-30 被哪些 Super Agent 订阅了」 | — | `multica router covering M-30` |
 | 「去掉 Y 这个范围」 | 复述并等确认 | 先 `router get --chat current` 找到那条订阅的 id，再 `multica router delete <订阅ID>` |
 | 「只要状态变更和新评论」 | 复述并等确认 | `multica router update --chat current --events status_changed,comment_created` |
 | 「静默 2 分钟再合批 / 每小时超过 30 次再提醒我」 | 复述并等确认 | `multica router update --chat current --debounce 120` / `--max-runs-per-hour 30` |
@@ -133,6 +134,8 @@ Owner 回复时往往只看你回复末尾的「需要你处理」，前面的�
 - **同一个智能体的范围有重叠时，事件只进最窄的那条订阅**：离 issue 更近的树根优先，任何任务树优先于项目，同级取创建最早的。例如同一个智能体既订阅了项目、又订阅了项目里的 M-12，M-12 树里的事件只进 M-12 那个 Super Agent，项目那个收不到。不同智能体各收各的。
 - 暂停的订阅不覆盖任何 issue。
 - **自己的操作只算 Super Agent 自己那几轮运行**：这个 chat 里的每一轮（批次轮和 Owner 发起的轮都算），没绑 chat 时是派发启动的锚点运行。这些运行做的改动会记下来，但不会触发 Super Agent 运行，所以 Super Agent 不会被自己叫醒。同一个智能体在 issue 任务或别的 chat 里做的事**不算**：Super Agent 把活派给它自己的智能体时，执行者的评论、状态和负责人变化、运行失败照样进批次，和派给别的智能体一样，不用为此另建 chat wakeup。少数分不出是哪次运行做的情况（例如这个智能体的 autopilot 建的 issue），仍按自己的操作处理。
+- **想知道一个 issue 被哪些 Super Agent 覆盖**：`multica router covering <issue>`。DELIVERS 一列是 `yes` 的订阅才真正收它的事件；`no (narrower …)` 表示同一个智能体有更窄的订阅接走了。issue 详情页「详情」里的「Super Agent」一行显示的是同一份信息。
+- **不同智能体不要订阅同一批 issue**：`router subscribe` 发现新范围里的 issue 已经有别的智能体在收事件时，会拒绝并列出是哪些 Super Agent、重叠了哪些 issue。照实告诉 Owner，问清是否允许两个 Super Agent 都处理这些 issue；Owner 同意后才在原命令后加 `--allow-overlap` 重新执行。同一个智能体的范围重叠不会被拒绝（只进最窄的那条）。只在新建订阅时检查：恢复暂停的订阅、接管保留的订阅不会再检查，做这两件事前先用 `router covering` 看一眼。
 
 **Super Agent 订阅不是 issue 的通知订阅。** `multica issue subscriber list` 里的订阅者（原因如 `creator`、`assignee`、`delegated`）只决定谁在收件箱里收到这个 issue 的通知，跟 Super Agent 无关：Super Agent 收不收事件只看上面的范围，不要用 issue 订阅者来判断，也不要为了让 Super Agent 收到事件去加 issue 订阅者。
 
@@ -152,7 +155,7 @@ Owner 问「订阅父任务能不能收到子任务的事件」时，按上面�
 你新建 issue 并交给 worker 之后：
 
 1. **能挂进范围的，优先挂进去**：这件事属于某个订阅的任务树，就用 `--parent` 建成那棵树里的子任务；属于订阅的项目，就建在那个项目里。这样不用改范围，批次自动会报。
-2. **建完核对**：`multica router get --chat current --output table` 找到订阅，`multica router scope <订阅ID>` 看新 issue 在不在列表里。
+2. **看 `issue create` 的提醒**：在 Super Agent chat 里建 issue 时，服务端会检查新 issue 归不归这个 chat。不归时，命令在 stderr 打印一行以「Super Agent:」开头的提醒（JSON 输出里是 `super_agent_scope`，`in_scope` 为 false），说明是不在任何范围里，还是被这个智能体的另一个 chat 接走了。没有提醒就是在范围里。拿不准时再核对：`multica router get --chat current --output table` 找到订阅，`multica router scope <订阅ID>` 看新 issue 在不在列表里。
 3. **不在范围里，照实说**，并把「要不要加进范围」列进「需要你处理」，例如：「M-30 不在这个 Super Agent 的范围里，它的进展批次不会报。要加进来吗？加进来以后它的评论、状态和负责人变化都会在这里报给你；不加，我就不会主动跟进它。」
 4. **Owner 同意后再加**：`multica router subscribe --issue M-30 --anchor-chat current`（改范围要先确认，见「确认方式」）。加完再用 `router scope` 核对一次，然后才能说「已订阅」。
 

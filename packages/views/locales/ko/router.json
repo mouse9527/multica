@@ -119,5 +119,16 @@
     "scope_paused": "{{scope}} (일시 중지됨)",
     "paused": "일시 중지됨 ({{reasons}})",
     "separator": ", "
+  },
+  "overlap": {
+    "title": "다른 Super Agent가 이미 이 범위의 이벤트를 받고 있습니다",
+    "item": "{{scope}}: {{agent}}({{other}})가 그중 {{n}}개 태스크의 이벤트를 받고 있습니다.",
+    "examples": "예: {{issues}}.",
+    "hint": "두 Super Agent가 같은 태스크를 각각 처리하게 됩니다. 그래도 추가하려면 {{action}}을(를) 한 번 더 선택하세요."
+  },
+  "covering": {
+    "label": "Super Agent",
+    "none": "없음",
+    "superseded": "이 에이전트의 더 좁은 범위가 이벤트를 받습니다"
   }
 }

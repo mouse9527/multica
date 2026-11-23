@@ -1,20 +1,24 @@
-// Added by the mouse9527/multica fork: Router page settings (M-105) and the
-// chat list's Router marker (M-108).
+// Added by the mouse9527/multica fork: Router page settings (M-105), the
+// chat list's Router marker (M-108), and issue coverage and overlaps (M-194).
 //
 // Router endpoints (`/api/router/*`, see docs/router.md). They answer 404
 // while `router_v1` is off; the UI only calls them when `router_chat` is on.
 
-import { api, parseWithFallback } from "../api";
+import { api, ApiError, parseWithFallback } from "../api";
 import {
   RouterChatSummaryListSchema,
+  RouterCoveringListSchema,
   RouterDispatchListSchema,
+  RouterOverlapRefusalSchema,
   RouterSubscriptionChangeListSchema,
   RouterSubscriptionListSchema,
   RouterSubscriptionSchema,
 } from "./schemas";
 import type {
   RouterChatSummary,
+  RouterCovering,
   RouterDispatch,
+  RouterOverlap,
   RouterScopeInput,
   RouterSettingsInput,
   RouterSubscription,
@@ -72,15 +76,45 @@ export async function listRouterSubscriptionChanges(
   }).changes;
 }
 
+/** The subscriptions whose scope contains an issue, the ones delivering its events first. */
+export async function listRouterIssueCovering(wsId: string, issueId: string): Promise<RouterCovering[]> {
+  const raw = await api.request(`/api/router/issues/${encodeURIComponent(issueId)}/covering`, scoped(wsId));
+  return parseWithFallback(raw, RouterCoveringListSchema, { covering: [] as RouterCovering[] }, {
+    endpoint: "GET /api/router/issues/:id/covering",
+  }).covering;
+}
+
+/** A subscribe refused because other agents already receive events from the scope. */
+export class RouterScopeOverlapError extends Error {
+  constructor(readonly overlaps: RouterOverlap[]) {
+    super("other Super Agents already receive events from this scope");
+    this.name = "RouterScopeOverlapError";
+  }
+}
+
 export async function createRouterSubscription(
   wsId: string,
   input: RouterScopeInput &
-    RouterSettingsInput & { agent_id: string; anchor_chat_session_id: string; anchor_issue_id?: string },
+    RouterSettingsInput & {
+      agent_id: string;
+      anchor_chat_session_id: string;
+      anchor_issue_id?: string;
+      allow_overlap?: boolean;
+    },
 ): Promise<RouterSubscription> {
-  const raw = await api.request(
-    "/api/router/subscriptions",
-    scoped(wsId, { method: "POST", body: JSON.stringify(input) }),
-  );
+  let raw: unknown;
+  try {
+    raw = await api.request(
+      "/api/router/subscriptions",
+      scoped(wsId, { method: "POST", body: JSON.stringify(input) }),
+    );
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      const refusal = RouterOverlapRefusalSchema.safeParse(error.body);
+      if (refusal.success) throw new RouterScopeOverlapError(refusal.data.overlaps);
+    }
+    throw error;
+  }
   return parseWrite(raw, "POST /api/router/subscriptions");
 }
 

@@ -1,5 +1,5 @@
-// Added by the mouse9527/multica fork: Router page settings (M-105) and the
-// chat list's Router marker (M-108).
+// Added by the mouse9527/multica fork: Router page settings (M-105), the
+// chat list's Router marker (M-108), and issue coverage and overlaps (M-194).
 
 import { z } from "zod";
 
@@ -91,5 +91,49 @@ export const RouterChatSummaryListSchema = z.object({
       }),
     )
     .nullable()
+    .transform((v) => v ?? []),
+});
+
+export const RouterCoveringListSchema = z.object({
+  covering: z
+    .array(
+      z.object({
+        subscription_id: z.string(),
+        agent_id: z.string().default(""),
+        agent_name: z.string().default(""),
+        owner_user_id: nullableString,
+        scope_type: z.string().default(""),
+        scope_id: z.string().default(""),
+        scope_name: z.string().default(""),
+        chat_bound: z.boolean().default(false),
+        chat_session_id: nullableString,
+        chat_title: nullableString,
+        enabled: z.boolean().default(true),
+        paused_reason: nullableString,
+        effective: z.boolean().default(false),
+        superseded_by: nullableString,
+      }),
+    )
+    .nullable()
+    .transform((v) => v ?? []),
+});
+
+export const RouterOverlapRefusalSchema = z.object({
+  code: z.literal("router_scope_overlap"),
+  overlaps: z
+    .array(
+      z.object({
+        subscription_id: z.string(),
+        agent_id: z.string().default(""),
+        agent_name: z.string().default(""),
+        scope_type: z.string().default(""),
+        scope_id: z.string().default(""),
+        scope_name: z.string().default(""),
+        issue_count: z.number().default(0),
+        issues: stringList,
+      }),
+    )
+    .nullable()
+    .optional()
     .transform((v) => v ?? []),
 });

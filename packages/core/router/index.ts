@@ -1,4 +1,5 @@
-// Added by the mouse9527/multica fork: Router page settings (M-105).
+// Added by the mouse9527/multica fork: Router page settings (M-105), and
+// issue coverage and overlaps (M-194).
 
 export * from "./types";
 export {
@@ -6,8 +7,10 @@ export {
   deleteRouterSubscription,
   listRouterChats,
   listRouterDispatches,
+  listRouterIssueCovering,
   listRouterSubscriptionChanges,
   listRouterSubscriptions,
+  RouterScopeOverlapError,
   setRouterSubscriptionPaused,
   updateRouterSubscription,
 } from "./api";
@@ -24,6 +27,7 @@ export {
   ROUTER_POLL_MS,
   routerChangesOptions,
   routerChatsOptions,
+  routerIssueCoveringOptions,
   routerKeys,
   routerLastDispatchOptions,
   routerSubscriptionsOptions,
