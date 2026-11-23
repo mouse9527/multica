@@ -17,6 +17,16 @@ import type { ChatMessage } from "@multica/core/types";
 import { RichContent } from "../../rich-content";
 
 /**
+ * A Router batch, kind `router_batch`. The API schema accepts the kind, but
+ * upstream's `ChatMessageKind` union does not list it, so the fork's code
+ * asks here instead of extending that union where upstream adds its own
+ * kinds (M-141).
+ */
+export function isRouterBatch(message: ChatMessage): boolean {
+  return (message.message_kind as string | undefined) === "router_batch";
+}
+
+/**
  * Drops the `no_response` rows of Router batch turns: the reply of a turn
  * whose input is a batch, matched by the task that owns that input. A batch
  * turn is never auto-retried (the server re-dispatches a failed batch as a new
@@ -26,7 +36,7 @@ import { RichContent } from "../../rich-content";
 export function hideSilentRouterTurns(messages: ChatMessage[]): ChatMessage[] {
   const batchTasks = new Set<string>();
   for (const m of messages) {
-    if (m.message_kind === "router_batch" && m.task_id) batchTasks.add(m.task_id);
+    if (isRouterBatch(m) && m.task_id) batchTasks.add(m.task_id);
   }
   if (batchTasks.size === 0) return messages;
   return messages.filter(

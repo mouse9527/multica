@@ -18,16 +18,13 @@ export interface ChatPinnedAgent {
  *   onboarding starter cards under it instead of quick-action chips.
  * - "wakeup" — the input of a turn a chat wakeup started. Its content is
  *   withheld; chat renders a divider naming the wakeup (`wakeup_id`).
- * - "router_batch" — issue events the server wrote into a Router chat; input
- *   for the agent, not the member's words (mouse9527/multica fork, M-96).
  */
 export type ChatMessageKind =
   | "message"
   | "no_response"
   | "onboarding_kickoff"
   | "onboarding_opening"
-  | "wakeup"
-  | "router_batch";
+  | "wakeup";
 
 /**
  * A concise follow-up offered by an assistant reply. `label` is rendered in

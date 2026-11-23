@@ -35,7 +35,9 @@ import { useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { ChatWakeupHeaderButton, useChatWakeups } from "./chat-wakeups";
+
 // Modified by the mouse9527/multica fork (M-105): Router settings in the ⋯ menu.
+// Below the import block, apart from upstream's imports (M-141).
 import { useRouterChatMenu } from "../../router/use-router-chat-menu";
 
 /**
@@ -70,6 +72,9 @@ export function ChatSessionHeader({
   const setArchived = useSetChatSessionArchived();
   const setActiveSession = useChatStore((s) => s.setActiveSession);
   const wakeups = useChatWakeups(session.id);
+
+  // mouse9527/multica fork (M-105): Router settings in the ⋯ menu. A blank
+  // line below upstream's hooks, so a hook upstream appends merges (M-141).
   const router = useRouterChatMenu(session, agent);
 
   const isArchived = session.status === "archived";
