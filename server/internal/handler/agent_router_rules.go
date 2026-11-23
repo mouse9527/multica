@@ -21,13 +21,20 @@ type inboxRulesResponse struct {
 	// (router_inbox_rules on, with the shadow hold, at its start).
 	Enabled bool                          `json:"enabled"`
 	Config  *agentrouter.InboxRulesConfig `json:"config"`
-	Stats   *agentrouter.InboxRulesStats  `json:"stats"`
+	// ConfigError is why the stored rule list is off when it is there but
+	// invalid; the workspace does not classify until it is set again.
+	ConfigError string                       `json:"config_error,omitempty"`
+	Stats       *agentrouter.InboxRulesStats `json:"stats"`
 }
 
 func (h *Handler) inboxRulesState(r *http.Request, workspaceID string) (inboxRulesResponse, error) {
 	var out inboxRulesResponse
 	out.Stats, out.Enabled = agentrouter.CurrentInboxRulesStats()
 	cfg, err := agentrouter.LoadInboxRulesConfig(r.Context(), h.DB, workspaceID)
+	if errors.Is(err, agentrouter.ErrInboxRulesInvalid) {
+		out.ConfigError = err.Error()
+		return out, nil
+	}
 	if err != nil || !cfg.Active() {
 		return out, err
 	}
