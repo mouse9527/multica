@@ -96,6 +96,7 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 | `multica router delete <id>` | `DELETE /api/router/subscriptions/{id}` |
 | `multica router events [--subscription] [--since 2h\|RFC3339] [--state pending\|consumed] [--source bus\|reconcile]` | `GET /api/router/events` |
 | `multica router scope <id> [--all]` | `GET /api/router/subscriptions/{id}/scope` |
+| `multica router covering <issue>` | `GET /api/router/issues/{id}/covering`（M-194） |
 | `multica router update <id> [--anchor] [--events] [--debounce] [--max-wait] [--max-runs-per-hour]` | `PATCH /api/router/subscriptions/{id}` |
 | `multica router changes <id>` | `GET /api/router/subscriptions/{id}/changes` |
 | `multica router release --chat <current\|会话> [--keep]` | 多次 `DELETE`，或 `pause` 后 `PATCH anchor_chat_session_id=none` |
@@ -374,6 +375,14 @@ Super Agent 的使用说明不再作为 skill 维护（手工导入的 skill 不
 
 - 前端：`packages/core/router/`（API、zod 校验、查询与变更、分组）；`packages/views/router/`（对话框、范围选择、列表页、两个挂载钩子）；文案在 `packages/views/locales/*/router.json`。
 - 上游触点：`packages/core/package.json` 导出 `./router`（API 调用用上游 `cd969f848` 起提供的 `ApiClient.request`，原先 fork 加在 `client.ts` 的 `forkRequest` 已在 M-131 同步时去掉），`chat-session-header.tsx` 与 `settings-page.tsx` 各加一个挂载钩子，8 个语言入口和 `resources-types.ts` 登记 `router` 命名空间，`featureflags/keys.go` 公开 `router_chat`；`packages/core/realtime/use-realtime-sync.ts` 的前缀刷新表加一项 `router`（M-147）。见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。
+
+## 覆盖、建 issue 时的范围检查与重叠提醒（M-194）
+
+同一个智能体的订阅重叠时，事件只进最窄的那条（见上文）；不同智能体的订阅覆盖同一个 issue 时，各自都会收到。下面三处都按这条规则回答，逻辑在 `server/internal/agentrouter/covering.go`，HTTP 在 `server/internal/handler/agent_router_covering.go`，CLI 在 `server/cmd/multica/cmd_router_covering.go`。不新增表，也不改表。
+
+- **谁覆盖一个 issue**：`GET /api/router/issues/{id}/covering`（`multica router covering <issue>`）列出范围包含这个 issue 的每条订阅（暂停的也列）：智能体、范围类型和名字、是否绑定 chat、是否暂停、`effective`（是否真正收这个 issue 的事件），以及被同一智能体更窄的订阅取代时的 `superseded_by`。chat 只对它的创建者显示 id 和标题（智能体调用时按这次运行的发起人判断），别人只看到 `chat_bound`；调用者看不到的私有项目里的范围不显示名字。issue 详情页「详情」区加一行「Super Agent」显示同一份信息（`packages/views/router/issue-super-agents.tsx`），没有覆盖时显示「无」；`router_chat` 关闭时这一行不出现，也不发请求。
+- **Super Agent chat 里建 issue**：`router_chat` 生效、请求来自智能体的 chat 运行（`X-Task-ID` 指向这个智能体的 chat 任务）、这个 chat 绑定了订阅时，`POST /api/issues` 的响应多一个 `super_agent_scope`：`in_scope`、收这个 issue 事件的订阅、它绑定在别的 chat 时的 `other_chat_session_id`，以及不在范围时的 `hint`（不在任何范围，或被这个智能体的另一个 chat 接走）。CLI 的 `issue create` 把 `hint` 以「Super Agent:」开头打印到 stderr。不自动加入范围：加不加仍由 Owner 决定（Owner 2026-11-23 选定 1A）。其他请求（成员、issue 上的运行、普通 chat、开关关闭）和读失败时都没有这个字段，与上游一致。上游触点：`issue.go` 的 `CreateIssueResponse` 加一个字段、`CreateIssue` 的写响应处加一次调用，`cmd_issue.go` 加一行打印。
+- **订阅重叠**：`POST /api/router/subscriptions` 发现新范围里的 issue 已经有**其他智能体**的运行中订阅在收事件（或同一个项目已被其他智能体订阅）时，返回 409，`code` 为 `router_scope_overlap`，`overlaps` 列出每条重叠的订阅、重叠的 issue 数和最多 10 个调用者看得到的编号（未关闭的在前）。请求带 `allow_overlap: true`（CLI `--allow-overlap`）才建立。同一智能体的重叠不拒绝。Super Agent 设置对话框收到这个 409 时不弹错误，而是在范围下方列出重叠的 Super Agent，并保留这些范围；再点一次「设为 Super Agent」或「保存」就带上 `allow_overlap` 添加。检查只发生在新建订阅时：恢复暂停的订阅（例如 A 暂停期间 B 订阅了同一批 issue，A 再恢复）、设置页接管保留的订阅，以及之后 issue 换了项目或父任务，都不会再检查，仍可能出现重叠，用 `covering` 或详情页那一行查看。
 
 ## 聊天列表的 Super Agent 标记（M-108）
 

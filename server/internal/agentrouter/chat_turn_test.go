@@ -26,6 +26,7 @@ func TestChatTurnNoteNamesScopesAndWhatSubscribedMeans(t *testing.T) {
 		"\"subscribed\" (订阅) means only a scope of this Super Agent",
 		"in scope only under a subscribed issue tree or in a subscribed project",
 		"`multica router scope <subscription-id>`",
+		"`multica issue create` prints a \"Super Agent:\" warning",
 		"the automatic `creator` one",
 		"chat wakeups are not subscriptions",
 		"ask the owner whether to add it",

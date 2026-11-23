@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router page settings (M-105), the chat list's Router marker (M-108), Router inbox S3a (M-118), and live Super Agent settings (M-147).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router page settings (M-105), the chat list's Router marker (M-108), Router inbox S3a (M-118), live Super Agent settings (M-147), and the issue coverage and overlap checks (M-194).
 //
 // HTTP surface of internal/agentrouter. It lives in package handler only to
 // reuse the request helpers (actor, workspace, issue and agent loaders,
@@ -35,6 +35,7 @@ func (h *Handler) MountAgentRouter(r chi.Router) {
 	r.Post("/subscriptions/{id}/resume", h.ResumeRouterSubscription)
 	r.Delete("/subscriptions/{id}", h.DeleteRouterSubscription)
 	r.Get("/subscriptions/{id}/scope", h.GetRouterSubscriptionScope)
+	r.Get("/issues/{id}/covering", h.GetRouterIssueCovering)
 	r.Get("/events", h.ListRouterEvents)
 	r.Get("/chats", h.ListRouterChats)
 	r.Get("/chats/current", h.GetCurrentRouterChat)
@@ -93,6 +94,9 @@ type CreateRouterSubscriptionRequest struct {
 	// AnchorChatSessionID binds the new subscription to a chat session in
 	// the same transaction (M-105). Needs router_chat.
 	AnchorChatSessionID string `json:"anchor_chat_session_id"`
+	// AllowOverlap subscribes even when other agents already receive events
+	// from the scope; without it such a subscribe answers 409 (M-194).
+	AllowOverlap bool `json:"allow_overlap"`
 }
 
 func (h *Handler) CreateRouterSubscription(w http.ResponseWriter, r *http.Request) {
@@ -204,6 +208,9 @@ func (h *Handler) CreateRouterSubscription(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		anchorID = uuidToString(anchor.ID)
+	}
+	if !req.AllowOverlap && h.refuseRouterOverlap(w, r, workspaceID, uuidToString(agent.ID), scopeType, scopeID) {
+		return
 	}
 
 	sub, err := h.routerStore().Create(r.Context(), agentrouter.CreateParams{

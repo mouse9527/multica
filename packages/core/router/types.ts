@@ -121,3 +121,44 @@ export interface RouterChatSummary {
   paused_reasons: string[];
   scopes: RouterChatScope[];
 }
+
+/**
+ * A subscription whose scope contains an issue
+ * (`GET /api/router/issues/:id/covering`, M-194). An agent receives an
+ * issue's events from its narrowest subscription only; different agents each
+ * receive them.
+ */
+export interface RouterCovering {
+  subscription_id: string;
+  agent_id: string;
+  agent_name: string;
+  owner_user_id: string | null;
+  scope_type: string;
+  scope_id: string;
+  /** Project title or tree root identifier; empty when the reader cannot see it. */
+  scope_name: string;
+  /** Whether the subscription is bound to a chat (a Super Agent). */
+  chat_bound: boolean;
+  /** The bound chat, named only to the member who started it. */
+  chat_session_id: string | null;
+  chat_title: string | null;
+  enabled: boolean;
+  paused_reason: string | null;
+  /** Whether this subscription delivers the issue's events to its agent. */
+  effective: boolean;
+  /** The agent's narrower subscription that delivers them instead. */
+  superseded_by: string | null;
+}
+
+/** Another agent's subscription that already receives events from a scope being added. */
+export interface RouterOverlap {
+  subscription_id: string;
+  agent_id: string;
+  agent_name: string;
+  scope_type: string;
+  scope_id: string;
+  scope_name: string;
+  issue_count: number;
+  /** Identifiers of up to ten of those issues the member can see, open ones first. */
+  issues: string[];
+}

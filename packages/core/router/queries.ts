@@ -1,8 +1,15 @@
 // Added by the mouse9527/multica fork: Router page settings (M-105), the
-// chat list's Router marker (M-108), and live Super Agent settings (M-147).
+// chat list's Router marker (M-108), live Super Agent settings (M-147), and
+// issue coverage (M-194).
 
 import { queryOptions, useQueries } from "@tanstack/react-query";
-import { listRouterChats, listRouterDispatches, listRouterSubscriptionChanges, listRouterSubscriptions } from "./api";
+import {
+  listRouterChats,
+  listRouterDispatches,
+  listRouterIssueCovering,
+  listRouterSubscriptionChanges,
+  listRouterSubscriptions,
+} from "./api";
 import { latestDispatch } from "./group";
 import type { RouterDispatch, RouterSubscription } from "./types";
 
@@ -22,6 +29,7 @@ export const routerKeys = {
     [...routerKeys.all(wsId), "dispatches", "last", subscriptionId] as const,
   changes: (wsId: string, subscriptionId: string) =>
     [...routerKeys.all(wsId), "changes", subscriptionId] as const,
+  covering: (wsId: string, issueId: string) => [...routerKeys.all(wsId), "covering", issueId] as const,
 };
 
 /**
@@ -70,5 +78,19 @@ export function routerChangesOptions(wsId: string, subscriptionId: string) {
     queryKey: routerKeys.changes(wsId, subscriptionId),
     queryFn: () => listRouterSubscriptionChanges(wsId, subscriptionId),
     enabled: Boolean(subscriptionId),
+  });
+}
+
+/**
+ * The Super Agents whose scope contains an issue. Subscription writes
+ * invalidate every router query; an issue moving between scopes does not, so
+ * it is read again when the issue page opens.
+ */
+export function routerIssueCoveringOptions(wsId: string, issueId: string) {
+  return queryOptions({
+    queryKey: routerKeys.covering(wsId, issueId),
+    queryFn: () => listRouterIssueCovering(wsId, issueId),
+    staleTime: 0,
+    enabled: Boolean(issueId),
   });
 }

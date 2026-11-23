@@ -1,4 +1,5 @@
-// Added by the mouse9527/multica fork: Router page settings (M-105).
+// Added by the mouse9527/multica fork: Router page settings (M-105), and the
+// overlap refusal on subscribe (M-194).
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
@@ -32,6 +33,12 @@ export interface AddRouterScopesInput {
    * this chat and resumed; one bound to another chat is refused.
    */
   existing: RouterSubscription[];
+  /**
+   * Scopes (by scope_id) the member chose to add although other Super Agents
+   * already receive their events. Any other scope that overlaps fails with
+   * RouterScopeOverlapError.
+   */
+  allowOverlap?: string[];
 }
 
 export interface AddRouterScopesResult {
@@ -105,6 +112,7 @@ export async function addRouterScopes(wsId: string, input: AddRouterScopesInput)
         agent_id: input.agentId,
         anchor_chat_session_id: input.chatSessionId,
         ...(board ? { anchor_issue_id: board.id } : {}),
+        ...(input.allowOverlap?.includes(scope.scope_id) ? { allow_overlap: true } : {}),
       });
       result.created.push(sub);
       if (board) result.boards.push(board);

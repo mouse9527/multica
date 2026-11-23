@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router settings by instruction (M-105), the Super Agent name in help (M-148), the guide pointer (M-150), and the issue subscriber help in a Super Agent chat (M-175).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router settings by instruction (M-105), the Super Agent name in help (M-148), the guide pointer (M-150), the issue subscriber help in a Super Agent chat (M-175), and the overlap refusal on subscribe (M-194).
 
 package main
 
@@ -123,6 +123,7 @@ func init() {
 	routerSubscribeCmd.Flags().String("project", "", "Subscribed project (ID)")
 	routerSubscribeCmd.Flags().StringSlice("events", nil, "Event types to capture (default: all): issue_created, status_changed, assignee_changed, comment_created, task_failed")
 	routerSubscribeCmd.Flags().String("anchor-chat", "", "Bind the subscription to a chat (a Super Agent): current (inside a chat run) or a chat session UUID; a --project scope without --anchor gets a board issue (needs router_chat)")
+	routerSubscribeCmd.Flags().Bool("allow-overlap", false, "Subscribe even when other Super Agents already receive events from the scope (only after the owner agreed)")
 	routerSubscribeCmd.Flags().String("output", "json", "Output format: table or json")
 	for _, c := range []*cobra.Command{routerGetCmd, routerPauseCmd, routerResumeCmd, routerDeleteCmd} {
 		c.Flags().String("chat", "", "Act on every subscription of the Super Agent bound to this chat: current (inside a chat run) or a chat session UUID")
@@ -207,6 +208,9 @@ func runRouterSubscribe(cmd *cobra.Command, _ []string) error {
 	if events, _ := cmd.Flags().GetStringSlice("events"); len(events) > 0 {
 		body["event_types"] = events
 	}
+	if allow, _ := cmd.Flags().GetBool("allow-overlap"); allow {
+		body["allow_overlap"] = true
+	}
 	if err := routerBatchingBody(ctx, cmd, client, body); err != nil {
 		return err
 	}
@@ -229,6 +233,9 @@ func runRouterSubscribe(cmd *cobra.Command, _ []string) error {
 	if err := client.PostJSON(ctx, "/api/router/subscriptions", body, &sub); err != nil {
 		if board != "" {
 			_ = client.DeleteJSON(ctx, "/api/issues/"+url.PathEscape(board))
+		}
+		if msg, ok := routerOverlapMessage(err); ok {
+			return fmt.Errorf("subscribe: %s", msg)
 		}
 		return fmt.Errorf("subscribe: %w", err)
 	}

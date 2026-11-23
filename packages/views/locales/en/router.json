@@ -119,5 +119,16 @@
     "scope_paused": "{{scope}} (paused)",
     "paused": "Paused ({{reasons}})",
     "separator": ", "
+  },
+  "overlap": {
+    "title": "Other Super Agents already receive events from these scopes",
+    "item": "{{scope}}: {{agent}} ({{other}}) receives {{n}} of its issues.",
+    "examples": "For example {{issues}}.",
+    "hint": "Both Super Agents would act on the same issues. To add these scopes anyway, choose {{action}} again."
+  },
+  "covering": {
+    "label": "Super Agent",
+    "none": "None",
+    "superseded": "A narrower scope of this agent receives the events"
   }
 }

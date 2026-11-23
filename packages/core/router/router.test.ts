@@ -1,16 +1,18 @@
 // @vitest-environment node
-// Added by the mouse9527/multica fork: Router page settings (M-105) and the
-// chat list's Router marker (M-108).
+// Added by the mouse9527/multica fork: Router page settings (M-105), the
+// chat list's Router marker (M-108), and issue coverage and overlaps (M-194).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClient, setApiInstance } from "../api";
 import {
   addRouterScopes,
   groupRouters,
+  RouterScopeOverlapError,
   RouterScopeTakenError,
   unboundSubscriptions,
   latestDispatch,
   listRouterChats,
   listRouterDispatches,
+  listRouterIssueCovering,
   listRouterSubscriptions,
   reconciledThrough,
   releaseRouter,
@@ -329,5 +331,73 @@ describe("pause and release", () => {
       "DELETE /api/router/subscriptions/s1",
       "DELETE /api/router/subscriptions/s2",
     ]);
+  });
+});
+
+describe("overlapping another agent's scope", () => {
+  const OVERLAP = {
+    subscription_id: "sub-b",
+    agent_id: "a2",
+    agent_name: "ops",
+    scope_type: "project",
+    scope_id: "proj",
+    scope_name: "home",
+    issue_count: 2,
+    issues: ["M-1", "M-2"],
+  };
+  const input = (allowOverlap?: string[]) => ({
+    chatSessionId: "chat-1",
+    agentId: "a1",
+    scopes: [{ scope_type: "issue_tree" as const, scope_id: "root" }],
+    settings: SETTINGS,
+    board: { title: "b", description: "d" },
+    existing: [],
+    allowOverlap,
+  });
+
+  it("fails the scope with the overlapping Super Agents", async () => {
+    serve(() => Response.json({ code: "router_scope_overlap", error: "x", overlaps: [OVERLAP] }, { status: 409 }));
+    const result = await addRouterScopes("ws", input());
+    expect(result.created).toEqual([]);
+    const error = result.failed[0]?.error;
+    expect(error).toBeInstanceOf(RouterScopeOverlapError);
+    expect((error as RouterScopeOverlapError).overlaps).toEqual([OVERLAP]);
+    expect(calls[0]?.body).not.toHaveProperty("allow_overlap");
+  });
+
+  it("adds the scope anyway once the member confirmed it", async () => {
+    serve(() => Response.json({ id: "new", agent_id: "a1", scope_type: "issue_tree", scope_id: "root" }, { status: 201 }));
+    const result = await addRouterScopes("ws", input(["root"]));
+    expect(result.failed).toEqual([]);
+    expect(calls[0]?.body).toMatchObject({ scope_id: "root", allow_overlap: true });
+  });
+});
+
+describe("listRouterIssueCovering", () => {
+  it("reads the covering subscriptions with defaults for missing fields", async () => {
+    serve(() =>
+      Response.json({
+        issue_id: "i1",
+        covering: [{ subscription_id: "s1", agent_name: "Mika", scope_type: "issue_tree", effective: true }],
+      }),
+    );
+    const covering = await listRouterIssueCovering("ws", "i1");
+    expect(new URL(calls[0]!.url).pathname).toBe("/api/router/issues/i1/covering");
+    expect(covering).toEqual([
+      expect.objectContaining({
+        subscription_id: "s1",
+        agent_name: "Mika",
+        effective: true,
+        chat_bound: false,
+        chat_session_id: null,
+        superseded_by: null,
+        enabled: true,
+      }),
+    ]);
+  });
+
+  it("falls back to no Super Agents on a malformed response", async () => {
+    serve(() => Response.json({ covering: "nope" }));
+    expect(await listRouterIssueCovering("ws", "i1")).toEqual([]);
   });
 });

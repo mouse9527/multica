@@ -1,4 +1,4 @@
-// Added by the mouse9527/multica fork: the Super Agent note on every chat turn (M-175).
+// Added by the mouse9527/multica fork: the Super Agent note on every chat turn (M-175), and the create warning (M-194).
 
 package agentrouter
 
@@ -15,7 +15,8 @@ import (
 // `multica router guide`.
 const routerSubscribedMeans = "In this chat, \"subscribed\" (订阅) means only a scope of this Super Agent: " +
 	"an issue you create is in scope only under a subscribed issue tree or in a subscribed project " +
-	"(check with `multica router scope <subscription-id>`). " +
+	"(`multica issue create` prints a \"Super Agent:\" warning when the new issue is not; " +
+	"check others with `multica router scope <subscription-id>`). " +
 	"Issue subscribers (the automatic `creator` one included) and chat wakeups are not subscriptions. " +
 	"When it is out of scope, say so and ask the owner whether to add it " +
 	"(`multica router subscribe --issue <id> --anchor-chat current`, only after they agree). " +
