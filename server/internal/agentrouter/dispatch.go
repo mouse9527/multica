@@ -855,15 +855,17 @@ const routerOwnerDecisions = "Every decision you ask of the owner must stand on 
 // chatBatchReplyRule says when a chat batch's reply alerts the owner. With
 // quiet replies on, a reply that opens with QuietReplyMarker stays in the
 // chat without the alert; the turn cannot end without text, as the runtime
-// asks for a visible reply.
+// asks for a visible reply. A quiet reply still ends with every open item:
+// quiet is about the alert, not the content (M-206).
 func chatBatchReplyRule(quiet bool) string {
 	if !quiet {
 		return "Any text you reply here notifies the owner: reply only when they need to know, decide or act, and say so plainly. " +
 			"When nothing needs them, finish without any text reply; the turn stays silent.\n"
 	}
 	return "A reply here notifies the owner unless its first line is exactly `" + QuietReplyMarker + "`. " +
-		"When the batch brings nothing new for the owner to decide or act on, start the reply with that line and add at most one short line on what happened; " +
-		"it stays in this chat without notifying them, and does not repeat the open decisions. " +
+		"When the batch brings nothing new for the owner to decide or act on, start the reply with that line and add at most one short line on what happened, " +
+		"then end it with every open item as in any reply; it stays in this chat without notifying them. " +
+		"Quiet means no alert, never fewer open items. " +
 		"When the owner has something new to decide or act on, never use that line: reply plainly, and the owner is notified. " +
 		"See \"没事可报的批次\" in `multica router guide`.\n"
 }
@@ -878,8 +880,8 @@ const routerReplyFormat = "Write every reply to the owner in the owner's languag
 	"Merged is not fixed: when the fix for a problem the owner reported is merged but not deployed, " +
 	"say it is merged, not live, and still happens in production, and list whether to deploy as an item for the owner. " +
 	"Before relaying an issue, read its current status and latest comments; do not repeat an older conclusion. " +
-	"A batch with nothing new for the owner gets no reply: do not send one only to repeat open items, " +
-	"but whenever you do reply, list them all. " +
+	"A batch with nothing new for the owner must not alert them, not even to repeat open items (the batch note says how to end it); " +
+	"every reply you do write, a quiet one included, still ends with all open items. " +
 	"See \"每次回复的格式\" in `multica router guide`.\n"
 
 // buildNote renders the run's context: the batch, the open issues in scope

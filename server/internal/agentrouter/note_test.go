@@ -149,8 +149,29 @@ var replyFormatRules = []string{
 	"merged, not live, and still happens in production",
 	"list whether to deploy as an item for the owner",
 	"read its current status and latest comments",
-	"A batch with nothing new for the owner gets no reply",
-	"do not send one only to repeat open items",
-	"whenever you do reply, list them all",
+	"A batch with nothing new for the owner must not alert them, not even to repeat open items",
+	"every reply you do write, a quiet one included, still ends with all open items",
 	"\"每次回复的格式\" in `multica router guide`",
+}
+
+// A quiet batch reply (router_chat_quiet, M-210) only skips the alert; it
+// still ends with every open item, because the owner reads only the end of
+// the last reply (M-162). The owner chose this over dropping them (M-206).
+func TestQuietChatBatchStillListsOpenItems(t *testing.T) {
+	in := noteInput{sub: dispatchSub{ID: "sub-1"}, anchorKey: "RT-1", scopeLabel: "issue tree RT-1", now: time.Now(), chat: true, quiet: true}
+	note := buildNote(in)
+	for _, want := range []string{
+		"then end it with every open item as in any reply",
+		"Quiet means no alert, never fewer open items",
+		"a quiet one included, still ends with all open items",
+	} {
+		if !strings.Contains(note, want) {
+			t.Errorf("quiet chat batch note lacks %q:\n%s", want, note)
+		}
+	}
+	for _, banned := range []string{"does not repeat", "gets no reply"} {
+		if strings.Contains(note, banned) {
+			t.Errorf("quiet chat batch note still says %q:\n%s", banned, note)
+		}
+	}
 }

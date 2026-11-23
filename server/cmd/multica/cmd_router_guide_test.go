@@ -139,8 +139,9 @@ func TestRouterGuideStatesTheReplyFormat(t *testing.T) {
 		"末尾单独一节「需要你处理」",
 		"目前没有",
 		"事件批次里没有新东西要告诉 Owner",
-		"不回复（这一轮不输出文字",
-		"不要只为了把旧的未结事项再列一遍而单独发一条",
+		"不写回复（这一轮不输出文字）",
+		"只为了把旧的未结事项再列一遍也不行",
+		"包括 `[无需你处理]` 开头的静默回复",
 		"跟 Owner 用的语言走",
 		"Owner 所在时区",
 		"`…Z` 时间是 UTC",
@@ -164,7 +165,7 @@ func TestRouterGuideStatesTheReplyFormat(t *testing.T) {
 	}
 	// A quiet batch must not become a reason to leave open items off a reply
 	// that is sent: the owner reads only the list at the end (M-162).
-	for _, banned := range []string{"再发一遍", "等下次有话要说时一起列", "按未上线说"} {
+	for _, banned := range []string{"再发一遍", "等下次有话要说时一起列", "按未上线说", "默认不回复"} {
 		if strings.Contains(section, banned) {
 			t.Errorf("the reply format section still says %q", banned)
 		}
@@ -218,9 +219,15 @@ func TestRouterGuideExplainsQuietBatchReplies(t *testing.T) {
 		"API Error:",
 		"反例",
 		"正例",
+		// M-206: quiet skips the alert, never the open items.
+		"末尾照样按「每次回复的格式」列出全部未结事项",
+		"静默只表示不弹通知",
 	} {
 		if !strings.Contains(section, want) {
 			t.Errorf("the quiet batch section lacks %q:\n%s", want, section)
 		}
+	}
+	if strings.Contains(section, "也不用把未结的决定事项再列一遍") {
+		t.Error("the quiet batch section still lets a quiet reply drop the open items")
 	}
 }
