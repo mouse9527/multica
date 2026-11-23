@@ -23,9 +23,9 @@ func appliedProposal(t *testing.T) (proposalFixture, string) {
 	return f, issueID
 }
 
-// targetRuns queues n finished runs of the target agent at the given age, the
-// first failed of them failed.
-func targetRuns(t *testing.T, agentID, age string, n, failed int) {
+// targetRuns queues n finished runs of the target agent at the given age,
+// each taking took; the first failed of them failed.
+func targetRuns(t *testing.T, agentID, age, took string, n, failed int) {
 	t.Helper()
 	for i := 0; i < n; i++ {
 		status := "completed"
@@ -36,7 +36,7 @@ func targetRuns(t *testing.T, agentID, age string, n, failed int) {
 			"status":       status,
 			"created_at":   testutil.Raw("now() - interval '" + age + "'"),
 			"started_at":   testutil.Raw("now() - interval '" + age + "'"),
-			"completed_at": testutil.Raw("now() - interval '" + age + "' + interval '5 minutes'"),
+			"completed_at": testutil.Raw("now() - interval '" + age + "' + interval '" + took + "'"),
 		})
 	}
 }
@@ -80,8 +80,8 @@ func TestEvolutionEffectSuggestsRollback(t *testing.T) {
 		t.Skip("database not available")
 	}
 	f, issueID := appliedProposal(t)
-	targetRuns(t, f.target, "12 days", 10, 0)
-	targetRuns(t, f.target, "4 days", 10, 6)
+	targetRuns(t, f.target, "12 days", "5 minutes", 10, 0)
+	targetRuns(t, f.target, "4 days", "5 minutes", 10, 6)
 
 	tickEvolution(t, nil)
 
@@ -134,8 +134,8 @@ func TestEvolutionEffectBelowSampleDrawsNoConclusion(t *testing.T) {
 		t.Skip("database not available")
 	}
 	f, issueID := appliedProposal(t)
-	targetRuns(t, f.target, "12 days", 10, 0)
-	targetRuns(t, f.target, "4 days", evolution.DefaultMinEffectSample-1, evolution.DefaultMinEffectSample-1)
+	targetRuns(t, f.target, "12 days", "5 minutes", 10, 0)
+	targetRuns(t, f.target, "4 days", "5 minutes", evolution.DefaultMinEffectSample-1, evolution.DefaultMinEffectSample-1)
 
 	tickEvolution(t, nil)
 
@@ -151,6 +151,39 @@ func TestEvolutionEffectBelowSampleDrawsNoConclusion(t *testing.T) {
 	}
 }
 
+// TestEvolutionEffectJudgesEachMetricOnItsOwnSample: ten runs in each
+// window, nine of them failed both times, and the one completed run took 60
+// seconds before and 600 after. The run count passes the minimum, but the
+// duration rests on one run per window, so it is not judged; the failure
+// rate did not move, so nothing is suggested.
+func TestEvolutionEffectJudgesEachMetricOnItsOwnSample(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	f, issueID := appliedProposal(t)
+	targetRuns(t, f.target, "12 days", "60 seconds", 10, 9)
+	targetRuns(t, f.target, "4 days", "600 seconds", 10, 9)
+
+	tickEvolution(t, nil)
+
+	e, n := evolutionEffect(t, issueID)
+	if n != 1 || e.verdict != evolution.EffectUnchanged || e.notified {
+		t.Fatalf("effect: %d rows, %+v", n, e)
+	}
+	var judged int
+	dbfx.QueryRow(t, `SELECT count(*) FROM evolution_effect, jsonb_array_elements(findings) f
+		WHERE proposal_issue_id = $1 AND f.value->>'metric' = $2`, issueID, evolution.MetricAvgDurationSecs).Scan(&judged)
+	if judged != 0 {
+		t.Error("the duration of one run per window was judged")
+	}
+	if got := agentComments(t, issueID, f.evo); got != 0 {
+		t.Errorf("Evolution commented %d times", got)
+	}
+	if got := regressionInbox(t, issueID); got != 0 {
+		t.Errorf("owner told %d times", got)
+	}
+}
+
 // TestEvolutionEffectNotMeasuredAfterRollback: an apply rolled back inside
 // its measurement window is recorded as not measured and never suggested for
 // rollback.
@@ -162,8 +195,8 @@ func TestEvolutionEffectNotMeasuredAfterRollback(t *testing.T) {
 	changeProposal(t, testUserID, issueID, "rollback").Want(http.StatusOK)
 	dbfx.Exec(t, `UPDATE evolution_config_version SET created_at = now() - interval '6 days'
 		WHERE proposal_issue_id = $1 AND action = 'rollback'`, issueID)
-	targetRuns(t, f.target, "12 days", 10, 0)
-	targetRuns(t, f.target, "4 days", 10, 10)
+	targetRuns(t, f.target, "12 days", "5 minutes", 10, 0)
+	targetRuns(t, f.target, "4 days", "5 minutes", 10, 10)
 
 	tickEvolution(t, nil)
 

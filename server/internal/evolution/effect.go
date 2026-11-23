@@ -45,6 +45,11 @@ const (
 	// metricStepDwellPrefix + status key is the average dwell in that step.
 	// Recorded for people to read; not compared.
 	metricStepDwellPrefix = "step_dwell_hours."
+	// metricSamplePrefix + metric key is how many runs or issues that metric
+	// was computed over in the window. Each compared metric must reach the
+	// sample minimum on its own: a duration over one completed run among ten
+	// failed ones is not judged.
+	metricSamplePrefix = "sample."
 )
 
 // metricSpec is a compared metric. A change counts only when it passes the
@@ -87,14 +92,19 @@ type Finding struct {
 }
 
 // CompareMetrics compares the metrics a target type is judged on. A metric
-// missing from either window is skipped.
-func CompareMetrics(targetType string, before, after Metrics, thresholdPercent int) []Finding {
+// missing from either window, or computed over fewer than minSample runs or
+// issues in either window, is skipped.
+func CompareMetrics(targetType string, before, after Metrics, thresholdPercent, minSample int) []Finding {
 	t := float64(thresholdPercent) / 100
 	out := []Finding{}
 	for _, spec := range effectMetrics[targetType] {
 		b, okB := before[spec.Key]
 		a, okA := after[spec.Key]
 		if !okB || !okA {
+			continue
+		}
+		sample := metricSamplePrefix + spec.Key
+		if before[sample] < float64(minSample) || after[sample] < float64(minSample) {
 			continue
 		}
 		f := Finding{Metric: spec.Key, Before: b, After: a, Direction: DirectionSame}
@@ -110,10 +120,11 @@ func CompareMetrics(targetType string, before, after Metrics, thresholdPercent i
 }
 
 // Verdict draws the verdict: no conclusion below the sample minimum in
-// either window; regressed when any metric got worse; improved when one got
-// better and none worse.
+// either window, or when no metric had enough samples to be compared
+// (findings holds only those that had); regressed when any metric got
+// worse; improved when one got better and none worse.
 func Verdict(sampleBefore, sampleAfter, minSample int, findings []Finding) string {
-	if sampleBefore < minSample || sampleAfter < minSample {
+	if sampleBefore < minSample || sampleAfter < minSample || len(findings) == 0 {
 		return EffectInsufficient
 	}
 	verdict := EffectUnchanged
@@ -145,9 +156,12 @@ func AgentMetrics(c AgentTaskCounts) (Metrics, int) {
 	if c.Finished > 0 {
 		m[MetricFailureRate] = round4(float64(c.Failed) / float64(c.Finished))
 		m[MetricRetryRate] = round4(float64(c.Retried) / float64(c.Finished))
+		m[metricSamplePrefix+MetricFailureRate] = float64(c.Finished)
+		m[metricSamplePrefix+MetricRetryRate] = float64(c.Finished)
 	}
 	if c.Timed > 0 {
 		m[MetricAvgDurationSecs] = round4(c.AvgDurationSecs)
+		m[metricSamplePrefix+MetricAvgDurationSecs] = float64(c.Timed)
 	}
 	return m, c.Finished
 }
@@ -193,10 +207,13 @@ var dwellExcluded = map[string]bool{"backlog": true, "done": true, "cancelled": 
 // A return is a status change from a step to exactly that step's
 // back_status_key: what the workflow's "needs changes" command does. Moving
 // back by hand to the same status counts too; moving anywhere else does not.
-// returns_per_issue is returns over the issues that moved in the window.
+// returns_per_issue is returns over the issues that moved in the window;
+// its sample is those issues. The dwell average's sample is the issues with
+// at least one counted dwell.
 func WorkflowMetrics(changes []StatusChange, returns map[string]string) (Metrics, int) {
 	m := Metrics{}
 	issues := map[string]bool{}
+	dwellIssues := map[string]bool{}
 	returned := 0
 	dwell := map[string][]float64{}
 	var total float64
@@ -210,15 +227,18 @@ func WorkflowMetrics(changes []StatusChange, returns map[string]string) (Metrics
 			continue
 		}
 		hours := c.DwellSecs / 3600
+		dwellIssues[c.IssueID] = true
 		dwell[c.From] = append(dwell[c.From], hours)
 		total += hours
 		counted++
 	}
 	if len(issues) > 0 && len(returns) > 0 {
 		m[MetricReturnsPerIssue] = round4(float64(returned) / float64(len(issues)))
+		m[metricSamplePrefix+MetricReturnsPerIssue] = float64(len(issues))
 	}
 	if counted > 0 {
 		m[MetricAvgDwellHours] = round4(total / float64(counted))
+		m[metricSamplePrefix+MetricAvgDwellHours] = float64(len(dwellIssues))
 	}
 	for key, hs := range dwell {
 		var sum float64

@@ -18,10 +18,20 @@ func findingOf(t *testing.T, findings []Finding, metric string) Finding {
 	return Finding{}
 }
 
+// sampled gives every metric in m a sample of n.
+func sampled(m Metrics, n int) Metrics {
+	out := Metrics{}
+	for k, v := range m {
+		out[k] = v
+		out[metricSamplePrefix+k] = float64(n)
+	}
+	return out
+}
+
 func TestCompareMetrics(t *testing.T) {
-	before := Metrics{MetricFailureRate: 0.10, MetricRetryRate: 0.02, MetricAvgDurationSecs: 600}
-	after := Metrics{MetricFailureRate: 0.20, MetricRetryRate: 0.04, MetricAvgDurationSecs: 300}
-	got := CompareMetrics(TargetAgent, before, after, 20)
+	before := sampled(Metrics{MetricFailureRate: 0.10, MetricRetryRate: 0.02, MetricAvgDurationSecs: 600}, 10)
+	after := sampled(Metrics{MetricFailureRate: 0.20, MetricRetryRate: 0.04, MetricAvgDurationSecs: 300}, 10)
+	got := CompareMetrics(TargetAgent, before, after, 20, 5)
 	if f := findingOf(t, got, MetricFailureRate); f.Direction != DirectionWorse {
 		t.Errorf("failure rate 10%% → 20%%: %+v", f)
 	}
@@ -33,17 +43,47 @@ func TestCompareMetrics(t *testing.T) {
 		t.Errorf("duration 600s → 300s: %+v", f)
 	}
 	// Within the relative threshold.
-	if f := findingOf(t, CompareMetrics(TargetAgent, Metrics{MetricFailureRate: 0.50}, Metrics{MetricFailureRate: 0.58}, 20), MetricFailureRate); f.Direction != DirectionSame {
+	if f := findingOf(t, CompareMetrics(TargetAgent, sampled(Metrics{MetricFailureRate: 0.50}, 10), sampled(Metrics{MetricFailureRate: 0.58}, 10), 20, 5), MetricFailureRate); f.Direction != DirectionSame {
 		t.Errorf("50%% → 58%% at a 20%% threshold: %+v", f)
 	}
 	// A metric one window lacks is not compared.
-	if got := CompareMetrics(TargetAgent, Metrics{MetricFailureRate: 0.1}, Metrics{}, 20); len(got) != 0 {
+	if got := CompareMetrics(TargetAgent, sampled(Metrics{MetricFailureRate: 0.1}, 10), Metrics{}, 20, 5); len(got) != 0 {
 		t.Errorf("compared a missing metric: %+v", got)
 	}
 	// Per-step dwell is recorded, never judged.
-	wf := CompareMetrics(TargetWorkflow, Metrics{metricStepDwellPrefix + "in_review": 1}, Metrics{metricStepDwellPrefix + "in_review": 50}, 20)
+	wf := CompareMetrics(TargetWorkflow, sampled(Metrics{metricStepDwellPrefix + "in_review": 1}, 10), sampled(Metrics{metricStepDwellPrefix + "in_review": 50}, 10), 20, 5)
 	if len(wf) != 0 {
 		t.Errorf("judged per-step dwell: %+v", wf)
+	}
+	// A metric below the sample minimum in either window is not compared.
+	if got := CompareMetrics(TargetAgent, sampled(Metrics{MetricFailureRate: 0.1}, 4), sampled(Metrics{MetricFailureRate: 0.9}, 10), 20, 5); len(got) != 0 {
+		t.Errorf("compared a metric with 4 samples before: %+v", got)
+	}
+	if got := CompareMetrics(TargetAgent, Metrics{MetricFailureRate: 0.1}, Metrics{MetricFailureRate: 0.9}, 20, 5); len(got) != 0 {
+		t.Errorf("compared a metric without a recorded sample: %+v", got)
+	}
+}
+
+// TestDurationNeedsItsOwnSample (review R1): ten finished runs per window
+// pass the run minimum, but only one completed run per window was timed, so
+// its tenfold duration is not judged and nothing regressed.
+func TestDurationNeedsItsOwnSample(t *testing.T) {
+	before, nb := AgentMetrics(AgentTaskCounts{Finished: 10, Failed: 9, AvgDurationSecs: 60, Timed: 1})
+	after, na := AgentMetrics(AgentTaskCounts{Finished: 10, Failed: 9, AvgDurationSecs: 600, Timed: 1})
+	findings := CompareMetrics(TargetAgent, before, after, 20, 5)
+	for _, f := range findings {
+		if f.Metric == MetricAvgDurationSecs {
+			t.Fatalf("judged the duration of one run: %+v", f)
+		}
+	}
+	if got := Verdict(nb, na, 5, findings); got != EffectUnchanged {
+		t.Fatalf("verdict = %s, want %s", got, EffectUnchanged)
+	}
+	// With enough timed runs, the same slowdown is a regression.
+	before, _ = AgentMetrics(AgentTaskCounts{Finished: 10, Failed: 4, AvgDurationSecs: 60, Timed: 6})
+	after, _ = AgentMetrics(AgentTaskCounts{Finished: 10, Failed: 4, AvgDurationSecs: 600, Timed: 6})
+	if got := Verdict(10, 10, 5, CompareMetrics(TargetAgent, before, after, 20, 5)); got != EffectRegressed {
+		t.Fatalf("verdict with six timed runs = %s, want %s", got, EffectRegressed)
 	}
 }
 
@@ -62,7 +102,8 @@ func TestVerdict(t *testing.T) {
 		{"any worse is a regression", 5, 5, worse, EffectRegressed},
 		{"better and none worse", 10, 10, better, EffectImproved},
 		{"nothing moved", 10, 10, same, EffectUnchanged},
-		{"nothing to compare", 10, 10, nil, EffectUnchanged},
+		// No metric had enough samples of its own.
+		{"nothing to compare", 10, 10, nil, EffectInsufficient},
 	}
 	for _, tc := range cases {
 		if got := Verdict(tc.before, tc.after, 5, tc.findings); got != tc.want {
@@ -75,6 +116,9 @@ func TestAgentMetrics(t *testing.T) {
 	m, n := AgentMetrics(AgentTaskCounts{Finished: 8, Failed: 2, Retried: 1, AvgDurationSecs: 120.5, Timed: 6})
 	if n != 8 || m[MetricFailureRate] != 0.25 || m[MetricRetryRate] != 0.125 || m[MetricAvgDurationSecs] != 120.5 {
 		t.Fatalf("got %v, %d", m, n)
+	}
+	if m[metricSamplePrefix+MetricFailureRate] != 8 || m[metricSamplePrefix+MetricRetryRate] != 8 || m[metricSamplePrefix+MetricAvgDurationSecs] != 6 {
+		t.Fatalf("samples: %v", m)
 	}
 	if m, n := AgentMetrics(AgentTaskCounts{}); n != 0 || len(m) != 0 {
 		t.Fatalf("no runs: %v, %d", m, n)
@@ -120,6 +164,18 @@ func TestWorkflowReturns(t *testing.T) {
 	}
 	if _, ok := m[metricStepDwellPrefix+"done"]; ok {
 		t.Error("dwell recorded for done")
+	}
+	if m[metricSamplePrefix+MetricReturnsPerIssue] != 2 || m[metricSamplePrefix+MetricAvgDwellHours] != 2 {
+		t.Errorf("samples: %v", m)
+	}
+	// Dwell counted for one issue only: its sample is that one issue, while
+	// returns still count both.
+	m, _ = WorkflowMetrics([]StatusChange{
+		{IssueID: "1", From: "in_review", To: "todo", FromCategory: "in_review", DwellSecs: 3600},
+		{IssueID: "2", From: "done", To: "todo", FromCategory: "done", DwellSecs: 3600},
+	}, returns)
+	if m[metricSamplePrefix+MetricAvgDwellHours] != 1 || m[metricSamplePrefix+MetricReturnsPerIssue] != 2 {
+		t.Errorf("samples: %v", m)
 	}
 
 	// A workflow without a way back does not measure returns.

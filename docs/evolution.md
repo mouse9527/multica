@@ -220,7 +220,8 @@ P4 起，新建提案时服务端同时在 `evolution_proposal` 表里存下这�
 
 1. 应用后窗口内同一目标又被进化改过（apply 或回滚）：`not_measured`，`reason` 写原因，不比较。
 2. 前后任一窗口的样本低于 `min_effect_sample`：`insufficient_data`，**不下结论**。
-3. 任一指标比应用前差超过 `regression_threshold_percent`（相对值）且超过绝对差下限：`regressed`。
+   每项指标还要用**它自己的有效样本**再过一次下限，不够的那项不参与比较：失败率、重试率的样本是已结束的运行数，平均时长的样本是有时间戳的 `completed` 运行数，退回次数的样本是有状态变化的 issue 数，停留时长的样本是有计入停留的 issue 数。例如前后各 10 次运行、各 9 次失败时，平均时长只基于 1 次运行，不比较。没有一项指标够样本时也是 `insufficient_data`。各项样本数记在 `metrics_*` 的 `sample.<指标>` 里。
+3. 任一（够样本的）指标比应用前差超过 `regression_threshold_percent`（相对值）且超过绝对差下限：`regressed`。
 4. 有指标变好、没有变差：`improved`；否则 `unchanged`。
 
 结论同时写进提案 issue 的扁平键 `evolution_effect`，便于过滤。

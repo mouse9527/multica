@@ -178,7 +178,7 @@ func measure(ctx context.Context, q Querier, v Version, cfg Config) (Effect, boo
 	if e.MetricsAfter, e.SampleAfter, err = windowMetrics(ctx, q, v, v.After, v.CreatedAt, end); err != nil {
 		return e, active, err
 	}
-	e.Findings = CompareMetrics(v.TargetType, e.MetricsBefore, e.MetricsAfter, cfg.RegressionThresholdPercent)
+	e.Findings = CompareMetrics(v.TargetType, e.MetricsBefore, e.MetricsAfter, cfg.RegressionThresholdPercent, cfg.MinEffectSample)
 	e.Verdict = Verdict(e.SampleBefore, e.SampleAfter, cfg.MinEffectSample, e.Findings)
 	return e, active, nil
 }
