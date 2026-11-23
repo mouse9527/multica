@@ -136,7 +136,9 @@ func (h *HoldShadow) Intercept(ctx context.Context, p db.CreateInboxItemParams) 
 	var note *string
 	if h.rules != nil {
 		var ruleErr error
-		if note, ruleErr = h.rules.classify(ctx, h.Store.DB, p); ruleErr != nil {
+		if note, ruleErr = h.rules.classify(ctx, h.Store.DB, p); errors.Is(ruleErr, ErrInboxRulesInvalid) {
+			h.logRulesConfigInvalid(p, ruleErr)
+		} else if ruleErr != nil {
 			h.logRuleFailure(p, ruleErr)
 		}
 	}
@@ -339,6 +341,17 @@ func (h *HoldShadow) logRuleFailure(p db.CreateInboxItemParams, err error) {
 	if n == 1 || n%100 == 0 {
 		h.Logger.Warn("router hold: inbox rules failed; recorded the item without a verdict",
 			"type", p.Type, "failures_total", n, "error", err)
+	}
+}
+
+// logRulesConfigInvalid logs, the same way, an item left unclassified because
+// its workspace's stored rule list is invalid: only the process sees it, and
+// the report alone would read like the workspace being off.
+func (h *HoldShadow) logRulesConfigInvalid(p db.CreateInboxItemParams, err error) {
+	n := h.rules.configInvalid.Load()
+	if n == 1 || n%100 == 0 {
+		h.Logger.Warn("router hold: stored inbox rules are invalid; recorded the item without a verdict",
+			"workspace_id", util.UUIDToString(p.WorkspaceID), "config_invalid_total", n, "error", err)
 	}
 }
 

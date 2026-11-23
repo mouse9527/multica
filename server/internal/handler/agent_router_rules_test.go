@@ -4,6 +4,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/agentrouter"
@@ -25,9 +26,10 @@ func TestRouterInboxRulesSettingAndReport(t *testing.T) {
 	withRouterFlags(t, true)
 
 	type state struct {
-		Enabled bool                          `json:"enabled"`
-		Config  *agentrouter.InboxRulesConfig `json:"config"`
-		Stats   *agentrouter.InboxRulesStats  `json:"stats"`
+		Enabled     bool                          `json:"enabled"`
+		Config      *agentrouter.InboxRulesConfig `json:"config"`
+		ConfigError string                        `json:"config_error"`
+		Stats       *agentrouter.InboxRulesStats  `json:"stats"`
 	}
 	var before state
 	routerCall(t, newRequest("GET", "/api/router/inbox-rules", nil)).Want(http.StatusOK).JSON(&before)
@@ -45,6 +47,7 @@ func TestRouterInboxRulesSettingAndReport(t *testing.T) {
 		"nothing":                   {},
 		"rules and defaults":        {"defaults": true, "waiting_statuses": []string{"in_review"}, "rules": []map[string]any{{"name": "c", "types": []string{"new_comment"}, "verdict": "handle"}}},
 		"a gray type handled":       {"rules": []map[string]any{{"name": "m", "types": []string{"mentioned"}, "verdict": "handle"}}},
+		"a gray rule on comments":   {"rules": []map[string]any{{"name": "c", "types": []string{"new_comment"}, "verdict": "gray"}}},
 		"unknown field":             {"rules": []map[string]any{}, "extra": 1},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -69,6 +72,21 @@ func TestRouterInboxRulesSettingAndReport(t *testing.T) {
 	routerCall(t, newRequest("GET", "/api/router/inbox-rules", nil)).Want(http.StatusOK).JSON(&got)
 	if got.Config == nil || len(got.Config.Rules) != 2 || got.Config.Rules[1].Verdict != "gray" {
 		t.Fatalf("after custom rules = %+v", got.Config)
+	}
+
+	// A list stored past the API that no longer passes the check is shown as
+	// invalid, not as no list.
+	dbfx.Exec(t, `UPDATE workspace SET settings = jsonb_set(settings, ARRAY[$2::text], $3::jsonb) WHERE id = $1`,
+		testWorkspaceID, agentrouter.WorkspaceSettingInboxRules,
+		`{"rules":[{"name":"comment","types":["new_comment"],"verdict":"gray"}]}`)
+	var invalid state
+	routerCall(t, newRequest("GET", "/api/router/inbox-rules", nil)).Want(http.StatusOK).JSON(&invalid)
+	if invalid.Config != nil || !strings.Contains(invalid.ConfigError, "not a gray type") {
+		t.Fatalf("with an invalid stored list = %+v", invalid)
+	}
+	routerCall(t, newRequest("PUT", "/api/router/inbox-rules", custom)).Want(http.StatusOK).JSON(&set)
+	if set.Config == nil || set.ConfigError != "" {
+		t.Fatalf("after setting it again = %+v", set)
 	}
 
 	// The report answers members and agents, with the definition of acting.

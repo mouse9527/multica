@@ -494,6 +494,7 @@ M-133，设计见 M-117 的 S3b（Owner 2026-11-18 放行，只做 mouse 工作�
 
 - 规则按顺序匹配，第一条命中的决定。每条规则可以限定 `types`（条目类型）、`severities`、`to_statuses`（只用于 `status_changed`，比的是 details 里的 `to`）；不写的维度匹配任何值。
 - **灰区类型固定**：`mentioned`、`task_failed`、`agent_blocked`（M-117 D1）永远判 `gray`，只有 `gray` 规则能点名它们，用来给它们起规则名；没有 `gray` 规则点名时规则名是 `gray_default`。
+- 反过来，`gray` 规则也**只能**点名这三种灰区类型，并且必须写明 `types`（M-142）。否则把 `handle` 误写成 `gray`，难判的条目会从 `handle` 的样本里挪到 `gray`，误扣率会偏好看。
 - 没有任何规则命中：判 `owner`，规则名 `unmatched`。清单漏了的类型只会多放行，不会算成规则处理。
 - `handle` 规则必须写明 `types`，不能当通配。
 - 每条判定都带规则名，写在影子行的 `decision_note`，格式 `rule:<判定>:<规则名>`（例如 `rule:handle:status_progress`），同时写 `decided_at`。`status` / `mode` 仍是 `shadow`，批次里的清单、30 天清理都照旧。
@@ -513,6 +514,7 @@ M-133，设计见 M-117 的 S3b（Owner 2026-11-18 放行，只做 mouse 工作�
 - `multica router inbox-rules set --defaults --waiting-status started_2`：写入默认清单（M-117 Q1 的规则）；之后可以导出 `--output json` 的 `config` 修改，再用 `--file rules.json`（`{"rules": [...]}`）写回；`--off` 删除。只有工作区 owner/admin 能改，`to_statuses` 里的状态要在工作区状态目录里存在。
 - 默认清单（按顺序）：`mention`（`mentioned` → gray）、`failure`（`task_failed`、`agent_blocked` → gray）、`enter_waiting_status`（进入等待状态的 `status_changed` → owner）、`action_required`（`severity=action_required` → owner，例如指派给 Owner）、`status_progress`（其余 `status_changed` → handle）、`field_update`（优先级、开始/截止日期 → handle）、`assignment_churn`（`assignee_changed`、`unassigned` → handle）、`subscribed`（`issue_subscribed` → handle）、`comment`（`new_comment` → handle；评论里 @ 了 Owner 时另有一条 `mentioned`，由 `mention` 判）。
 - 设置改了，本进程立即生效；其他副本最多 30 秒。
+- 存进设置的清单如果不合法（绕过 API 写入，或按旧的、更宽的校验写入，比如 M-142 之前点名了非灰区类型的 `gray` 规则），这个工作区就不再分类。这种情况不是静默的（M-142）：`multica router inbox-rules` 会显示「invalid」和原因（API 字段 `config_error`）；每条没分类的条目计入 `config_invalid`（第一次和每 100 次记一条 warn）。用 `set` 重新写入一次就恢复。
 - 只在 mouse 工作区设置；BIPO 不设。
 
 ### 「Owner 事后有动作」的口径（M-117 未知项 ④）
@@ -522,7 +524,7 @@ M-133，设计见 M-117 的 S3b（Owner 2026-11-18 放行，只做 mouse 工作�
 - 发了评论（`comment`，作者是 Owner 本人）；或
 - 改了这个 issue（`activity_log` 里 Owner 本人为 actor 的任何一行：状态、指派、优先级、日期等）。
 
-不算：读了、归档了条目（M-82 里 Owner 已读 100%，归档是清理）；Owner 在 chat 里回复、由别人写回 issue 的（M-82：40 次交还里 39 次走 chat）。「下一条条目」的截止让一次动作只算给它之前最近的那一条，避免把对「待你决定」的回复算到前面的状态变化上。条目过了窗口才计入样本，窗口内的计为 pending；从没进收件箱的不计。
+不算：读了、归档了条目（M-82 里 Owner 已读 100%，归档是清理）；Owner 在 chat 里回复、由别人写回 issue 的（M-82：40 次交还里 39 次走 chat）。「下一条条目」的截止让一次动作只算给它之前最近的那一条，避免把对「待你决定」的回复算到前面的状态变化上。条目的观察期结束才计入样本：满了窗口，**或者同一 issue 的下一条条目已经到了**（M-142，观察期已被截断，不再等满窗口）；观察期内的计为 pending；从没进收件箱的不计。
 
 ### 报告
 
@@ -533,7 +535,7 @@ M-133，设计见 M-117 的 S3b（Owner 2026-11-18 放行，只做 mouse 工作�
 - `unclassified`（期间没有判定的影子行，例如开关打开前、分类失败）和 `not_delivered`；
 - 输出里写明「有动作」的口径。
 
-成员看到发给自己的条目，智能体看到自己订阅的条目（与 `router holds` 相同）。`--window` 1 到 168 小时，`--since` 不小于窗口、不超过 30 天（影子行的保留期）。`multica router holds` 多了 `VERDICT` 列；`multica router inbox-rules` 显示规则清单和回答请求的进程自启动以来的判定计数、失败数（`router holds --stats` 的 `rules` 字段同样有）。
+成员看到发给自己的条目，智能体看到自己订阅的条目（与 `router holds` 相同）。`--window` 1 到 168 小时，`--since` 不小于窗口、不超过 30 天（影子行的保留期）。`multica router holds` 多了 `VERDICT` 列；`multica router inbox-rules` 显示规则清单和回答请求的进程自启动以来的判定计数、失败数、`config_invalid`（`router holds --stats` 的 `rules` 字段同样有）。
 
 ## 已知局限（S3b）
 
@@ -546,7 +548,7 @@ M-133，设计见 M-117 的 S3b（Owner 2026-11-18 放行，只做 mouse 工作�
 1. 没有迁移。更新 daemon 用的 CLI（`router inbox-rules`）。
 2. 部署后先保持 `router_inbox_rules` 关闭，确认行为不变。
 3. 在 mouse 工作区执行 `multica router inbox-rules set --defaults --waiting-status started_2`（Owner 本人或 admin）；关闭开关时这一步不改变任何行为。
-4. 打开 `FF_ROUTER_INBOX_RULES=true`（需要重启，`router_hold_shadow` 已打开）。`multica router holds` 的新条目应带 `VERDICT`，`multica router inbox-rules` 的失败数为 0。
+4. 打开 `FF_ROUTER_INBOX_RULES=true`（需要重启，`router_hold_shadow` 已打开）。`multica router holds` 的新条目应带 `VERDICT`，`multica router inbox-rules` 的失败数和 `invalid stored rules` 都为 0，规则清单不显示 invalid。
 5. 攒够样本后用 `multica router inbox-rules report` 给 Owner 报误扣率；达到 Owner 定的阈值才开 S3c。
 
 ## 已知局限（S3a）
