@@ -3234,7 +3234,8 @@ type CreateIssueRequest struct {
 // CreateIssueResponse echoes the atomic PR setting without expanding issue reads.
 type CreateIssueResponse struct {
 	IssueResponse
-	PRAutoCompleteDisabled bool `json:"pr_auto_complete_disabled"`
+	PRAutoCompleteDisabled bool                           `json:"pr_auto_complete_disabled"`
+	SuperAgentScope        *agentrouter.CreatedIssueScope `json:"super_agent_scope,omitempty"` // mouse9527/multica fork (M-194)
 }
 
 // UnmarshalJSON rejects duplicate object members before Go's ordinary map
@@ -3754,7 +3755,8 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if req.PRAutoCompleteDisabled {
 		h.recordPRAutoCompleteActivity(r.Context(), issue, creatorType, actualCreatorID, true)
 	}
-	writeJSON(w, http.StatusCreated, CreateIssueResponse{IssueResponse: resp, PRAutoCompleteDisabled: req.PRAutoCompleteDisabled})
+	writeJSON(w, http.StatusCreated, CreateIssueResponse{IssueResponse: resp, PRAutoCompleteDisabled: req.PRAutoCompleteDisabled,
+		SuperAgentScope: h.superAgentCreatedIssueScope(r.Context(), r, workspaceID, issue, resp.Identifier)}) // mouse9527/multica fork (M-194)
 }
 
 type UpdateIssueRequest struct {
