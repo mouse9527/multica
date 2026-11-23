@@ -534,7 +534,10 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			return
 		}
 
-		registeredURL, err := d.ensureRepoReady(r.Context(), req.WorkspaceID, req.URL)
+		// Modified for the mouse9527/multica fork (M-168): the waits for a
+		// cache build and for a blobless cache's files share one budget.
+		ctx := repocache.WithWaitDeadline(r.Context(), time.Now().Add(repoCacheBuildWaitBudget))
+		registeredURL, err := d.ensureRepoReady(ctx, req.WorkspaceID, req.URL)
 		if err != nil {
 			if r.Context().Err() != nil {
 				d.logger.Debug("repo checkout readiness cancelled", "url", req.URL, "error", err)
@@ -582,7 +585,7 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 		if cache, ok := d.repoCache.(interface {
 			CreateWorktreeContext(context.Context, repocache.WorktreeParams) (*repocache.WorktreeResult, error)
 		}); ok {
-			result, err = cache.CreateWorktreeContext(r.Context(), params)
+			result, err = cache.CreateWorktreeContext(ctx, params)
 		} else {
 			result, err = d.repoCache.CreateWorktree(params)
 		}

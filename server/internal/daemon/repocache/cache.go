@@ -771,7 +771,7 @@ func runGitFetchContext(ctx context.Context, barePath string) error {
 	// Modified for the mouse9527/multica fork (M-161): recognize ref case
 	// conflicts (RefCaseConflictError) instead of reporting a plain failure.
 	if out, err := runGitFetchOutput(ctx, barePath); err != nil {
-		return classifyFetchError(out, err)
+		return classifyFetchError(out, err, func() []string { return storedRefNames(ctx, barePath) })
 	}
 	return nil
 }
