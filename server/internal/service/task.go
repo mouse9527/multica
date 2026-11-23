@@ -7999,7 +7999,8 @@ func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQu
 			session, sessionErr := s.Queries.GetChatSession(ctx, task.ChatSessionID)
 			origin, originErr := s.Queries.GetTaskChannelOrigin(ctx, task.ID)
 			if sessionErr == nil && originErr == nil && !origin.ChannelIngested &&
-				session.Status == "active" && !session.IsAgentIntro && util.UUIDToString(session.WorkspaceID) == workspaceID {
+				session.Status == "active" && !session.IsAgentIntro && util.UUIDToString(session.WorkspaceID) == workspaceID &&
+				chatReplyAlertAllowed(ctx, task, msg) { // mouse9527/multica fork (M-210)
 				title := strings.TrimSpace(session.Title)
 				if title == "" {
 					title = "Chat reply"
