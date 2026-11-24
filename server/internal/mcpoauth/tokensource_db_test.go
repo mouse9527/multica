@@ -294,8 +294,10 @@ func TestTransientRefreshFailureKeepsTheGrant(t *testing.T) {
 	if status := h.status(t); status.Status != StatusConnected {
 		t.Fatalf("status = %+v", status)
 	}
-	// The server recovers; the stored refresh token still works.
+	// The server recovers; once the retry window has passed the stored
+	// refresh token still works.
 	h.auth.fail = nil
+	h.clock.Advance(DefaultRetryAfterFailure)
 	h.mustToken(t, "at-2")
 	if status := h.status(t); status.LastError != "" {
 		t.Fatalf("status = %+v", status)
@@ -319,7 +321,28 @@ func TestTransientFailureAfterTheOldTokenExpired(t *testing.T) {
 	// The grant still works once the server answers.
 	h.auth.fail = nil
 	h.auth.during = nil
+	h.clock.Advance(DefaultRetryAfterFailure)
 	h.mustToken(t, "at-2")
+}
+
+// After a transient failure, callers within the retry window use the current
+// token without asking the token endpoint again.
+func TestTransientFailureBacksOff(t *testing.T) {
+	h := newTokenHarness(t, time.Hour, "rt-1")
+	h.auth.fail = errors.New("HTTP 503")
+	h.clock.Advance(time.Hour - time.Minute)
+	h.mustToken(t, "at-1")
+	h.clock.Advance(10 * time.Second)
+	h.mustToken(t, "at-1")
+	if n := h.auth.calls.Load(); n != 1 {
+		t.Fatalf("%d refreshes inside the retry window, want 1", n)
+	}
+	h.clock.Advance(DefaultRetryAfterFailure)
+	h.auth.fail = nil
+	h.mustToken(t, "at-2")
+	if n := h.auth.calls.Load(); n != 2 {
+		t.Fatalf("%d refreshes, want 2 once the window passed", n)
+	}
 }
 
 func TestWithoutRefreshToken(t *testing.T) {
