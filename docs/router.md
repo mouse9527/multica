@@ -49,7 +49,12 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 
 - **范围**：`issue_tree` 是根 issue 及其后代（最多 32 层），`project` 是项目里的 issue（按 issue 自己的 `project_id`）。
 - **最窄范围**：同一个智能体的多条订阅都覆盖某个 issue 时，事件只记到最窄的那条：离 issue 更近的树根优先，任何树优先于项目，同级取创建最早的。不同智能体各记各的。
-- **self**：事件的 actor 就是订阅的智能体时 `self=true`（S2 不会因为它派发运行）。对账补到的状态和处理人变化不知道 actor，`self=false`。
+- **self**：事件的 actor 是订阅的智能体，**并且**动作来自这个 Super Agent 自己的运行时，`self=true`（S2 不会因为它派发运行）。自己的运行只有两种：订阅绑定的 chat 里的轮次（批次轮次和 Owner 发起的轮次都算），以及派发为这条订阅启动的运行（含系统重试）。判定在 `run_origin.go` 的 `ownRunSQL`（M-193、M-233）。除此之外的动作都按别人的事件处理，能触发批次：
+  - 同一个智能体在 issue 任务（包括锚点 issue 上的普通任务）、别的 chat 里做的事；
+  - 服务端以这个智能体名义写的 issue 和评论，例如进化的分析、精简检查、提案 issue，提案上的补充证据和变差提示评论，自动化（autopilot）以智能体名义建的 issue；
+  - 找不到发起运行的动作：记录里没有运行，或者运行不是这个智能体的。M-193 时这类按「自己」处理，**M-233 去掉了这个保守默认**（Owner 2026-11-24）。
+- **怎么认出 Super Agent 自己的写入**：Super Agent 轮次通过 API 做的写入都会记下运行。评论记 `comment.source_task_id`（来自服务端可信的 `X-Task-ID`）；建 issue 记 `origin_type=agent_create` 加 `origin_id`；改状态、改处理人的 Bus 事件带 `ActorTaskID`（`UpdateIssue`、批量更新）；运行失败本身就是运行。快捷动作（quick action）由智能体执行时，评论现在也记 `source_task_id`（M-233 补上）。建 wakeup、订阅变更、通知都不是事件，不参与判定。对账补到的状态和处理人变化不知道 actor，`self=false`（与以前相同）。
+- **防自循环刹车（M-233，`self_loop.go`）**：如果某条写入路径以后丢了运行 id，Super Agent 会被自己叫醒。兜底规则：一条订阅**最近连续 5 次**运行都是只由它的智能体自己的事件启动的（批次里每个非 self 事件的 actor 都是这个智能体），而最近一次运行不到 15 分钟，那么下一批同样只有智能体事件的批次先不派发，事件留在待处理里。15 分钟后派发；期间任何别人的事件到来，批次立即派发，并带上积压的事件。刹车生效时给 Owner 发一条普通通知「Super Agent may be waking itself」，每条订阅每小时最多一条。什么都不丢，也不暂停订阅。代价：Super Agent 把活交给同一个智能体做时，执行者的进展也是「只有智能体」的批次，连续 5 批之后最多每 15 分钟进一次 chat。
 - **状态和处理人的 actor**：只有当事件负载里的 issue（状态、处理人、`updated_at`）就是记录变化时数据库里的状态，才记上事件的 actor；否则（这次变化之后又被别人改了）actor 留空。负载时间只精确到秒，同一秒内两次写入、字段又相同的，记到先处理的那个事件上。
 - 事件 `payload` 只放引用和变化的字段，不放评论正文。
 
@@ -263,7 +268,7 @@ Super Agent 只做分派、跟踪、转告，不自己干活。实质性工作�
 - 收件人是某个订阅的 Owner，这个订阅启用、未暂停，并绑定了一个 `active`、智能体相同的 chat 会话；
 - issue 在这个订阅的范围内（祖先链加项目）。收件人有多个这样的订阅时取最窄的那个（与 `pickNarrowest` 同一规则，跨智能体比较）；
 - 不在不扣名单里：`router_notice`（Super Agent 自己的通知，含暂停、故障通知）、连接应用的四类条目（`app_action_requested`、`app_action_reminder`、`app_connect_requested`、`app_action_result`）、`autopilot_paused`、`autopilot_quota_exceeded`、`quick_create_failed`、`quick_create_unconfirmed`；
-- 条目的 actor 不是这个订阅的智能体（Super Agent 自己的动作不扣）。
+- 条目不是 Super Agent 自己的动作。和事件的 self 规则相同：actor 是订阅的智能体，并且条目来自它自己运行写的评论（`details.comment_id` 指向的评论的 `source_task_id` 是 Super Agent 自己的运行），才不扣。没有评论的条目（状态变更、指派等）找不到运行，M-233 起按别人的动作处理，会被记为暂扣，在下一批里列出（影子模式，不影响收件箱）。这也包括 Super Agent 在自己 chat 里改状态带来的条目。改成真正暂扣之前，要给收件箱条目记下运行（例如 actor 的任务 id），否则 Owner 会收到 Super Agent 自己操作的通知；或者明确接受这点噪声。
 
 订阅集合按 30 秒缓存（与捕获相同），订阅变更会让本进程的缓存立刻失效；派发自动暂停不改代数，最多 30 秒后生效。判定只对「收件人有绑定 chat 的订阅」的条目查库（一条递归查询取祖先链和项目），其他条目只读内存。
 
@@ -409,7 +414,7 @@ Super Agent 的使用说明不再作为 skill 维护（手工导入的 skill 不
 
 ## 已知局限（并行，M-104）
 
-- `self` 仍按智能体判定：同一个智能体的 Super Agent 1 在 Super Agent 2 的范围里做的事，对 Super Agent 2 也算 `self`，不会触发 Super Agent 2 的批次（只跟着下一批被标为已消费）。范围通常不交叉（事件只投最窄订阅，Owner 已认可）；需要交叉时，用不同的智能体。
+- （M-193 起已不成立）原来 `self` 按智能体判定，同一个智能体的 Super Agent 1 在 Super Agent 2 的范围里做的事，对 Super Agent 2 也算 `self`。现在按运行判定（见「捕获什么」的 self）：Super Agent 1 的 chat 轮次不是 Super Agent 2 的运行，会触发 Super Agent 2 的批次。范围通常不交叉（事件只投最窄订阅，Owner 已认可）。
 - 同一个智能体的两条锚点订阅共用一个锚点 issue 时，受上游「同一 issue 同一智能体」唯一索引和认领串行限制，仍然排队。
 
 ## 已知局限（页面设置，M-105）
