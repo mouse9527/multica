@@ -46,12 +46,20 @@ type mcpOAuthCredentialFetcher func(ctx context.Context, serverID, rejectedHash 
 
 const (
 	// mcpOAuthProxyMaxBody bounds one MCP request body, which the proxy
-	// buffers so it can resend it once with a fresh token after a 401.
+	// buffers so it can resend it once with a fresh token after a 401. It
+	// matches the Remote MCP client's response cap (remotemcp.MaxResponseBytes):
+	// a JSON-RPC call larger than that is not a tool call this proxy should
+	// hold in memory. A larger body gets 413 and the runtime sees the error.
 	mcpOAuthProxyMaxBody = 4 << 20
 	// mcpOAuthCredentialSlack: a cached token that expires within it is
 	// fetched again before use.
-	mcpOAuthCredentialSlack        = time.Minute
-	mcpOAuthCredentialFetchTimeout = 20 * time.Second
+	mcpOAuthCredentialSlack = time.Minute
+	// mcpOAuthCredentialFetchTimeout bounds one credential fetch. It runs
+	// under the proxy's lock on purpose (one fetch at a time, so a 401 burst
+	// asks the server once), so it also bounds how long a parallel call can
+	// wait behind it. The server answers from its cache unless a refresh is
+	// due, and its own refresh is bounded at 10s.
+	mcpOAuthCredentialFetchTimeout = 10 * time.Second
 )
 
 // hopHeaders are not forwarded in either direction, and the runtime's own
@@ -82,20 +90,27 @@ type mcpOAuthProxy struct {
 	cached *mcpOAuthCredential
 }
 
-func newMCPOAuthProxy(server MCPOAuthProxyServerData, fetch mcpOAuthCredentialFetcher, logger *slog.Logger) (*mcpOAuthProxy, error) {
+// newMCPOAuthProxy builds the proxy for one server. Only an HTTPS target is
+// served: the server stores nothing else, and a token must not travel in the
+// clear. transport is nil in production (a fresh clone of the default);
+// tests pass one that trusts their TLS server.
+func newMCPOAuthProxy(server MCPOAuthProxyServerData, fetch mcpOAuthCredentialFetcher, transport http.RoundTripper, logger *slog.Logger) (*mcpOAuthProxy, error) {
 	target, err := url.Parse(server.URL)
-	if err != nil || (target.Scheme != "https" && target.Scheme != "http") || target.Host == "" {
+	if err != nil || target.Scheme != "https" || target.Host == "" || target.User != nil {
 		return nil, fmt.Errorf("MCP OAuth server %q has an unusable URL", server.Name)
 	}
 	pathToken := make([]byte, 24)
 	if _, err := rand.Read(pathToken); err != nil {
 		return nil, err
 	}
-	transport := httptransport.CloneDefault().(*http.Transport)
-	// MCP over HTTP answers with a stream for as long as the call runs, so
-	// there is no overall client timeout; only the wait for headers is
-	// bounded.
-	transport.ResponseHeaderTimeout = 2 * time.Minute
+	if transport == nil {
+		defaultTransport := httptransport.CloneDefault().(*http.Transport)
+		// MCP over HTTP answers with a stream for as long as the call runs,
+		// so there is no overall client timeout; only the wait for headers
+		// is bounded.
+		defaultTransport.ResponseHeaderTimeout = 2 * time.Minute
+		transport = defaultTransport
+	}
 	return &mcpOAuthProxy{
 		name: server.Name, serverID: server.ServerID, target: target,
 		path:  "/" + hex.EncodeToString(pathToken),
@@ -287,6 +302,10 @@ func (s *mcpOAuthProxySet) Close() {
 	})
 }
 
+// mcpOAuthConfigUnreadableNotice is the transcript line when the run's MCP
+// config could not be parsed to withhold the OAuth server names.
+const mcpOAuthConfigUnreadableNotice = "No MCP servers were mounted for this run: its MCP configuration could not be read."
+
 // mcpOAuthMountInput is what applyMCPOAuthServers needs about the run.
 type mcpOAuthMountInput struct {
 	Agent    *AgentData
@@ -299,7 +318,9 @@ type mcpOAuthMountInput struct {
 	// config (mergeRuntimeAndAgentMcpConfig in production).
 	RuntimeConfig func(json.RawMessage) (json.RawMessage, error)
 	Fetch         mcpOAuthCredentialFetcher
-	Logger        *slog.Logger
+	// Transport is the proxies' upstream transport; nil means the default.
+	Transport http.RoundTripper
+	Logger    *slog.Logger
 }
 
 // applyMCPOAuthServers makes the run's MCP config honor the server's OAuth
@@ -343,8 +364,11 @@ func applyMCPOAuthServers(in mcpOAuthMountInput) (json.RawMessage, *mcpOAuthProx
 	}
 	effective, err := withholdMCPServerNames(effective, withheld)
 	if err != nil {
+		// It cannot be checked for the withheld names, so none of it is
+		// mounted; the transcript says so rather than tools going missing
+		// without a word.
 		in.Logger.Warn("MCP OAuth: run MCP config does not parse; mounting no MCP servers", "error", err)
-		return json.RawMessage(`{"mcpServers":{}}`), nil, nil
+		return json.RawMessage(`{"mcpServers":{}}`), nil, []string{mcpOAuthConfigUnreadableNotice}
 	}
 
 	set := newMCPOAuthProxySet()
@@ -359,7 +383,7 @@ func applyMCPOAuthServers(in mcpOAuthMountInput) (json.RawMessage, *mcpOAuthProx
 			notices = append(notices, fmt.Sprintf("MCP server %q was not mounted: OAuth MCP servers are not supported with the %s runtime yet.", server.Name, in.Provider))
 			continue
 		}
-		proxy, err := newMCPOAuthProxy(server, in.Fetch, in.Logger)
+		proxy, err := newMCPOAuthProxy(server, in.Fetch, in.Transport, in.Logger)
 		if err != nil {
 			notices = append(notices, fmt.Sprintf("MCP server %q was not mounted: its URL cannot be used.", server.Name))
 			continue

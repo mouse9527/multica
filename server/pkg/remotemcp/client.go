@@ -50,6 +50,12 @@ func ValidatePublicHTTPSEndpoint(ctx context.Context, raw string, allowedHosts [
 		return nil, errors.New("endpoint must be a public HTTPS URL without userinfo, query, or fragment")
 	}
 	host := strings.ToLower(strings.TrimSuffix(endpoint.Hostname(), "."))
+	// Modified for the mouse9527/multica fork (M-230): an exact origin the
+	// caller allowed through its context skips only the public-address rule
+	// (allowed_origins_fork.go).
+	if originAllowedByContext(ctx, endpoint) && (len(allowedHosts) == 0 || hostAllowed(host, allowedHosts)) {
+		return endpoint, nil
+	}
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return nil, errors.New("endpoint host is not public")
 	}
@@ -146,7 +152,9 @@ func NewSecureHTTPClient(endpoint *url.URL) *http.Client {
 			// The host pin above still holds for a dev origin, so a redirect
 			// pointing somewhere else is refused either way. What this skips is
 			// only "the address must be on the public internet".
-			if !devOrigin && !isPublicAddress(candidate) {
+			// Modified for the mouse9527/multica fork (M-230): see
+			// originAllowedByContext.
+			if !devOrigin && !isPublicAddress(candidate) && !originAllowedByContext(ctx, endpoint) {
 				return nil, errors.New("remote MCP endpoint resolved to a non-public address")
 			}
 			connection, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(candidate.String(), port))

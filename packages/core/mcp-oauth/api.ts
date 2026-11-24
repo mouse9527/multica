@@ -19,8 +19,17 @@ import type {
   McpOAuthServerList,
 } from "./types";
 
+// Callers pass headers as a plain object; they are kept, and the workspace
+// headers are added on top.
 function scoped(wsId: string, init: RequestInit = {}): RequestInit {
-  return { ...init, headers: { "X-Workspace-Slug": "", "X-Workspace-ID": wsId } };
+  return {
+    ...init,
+    headers: {
+      ...(init.headers as Record<string, string> | undefined),
+      "X-Workspace-Slug": "",
+      "X-Workspace-ID": wsId,
+    },
+  };
 }
 
 function base(agentId: string): string {

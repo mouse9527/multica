@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
@@ -380,10 +381,14 @@ func (h *Handler) ConnectAgentMCPOAuthServer(w http.ResponseWriter, r *http.Requ
 
 // safeReturnPath keeps only an app-relative path, so the page that finishes a
 // connect cannot be made to send the browser to another site.
+//
+// Any control character refuses the path: browsers delete tab, CR and LF
+// from a URL before parsing it, so "/\t/evil.example" would become
+// "//evil.example", another site, after this check had passed.
 func safeReturnPath(path string) string {
 	path = strings.TrimSpace(path)
 	if len(path) > 2048 || !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") ||
-		strings.HasPrefix(path, "/\\") || strings.ContainsAny(path, "\r\n") {
+		strings.HasPrefix(path, "/\\") || strings.IndexFunc(path, unicode.IsControl) >= 0 {
 		return ""
 	}
 	return path

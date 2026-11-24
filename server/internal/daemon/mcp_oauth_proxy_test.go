@@ -17,8 +17,9 @@ import (
 	"time"
 )
 
-// upstreamMCP is a fake OAuth-protected MCP server that records what reached
-// it and accepts only the token in want.
+// upstreamMCP is a fake OAuth-protected MCP server over HTTPS (the proxy
+// serves no other target) that records what reached it and accepts only the
+// token in want.
 type upstreamMCP struct {
 	srv  *httptest.Server
 	mu   sync.Mutex
@@ -30,7 +31,7 @@ type upstreamMCP struct {
 func newUpstreamMCP(t *testing.T, want string, handler http.HandlerFunc) *upstreamMCP {
 	t.Helper()
 	u := &upstreamMCP{want: want}
-	u.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	u.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		u.mu.Lock()
 		u.seen = append(u.seen, r.Clone(context.Background()))
@@ -87,16 +88,17 @@ func (f *countingFetcher) fetch(_ context.Context, serverID, rejectedHash string
 	}, nil
 }
 
-func startTestProxy(t *testing.T, upstream string, fetch mcpOAuthCredentialFetcher) (string, *mcpOAuthProxySet) {
+func startTestProxy(t *testing.T, upstream *upstreamMCP, fetch mcpOAuthCredentialFetcher) (string, *mcpOAuthProxySet) {
 	t.Helper()
 	config, set, notices := applyMCPOAuthServers(mcpOAuthMountInput{
 		Agent: &AgentData{
 			MCPOAuthNames: []string{"gateway"},
-			MCPOAuthProxy: []MCPOAuthProxyServerData{{Name: "gateway", ServerID: "srv-1", URL: upstream + "/mcp"}},
+			MCPOAuthProxy: []MCPOAuthProxyServerData{{Name: "gateway", ServerID: "srv-1", URL: upstream.srv.URL + "/mcp"}},
 		},
 		Provider:  "claude",
 		Effective: json.RawMessage(`{"mcpServers":{}}`),
 		Fetch:     fetch,
+		Transport: upstream.srv.Client().Transport,
 		Logger:    quietTaskLog(),
 	})
 	if len(notices) != 0 || set == nil {
@@ -143,7 +145,7 @@ func postMCP(t *testing.T, url, body string, header http.Header) *http.Response 
 func TestMCPOAuthProxyForwardsWithTheFetchedToken(t *testing.T) {
 	upstream := newUpstreamMCP(t, "tok-1", nil)
 	fetcher := &countingFetcher{tokens: []string{"tok-1"}, ttl: time.Hour}
-	proxyURL, _ := startTestProxy(t, upstream.srv.URL, fetcher.fetch)
+	proxyURL, _ := startTestProxy(t, upstream, fetcher.fetch)
 
 	header := http.Header{
 		"Authorization":  {"Bearer runtime-own-token"},
@@ -179,7 +181,7 @@ func TestMCPOAuthProxyForwardsWithTheFetchedToken(t *testing.T) {
 func TestMCPOAuthProxyRefetchesAnExpiringToken(t *testing.T) {
 	upstream := newUpstreamMCP(t, "tok-1", nil)
 	fetcher := &countingFetcher{tokens: []string{"tok-1"}, ttl: mcpOAuthCredentialSlack / 2}
-	proxyURL, _ := startTestProxy(t, upstream.srv.URL, fetcher.fetch)
+	proxyURL, _ := startTestProxy(t, upstream, fetcher.fetch)
 	for i := 0; i < 3; i++ {
 		if resp := postMCP(t, proxyURL, `{}`, nil); resp.StatusCode != http.StatusOK {
 			t.Fatalf("call %d: %d", i, resp.StatusCode)
@@ -195,7 +197,7 @@ func TestMCPOAuthProxyRefetchesAnExpiringToken(t *testing.T) {
 func TestMCPOAuthProxyRetriesOnceAfter401(t *testing.T) {
 	upstream := newUpstreamMCP(t, "tok-2", nil)
 	fetcher := &countingFetcher{tokens: []string{"tok-1", "tok-2"}, ttl: time.Hour}
-	proxyURL, _ := startTestProxy(t, upstream.srv.URL, fetcher.fetch)
+	proxyURL, _ := startTestProxy(t, upstream, fetcher.fetch)
 
 	resp := postMCP(t, proxyURL, `{"id":7}`, nil)
 	if resp.StatusCode != http.StatusOK {
@@ -230,7 +232,7 @@ func TestMCPOAuthProxyRetriesOnceAfter401(t *testing.T) {
 func TestMCPOAuthProxyWithoutACredentialCallsNothing(t *testing.T) {
 	upstream := newUpstreamMCP(t, "tok-1", nil)
 	fetcher := &countingFetcher{err: errors.New("GET credential returned 409: needs reconnect")}
-	proxyURL, _ := startTestProxy(t, upstream.srv.URL, fetcher.fetch)
+	proxyURL, _ := startTestProxy(t, upstream, fetcher.fetch)
 	if resp := postMCP(t, proxyURL, `{}`, nil); resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status %d, want 502", resp.StatusCode)
 	}
@@ -244,7 +246,7 @@ func TestMCPOAuthProxyWithoutACredentialCallsNothing(t *testing.T) {
 func TestMCPOAuthProxyServesOnlyItsPath(t *testing.T) {
 	upstream := newUpstreamMCP(t, "tok-1", nil)
 	fetcher := &countingFetcher{tokens: []string{"tok-1"}, ttl: time.Hour}
-	proxyURL, _ := startTestProxy(t, upstream.srv.URL, fetcher.fetch)
+	proxyURL, _ := startTestProxy(t, upstream, fetcher.fetch)
 	base := proxyURL[:strings.LastIndex(proxyURL, "/")]
 	if resp := postMCP(t, base+"/guess", `{}`, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status %d, want 404", resp.StatusCode)
@@ -266,7 +268,7 @@ func TestMCPOAuthProxyStreamsEvents(t *testing.T) {
 		_, _ = io.WriteString(w, "data: second\n\n")
 	})
 	fetcher := &countingFetcher{tokens: []string{"tok-1"}, ttl: time.Hour}
-	proxyURL, _ := startTestProxy(t, upstream.srv.URL, fetcher.fetch)
+	proxyURL, _ := startTestProxy(t, upstream, fetcher.fetch)
 
 	resp := postMCP(t, proxyURL, `{}`, nil)
 	reader := bufio.NewReader(resp.Body)
@@ -356,6 +358,40 @@ func TestApplyMCPOAuthServersWithholdsNames(t *testing.T) {
 		}
 	})
 
+	t.Run("an unreadable run config: nothing is mounted, and the transcript says so", func(t *testing.T) {
+		config, set, notices := applyMCPOAuthServers(mcpOAuthMountInput{
+			Agent: agent, Provider: "claude", Effective: json.RawMessage(`{"mcpServers":`),
+			Fetch: fetcher.fetch, Logger: quietTaskLog(),
+		})
+		if set != nil || string(config) != `{"mcpServers":{}}` {
+			t.Fatalf("config = %s", config)
+		}
+		if len(notices) != 1 || notices[0] != mcpOAuthConfigUnreadableNotice {
+			t.Fatalf("notices = %v", notices)
+		}
+	})
+
+	t.Run("a target that is not HTTPS is not proxied", func(t *testing.T) {
+		before := fetcher.calls.Load()
+		config, set, notices := applyMCPOAuthServers(mcpOAuthMountInput{
+			Agent: &AgentData{
+				MCPOAuthNames: []string{"gateway"},
+				MCPOAuthProxy: []MCPOAuthProxyServerData{{Name: "gateway", ServerID: "srv-1", URL: "http://mcp.example.com/mcp"}},
+			},
+			Provider: "claude", Effective: json.RawMessage(`{"mcpServers":{}}`),
+			Fetch: fetcher.fetch, Logger: quietTaskLog(),
+		})
+		if set != nil || len(decode(t, config)) != 0 {
+			t.Fatalf("set = %v, config = %s", set, config)
+		}
+		if len(notices) != 1 || !strings.Contains(notices[0], `"gateway"`) {
+			t.Fatalf("notices = %v", notices)
+		}
+		if fetcher.calls.Load() != before {
+			t.Fatal("a token was fetched for a plain-HTTP target")
+		}
+	})
+
 	t.Run("names unreadable on the server: nothing is mounted", func(t *testing.T) {
 		config, set, _ := applyMCPOAuthServers(mcpOAuthMountInput{
 			Agent: &AgentData{MCPOAuthWithholdAll: true}, Provider: "claude",
@@ -392,7 +428,7 @@ func TestMCPOAuthProxySetCloseEndsOpenStreams(t *testing.T) {
 		<-r.Context().Done()
 	})
 	fetcher := &countingFetcher{tokens: []string{"tok-1"}, ttl: time.Hour}
-	proxyURL, set := startTestProxy(t, upstream.srv.URL, fetcher.fetch)
+	proxyURL, set := startTestProxy(t, upstream, fetcher.fetch)
 
 	resp := postMCP(t, proxyURL, `{}`, nil)
 	reader := bufio.NewReader(resp.Body)
@@ -429,7 +465,7 @@ func TestMCPOAuthProxySetCloseEndsOpenStreams(t *testing.T) {
 func TestMCPOAuthProxySetClose(t *testing.T) {
 	upstream := newUpstreamMCP(t, "tok-1", nil)
 	fetcher := &countingFetcher{tokens: []string{"tok-1"}, ttl: time.Hour}
-	proxyURL, set := startTestProxy(t, upstream.srv.URL, fetcher.fetch)
+	proxyURL, set := startTestProxy(t, upstream, fetcher.fetch)
 	set.Close()
 	set.Close() // idempotent
 	if _, err := http.Post(proxyURL, "application/json", strings.NewReader(`{}`)); err == nil {

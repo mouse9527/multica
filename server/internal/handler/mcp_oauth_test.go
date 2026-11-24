@@ -481,6 +481,9 @@ func TestSafeReturnPath(t *testing.T) {
 		"/\\evil.example":      "",
 		"relative":             "",
 		"/a\r\nb":              "",
+		"/\t/evil.example":     "",
+		"/a\x00b":              "",
+		"/a\x7fb":              "",
 	} {
 		if got := safeReturnPath(in); got != want {
 			t.Errorf("safeReturnPath(%q) = %q, want %q", in, got, want)

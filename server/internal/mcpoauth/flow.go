@@ -56,7 +56,8 @@ var (
 
 // Flow runs the authorization code flow with PKCE (S256), state and the
 // RFC 8707 resource parameter. Every protocol step is pkg/remotemcp's, which
-// only reaches public HTTPS endpoints and follows no redirects.
+// only reaches public HTTPS endpoints (plus the operator's exact origins in
+// AllowedOriginsEnv) and follows no redirects.
 type Flow struct {
 	Store *Store
 }
@@ -65,6 +66,7 @@ type Flow struct {
 // 8414 or OIDC), dynamic client registration (RFC 7591), a PKCE verifier and
 // a one-time state. It returns the URL to send the browser to.
 func (f Flow) Start(ctx context.Context, server Server, userID, redirectURI, returnTo string) (string, error) {
+	ctx = withAllowedOrigins(ctx)
 	metadata, err := remotemcp.DiscoverOAuth(ctx, server.URL, nil)
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrDiscovery, err)
@@ -118,7 +120,7 @@ func (f Flow) Complete(ctx context.Context, state, code, userID string, check fu
 	if strings.TrimSpace(code) == "" {
 		return pending, ErrAuthorizationDenied
 	}
-	token, err := remotemcp.ExchangeOAuthCode(ctx, pending.TokenEndpoint, pending.Resource, code,
+	token, err := remotemcp.ExchangeOAuthCode(withAllowedOrigins(ctx), pending.TokenEndpoint, pending.Resource, code,
 		pending.RedirectURI, pending.Verifier.Reveal(), pending.Client.registration())
 	if err != nil {
 		return pending, fmt.Errorf("%w: %w", ErrExchange, err)
@@ -150,7 +152,7 @@ func (f Flow) Complete(ctx context.Context, state, code, userID string, check fu
 // refreshes would pass as transient and a dead connection would never ask for
 // a reconnect, so that test must fail first.
 func Refresh(ctx context.Context, req RefreshRequest) (remotemcp.OAuthTokenResponse, error) {
-	response, err := remotemcp.RefreshOAuthToken(ctx, req.TokenEndpoint, req.Resource, req.RefreshToken.Reveal(), req.Client)
+	response, err := remotemcp.RefreshOAuthToken(withAllowedOrigins(ctx), req.TokenEndpoint, req.Resource, req.RefreshToken.Reveal(), req.Client)
 	if err != nil {
 		switch err.Error() {
 		case "HTTP 400", "HTTP 401":
