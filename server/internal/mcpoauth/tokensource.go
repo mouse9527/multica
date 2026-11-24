@@ -171,11 +171,11 @@ func (row connectionRow) stillValid(now time.Time) bool {
 // (try again later; the grant is kept). The caller decides what a task does
 // without the server — the claim path mounts nothing and tells the task why.
 func (s *TokenSource) Credential(ctx context.Context, serverID, userID string) (Credential, error) {
-	now := s.store.now()
 	row, err := loadConnection(ctx, s.store.db, serverID, userID, false)
 	if err != nil {
 		return Credential{}, err
 	}
+	now := s.store.now()
 	if row.status == StatusNeedsReconnect {
 		return Credential{}, ErrNeedsReconnect
 	}
@@ -271,15 +271,19 @@ func (s *TokenSource) refreshLocked(ctx context.Context, serverID, userID string
 		}
 		// Transient. The error text is not logged: it comes from the network.
 		s.logger.Warn("mcp oauth: refresh failed; keeping the grant", "server_id", serverID, "user_id", userID)
+		// The call may have taken until RefreshTimeout, so whether the old
+		// token is still usable is judged at the time it failed, not at the
+		// time it started.
+		failedAt := s.store.now()
 		if _, err := tx.Exec(work, `
 			UPDATE mcp_oauth_connection SET last_error = $3, updated_at = $4
-			WHERE server_id = $1::uuid AND user_id = $2::uuid`, serverID, userID, ReasonRefreshFailed, now); err != nil {
+			WHERE server_id = $1::uuid AND user_id = $2::uuid`, serverID, userID, ReasonRefreshFailed, failedAt); err != nil {
 			return Credential{}, err
 		}
 		if err := tx.Commit(work); err != nil {
 			return Credential{}, err
 		}
-		if row.stillValid(now) {
+		if row.stillValid(failedAt) {
 			return s.credential(ctx, serverID, userID, row)
 		}
 		return Credential{}, ErrUnavailable
@@ -301,6 +305,8 @@ func (s *TokenSource) refreshLocked(ctx context.Context, serverID, userID string
 	if err != nil {
 		return Credential{}, err
 	}
+	// The lifetime is counted from before the request was sent, so the
+	// stored expiry is never later than the server's.
 	expiry := expiryArg(now, response.ExpiresIn)
 	if _, err := tx.Exec(work, `
 		UPDATE mcp_oauth_connection SET

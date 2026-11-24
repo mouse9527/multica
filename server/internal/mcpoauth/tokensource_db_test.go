@@ -31,7 +31,10 @@ type fakeAuthServer struct {
 	fail error
 	// gate, when set, blocks every refresh until it is closed.
 	gate chan struct{}
-	seen []RefreshRequest
+	// during, when set, runs inside every refresh call, as time passing
+	// while the token endpoint answers.
+	during func()
+	seen   []RefreshRequest
 }
 
 func (a *fakeAuthServer) refresh(ctx context.Context, req RefreshRequest) (remotemcp.OAuthTokenResponse, error) {
@@ -42,6 +45,9 @@ func (a *fakeAuthServer) refresh(ctx context.Context, req RefreshRequest) (remot
 		case <-ctx.Done():
 			return remotemcp.OAuthTokenResponse{}, ctx.Err()
 		}
+	}
+	if a.during != nil {
+		a.during()
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -294,6 +300,26 @@ func TestTransientRefreshFailureKeepsTheGrant(t *testing.T) {
 	if status := h.status(t); status.LastError != "" {
 		t.Fatalf("status = %+v", status)
 	}
+}
+
+// The old token expires while the failing refresh is in flight. It must be
+// judged at the time the refresh failed: handing it out would mount a server
+// whose every call is answered 401.
+func TestTransientFailureAfterTheOldTokenExpired(t *testing.T) {
+	h := newTokenHarness(t, time.Hour, "rt-1")
+	h.auth.fail = errors.New("HTTP 503")
+	h.auth.during = func() { h.clock.Advance(5 * time.Second) }
+	h.clock.Advance(time.Hour - 2*time.Second)
+	if _, err := h.credential(t); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v, want ErrUnavailable", err)
+	}
+	if status := h.status(t); status.Status != StatusConnected || status.LastError != ReasonRefreshFailed {
+		t.Fatalf("status = %+v, want the grant kept", status)
+	}
+	// The grant still works once the server answers.
+	h.auth.fail = nil
+	h.auth.during = nil
+	h.mustToken(t, "at-2")
 }
 
 func TestWithoutRefreshToken(t *testing.T) {
