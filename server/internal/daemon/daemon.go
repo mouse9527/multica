@@ -9473,6 +9473,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// keep ascending seq values for the same task.
 	var msgSeq atomic.Int32
 	d.reportThinkingLevelWarning(ctx, task.ID, selection.ThinkingLevelWarning, &msgSeq, taskLog)
+	// mouse9527/multica fork: OAuth MCP servers left out of this run (M-230).
+	d.reportMCPOAuthNotices(ctx, task, &msgSeq, taskLog)
 	var pendingCursorLoginCheck *cursorMcpLoginCheck
 	if provider == "cursor" && (env.CursorDataDir != "" || env.CursorUserDataDir != "") {
 		check := cursorMcpLoginCheck{

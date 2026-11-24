@@ -267,6 +267,30 @@ func (s *Store) ListServersForAgent(ctx context.Context, workspaceID, agentID st
 	return out, rows.Err()
 }
 
+// ListServerNamesForAgent returns the names the agent's OAuth MCP servers
+// take in its mcpServers, ordered. It opens no secret, so a claim can hold
+// those names back from the agent's other MCP config even when the
+// deployment key is missing.
+func ListServerNamesForAgent(ctx context.Context, q Querier, workspaceID, agentID string) ([]string, error) {
+	rows, err := q.Query(ctx, `
+		SELECT name FROM mcp_oauth_server
+		WHERE workspace_id = $1::uuid AND agent_id = $2::uuid
+		ORDER BY name`, workspaceID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	names := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
 // DeleteServer removes a server with its connections and pending
 // authorizations. There are no foreign keys, so this is the cascade.
 func (s *Store) DeleteServer(ctx context.Context, workspaceID, serverID string) error {
