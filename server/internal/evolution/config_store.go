@@ -81,6 +81,9 @@ func SaveConfig(ctx context.Context, database Database, queries *db.Queries, pub
 	if err != nil {
 		return State{}, err
 	}
+	if err := checkOutputProject(ctx, database, req.WorkspaceID, cfg); err != nil {
+		return State{}, err
+	}
 	now := req.Now.UTC().Truncate(time.Microsecond)
 
 	startChat := cfg.ChatWanted() && !prev.ChatActive

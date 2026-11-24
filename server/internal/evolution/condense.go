@@ -392,6 +392,7 @@ func (s *Scheduler) startReview(ctx context.Context, wa workspaceAgent, cfg Conf
 		WorkspaceID:    util.MustParseUUID(wa.WorkspaceID),
 		Title:          reviewTitle(wa.AgentName, period),
 		Description:    pgtype.Text{String: reviewDescription(review, cfg), Valid: true},
+		ProjectID:      outputProject(ctx, s.DB, wa.WorkspaceID, cfg),
 		Status:         "todo",
 		Priority:       "none",
 		AssigneeType:   pgtype.Text{String: "agent", Valid: true},

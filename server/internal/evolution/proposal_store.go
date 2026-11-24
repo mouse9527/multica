@@ -232,6 +232,7 @@ func (s *Proposals) File(ctx context.Context, req FileRequest) (FileResult, erro
 			lang: lang, p: p, snap: snap, evidence: evidence, runIssueID: run.IssueID, runIdentifier: runIssue,
 			loc: req.Config.Location(), measure: measure, proposedRunes: utf8.RuneCountInString(proposed), cfg: req.Config,
 		}.render(), Valid: true},
+		ProjectID: outputProject(ctx, s.DB, req.WorkspaceID, req.Config),
 		// Unassigned and parked: a proposal waits for an owner and starts
 		// nothing.
 		Status:         "backlog",
