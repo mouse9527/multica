@@ -422,10 +422,12 @@ func (s *Scheduler) startRun(ctx context.Context, wa workspaceAgent, plan runPla
 	}
 
 	wsID, agentID := util.MustParseUUID(wa.WorkspaceID), util.MustParseUUID(wa.AgentID)
+	cfg := ConfigFromSettings(wa.Settings)
 	created, err := s.Issues.Create(ctx, service.IssueCreateParams{
 		WorkspaceID:    wsID,
-		Title:          runTitle(wa.AgentName, plan, now, ConfigFromSettings(wa.Settings)),
+		Title:          runTitle(wa.AgentName, plan, now, cfg),
 		Description:    pgtype.Text{String: runDescription(run, cursors), Valid: true},
+		ProjectID:      outputProject(ctx, s.DB, wa.WorkspaceID, cfg),
 		Status:         "todo",
 		Priority:       "none",
 		AssigneeType:   pgtype.Text{String: "agent", Valid: true},

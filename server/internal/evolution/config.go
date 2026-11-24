@@ -1,6 +1,6 @@
 // Added by the mouse9527/multica fork: Evolution P2, configuration (M-136);
 // P3 proposal bounds (M-137); P5 effect measurement (M-139);
-// P6 the monthly condense review (M-140).
+// P6 the monthly condense review (M-140); the output project (M-231).
 
 package evolution
 
@@ -142,6 +142,13 @@ type Config struct {
 	// CondenseRepeatPercent: instructions in which at least this share of
 	// lines repeats an earlier line are reviewed.
 	CondenseRepeatPercent int `json:"condense_repeat_percent"`
+
+	// OutputProjectID (M-231) is the project every issue Evolution opens is
+	// filed into: analysis and catch-up runs, condense reviews, proposals.
+	// Empty means no project. Saving checks the project exists and is not
+	// private; one deleted, archived, or made private later is skipped when an
+	// issue is opened (see outputProject).
+	OutputProjectID string `json:"output_project_id"`
 }
 
 // Schedule is when the daily analysis starts: at Time in Timezone, every
@@ -279,6 +286,7 @@ func (c Config) clamped() Config {
 	}
 	c.ExcludeProjects = validUUIDs(c.ExcludeProjects)
 	c.ExcludeAgents = validUUIDs(c.ExcludeAgents)
+	c.OutputProjectID = normalizedUUID(c.OutputProjectID)
 	return c
 }
 
@@ -394,6 +402,11 @@ func (c Config) Validate() error {
 			}
 		}
 	}
+	if id := strings.TrimSpace(c.OutputProjectID); id != "" {
+		if _, err := util.ParseUUID(id); err != nil {
+			return invalidf("output_project_id: %q is not a uuid", c.OutputProjectID)
+		}
+	}
 	return nil
 }
 
@@ -403,6 +416,7 @@ func (c Config) normalized() Config {
 	c = c.withProposalDefaults()
 	c.ExcludeProjects = validUUIDs(c.ExcludeProjects)
 	c.ExcludeAgents = validUUIDs(c.ExcludeAgents)
+	c.OutputProjectID = normalizedUUID(c.OutputProjectID)
 	return c
 }
 
@@ -454,4 +468,13 @@ func validUUIDs(ids []string) []string {
 		}
 	}
 	return out
+}
+
+// normalizedUUID is id lower-cased and trimmed, or empty when it is not a uuid.
+func normalizedUUID(id string) string {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if _, err := util.ParseUUID(id); err != nil {
+		return ""
+	}
+	return id
 }

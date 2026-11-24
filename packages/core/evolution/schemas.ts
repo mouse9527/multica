@@ -1,4 +1,4 @@
-// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-137, M-138, M-139, M-140).
+// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-137, M-138, M-139, M-140, M-231).
 
 import { z } from "zod";
 
@@ -54,6 +54,9 @@ export const EvolutionConfigSchema = z.object({
   condense_day_of_month: z.number().int().catch(1),
   condense_min_runes: z.number().int().catch(6000),
   condense_repeat_percent: z.number().int().catch(15),
+  // M-231: the project Evolution's issues go into ("" for none). Kept so a
+  // save round-trips it.
+  output_project_id: z.string().nullable().catch("").transform((v) => v ?? ""),
 });
 
 export const EvolutionRunSchema = z.object({
