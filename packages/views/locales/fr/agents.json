@@ -286,6 +286,7 @@
     "custom_args": "Arguments personnalisés",
     "mcp_config": "MCP",
     "composio_mcp": "Apps",
+    "mcp_oauth": "MCP OAuth",
     "integrations": "Intégrations",
     "runtime_config": "Routage",
     "qoder_agent": "Qoder Cloud Agents",

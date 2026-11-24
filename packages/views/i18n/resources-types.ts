@@ -32,6 +32,8 @@ import type router from "../locales/en/router.json";
 // Modified by the mouse9527/multica fork (M-43): the password login namespace.
 import type passwordauth from "../locales/en/passwordauth.json";
 import type evolution from "../locales/en/evolution.json";
+// mouse9527/multica fork (M-230): the OAuth MCP namespace.
+import type mcpoauth from "../locales/en/mcpoauth.json";
 
 // Module augmentation enables i18next v26 selector API across the monorepo:
 // `t($ => $.signin.title)` resolves to the value in en/auth.json.
@@ -76,6 +78,7 @@ declare global {
     router: typeof router;
     passwordauth: typeof passwordauth;
     evolution: typeof evolution;
+    mcpoauth: typeof mcpoauth;
   }
 }
 

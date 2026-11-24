@@ -1,0 +1,49 @@
+{
+  "title": "OAuth MCP サーバー",
+  "hint": "実行はエージェントのオーナーの接続でサインインします。Claude、Codex、Hermes、Qoder、mcode ランタイムで使えます。",
+  "add": "サーバーを追加",
+  "loading": "OAuth MCP サーバーを読み込み中…",
+  "load_failed": "OAuth MCP サーバーを読み込めませんでした。",
+  "empty": "OAuth MCP サーバーはまだありません。",
+  "status": {
+    "connected": "接続済み",
+    "needs_reconnect": "再接続が必要",
+    "not_connected": "未接続"
+  },
+  "connect": "接続",
+  "reconnect": "再接続",
+  "disconnect": "切断",
+  "delete": "削除",
+  "delete_aria": "{{name}} を削除",
+  "owner_only": "接続できるのはエージェントのオーナーだけです。",
+  "action_failed": "問題が発生しました。もう一度お試しください。",
+  "connect_continue": "ブラウザーで接続を完了してください。",
+  "added_toast": "{{name}} を追加しました",
+  "deleted_toast": "{{name}} を削除しました",
+  "disconnected_toast": "{{name}} を切断しました",
+  "delete_title": "{{name}} を削除しますか？",
+  "delete_description": "実行はこのサーバーを使わなくなり、接続も削除されます。",
+  "cancel": "キャンセル",
+  "dialog": {
+    "title": "OAuth MCP サーバーを追加",
+    "name_label": "名前",
+    "name_hint": "実行で使われる名前。英数字、- と _ が使えます。",
+    "url_label": "MCP サーバーの URL",
+    "scope_label": "スコープ（任意）",
+    "headers_label": "追加ヘッダー（任意）",
+    "headers_hint": "1 行に 1 つ、名前: 値 の形式で。すべてのリクエストに付き、保存後は表示されません。",
+    "headers_invalid": "ヘッダーは 1 行ずつ 名前: 値 の形式で書いてください。",
+    "save": "追加"
+  },
+  "callback": {
+    "working": "MCP サーバーに接続しています…",
+    "failed_title": "MCP サーバーに接続できませんでした",
+    "missing": "このページには認可の結果が必要です。エージェントの設定からやり直してください。",
+    "denied": "認可はキャンセルされました。",
+    "expired": "このリンクは使用済みか期限切れです。エージェントの設定からやり直してください。",
+    "not_allowed": "このエージェントはもう接続できません。",
+    "sign_in": "このブラウザーで Multica にサインインしてから、エージェントの設定からやり直してください。",
+    "generic": "認可サーバーが接続を完了しませんでした。エージェントの設定から再試行してください。",
+    "go_to_app": "Multica へ"
+  }
+}

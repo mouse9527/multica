@@ -1,0 +1,49 @@
+{
+  "title": "OAuth MCP 服务器",
+  "hint": "每次运行都使用智能体所有者的连接。支持 Claude、Codex、Hermes、Qoder 和 mcode 运行时。",
+  "add": "添加服务器",
+  "loading": "正在加载 OAuth MCP 服务器…",
+  "load_failed": "无法加载 OAuth MCP 服务器。",
+  "empty": "还没有 OAuth MCP 服务器。",
+  "status": {
+    "connected": "已连接",
+    "needs_reconnect": "需要重新连接",
+    "not_connected": "未连接"
+  },
+  "connect": "连接",
+  "reconnect": "重新连接",
+  "disconnect": "断开",
+  "delete": "删除",
+  "delete_aria": "删除 {{name}}",
+  "owner_only": "只有智能体的所有者可以连接。",
+  "action_failed": "操作失败，请重试。",
+  "connect_continue": "请在浏览器中完成连接。",
+  "added_toast": "已添加 {{name}}",
+  "deleted_toast": "已删除 {{name}}",
+  "disconnected_toast": "已断开 {{name}}",
+  "delete_title": "删除 {{name}}？",
+  "delete_description": "运行将不再使用这个服务器，它的连接也会被移除。",
+  "cancel": "取消",
+  "dialog": {
+    "title": "添加 OAuth MCP 服务器",
+    "name_label": "名称",
+    "name_hint": "运行中看到的名称。可用字母、数字、- 和 _。",
+    "url_label": "MCP 服务器地址",
+    "scope_label": "Scope（可选）",
+    "headers_label": "额外请求头（可选）",
+    "headers_hint": "每行一个，格式为 名称: 值。每次请求都会带上，保存后不会再显示。",
+    "headers_invalid": "每个请求头单独一行，格式为 名称: 值。",
+    "save": "添加"
+  },
+  "callback": {
+    "working": "正在连接 MCP 服务器…",
+    "failed_title": "无法连接 MCP 服务器",
+    "missing": "这个页面需要授权结果。请从智能体设置重新开始。",
+    "denied": "授权已取消。",
+    "expired": "这个链接已经用过或已过期。请从智能体设置重新开始。",
+    "not_allowed": "你已不能再连接这个智能体。",
+    "sign_in": "请先在这个浏览器登录 Multica，再从智能体设置重新开始。",
+    "generic": "授权服务器没有完成连接。请从智能体设置重试。",
+    "go_to_app": "前往 Multica"
+  }
+}

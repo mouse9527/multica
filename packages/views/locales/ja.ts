@@ -29,6 +29,8 @@ import jaRouter from "./ja/router.json";
 // Modified by the mouse9527/multica fork (M-43): the password login namespace.
 import jaPasswordauth from "./ja/passwordauth.json";
 import jaEvolution from "./ja/evolution.json";
+// mouse9527/multica fork (M-230): the OAuth MCP namespace.
+import jaMcpOAuth from "./ja/mcpoauth.json";
 
 const resources: LocaleResources = {
   common: jaCommon,
@@ -59,6 +61,7 @@ const resources: LocaleResources = {
   router: jaRouter,
   passwordauth: jaPasswordauth,
   evolution: jaEvolution,
+  mcpoauth: jaMcpOAuth,
 };
 
 export default resources;

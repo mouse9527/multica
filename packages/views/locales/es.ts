@@ -29,6 +29,8 @@ import esRouter from "./es/router.json";
 // Modified by the mouse9527/multica fork (M-43): the password login namespace.
 import esPasswordauth from "./es/passwordauth.json";
 import esEvolution from "./es/evolution.json";
+// mouse9527/multica fork (M-230): the OAuth MCP namespace.
+import esMcpOAuth from "./es/mcpoauth.json";
 
 const resources: LocaleResources = {
   common: esCommon,
@@ -59,6 +61,7 @@ const resources: LocaleResources = {
   router: esRouter,
   passwordauth: esPasswordauth,
   evolution: esEvolution,
+  mcpoauth: esMcpOAuth,
 };
 
 export default resources;

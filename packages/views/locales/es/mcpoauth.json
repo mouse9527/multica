@@ -1,0 +1,49 @@
+{
+  "title": "Servidores MCP con OAuth",
+  "hint": "Las ejecuciones inician sesión con la conexión del propietario del agente. Funciona con los runtimes Claude, Codex, Hermes, Qoder y mcode.",
+  "add": "Añadir servidor",
+  "loading": "Cargando servidores MCP con OAuth…",
+  "load_failed": "No se pudieron cargar los servidores MCP con OAuth.",
+  "empty": "Todavía no hay servidores MCP con OAuth.",
+  "status": {
+    "connected": "Conectado",
+    "needs_reconnect": "Hay que volver a conectar",
+    "not_connected": "Sin conectar"
+  },
+  "connect": "Conectar",
+  "reconnect": "Volver a conectar",
+  "disconnect": "Desconectar",
+  "delete": "Eliminar",
+  "delete_aria": "Eliminar {{name}}",
+  "owner_only": "Solo el propietario del agente puede conectarlo.",
+  "action_failed": "Algo salió mal. Inténtalo de nuevo.",
+  "connect_continue": "Termina la conexión en tu navegador.",
+  "added_toast": "{{name}} añadido",
+  "deleted_toast": "{{name}} eliminado",
+  "disconnected_toast": "{{name}} desconectado",
+  "delete_title": "¿Eliminar {{name}}?",
+  "delete_description": "Las ejecuciones dejan de usar este servidor y se elimina su conexión.",
+  "cancel": "Cancelar",
+  "dialog": {
+    "title": "Añadir un servidor MCP con OAuth",
+    "name_label": "Nombre",
+    "name_hint": "El nombre que ven las ejecuciones. Letras, dígitos, - y _.",
+    "url_label": "URL del servidor MCP",
+    "scope_label": "Scope (opcional)",
+    "headers_label": "Cabeceras adicionales (opcional)",
+    "headers_hint": "Una por línea, como Nombre: valor. Se envían con cada solicitud y no se vuelven a mostrar.",
+    "headers_invalid": "Escribe cada cabecera en su propia línea como Nombre: valor.",
+    "save": "Añadir"
+  },
+  "callback": {
+    "working": "Conectando el servidor MCP…",
+    "failed_title": "No se pudo conectar el servidor MCP",
+    "missing": "Esta página necesita el resultado de una autorización. Vuelve a empezar desde la configuración del agente.",
+    "denied": "Se canceló la autorización.",
+    "expired": "Este enlace ya se usó o caducó. Vuelve a empezar desde la configuración del agente.",
+    "not_allowed": "Ya no puedes conectar este agente.",
+    "sign_in": "Inicia sesión en Multica en este navegador y vuelve a empezar desde la configuración del agente.",
+    "generic": "El servidor de autorización no completó la conexión. Inténtalo de nuevo desde la configuración del agente.",
+    "go_to_app": "Ir a Multica"
+  }
+}

@@ -29,6 +29,8 @@ import zhHantRouter from "./zh-Hant/router.json";
 // Modified by the mouse9527/multica fork (M-43): the password login namespace.
 import zhHantPasswordauth from "./zh-Hant/passwordauth.json";
 import zhHantEvolution from "./zh-Hant/evolution.json";
+// mouse9527/multica fork (M-230): the OAuth MCP namespace.
+import zhHantMcpOAuth from "./zh-Hant/mcpoauth.json";
 
 const resources: LocaleResources = {
   common: zhHantCommon,
@@ -59,6 +61,7 @@ const resources: LocaleResources = {
   router: zhHantRouter,
   passwordauth: zhHantPasswordauth,
   evolution: zhHantEvolution,
+  mcpoauth: zhHantMcpOAuth,
 };
 
 export default resources;

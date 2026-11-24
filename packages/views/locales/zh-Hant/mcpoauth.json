@@ -1,0 +1,49 @@
+{
+  "title": "OAuth MCP 伺服器",
+  "hint": "每次執行都使用 AI 代理所有者的連線。支援 Claude、Codex、Hermes、Qoder 與 mcode 執行環境。",
+  "add": "新增伺服器",
+  "loading": "正在載入 OAuth MCP 伺服器…",
+  "load_failed": "無法載入 OAuth MCP 伺服器。",
+  "empty": "尚無 OAuth MCP 伺服器。",
+  "status": {
+    "connected": "已連線",
+    "needs_reconnect": "需要重新連線",
+    "not_connected": "未連線"
+  },
+  "connect": "連線",
+  "reconnect": "重新連線",
+  "disconnect": "中斷連線",
+  "delete": "刪除",
+  "delete_aria": "刪除 {{name}}",
+  "owner_only": "只有 AI 代理的所有者可以連線。",
+  "action_failed": "操作失敗，請再試一次。",
+  "connect_continue": "請在瀏覽器中完成連線。",
+  "added_toast": "已新增 {{name}}",
+  "deleted_toast": "已刪除 {{name}}",
+  "disconnected_toast": "已中斷 {{name}}",
+  "delete_title": "刪除 {{name}}？",
+  "delete_description": "執行將不再使用這個伺服器，它的連線也會被移除。",
+  "cancel": "取消",
+  "dialog": {
+    "title": "新增 OAuth MCP 伺服器",
+    "name_label": "名稱",
+    "name_hint": "執行中看到的名稱。可用字母、數字、- 與 _。",
+    "url_label": "MCP 伺服器網址",
+    "scope_label": "Scope（選填）",
+    "headers_label": "額外請求標頭（選填）",
+    "headers_hint": "每行一個，格式為 名稱: 值。每次請求都會帶上，儲存後不會再顯示。",
+    "headers_invalid": "每個請求標頭單獨一行，格式為 名稱: 值。",
+    "save": "新增"
+  },
+  "callback": {
+    "working": "正在連線 MCP 伺服器…",
+    "failed_title": "無法連線 MCP 伺服器",
+    "missing": "這個頁面需要授權結果。請從 AI 代理設定重新開始。",
+    "denied": "授權已取消。",
+    "expired": "這個連結已使用過或已過期。請從 AI 代理設定重新開始。",
+    "not_allowed": "你已無法再連線這個 AI 代理。",
+    "sign_in": "請先在這個瀏覽器登入 Multica，再從 AI 代理設定重新開始。",
+    "generic": "授權伺服器沒有完成連線。請從 AI 代理設定重試。",
+    "go_to_app": "前往 Multica"
+  }
+}

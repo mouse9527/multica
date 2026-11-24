@@ -29,6 +29,8 @@ import zhHansRouter from "./zh-Hans/router.json";
 // Modified by the mouse9527/multica fork (M-43): the password login namespace.
 import zhHansPasswordauth from "./zh-Hans/passwordauth.json";
 import zhHansEvolution from "./zh-Hans/evolution.json";
+// mouse9527/multica fork (M-230): the OAuth MCP namespace.
+import zhHansMcpOAuth from "./zh-Hans/mcpoauth.json";
 
 const resources: LocaleResources = {
   common: zhHansCommon,
@@ -59,6 +61,7 @@ const resources: LocaleResources = {
   router: zhHansRouter,
   passwordauth: zhHansPasswordauth,
   evolution: zhHansEvolution,
+  mcpoauth: zhHansMcpOAuth,
 };
 
 export default resources;
