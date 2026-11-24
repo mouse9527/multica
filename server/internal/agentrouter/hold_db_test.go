@@ -85,12 +85,13 @@ func TestShadowHoldRecordsWhatTheHoldWouldTake(t *testing.T) {
 	h := e.shadowHold()
 
 	taken := e.writeInbox(inboxWrite{recipient: e.user, issue: child, typ: "mentioned", actorType: "agent", actorID: e.agentB})
+	ownDetails := `{"comment_id":"` + e.ownComment(sub, child, e.ownRun(sub, root)) + `"}`
 	for name, w := range map[string]inboxWrite{
 		"outside the scope":     {recipient: e.user, issue: outside, typ: "mentioned"},
 		"for someone else":      {recipient: other, issue: child, typ: "mentioned"},
 		"the Router's notice":   {recipient: e.user, issue: child, typ: InboxNoticeType},
 		"a connected-app ask":   {recipient: e.user, issue: child, typ: "app_action_requested"},
-		"the Router's own work": {recipient: e.user, issue: child, typ: "new_comment", actorType: "agent", actorID: e.agentA},
+		"the Router's own work": {recipient: e.user, issue: child, typ: "new_comment", actorType: "agent", actorID: e.agentA, details: ownDetails},
 		"not about an issue":    {recipient: e.user, typ: "quick_create_done"},
 	} {
 		t.Run(name, func(t *testing.T) { e.writeInbox(w) })
