@@ -1,4 +1,5 @@
-// Added by the mouse9527/multica fork: own actions by run (M-193).
+// Added by the mouse9527/multica fork: own actions by run (M-193); an unknown
+// run is someone else's (M-233).
 
 package agentrouter
 
@@ -53,6 +54,28 @@ func (e *env) superAgentRuns() runFixture {
 	return r
 }
 
+// ownRun is a finished run dispatch started for sub on issueID: an action
+// from it is the Super Agent's own.
+func (e *env) ownRun(sub Subscription, issueID string) string {
+	e.t.Helper()
+	task := e.fx.Task(e.t, sub.AgentID, testutil.Cols{
+		"issue_id": issueID, "runtime_id": e.runtimeOf(sub.AgentID), "status": "completed",
+		"started_at": testutil.Raw("now()"), "completed_at": testutil.Raw("now()"),
+	})
+	e.fx.Insert(e.t, "router_dispatch", testutil.Cols{
+		"workspace_id": e.ws, "subscription_id": sub.ID, "agent_id": sub.AgentID,
+		"anchor_issue_id": issueID, "task_id": task, "event_count": 1,
+		"outcome": "completed", "settled_at": testutil.Raw("now()"),
+	})
+	return task
+}
+
+// ownComment writes a comment by agent A from one of sub's own runs.
+func (e *env) ownComment(sub Subscription, issueID string, run string) string {
+	e.t.Helper()
+	return e.comment(issueID, testutil.Cols{"author_type": "agent", "author_id": e.agentA, "source_task_id": run})
+}
+
 // agentComment writes a comment by agent A from task ("" for none).
 func (e *env) agentComment(issueID, task string) string {
 	e.t.Helper()
@@ -105,7 +128,7 @@ func assertSelf(t *testing.T, got map[string]bool, want map[string]bool, names m
 // TestOwnActionsAreTheSuperAgentsRunsOnly: the listener marks an action of the
 // subscribed agent as its own only when it came from the Super Agent's chat
 // or a run dispatch started; the same agent's issue tasks and other chats
-// count as anyone else, and an action whose run is unknown stays its own.
+// count as anyone else, and so does an action whose run is unknown (M-233).
 func TestOwnActionsAreTheSuperAgentsRunsOnly(t *testing.T) {
 	e := newEnv(t)
 	r := e.superAgentRuns()
@@ -120,7 +143,7 @@ func TestOwnActionsAreTheSuperAgentsRunsOnly(t *testing.T) {
 	comment("the chat turn", r.chatTurn, true)
 	comment("a dispatched run", r.dispatched, true)
 	comment("a retry of a dispatched run", r.retry, true)
-	comment("no known run", "", true)
+	comment("no known run", "", false)
 	comment("an issue task", r.issueTask, false)
 	comment("another chat", r.otherChatTurn, false)
 	comment("an issue task on the anchor", r.onAnchor, false)
@@ -132,7 +155,7 @@ func TestOwnActionsAreTheSuperAgentsRunsOnly(t *testing.T) {
 	}
 	status("in_progress", r.issueTask, false)
 	status("in_review", r.chatTurn, true)
-	status("done", "", true)
+	status("done", "", false)
 
 	created := func(name, eventTask string, origin testutil.Cols, self bool) {
 		cols := testutil.Cols{"parent_issue_id": r.child, "creator_type": "agent", "creator_id": e.agentA}
@@ -178,8 +201,8 @@ func TestReconcileJudgesOwnActionsByRun(t *testing.T) {
 	e.reconcile()
 
 	assertSelf(t, selfByKey(e.events(r.sub.ID)), map[string]bool{
-		fromIssueTask: false, fromChat: true, unknown: true, KindTaskFailed: false,
-		createdByExecutor: false, createdByChat: true, createdByAutopilot: true,
+		fromIssueTask: false, fromChat: true, unknown: false, KindTaskFailed: false,
+		createdByExecutor: false, createdByChat: true, createdByAutopilot: false,
 	}, map[string]string{
 		fromIssueTask: "comment from an issue task", fromChat: "comment from the chat turn",
 		unknown: "comment from no known run", KindTaskFailed: "failed issue task",
@@ -217,7 +240,8 @@ func TestWorkHandedToTheSameAgentStartsABatch(t *testing.T) {
 
 // TestShadowHoldTakesTheSameAgentsIssueWork: an inbox item caused by a comment
 // of the subscribed agent is the Super Agent's own only when the comment came
-// from its own run.
+// from its own run; an item with no comment has no known run and is taken
+// (M-233).
 func TestShadowHoldTakesTheSameAgentsIssueWork(t *testing.T) {
 	e := newEnv(t)
 	r := e.superAgentRuns()
@@ -229,12 +253,15 @@ func TestShadowHoldTakesTheSameAgentsIssueWork(t *testing.T) {
 		details: `{"comment_id":"` + fromChat + `"}`})
 	taken := e.writeInbox(inboxWrite{recipient: e.user, issue: r.child, typ: "new_comment", actorType: "agent", actorID: e.agentA,
 		details: `{"comment_id":"` + fromIssueTask + `"}`})
-	// Without a comment the run is unknown: still the Super Agent's own.
-	e.writeInbox(inboxWrite{recipient: e.user, issue: r.child, typ: "status_changed", actorType: "agent", actorID: e.agentA})
+	// Without a comment the run is unknown: someone else's (M-233).
+	unknown := e.writeInbox(inboxWrite{recipient: e.user, issue: r.child, typ: "status_changed", actorType: "agent", actorID: e.agentA})
 
-	got := e.holds()
-	if len(got) != 1 || got[0].InboxItemID != taken {
-		t.Fatalf("holds = %+v, want only the item from the issue task's comment", got)
+	got := map[string]bool{}
+	for _, h := range e.holds() {
+		got[h.InboxItemID] = true
+	}
+	if len(got) != 2 || !got[taken] || !got[unknown] {
+		t.Fatalf("holds = %v, want the items from the issue task's comment and with no known run", got)
 	}
 }
 

@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), no rate pause (M-111), self-contained owner decisions (M-162), the chat wakeup and batch split (M-164), what "subscribed" means (M-175), own actions by run (M-193), quiet batch replies (M-210), the reply format (M-206), and wakeups on issues in scope (M-208).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), no rate pause (M-111), self-contained owner decisions (M-162), the chat wakeup and batch split (M-164), what "subscribed" means (M-175), own actions by run (M-193), the self-loop brake (M-233), quiet batch replies (M-210), the reply format (M-206), wakeups on issues in scope (M-208), and slim chat batches (M-240).
 
 package agentrouter
 
@@ -76,6 +76,9 @@ type Dispatcher struct {
 	// Quiet tells chat batches how to end without alerting the owner (the
 	// router_chat_quiet feature, chat_quiet.go).
 	Quiet bool
+	// Slim leaves out of chat batches the rules every chat turn's Super Agent
+	// note already carries (the router_batch_slim feature, chat_slim.go).
+	Slim bool
 
 	lastPrune atomic.Int64
 }
@@ -396,6 +399,12 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 	if !batch.hasOthers() {
 		return outcomeWaiting, "", tx.Commit(ctx)
 	}
+	if held, notice, err := d.selfLoopBrake(ctx, tx, sub, batch, agentName, agentOwner); err != nil || held {
+		if err != nil {
+			return outcomeWaiting, "", err
+		}
+		return outcomeWaiting, notice, tx.Commit(ctx)
+	}
 	inflight, total, err := loadInFlight(ctx, tx, sub.WorkspaceID, sub.ID)
 	if err != nil {
 		return outcomeWaiting, "", err
@@ -409,7 +418,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 	}
 	note := buildNote(noteInput{
 		sub: sub, anchorKey: anchorKey, scopeLabel: scopeLabel(ctx, tx, sub),
-		batch: batch, inflight: inflight, inflightTotal: total, now: time.Now(), chat: chatID != "", quiet: d.Quiet,
+		batch: batch, inflight: inflight, inflightTotal: total, now: time.Now(), chat: chatID != "", quiet: d.Quiet, slim: d.Slim,
 		shadow: shadow, shadowTotal: shadowTotal,
 	})
 
@@ -797,6 +806,8 @@ type noteInput struct {
 	chat bool
 	// quiet: a chat batch can end with a quiet reply (M-210).
 	quiet bool
+	// slim: a chat batch leaves out the rules the chat turn note carries (M-240).
+	slim bool
 	// shadow lists the inbox items the hold would have taken (M-97), of
 	// shadowTotal not yet listed.
 	shadow      []shadowHold
@@ -812,8 +823,16 @@ const (
 
 // routerBoundary keeps the Router to dispatching, tracking and relaying: the
 // substantive work goes to workers through issues (M-112). The full guide is
-// the CLI's `multica router guide` (M-150).
-const routerBoundary = "You dispatch, track and relay; you do not do the work yourself. " +
+// the CLI's `multica router guide` (M-150). Only routerBoundaryCore is
+// missing from a chat turn's Super Agent note; the rest is in it too
+// (chat_turn.go, chat_slim.go).
+const routerBoundary = routerBoundaryCore +
+	routerSubscribedMeans +
+	routerWakeupSplit +
+	routerOwnerDecisions +
+	routerReplyFormat
+
+const routerBoundaryCore = "You dispatch, track and relay; you do not do the work yourself. " +
 	"Yours: reading state to decide and relay (issues, comments, runs, subscriptions, PR and Actions status) " +
 	"and issue and project operations (create, assign, change status, comment to @ the handler, update Super Agent state). " +
 	"Hand off everything else, including querying or analysing business data (databases, logs, metrics), research, root-cause diagnosis, " +
@@ -822,11 +841,7 @@ const routerBoundary = "You dispatch, track and relay; you do not do the work yo
 	"work worth tracking in the repository (a code change that will produce a PR, a design conclusion that needs a public record) " +
 	"also gets a GitHub issue, linked as `gh_issue` per the github-evidence skill; " +
 	"ops, environment and credential work stays a local issue only. " +
-	"The full guide, including the commands for this Super Agent's settings, is `multica router guide`.\n" +
-	routerSubscribedMeans +
-	routerWakeupSplit +
-	routerOwnerDecisions +
-	routerReplyFormat
+	"The full guide, including the commands for this Super Agent's settings, is `multica router guide`.\n"
 
 // routerWakeupSplit: the batch already reports issues in scope, so a chat
 // wakeup on them wakes the Super Agent twice for one change (M-164). A timed
@@ -906,7 +921,7 @@ func buildNote(in noteInput) string {
 			"Your own actions are left out and never start a batch: those of your turns in this chat. " +
 			"What your agent does in issue tasks or other chats comes in like anyone else's, so work you hand to your own agent is reported here too. " +
 			chatBatchReplyRule(in.quiet) +
-			routerBoundary +
+			chatBatchBoundary(in.slim) +
 			"When the owner asks you something here, answer directly only if one sentence from current state answers it; " +
 			"otherwise open an issue, hand it off and reply with one line naming the issue and who has it.\n\n")
 	} else {

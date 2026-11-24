@@ -12,6 +12,7 @@
 - `router_inbox_resolve`（S3a，M-118），默认关闭，`FF_ROUTER_INBOX_RESOLVE=true` 打开，**只在 `router_v1` 也打开时生效**，启动时读一次。另外只在工作区设置里有 `router_inbox_resolve`（指定了 Owner）的工作区生效。任一缺失时不注册监听器和对账任务、不归档任何条目，行为与上游一致。开关常量放在 `internal/agentrouter/inbox_resolve.go`，没有改 `featureflags/keys.go`。
 - `router_inbox_rules`（S3b，M-133），默认关闭，`FF_ROUTER_INBOX_RULES=true` 打开，**只在影子钩子注册时生效**（`router_hold_shadow` 及它依赖的开关都打开），启动时读一次。另外只在工作区设置里有 `router_inbox_rules`（规则清单）的工作区生效。任一缺失时影子行照旧写、不带判定，收件箱写入与关闭时完全一样。开关常量放在 `internal/agentrouter/inbox_rules.go`，没有改 `featureflags/keys.go`。
 - `router_chat_quiet`（M-210），默认关闭，`FF_ROUTER_CHAT_QUIET=true` 打开，**只在 `router_chat` 也打开时生效**，启动时读一次。打开后批次轮次可以「静默结束」：回复留在 chat 里，但不弹 chat 回复通知（见后文「通知与显示」）。关闭时批次说明和通知都与上游一致。开关常量放在 `internal/agentrouter/chat_quiet.go`，没有改 `featureflags/keys.go`。
+- `router_batch_slim`（M-240），默认关闭，`FF_ROUTER_BATCH_SLIM=true` 打开，**只在 `router_chat` 也打开时生效**，启动时读一次。打开后 chat 批次不再重复每一轮「## Super Agent」说明里已有的四段规则（见后文「使用说明随 CLI 发布」里的「每次回复的格式」一条）；锚点运行不受影响。关闭时批次说明逐字不变。开关常量放在 `internal/agentrouter/chat_slim.go`，没有改 `featureflags/keys.go`。
 - `MULTICA_ROUTER_RECONCILE_INTERVAL`：对账周期（Go duration，如 `5m`），默认 5 分钟，最小 30 秒。
 
 ## 数据（迁移 9004–9007，只新增表）
@@ -49,7 +50,12 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 
 - **范围**：`issue_tree` 是根 issue 及其后代（最多 32 层），`project` 是项目里的 issue（按 issue 自己的 `project_id`）。
 - **最窄范围**：同一个智能体的多条订阅都覆盖某个 issue 时，事件只记到最窄的那条：离 issue 更近的树根优先，任何树优先于项目，同级取创建最早的。不同智能体各记各的。
-- **self**：事件的 actor 就是订阅的智能体时 `self=true`（S2 不会因为它派发运行）。对账补到的状态和处理人变化不知道 actor，`self=false`。
+- **self**：事件的 actor 是订阅的智能体，**并且**动作来自这个 Super Agent 自己的运行时，`self=true`（S2 不会因为它派发运行）。自己的运行只有两种：订阅绑定的 chat 里的轮次（批次轮次和 Owner 发起的轮次都算），以及派发为这条订阅启动的运行（含系统重试）。判定在 `run_origin.go` 的 `ownRunSQL`（M-193、M-233）。除此之外的动作都按别人的事件处理，能触发批次：
+  - 同一个智能体在 issue 任务（包括锚点 issue 上的普通任务）、别的 chat 里做的事；
+  - 服务端以这个智能体名义写的 issue 和评论，例如进化的分析、精简检查、提案 issue，提案上的补充证据和变差提示评论，自动化（autopilot）以智能体名义建的 issue；
+  - 找不到发起运行的动作：记录里没有运行，或者运行不是这个智能体的。M-193 时这类按「自己」处理，**M-233 去掉了这个保守默认**（Owner 2026-11-24）。
+- **怎么认出 Super Agent 自己的写入**：Super Agent 轮次通过 API 做的写入都会记下运行。评论记 `comment.source_task_id`（来自服务端可信的 `X-Task-ID`）；建 issue 记 `origin_type=agent_create` 加 `origin_id`；改状态、改处理人的 Bus 事件带 `ActorTaskID`（`UpdateIssue`、批量更新）；运行失败本身就是运行。快捷动作（quick action）由智能体执行时，评论现在也记 `source_task_id`（M-233 补上）。建 wakeup、订阅变更、通知都不是事件，不参与判定。对账补到的状态和处理人变化不知道 actor，`self=false`（与以前相同）。
+- **防自循环刹车（M-233，`self_loop.go`）**：如果某条写入路径以后丢了运行 id，Super Agent 会被自己叫醒。兜底规则：一条订阅**最近连续 5 次**运行都是只由它的智能体自己的事件启动的（批次里每个非 self 事件的 actor 都是这个智能体），而最近一次运行不到 15 分钟，那么下一批同样只有智能体事件的批次先不派发，事件留在待处理里。15 分钟后派发；期间任何别人的事件到来，批次立即派发，并带上积压的事件。刹车生效时给 Owner 发一条普通通知「Super Agent may be waking itself」，每条订阅每小时最多一条。什么都不丢，也不暂停订阅。代价：Super Agent 把活交给同一个智能体做时，执行者的进展也是「只有智能体」的批次，连续 5 批之后最多每 15 分钟进一次 chat。
 - **状态和处理人的 actor**：只有当事件负载里的 issue（状态、处理人、`updated_at`）就是记录变化时数据库里的状态，才记上事件的 actor；否则（这次变化之后又被别人改了）actor 留空。负载时间只精确到秒，同一秒内两次写入、字段又相同的，记到先处理的那个事件上。
 - 事件 `payload` 只放引用和变化的字段，不放评论正文。
 
@@ -263,7 +269,7 @@ Super Agent 只做分派、跟踪、转告，不自己干活。实质性工作�
 - 收件人是某个订阅的 Owner，这个订阅启用、未暂停，并绑定了一个 `active`、智能体相同的 chat 会话；
 - issue 在这个订阅的范围内（祖先链加项目）。收件人有多个这样的订阅时取最窄的那个（与 `pickNarrowest` 同一规则，跨智能体比较）；
 - 不在不扣名单里：`router_notice`（Super Agent 自己的通知，含暂停、故障通知）、连接应用的四类条目（`app_action_requested`、`app_action_reminder`、`app_connect_requested`、`app_action_result`）、`autopilot_paused`、`autopilot_quota_exceeded`、`quick_create_failed`、`quick_create_unconfirmed`；
-- 条目的 actor 不是这个订阅的智能体（Super Agent 自己的动作不扣）。
+- 条目不是 Super Agent 自己的动作。和事件的 self 规则相同：actor 是订阅的智能体，并且条目来自它自己运行写的评论（`details.comment_id` 指向的评论的 `source_task_id` 是 Super Agent 自己的运行），才不扣。没有评论的条目（状态变更、指派等）找不到运行，M-233 起按别人的动作处理，会被记为暂扣，在下一批里列出（影子模式，不影响收件箱）。这也包括 Super Agent 在自己 chat 里改状态带来的条目。改成真正暂扣之前，要给收件箱条目记下运行（例如 actor 的任务 id），否则 Owner 会收到 Super Agent 自己操作的通知；或者明确接受这点噪声。
 
 订阅集合按 30 秒缓存（与捕获相同），订阅变更会让本进程的缓存立刻失效；派发自动暂停不改代数，最多 30 秒后生效。判定只对「收件人有绑定 chat 的订阅」的条目查库（一条递归查询取祖先链和项目），其他条目只读内存。
 
@@ -364,7 +370,7 @@ Super Agent 的使用说明不再作为 skill 维护（手工导入的 skill 不
 - **Mika 的提示词**：`router_v1` 打开时，领任务组装 Mika 的提示词，在随二进制发布的系统部分之后、工作区备注之前加一小段「## Super Agent」，只有一句话：遇到 Super Agent 相关的请求先跑 `multica router guide`。整份说明不进提示词，平常的运行不多花 token。`router_v1` 关闭时这段不出现，Mika 的提示词与上游一致。智能体设置页只读展示的系统提示词里不显示这一段。
 - **Super Agent 批次**：每个批次里的边界说明（M-112）末尾加一句，指向 `multica router guide`。批次只在 Router 开关打开时存在。
 - **Super Agent chat 的每一轮（M-175）**：`router_chat` 生效时，领任务发现这一轮所在的 chat 绑定了订阅（Owner 直接发消息的那一轮也算），就在智能体说明末尾加一段「## Super Agent」（M-206、M-208 之后约 3KB，不只一句话）：这个 chat 是 Super Agent、它的每个范围（任务树编号或项目名、订阅 ID、是否在运行），以及「订阅」只指这些范围：自己新建的 issue 只有挂在订阅的任务树下或建在订阅的项目里才在范围内，要用 `router scope` 核对；issue 订阅者（含建 issue 时自动成为的 `creator`）和 chat wakeup 都不是订阅；不在范围就照实说，问 Owner 要不要加，同意后才 `router subscribe --issue <id> --anchor-chat current`。批次的边界说明里也有同一段。没有绑定订阅的 chat、issue 上的运行、`router_chat` 关闭时都不加，与上游一致；读订阅失败时也不加，照常领任务。逻辑在 `server/internal/agentrouter/chat_turn.go` 和 `server/internal/handler/agent_router_chat_turn.go`，`daemon.go` 只加一行调用。`multica router guide` 对应一节「自己新建的 issue 在不在范围里」，`issue subscriber list|add --help` 也写明 `creator` 订阅不是 Super Agent 的范围。
-- **每次回复的格式（M-206）**：汇报格式随产品下发，不靠工作区说明或智能体自己的记忆。`multica router guide` 一节「每次回复的格式」：每次回复末尾单独一节「需要你处理」（用 Owner 的语言写标题，编号，未结的每次都列，没有就写「目前没有」）；事件批次里没有新东西要告诉 Owner 就不让 Owner 收到通知（开了 `router_chat_quiet` 时用 `[无需你处理]` 静默结束，没开时不写回复），不为重列旧事项通知 Owner，但只要写了回复（包括静默回复）就列全部未结事项；跟 Owner 的语言走；时间写成 Owner 所在时区，不原样贴 UTC，不知道时区就写明时区；修复已合并未部署时写「已合并，未上线，线上仍会出现」，并把是否部署列为待处理，不知道是否部署时写「已合并，未确认是否已上线」；转述前先读 issue 的最新状态和评论。简短版（`dispatch.go` 的 `routerReplyFormat`）同时进批次的边界说明和上面 Owner 每一轮的「## Super Agent」段，后者也补上了「请 Owner 决定的事」的简短版。两条注入路径的门控不同：每一轮的那段只在 `router_chat` 生效、且这一轮的 chat 绑定了订阅时加（同上）；批次的边界说明在每个批次里都有，只要批次存在（Router 开关打开），包括没有绑定 chat、走 `multica notify owner` 的锚点运行，所以 guide 这一节也管 `notify owner` 的正文；这句只加在锚点运行的批次开头（`buildNote` 的非 chat 分支），共享的规则常量里不提 `notify owner`，因为 chat 轮次要在 chat 里回复，说明里出现这个命令会诱导它另发通知（`chat_db_test.go` 断言 chat 批次说明不含它）。已知成本：chat 里的批次轮次两边都带，「订阅」含义、wakeup 分工、Owner 决定、回复格式这四段（约 2.7KB）会出现两遍；先接受，不为省这点去改认领路径。工作区自己的流程（决定卡、风险分档、状态名、智能体名）不写进去，留在工作区说明。
+- **每次回复的格式（M-206）**：汇报格式随产品下发，不靠工作区说明或智能体自己的记忆。`multica router guide` 一节「每次回复的格式」：每次回复末尾单独一节「需要你处理」（用 Owner 的语言写标题，编号，未结的每次都列，没有就写「目前没有」）；事件批次里没有新东西要告诉 Owner 就不让 Owner 收到通知（开了 `router_chat_quiet` 时用 `[无需你处理]` 静默结束，没开时不写回复），不为重列旧事项通知 Owner，但只要写了回复（包括静默回复）就列全部未结事项；跟 Owner 的语言走；时间写成 Owner 所在时区，不原样贴 UTC，不知道时区就写明时区；修复已合并未部署时写「已合并，未上线，线上仍会出现」，并把是否部署列为待处理，不知道是否部署时写「已合并，未确认是否已上线」；转述前先读 issue 的最新状态和评论。简短版（`dispatch.go` 的 `routerReplyFormat`）同时进批次的边界说明和上面 Owner 每一轮的「## Super Agent」段，后者也补上了「请 Owner 决定的事」的简短版。两条注入路径的门控不同：每一轮的那段只在 `router_chat` 生效、且这一轮的 chat 绑定了订阅时加（同上）；批次的边界说明在每个批次里都有，只要批次存在（Router 开关打开），包括没有绑定 chat、走 `multica notify owner` 的锚点运行，所以 guide 这一节也管 `notify owner` 的正文；这句只加在锚点运行的批次开头（`buildNote` 的非 chat 分支），共享的规则常量里不提 `notify owner`，因为 chat 轮次要在 chat 里回复，说明里出现这个命令会诱导它另发通知（`chat_db_test.go` 断言 chat 批次说明不含它）。chat 里的批次轮次两边都带，「订阅」含义、wakeup 分工、Owner 决定、回复格式这四段（约 2.8KB）会出现两遍，而批次消息会一直留在 chat 历史里，每来一批上下文就多一份。开关 `router_batch_slim`（M-240，调研见 M-234）打开后，chat 批次不再带这四段（`routerBoundary` 拆成 `routerBoundaryCore` 加四段，chat 批次只用前者，见 `chat_slim.go`），只保留批次开头说明、静默回复规则（`chatBatchReplyRule`）、边界正文（每一轮的说明里没有这段，所以不去掉），再加一行「这四类规则在本 chat 的 Super Agent 说明和 `multica router guide` 里，本批同样适用」。规则没有丢：批次轮次也是 chat 轮次，认领时同样经过 `withSuperAgentChatNote`，而批次进 chat 本身就要求 `router_chat` 打开、订阅绑定了这个 chat，所以这一轮的 instructions 里一定有这四段（`handler/agent_router_batch_slim_test.go` 认领真实批次轮次验证）。唯一的例外是认领时读每一轮说明失败（只记日志、照常认领），这一轮就看不到这四段，和 Owner 发起的轮次同样处理。锚点运行没有每一轮的说明，批次里照旧带全部规则。开关关闭时批次说明与之前逐字一致。工作区自己的流程（决定卡、风险分档、状态名、智能体名）不写进去，留在工作区说明。
 - **范围内 issue 的 chat wakeup（M-208）**：「chat wakeup 和事件批次的分工」一节补两条：对范围内的 issue 建了 wakeup（例如限流失败后定时重试），在回复里说清是哪一类提醒、为什么批次覆盖不了（「定时重试，不是事件重复」），因为 Owner 会在 chat 里同时看到这个 wakeup 和批次汇报；wakeup 触发的那一轮先读 issue 当前状态和最新评论再汇报，批次报过的不再整段重复。简短版在 `routerWakeupSplit`，原来只进批次，现在也进 Owner 每一轮的「## Super Agent」段：wakeup 起的轮次是 chat 轮次，只能从这一段拿到规则。
 
 上线步骤（运维或 Owner 执行；本任务不改线上数据）：
@@ -409,7 +415,7 @@ Super Agent 的使用说明不再作为 skill 维护（手工导入的 skill 不
 
 ## 已知局限（并行，M-104）
 
-- `self` 仍按智能体判定：同一个智能体的 Super Agent 1 在 Super Agent 2 的范围里做的事，对 Super Agent 2 也算 `self`，不会触发 Super Agent 2 的批次（只跟着下一批被标为已消费）。范围通常不交叉（事件只投最窄订阅，Owner 已认可）；需要交叉时，用不同的智能体。
+- （M-193 起已不成立）原来 `self` 按智能体判定，同一个智能体的 Super Agent 1 在 Super Agent 2 的范围里做的事，对 Super Agent 2 也算 `self`。现在按运行判定（见「捕获什么」的 self）：Super Agent 1 的 chat 轮次不是 Super Agent 2 的运行，会触发 Super Agent 2 的批次。范围通常不交叉（事件只投最窄订阅，Owner 已认可）。
 - 同一个智能体的两条锚点订阅共用一个锚点 issue 时，受上游「同一 issue 同一智能体」唯一索引和认领串行限制，仍然排队。
 
 ## 已知局限（页面设置，M-105）

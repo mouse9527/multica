@@ -126,8 +126,8 @@ func TestDispatchBatchesEventsIntoOneAnchorRun(t *testing.T) {
 	e.publishComment(e.comment(child))
 	e.setStatus(child, "in_progress")
 	e.publishIssue(protocol.EventIssueUpdated, child, "member", e.user)
-	// The agent's own comment is captured but never starts a run.
-	e.publishComment(e.comment(child, testutil.Cols{"author_type": "agent", "author_id": e.agentA}))
+	// The Super Agent's own comment is captured but never starts a run.
+	e.publishComment(e.ownComment(sub, child, e.ownRun(sub, root)))
 
 	e.tick(d)
 	if len(runs.calls) != 0 {
@@ -183,7 +183,7 @@ func TestOwnEventsAloneNeverDispatch(t *testing.T) {
 	e, d, runs := newDispatchEnv(t)
 	root := e.issue("router root")
 	sub := e.subscribe(e.agentA, ScopeIssueTree, root)
-	e.publishComment(e.comment(root, testutil.Cols{"author_type": "agent", "author_id": e.agentA}))
+	e.publishComment(e.ownComment(sub, root, e.ownRun(sub, root)))
 	e.age(sub.ID)
 	e.tick(d)
 	if len(runs.calls) != 0 || len(e.pending(sub.ID)) != 1 {
@@ -198,8 +198,9 @@ func TestOwnEventsBacklogDoesNotHoldBackOthers(t *testing.T) {
 	e, d, runs := newDispatchEnv(t)
 	root := e.issue("router root")
 	sub := e.subscribe(e.agentA, ScopeIssueTree, root)
+	own := e.ownRun(sub, root)
 	for range maxBatchEvents + 50 {
-		e.publishComment(e.comment(root, testutil.Cols{"author_type": "agent", "author_id": e.agentA}))
+		e.publishComment(e.ownComment(sub, root, own))
 	}
 	e.publishComment(e.comment(root))
 	e.age(sub.ID)
@@ -222,11 +223,12 @@ func TestFullBatchLeavesLaterEventsForTheNext(t *testing.T) {
 	e, d, runs := newDispatchEnv(t)
 	root := e.issue("router root")
 	sub := e.subscribe(e.agentA, ScopeIssueTree, root)
-	e.publishComment(e.comment(root, testutil.Cols{"author_type": "agent", "author_id": e.agentA}))
+	own := e.ownRun(sub, root)
+	e.publishComment(e.ownComment(sub, root, own))
 	for range maxBatchEvents + 1 {
 		e.publishComment(e.comment(root))
 	}
-	e.publishComment(e.comment(root, testutil.Cols{"author_type": "agent", "author_id": e.agentA}))
+	e.publishComment(e.ownComment(sub, root, own))
 	e.age(sub.ID)
 	e.tick(d)
 	if len(runs.calls) != 1 {
