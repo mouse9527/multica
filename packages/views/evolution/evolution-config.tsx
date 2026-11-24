@@ -1,5 +1,5 @@
 // Added by the mouse9527/multica fork: Evolution P2, the scheduled analysis
-// settings (M-136).
+// settings (M-136), and the project Evolution's issues go into (M-248).
 //
 // Shown under the enabled Evolution agent. Owners and admins edit the
 // configuration; every member can read it, so members can see what Evolution
@@ -31,6 +31,13 @@ import {
 import { Button } from "@multica/ui/components/ui/button";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { Input } from "@multica/ui/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@multica/ui/components/ui/select";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { Loader2 } from "@multica/ui/icons";
@@ -149,6 +156,13 @@ export function EvolutionConfigSection({ wsId, agentId, canEdit }: { wsId: strin
       </div>
 
       <Exclusions wsId={wsId} selfAgentId={agentId} config={config} disabled={disabled} onChange={update} />
+
+      <OutputProject
+        wsId={wsId}
+        value={config.output_project_id}
+        disabled={disabled}
+        onChange={(output_project_id) => update({ output_project_id })}
+      />
 
       {canEdit && (
         <div>
@@ -275,6 +289,100 @@ function Exclusions({
         disabled={disabled}
         onChange={(exclude_agents) => onChange({ exclude_agents })}
       />
+    </div>
+  );
+}
+
+// The Select's value for "no project": the config stores "" for it, which
+// Base UI would read as no selection.
+const NO_OUTPUT_PROJECT = "none";
+
+/** Why a configured output project no longer takes Evolution's issues. */
+type OutputProjectProblem = "missing" | "archived" | "private";
+
+/**
+ * The project Evolution files its issues into (M-231). The server accepts only
+ * a public, unarchived project of this workspace, so only those are offered.
+ * A project that became unusable after it was chosen is named with the reason;
+ * the server refuses to save it again, so it has to be changed or cleared.
+ */
+function OutputProject({
+  wsId,
+  value,
+  disabled,
+  onChange,
+}: {
+  wsId: string;
+  value: string;
+  disabled: boolean;
+  onChange: (projectId: string) => void;
+}) {
+  const { t } = useT("evolution");
+  const projects = useQuery(projectListOptions(wsId));
+  const all = projects.data ?? [];
+  const usable = all.filter((p) => !p.archived_at && p.visibility !== "private");
+  const chosen = value ? all.find((p) => p.id === value) : undefined;
+  // Decide only once the list has loaded: until then every id looks missing.
+  const problem: OutputProjectProblem | null =
+    !value || !projects.isSuccess
+      ? null
+      : !chosen
+        ? "missing"
+        : chosen.archived_at
+          ? "archived"
+          : chosen.visibility === "private"
+            ? "private"
+            : null;
+  const noneLabel = t(($) => $.output_project_none);
+  const label = (id: string) =>
+    id === NO_OUTPUT_PROJECT
+      ? noneLabel
+      : (all.find((p) => p.id === id)?.title ?? (projects.isSuccess ? t(($) => $.output_project_unknown) : ""));
+  const selected = value || NO_OUTPUT_PROJECT;
+  const items = [
+    { value: NO_OUTPUT_PROJECT, label: noneLabel },
+    ...usable.map((p) => ({ value: p.id, label: p.title })),
+    // Keep an unusable choice nameable in the trigger without offering it.
+    ...(problem ? [{ value, label: label(value) }] : []),
+  ];
+
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="text-caption text-muted-foreground">{t(($) => $.output_project)}</p>
+      <Select
+        items={items}
+        value={selected}
+        onValueChange={(next) => next && onChange(next === NO_OUTPUT_PROJECT ? "" : next)}
+        disabled={disabled}
+      >
+        <SelectTrigger
+          className="w-full sm:w-80"
+          aria-label={t(($) => $.output_project)}
+          aria-invalid={problem ? true : undefined}
+        >
+          <SelectValue>{() => <span className="truncate">{label(selected)}</span>}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={NO_OUTPUT_PROJECT}>{noneLabel}</SelectItem>
+          {usable.map((p) => (
+            <SelectItem key={p.id} value={p.id}>
+              <span className="truncate">{p.title}</span>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <p
+        role={problem ? "alert" : undefined}
+        className={problem ? "text-caption text-destructive" : "text-caption text-muted-foreground"}
+      >
+        {problem === "missing"
+          ? t(($) => $.output_project_missing)
+          : problem === "archived"
+            ? t(($) => $.output_project_archived)
+            : problem === "private"
+              ? t(($) => $.output_project_private)
+              : t(($) => $.output_project_hint)}
+      </p>
     </div>
   );
 }
