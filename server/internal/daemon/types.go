@@ -254,6 +254,9 @@ type AgentData struct {
 	ThinkingLevel         string                     `json:"thinking_level,omitempty"`
 	ServiceTier           string                     `json:"service_tier,omitempty"`
 	DisabledRuntimeSkills []DisabledRuntimeSkillData `json:"disabled_runtime_skills,omitempty"`
+	// MCPOAuthNotices (mouse9527/multica fork, M-230): OAuth MCP servers the
+	// server left out of McpConfig, each with the reason, for the transcript.
+	MCPOAuthNotices []string `json:"mcp_oauth_notices,omitempty"`
 	// RuntimeConfig is the per-provider runtime_config JSON as stored on
 	// the agent record, forwarded verbatim by the claim endpoint. The
 	// daemon decodes provider-specific fields (e.g. openclaw mode +
