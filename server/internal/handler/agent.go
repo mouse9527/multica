@@ -858,6 +858,10 @@ type TaskAgentData struct {
 	ThinkingLevel         string                      `json:"thinking_level,omitempty"`
 	ServiceTier           string                      `json:"service_tier,omitempty"`
 	DisabledRuntimeSkills []DisabledRuntimeSkill      `json:"disabled_runtime_skills,omitempty"`
+	// MCPOAuthNotices (mouse9527/multica fork, M-230) names the OAuth MCP
+	// servers left out of McpConfig and why; the daemon writes each into
+	// the run transcript.
+	MCPOAuthNotices []string `json:"mcp_oauth_notices,omitempty"`
 	// RuntimeConfig is the agent's saved runtime_config JSON as-is. The
 	// daemon decodes it per-provider — e.g. the openclaw backend reads
 	// `mode` + `gateway.*` to choose between embedded and gateway routing
