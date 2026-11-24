@@ -11,11 +11,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/mcpoauth"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
 // mcpOAuthClaimFixture is an agent owned by testUserID with one queued task
@@ -258,6 +262,46 @@ func TestClaimWithoutMCPOAuthKeyWithholdsAndNotes(t *testing.T) {
 	}
 	if len(agent.MCPOAuthNotices) != 1 || !strings.Contains(agent.MCPOAuthNotices[0], "not configured on this Multica server") {
 		t.Fatalf("notices = %v", agent.MCPOAuthNotices)
+	}
+}
+
+// failingDBExecutor fails every query, like a dropped connection.
+type failingDBExecutor struct{}
+
+var errFailingDB = errors.New("connection reset by peer")
+
+func (failingDBExecutor) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, errFailingDB
+}
+
+func (failingDBExecutor) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	return nil, errFailingDB
+}
+
+func (failingDBExecutor) QueryRow(context.Context, string, ...any) pgx.Row {
+	return failingRow{}
+}
+
+type failingRow struct{}
+
+func (failingRow) Scan(...any) error { return errFailingDB }
+
+// When the agent's OAuth server names cannot be read, it is unknown which
+// entries they own, so none is mounted: the claim carries an empty managed
+// config (no fallback to a static entry, nor to the runtime's own config)
+// and a notice. Pure unit test: the handler's database fails every query.
+func TestClaimMCPOAuthNamesUnreadableMountsNothing(t *testing.T) {
+	provider := featureflag.NewStaticProvider()
+	provider.Set(featureflags.MCPOAuthV1, featureflag.Rule{Default: true})
+	h := &Handler{FeatureFlags: featureflag.NewService(provider), DB: failingDBExecutor{}}
+	static := json.RawMessage(`{"mcpServers":{"gateway":{"url":"https://static.example","headers":{"Authorization":"Bearer static-shared-key"}},"own":{"url":"https://own.example"}}}`)
+
+	mcpConfig, notices := h.applyMCPOAuthServers(context.Background(), &db.AgentTaskQueue{}, db.Agent{}, static)
+	if !jsonEqual(t, mcpConfig, `{"mcpServers":{}}`) {
+		t.Fatalf("mcp_config = %s, want an empty managed config", mcpConfig)
+	}
+	if len(notices) != 1 || notices[0] != mcpOAuthUnreadableNotice {
+		t.Fatalf("notices = %v", notices)
 	}
 }
 

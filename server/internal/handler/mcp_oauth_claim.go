@@ -52,8 +52,13 @@ func (h *Handler) applyMCPOAuthServers(ctx context.Context, task *db.AgentTaskQu
 	workspaceID, agentID := uuidToString(agent.WorkspaceID), uuidToString(agent.ID)
 	names, err := mcpoauth.ListServerNamesForAgent(ctx, h.DB, workspaceID, agentID)
 	if err != nil {
-		slog.Warn("daemon claim: list mcp oauth servers failed", "task_id", uuidToString(task.ID), "error", err)
-		return mcpConfig, nil
+		// Without the names it is unknown which entries of mcpConfig an OAuth
+		// server owns, and mounting any of them could put a withheld static
+		// credential back into use. So this run gets no managed MCP servers
+		// at all: an empty managed config, which also keeps the runtime from
+		// falling back to its own. The task still runs.
+		slog.Warn("daemon claim: list mcp oauth servers failed; mounting no MCP servers this run", "task_id", uuidToString(task.ID), "error", err)
+		return json.RawMessage(`{"mcpServers":{}}`), []string{mcpOAuthUnreadableNotice}
 	}
 	if len(names) == 0 {
 		return mcpConfig, nil
@@ -162,6 +167,10 @@ func withoutMCPServers(mcpConfig json.RawMessage, names []string, task *db.Agent
 	}
 	return out
 }
+
+// mcpOAuthUnreadableNotice is the transcript line when the agent's OAuth
+// servers could not be read and no MCP server was mounted.
+const mcpOAuthUnreadableNotice = "No MCP servers were mounted for this run: the agent's OAuth MCP configuration could not be read. The next task will try again."
 
 // mcpOAuthNotice is the transcript line for a server left out of the task.
 func mcpOAuthNotice(name string, err error) string {
