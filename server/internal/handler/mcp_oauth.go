@@ -8,12 +8,12 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/featureflags"
@@ -46,30 +46,53 @@ func (h *Handler) MountMCPOAuth(r chi.Router) {
 	r.With(requireInteractiveSession).Post("/complete", h.CompleteMCPOAuth)
 }
 
-// tokenPrefix matches the prefixed tokens the auth middleware accepts besides
-// a session JWT: local PATs (mul_), cloud PATs (mcn_), task tokens (mat_),
-// and any later one in the same form. A session JWT starts "eyJ".
-var tokenPrefix = regexp.MustCompile(`^[A-Za-z]{2,8}_`)
-
-// requireInteractiveSession admits only a signed-in session: a session JWT,
-// whether it came in the auth cookie or in the Authorization header.
-// RequireHumanActor is not enough here: it refuses task tokens and cloud PATs,
-// but the auth middleware marks no actor source for a local mul_ PAT, so a
-// script holding one would pass as the user. Connecting puts a person's
-// identity behind an agent, so it takes the person.
+// requireInteractiveSession admits only a signed-in session: the credential
+// the auth middleware authenticated the request with must be a session JWT
+// signed by this server whose subject is the request's user, whether it came
+// in the auth cookie or in the Authorization header. It is an allowlist: a
+// local PAT (mul_), a cloud PAT, a task token, or any credential added later
+// is refused unless it is that.
 //
-// The check reads the credential the middleware actually authenticated, not
-// just the Authorization header: the middleware also accepts a PAT placed in
-// the auth cookie, and a PAT holder can compute that cookie's token-bound
-// CSRF value from the PAT itself.
+// RequireHumanActor is not enough here: it refuses task tokens and cloud
+// PATs, but the auth middleware marks no actor source for a local PAT, so a
+// script holding one would pass as the user. And the check reads the
+// credential the middleware used, not just the Authorization header: the
+// middleware also accepts a PAT placed in the auth cookie, and a PAT holder
+// can compute that cookie's token-bound CSRF value from the PAT itself.
+// Connecting puts a person's identity behind an agent, so it takes the person.
 func requireInteractiveSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isMachineCredentialActor(r) || tokenPrefix.MatchString(authenticatedCredential(r)) {
+		if isMachineCredentialActor(r) || !isSessionFor(authenticatedCredential(r), requestUserID(r)) {
 			writeErrorCode(w, http.StatusForbidden, "mcp_oauth_session_only", "this action needs a signed-in session, not a token")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isSessionFor reports whether credential is a valid session JWT of this
+// server (HS256, signed with its secret, not expired) for userID. The auth
+// middleware has verified it already; this re-check is what makes the guard
+// an allowlist rather than a list of token shapes to refuse.
+func isSessionFor(credential, userID string) bool {
+	if credential == "" || userID == "" {
+		return false
+	}
+	token, err := jwt.Parse(credential, func(token *jwt.Token) (any, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, jwt.ErrSignatureInvalid
+		}
+		return auth.JWTSecret(), nil
+	})
+	if err != nil || !token.Valid {
+		return false
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return false
+	}
+	sub, _ := claims["sub"].(string)
+	return sub != "" && sub == userID
 }
 
 // authenticatedCredential is the credential the auth middleware authenticated
