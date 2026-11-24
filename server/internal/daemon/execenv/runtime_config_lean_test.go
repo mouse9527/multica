@@ -354,4 +354,5 @@ func TestLeanBriefByteComparison(t *testing.T) {
 		}
 	}
 	t.Log("\n" + report.String())
+	t.Errorf("TEMP byte report (revert before merge):\n%s\n----- lean issue brief -----\n%s", report.String(), buildMetaSkillContentLean("claude", leanTestIssueContext()))
 }
