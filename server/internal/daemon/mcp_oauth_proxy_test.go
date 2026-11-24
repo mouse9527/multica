@@ -61,17 +61,19 @@ func (u *upstreamMCP) requests() ([]*http.Request, []string) {
 
 // countingFetcher hands out the tokens in order, each valid for ttl.
 type countingFetcher struct {
-	mu     sync.Mutex
-	calls  atomic.Int32
-	tokens []string
-	ttl    time.Duration
-	err    error
+	mu       sync.Mutex
+	calls    atomic.Int32
+	tokens   []string
+	ttl      time.Duration
+	err      error
+	rejected []string
 }
 
-func (f *countingFetcher) fetch(_ context.Context, serverID string) (mcpOAuthCredential, error) {
+func (f *countingFetcher) fetch(_ context.Context, serverID, rejectedHash string) (mcpOAuthCredential, error) {
 	n := int(f.calls.Add(1))
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.rejected = append(f.rejected, rejectedHash)
 	if f.err != nil {
 		return mcpOAuthCredential{}, f.err
 	}
@@ -204,6 +206,14 @@ func TestMCPOAuthProxyRetriesOnceAfter401(t *testing.T) {
 		bodies[0] != `{"id":7}` || bodies[1] != `{"id":7}` {
 		t.Fatalf("upstream saw %d requests: %v", len(seen), bodies)
 	}
+	// The second fetch told the server which token was refused, so the
+	// server refreshes it rather than serving it again.
+	fetcher.mu.Lock()
+	rejected := append([]string(nil), fetcher.rejected...)
+	fetcher.mu.Unlock()
+	if len(rejected) != 2 || rejected[0] != "" || rejected[1] != bearerTokenHash(map[string]string{"Authorization": "Bearer tok-1"}) {
+		t.Fatalf("rejected hashes sent = %q", rejected)
+	}
 
 	// Still unauthorized with the fresh token: the 401 goes back, no loop.
 	upstream.mu.Lock()
@@ -325,29 +335,24 @@ func TestApplyMCPOAuthServersWithholdsNames(t *testing.T) {
 		}
 	})
 
-	t.Run("a runtime without the proxy gets the current token directly", func(t *testing.T) {
+	t.Run("a runtime without the proxy does not get the server", func(t *testing.T) {
+		before := fetcher.calls.Load()
 		config, set, notices := applyMCPOAuthServers(mcpOAuthMountInput{
-			Agent: agent, Provider: "cursor", Effective: json.RawMessage(`{"mcpServers":{}}`),
+			Agent: agent, Provider: "cursor", Effective: json.RawMessage(`{"mcpServers":{"gateway":{"url":"https://static.example","headers":{"Authorization":"Bearer static-shared-key"}},"own":{"url":"https://own.example"}}}`),
 			Fetch: fetcher.fetch, Logger: quietTaskLog(),
 		})
-		if set != nil || len(notices) != 0 {
-			t.Fatalf("set = %v, notices = %v", set, notices)
+		servers := decode(t, config)
+		if set != nil || len(servers) != 1 || servers["own"] == nil {
+			t.Fatalf("set = %v, servers = %v", set, servers)
 		}
-		gateway := decode(t, config)["gateway"]
-		headers, _ := gateway["headers"].(map[string]any)
-		if gateway["url"] != "https://mcp.example.com/mcp" || headers["Authorization"] != "Bearer tok-1" {
-			t.Fatalf("gateway = %v", gateway)
+		if strings.Contains(string(config), "Bearer") {
+			t.Fatalf("a token reached a runtime without the proxy: %s", config)
 		}
-	})
-
-	t.Run("no token for a runtime without the proxy: not mounted, with a notice", func(t *testing.T) {
-		failing := &countingFetcher{err: errors.New("unavailable")}
-		config, _, notices := applyMCPOAuthServers(mcpOAuthMountInput{
-			Agent: agent, Provider: "cursor", Effective: json.RawMessage(`{"mcpServers":{"gateway":{"url":"https://static.example"}}}`),
-			Fetch: failing.fetch, Logger: quietTaskLog(),
-		})
-		if servers := decode(t, config); len(servers) != 0 || len(notices) != 1 || !strings.Contains(notices[0], `"gateway"`) {
-			t.Fatalf("servers = %v, notices = %v", servers, notices)
+		if len(notices) != 1 || !strings.Contains(notices[0], `"gateway"`) || !strings.Contains(notices[0], "cursor") {
+			t.Fatalf("notices = %v", notices)
+		}
+		if fetcher.calls.Load() != before {
+			t.Fatal("a token was fetched for a runtime that cannot use the proxy")
 		}
 	})
 
@@ -372,6 +377,51 @@ func TestApplyMCPOAuthServersWithholdsNames(t *testing.T) {
 			t.Fatalf("no agent: config = %s", config)
 		}
 	})
+}
+
+// Closing the run's proxies while an event stream is open ends it on both
+// sides: the upstream call is cancelled and the runtime's connection is
+// closed, so nothing keeps reaching the MCP server after the run.
+func TestMCPOAuthProxySetCloseEndsOpenStreams(t *testing.T) {
+	upstreamEnded := make(chan struct{})
+	upstream := newUpstreamMCP(t, "tok-1", func(w http.ResponseWriter, r *http.Request) {
+		defer close(upstreamEnded)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: first\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	})
+	fetcher := &countingFetcher{tokens: []string{"tok-1"}, ttl: time.Hour}
+	proxyURL, set := startTestProxy(t, upstream.srv.URL, fetcher.fetch)
+
+	resp := postMCP(t, proxyURL, `{}`, nil)
+	reader := bufio.NewReader(resp.Body)
+	if line, err := reader.ReadString('\n'); err != nil || line != "data: first\n" {
+		t.Fatalf("first line %q, %v", line, err)
+	}
+	clientEnded := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(io.Discard, reader)
+		clientEnded <- err
+	}()
+
+	closed := make(chan struct{})
+	go func() {
+		set.Close()
+		close(closed)
+	}()
+	for name, ch := range map[string]<-chan struct{}{"Close": closed, "the upstream call": upstreamEnded} {
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s did not end after Close", name)
+		}
+	}
+	select {
+	case <-clientEnded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the runtime's stream stayed open after Close")
+	}
 }
 
 // Closing the run's proxies stops serving: nothing keeps the token reachable

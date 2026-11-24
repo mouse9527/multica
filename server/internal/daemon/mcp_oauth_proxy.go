@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -38,8 +39,10 @@ type mcpOAuthCredential struct {
 }
 
 // mcpOAuthCredentialFetcher gets the current credential for a server of the
-// running task from the Multica server.
-type mcpOAuthCredentialFetcher func(ctx context.Context, serverID string) (mcpOAuthCredential, error)
+// running task from the Multica server. rejectedHash, when set, is the hex
+// SHA-256 of a token the MCP server just refused, so the server refreshes it
+// instead of handing it back.
+type mcpOAuthCredentialFetcher func(ctx context.Context, serverID, rejectedHash string) (mcpOAuthCredential, error)
 
 const (
 	// mcpOAuthProxyMaxBody bounds one MCP request body, which the proxy
@@ -107,16 +110,23 @@ func newMCPOAuthProxy(server MCPOAuthProxyServerData, fetch mcpOAuthCredentialFe
 }
 
 // credential returns the cached credential, or fetches one when there is
-// none, it is about to expire, or fresh is set (after a 401).
-func (p *mcpOAuthProxy) credential(ctx context.Context, fresh bool) (mcpOAuthCredential, error) {
+// none or it is about to expire. rejected is the credential the MCP server
+// just answered 401 to: the server is told which token it was, so it
+// refreshes that token instead of returning it again (unless it has already
+// been replaced, in which case the current one comes back).
+func (p *mcpOAuthProxy) credential(ctx context.Context, rejected *mcpOAuthCredential) (mcpOAuthCredential, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !fresh && p.cached != nil && (p.cached.ExpiresAt.IsZero() || time.Until(p.cached.ExpiresAt) > mcpOAuthCredentialSlack) {
+	if rejected == nil && p.cached != nil && (p.cached.ExpiresAt.IsZero() || time.Until(p.cached.ExpiresAt) > mcpOAuthCredentialSlack) {
 		return *p.cached, nil
+	}
+	rejectedHash := ""
+	if rejected != nil {
+		rejectedHash = bearerTokenHash(rejected.Headers)
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, mcpOAuthCredentialFetchTimeout)
 	defer cancel()
-	credential, err := p.fetch(fetchCtx, p.serverID)
+	credential, err := p.fetch(fetchCtx, p.serverID, rejectedHash)
 	if err != nil {
 		p.cached = nil
 		return mcpOAuthCredential{}, err
@@ -139,13 +149,13 @@ func (p *mcpOAuthProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	response, err := p.forward(r, body, false)
+	response, used, err := p.forward(r, body, nil)
 	if err == nil && response.StatusCode == http.StatusUnauthorized {
 		// The token may have been revoked or rotated since it was cached:
-		// try once more with a fresh one.
+		// try once more with a replacement.
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, mcpOAuthProxyMaxBody))
 		response.Body.Close()
-		response, err = p.forward(r, body, true)
+		response, _, err = p.forward(r, body, &used)
 	}
 	if err != nil {
 		// The error text never carries the token: fetch errors come from
@@ -167,10 +177,12 @@ func (p *mcpOAuthProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	streamResponse(w, response.Body)
 }
 
-func (p *mcpOAuthProxy) forward(r *http.Request, body []byte, fresh bool) (*http.Response, error) {
-	credential, err := p.credential(r.Context(), fresh)
+// forward sends the request with the current credential and returns the
+// credential it used.
+func (p *mcpOAuthProxy) forward(r *http.Request, body []byte, rejected *mcpOAuthCredential) (*http.Response, mcpOAuthCredential, error) {
+	credential, err := p.credential(r.Context(), rejected)
 	if err != nil {
-		return nil, fmt.Errorf("credential: %w", err)
+		return nil, mcpOAuthCredential{}, fmt.Errorf("credential: %w", err)
 	}
 	target := *p.target
 	if r.URL.RawQuery != "" {
@@ -182,7 +194,7 @@ func (p *mcpOAuthProxy) forward(r *http.Request, body []byte, fresh bool) (*http
 	}
 	outbound, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, credential, err
 	}
 	for key, values := range r.Header {
 		canonical := http.CanonicalHeaderKey(key)
@@ -196,7 +208,23 @@ func (p *mcpOAuthProxy) forward(r *http.Request, body []byte, fresh bool) (*http
 	for key, value := range credential.Headers {
 		outbound.Header.Set(key, value)
 	}
-	return p.client.Do(outbound)
+	response, err := p.client.Do(outbound)
+	return response, credential, err
+}
+
+// bearerTokenHash is the hex SHA-256 of the bearer token in headers, the
+// form the server's credential endpoint takes a rejected token in.
+func bearerTokenHash(headers map[string]string) string {
+	for key, value := range headers {
+		if !strings.EqualFold(key, "Authorization") {
+			continue
+		}
+		if token, ok := strings.CutPrefix(value, "Bearer "); ok {
+			sum := sha256.Sum256([]byte(token))
+			return hex.EncodeToString(sum[:])
+		}
+	}
+	return ""
 }
 
 // streamResponse copies the body and flushes as it goes, so a server-sent
@@ -220,22 +248,38 @@ func streamResponse(w http.ResponseWriter, body io.Reader) {
 	}
 }
 
-// mcpOAuthProxySet is the proxies of one run.
+// mcpOAuthProxySet is the proxies of one run. Every request they serve runs
+// under the set's context, so Close ends calls still in flight, open event
+// streams included, rather than leaving them reaching the MCP server after
+// the run.
 type mcpOAuthProxySet struct {
+	ctx       context.Context
+	cancel    context.CancelFunc
 	servers   []*http.Server
 	listeners []net.Listener
 	once      sync.Once
 }
 
+func newMCPOAuthProxySet() *mcpOAuthProxySet {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &mcpOAuthProxySet{ctx: ctx, cancel: cancel}
+}
+
+// Close cancels every request in flight (which aborts its upstream call),
+// lets the handlers return, then closes whatever connections remain.
 func (s *mcpOAuthProxySet) Close() {
 	if s == nil {
 		return
 	}
 	s.once.Do(func() {
+		s.cancel()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		for _, server := range s.servers {
-			_ = server.Shutdown(ctx)
+			if err := server.Shutdown(ctx); err != nil {
+				_ = server.Close()
+			}
+			_ = server.Close()
 		}
 		for _, listener := range s.listeners {
 			_ = listener.Close()
@@ -264,9 +308,10 @@ type mcpOAuthMountInput struct {
 //   - every OAuth server name is withheld from the whole config, including
 //     the runtime's own MCP servers, so a same-named local entry (and its
 //     static credential) is never used in its place;
-//   - each server to mount is added as a local proxy entry, or, for a
-//     runtime the proxy is not offered to (the same set the Remote MCP
-//     broker supports), as a direct entry with the token fetched now;
+//   - each server to mount is added as a local proxy entry; a runtime the
+//     proxy is not offered to (outside the set the Remote MCP broker
+//     supports) does not get the server at all, since the only alternative
+//     is a token in its config file;
 //   - when the server could not read the names (WithholdAll), no MCP server
 //     is mounted at all.
 //
@@ -302,21 +347,16 @@ func applyMCPOAuthServers(in mcpOAuthMountInput) (json.RawMessage, *mcpOAuthProx
 		return json.RawMessage(`{"mcpServers":{}}`), nil, nil
 	}
 
-	set := &mcpOAuthProxySet{}
+	set := newMCPOAuthProxySet()
 	entries := map[string]any{}
 	var notices []string
 	for _, server := range agent.MCPOAuthProxy {
 		if !providerSupportsRemoteMCPBroker(in.Provider) {
-			// No local proxy for this runtime: give it the current token
-			// directly, as a daemon without the proxy would have got it.
-			ctx, cancel := context.WithTimeout(context.Background(), mcpOAuthCredentialFetchTimeout)
-			credential, fetchErr := in.Fetch(ctx, server.ServerID)
-			cancel()
-			if fetchErr != nil {
-				notices = append(notices, fmt.Sprintf("MCP server %q was not mounted this time: a current token could not be obtained. The next task will try again.", server.Name))
-				continue
-			}
-			entries[server.Name] = map[string]any{"type": "http", "url": server.URL, "headers": credential.Headers}
+			// The local proxy is offered to the runtimes the Remote MCP
+			// broker supports. Any other runtime would need the token in
+			// its own config file, where it would outlive the run and
+			// expire mid-task, so the server is not mounted for it.
+			notices = append(notices, fmt.Sprintf("MCP server %q was not mounted: OAuth MCP servers are not supported with the %s runtime yet.", server.Name, in.Provider))
 			continue
 		}
 		proxy, err := newMCPOAuthProxy(server, in.Fetch, in.Logger)
@@ -329,7 +369,11 @@ func applyMCPOAuthServers(in mcpOAuthMountInput) (json.RawMessage, *mcpOAuthProx
 			notices = append(notices, fmt.Sprintf("MCP server %q was not mounted this time: the local proxy could not start.", server.Name))
 			continue
 		}
-		httpServer := &http.Server{Handler: proxy, ReadHeaderTimeout: 10 * time.Second}
+		httpServer := &http.Server{
+			Handler:           proxy,
+			ReadHeaderTimeout: 10 * time.Second,
+			BaseContext:       func(net.Listener) context.Context { return set.ctx },
+		}
 		set.servers = append(set.servers, httpServer)
 		set.listeners = append(set.listeners, listener)
 		go func() {
@@ -340,6 +384,7 @@ func applyMCPOAuthServers(in mcpOAuthMountInput) (json.RawMessage, *mcpOAuthProx
 		entries[server.Name] = map[string]any{"type": "http", "url": "http://" + listener.Addr().String() + proxy.path}
 	}
 	if len(set.servers) == 0 {
+		set.Close()
 		set = nil
 	}
 	if len(entries) == 0 {

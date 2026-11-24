@@ -38,8 +38,8 @@ func (d *Daemon) mountMCPOAuthServers(task Task, provider string, effective json
 		RuntimeConfig: func(config json.RawMessage) (json.RawMessage, error) {
 			return mergeRuntimeAndAgentMcpConfig(provider, config)
 		},
-		Fetch: func(ctx context.Context, serverID string) (mcpOAuthCredential, error) {
-			return d.client.ResolveMCPOAuthCredential(ctx, task.ID, serverID)
+		Fetch: func(ctx context.Context, serverID, rejectedHash string) (mcpOAuthCredential, error) {
+			return d.client.ResolveMCPOAuthCredential(ctx, task.ID, serverID, rejectedHash)
 		},
 		Logger: taskLog,
 	})
