@@ -11,14 +11,24 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/multica-ai/multica/server/internal/mcpoauth"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func mcpOAuthCredentialCall(t *testing.T, taskID, serverID string) *testutil.Response {
 	t.Helper()
+	return mcpOAuthCredentialCallQuery(t, taskID, serverID, "")
+}
+
+func mcpOAuthCredentialCallQuery(t *testing.T, taskID, serverID, query string) *testutil.Response {
+	t.Helper()
 	r := chi.NewRouter()
 	r.Get("/api/daemon/tasks/{id}/mcp-oauth/{serverId}/credential", testHandler.ResolveMCPOAuthCredential)
-	req := newOwnerDaemonRequest(http.MethodGet, "/api/daemon/tasks/"+taskID+"/mcp-oauth/"+serverID+"/credential", nil)
+	path := "/api/daemon/tasks/" + taskID + "/mcp-oauth/" + serverID + "/credential"
+	if query != "" {
+		path += "?" + query
+	}
+	req := newOwnerDaemonRequest(http.MethodGet, path, nil)
 	return testutil.Call(t, r.ServeHTTP, req)
 }
 
@@ -82,6 +92,15 @@ func TestResolveMCPOAuthCredential(t *testing.T) {
 	other := connectForClaimTest(t, store, otherAgent, "elsewhere", "other-agent-token", nil)
 	if body := mcpOAuthCredentialCall(t, taskID, other.ID).Want(http.StatusNotFound).Body.String(); strings.Contains(body, "other-agent-token") {
 		t.Fatal("another agent's token was served")
+	}
+
+	// A malformed rejected-token hash is refused; a hash of a token that is
+	// not the stored one changes nothing.
+	mcpOAuthCredentialCallQuery(t, taskID, gateway.ID, "rejected=not-a-hash").Want(http.StatusBadRequest)
+	var unchanged mcpOAuthCredentialResponse
+	mcpOAuthCredentialCallQuery(t, taskID, gateway.ID, "rejected="+mcpoauth.TokenHash("some-other-token")).Want(http.StatusOK).JSON(&unchanged)
+	if unchanged.Headers["Authorization"] != "Bearer credential-token" {
+		t.Fatalf("credential = %+v", unchanged)
 	}
 
 	// With the flag off the route does not exist.

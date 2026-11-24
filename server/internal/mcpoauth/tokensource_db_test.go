@@ -414,3 +414,45 @@ func TestCredentialForUnknownConnection(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotConnected", err)
 	}
 }
+
+// A token the MCP server refused is refreshed even though it has most of its
+// lifetime left; a caller reporting a token someone already replaced gets the
+// current one without another refresh; an unknown hash changes nothing.
+func TestCredentialReplacingARejectedToken(t *testing.T) {
+	h := newTokenHarness(t, time.Hour, "rt-1")
+	ctx := context.Background()
+
+	c, err := h.source.CredentialReplacing(ctx, h.server.ID, h.f.ownerID, TokenHash("at-1"))
+	if err != nil || c.AccessToken.Reveal() != "at-2" {
+		t.Fatalf("after rejecting at-1: %q, %v; want at-2", c.AccessToken.Reveal(), err)
+	}
+	c, err = h.source.CredentialReplacing(ctx, h.server.ID, h.f.ownerID, TokenHash("at-1"))
+	if err != nil || c.AccessToken.Reveal() != "at-2" {
+		t.Fatalf("stale rejection: %q, %v; want at-2", c.AccessToken.Reveal(), err)
+	}
+	c, err = h.source.CredentialReplacing(ctx, h.server.ID, h.f.ownerID, TokenHash("some-other-token"))
+	if err != nil || c.AccessToken.Reveal() != "at-2" {
+		t.Fatalf("unknown hash: %q, %v; want at-2", c.AccessToken.Reveal(), err)
+	}
+	if n := h.auth.calls.Load(); n != 1 {
+		t.Fatalf("%d refreshes, want 1", n)
+	}
+
+	// A rejected token is never handed back, not even while a transient
+	// failure is being waited out.
+	h.auth.fail = errors.New("HTTP 503")
+	if _, err := h.source.CredentialReplacing(ctx, h.server.ID, h.f.ownerID, TokenHash("at-2")); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("rejected token with the endpoint down: err = %v, want ErrUnavailable", err)
+	}
+	if _, err := h.source.CredentialReplacing(ctx, h.server.ID, h.f.ownerID, TokenHash("at-2")); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("inside the retry window: err = %v, want ErrUnavailable", err)
+	}
+	// Callers that were not refused still get the token while it lasts.
+	h.mustToken(t, "at-2")
+}
+
+func TestTokenHash(t *testing.T) {
+	if got := TokenHash("abc"); got != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" {
+		t.Fatalf("TokenHash = %s", got)
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -13,6 +15,8 @@ import (
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/mcpoauth"
 )
+
+var tokenHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type mcpOAuthCredentialResponse struct {
 	// Headers are the request headers for the MCP server: Authorization
@@ -23,7 +27,7 @@ type mcpOAuthCredentialResponse struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
-// ResolveMCPOAuthCredential (GET /api/daemon/tasks/{id}/mcp-oauth/{serverId}/credential)
+// ResolveMCPOAuthCredential (GET /api/daemon/tasks/{id}/mcp-oauth/{serverId}/credential[?rejected=<token hash>])
 // is how a daemon's local proxy gets the current token for an OAuth MCP
 // server while the task runs, so a token that expires mid-task is replaced
 // rather than failing every later call. It serves only a task this daemon may
@@ -71,7 +75,15 @@ func (h *Handler) ResolveMCPOAuthCredential(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	credential, err := mcpoauth.NewTokenSource(store, mcpoauth.Refresh, slog.Default()).Credential(r.Context(), server.ID, uuidToString(agent.OwnerID))
+	// rejected is mcpoauth.TokenHash of the token the MCP server just
+	// answered 401 to: while it is still the stored token it is refreshed
+	// rather than served again.
+	rejected := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("rejected")))
+	if rejected != "" && !tokenHashPattern.MatchString(rejected) {
+		writeError(w, http.StatusBadRequest, "rejected must be a hex SHA-256")
+		return
+	}
+	credential, err := mcpoauth.NewTokenSource(store, mcpoauth.Refresh, slog.Default()).CredentialReplacing(r.Context(), server.ID, uuidToString(agent.OwnerID), rejected)
 	switch {
 	case errors.Is(err, mcpoauth.ErrNotConnected):
 		writeErrorCode(w, http.StatusNotFound, "mcp_oauth_not_connected", "the MCP server is not connected")
