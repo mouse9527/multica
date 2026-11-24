@@ -8466,6 +8466,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// local_directory still fails closed.
 	var agentMcpConfig json.RawMessage
 	var effectiveMcpConfig json.RawMessage
+	var mcpOAuthDaemonNotices []string // mouse9527/multica fork (M-230)
 	var cursorMcpAuthSource string
 	var cursorMcpAuthStore string
 	var cursorUserDataDir string
@@ -8529,6 +8530,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				return TaskResult{}, fmt.Errorf("merge Remote MCP broker configuration: %w", mergeErr)
 			}
 			effectiveMcpConfig = merged
+		}
+		// mouse9527/multica fork: OAuth MCP servers through local proxies, and
+		// their names withheld from the runtime's own MCP config (M-230).
+		var mcpOAuthProxies *mcpOAuthProxySet
+		effectiveMcpConfig, mcpOAuthProxies, mcpOAuthDaemonNotices = d.mountMCPOAuthServers(task, provider, effectiveMcpConfig, taskLog)
+		if mcpOAuthProxies != nil {
+			defer mcpOAuthProxies.Close()
 		}
 		if provider == "cursor" {
 			cursorMcpAuthSource = strings.TrimSpace(task.Agent.CustomEnv[execenv.CursorMcpAuthSourceEnv])
@@ -9474,7 +9482,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var msgSeq atomic.Int32
 	d.reportThinkingLevelWarning(ctx, task.ID, selection.ThinkingLevelWarning, &msgSeq, taskLog)
 	// mouse9527/multica fork: OAuth MCP servers left out of this run (M-230).
-	d.reportMCPOAuthNotices(ctx, task, &msgSeq, taskLog)
+	d.reportMCPOAuthNotices(ctx, task, mcpOAuthDaemonNotices, &msgSeq, taskLog)
 	var pendingCursorLoginCheck *cursorMcpLoginCheck
 	if provider == "cursor" && (env.CursorDataDir != "" || env.CursorUserDataDir != "") {
 		check := cursorMcpLoginCheck{

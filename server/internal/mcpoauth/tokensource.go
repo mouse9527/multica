@@ -4,6 +4,9 @@ package mcpoauth
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -194,6 +197,42 @@ func (row connectionRow) recentlyFailed(now time.Time, window time.Duration) boo
 // (try again later; the grant is kept). The caller decides what a task does
 // without the server — the claim path mounts nothing and tells the task why.
 func (s *TokenSource) Credential(ctx context.Context, serverID, userID string) (Credential, error) {
+	return s.credentialReplacing(ctx, serverID, userID, "")
+}
+
+// CredentialReplacing is Credential for a caller whose last token was just
+// refused by the MCP server (a 401). rejectedHash is TokenHash of that token.
+// While it is still the stored token, it counts as expired: it is refreshed
+// now rather than handed back, whatever its stated lifetime says. If someone
+// already replaced it, the current token is returned without another refresh.
+func (s *TokenSource) CredentialReplacing(ctx context.Context, serverID, userID, rejectedHash string) (Credential, error) {
+	return s.credentialReplacing(ctx, serverID, userID, rejectedHash)
+}
+
+// TokenHash identifies an access token without carrying it: hex SHA-256.
+func TokenHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+// expireIfRejected treats the row's access token as already expired when it
+// is the one the caller reported rejected, so every later check (usable,
+// still valid, retry window) refuses to hand it out again.
+func (s *TokenSource) expireIfRejected(row *connectionRow, rejectedHash string, now time.Time) {
+	if rejectedHash == "" || len(row.access) == 0 {
+		return
+	}
+	access, err := s.store.open(row.access)
+	if err != nil || access == "" {
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(TokenHash(access)), []byte(rejectedHash)) == 1 {
+		expired := now
+		row.expiresAt = &expired
+	}
+}
+
+func (s *TokenSource) credentialReplacing(ctx context.Context, serverID, userID, rejectedHash string) (Credential, error) {
 	row, err := loadConnection(ctx, s.store.db, serverID, userID, false)
 	if err != nil {
 		return Credential{}, err
@@ -202,6 +241,7 @@ func (s *TokenSource) Credential(ctx context.Context, serverID, userID string) (
 	if row.status == StatusNeedsReconnect {
 		return Credential{}, ErrNeedsReconnect
 	}
+	s.expireIfRejected(&row, rejectedHash, now)
 	if row.usable(now, s.Margin) {
 		return s.credential(ctx, serverID, userID, row)
 	}
@@ -212,7 +252,7 @@ func (s *TokenSource) Credential(ctx context.Context, serverID, userID string) (
 	// only as long as its own context allows.
 	done := make(chan refreshResult, 1)
 	go func() {
-		credential, err := s.refreshLocked(ctx, serverID, userID)
+		credential, err := s.refreshLocked(ctx, serverID, userID, rejectedHash)
 		done <- refreshResult{credential, err}
 	}()
 	select {
@@ -237,7 +277,7 @@ type refreshResult struct {
 // the token endpoint has rotated the refresh token, abandoning the write would
 // lose the only copy of the new one and force a reconnect. RefreshTimeout
 // and LockTimeout still bound it.
-func (s *TokenSource) refreshLocked(ctx context.Context, serverID, userID string) (Credential, error) {
+func (s *TokenSource) refreshLocked(ctx context.Context, serverID, userID, rejectedHash string) (Credential, error) {
 	work, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.LockTimeout+s.RefreshTimeout+commitReserve)
 	defer cancel()
 	tx, err := s.store.db.Begin(work)
@@ -256,6 +296,7 @@ func (s *TokenSource) refreshLocked(ctx context.Context, serverID, userID string
 	if row.status == StatusNeedsReconnect {
 		return Credential{}, ErrNeedsReconnect
 	}
+	s.expireIfRejected(&row, rejectedHash, now)
 	if row.usable(now, s.Margin) {
 		// Someone else refreshed while this caller waited for the lock.
 		if err := tx.Commit(work); err != nil {

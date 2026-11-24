@@ -862,6 +862,13 @@ type TaskAgentData struct {
 	// servers left out of McpConfig and why; the daemon writes each into
 	// the run transcript.
 	MCPOAuthNotices []string `json:"mcp_oauth_notices,omitempty"`
+	// MCPOAuthProxy, MCPOAuthNames, MCPOAuthWithholdAll (fork, M-230) go to
+	// a daemon that proxies OAuth MCP servers: the servers to proxy (no
+	// token), every OAuth server name to withhold from the runtime's own MCP
+	// config, and whether to mount no MCP server at all. See mcp_oauth_claim.go.
+	MCPOAuthProxy       []MCPOAuthProxyServer `json:"mcp_oauth_proxy,omitempty"`
+	MCPOAuthNames       []string              `json:"mcp_oauth_names,omitempty"`
+	MCPOAuthWithholdAll bool                  `json:"mcp_oauth_withhold_all,omitempty"`
 	// RuntimeConfig is the agent's saved runtime_config JSON as-is. The
 	// daemon decodes it per-provider — e.g. the openclaw backend reads
 	// `mode` + `gateway.*` to choose between embedded and gateway routing
