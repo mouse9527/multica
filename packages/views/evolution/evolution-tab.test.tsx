@@ -1,4 +1,4 @@
-// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136).
+// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-248).
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -14,6 +14,7 @@ const state = vi.hoisted(() => ({
   status: { agent: null } as unknown,
   config: null as unknown,
   flag: true,
+  projects: [] as { id: string; title: string; archived_at: string | null; visibility?: string }[],
 }));
 
 vi.mock("@multica/core/config", () => ({ useFeatureEnabled: () => state.flag }));
@@ -32,7 +33,7 @@ vi.mock("@multica/core/paths", () => ({
 vi.mock("@multica/core/projects", () => ({
   projectListOptions: (wsId: string) => ({
     queryKey: ["projects", wsId],
-    queryFn: async () => [{ id: "p-1", title: "Website", archived_at: null }],
+    queryFn: async () => state.projects,
   }),
 }));
 vi.mock("@multica/core/workspace/queries", async (original) => ({
@@ -74,7 +75,9 @@ vi.mock("@multica/core/api", async (original) => ({
 
 const apiRequest = vi.mocked(api.request);
 
-function configState(overrides: { chat_active?: boolean; chat?: boolean; enabled?: boolean } = {}) {
+function configState(
+  overrides: { chat_active?: boolean; chat?: boolean; enabled?: boolean; output_project_id?: string } = {},
+) {
   return {
     config: {
       enabled: overrides.enabled ?? false,
@@ -85,6 +88,7 @@ function configState(overrides: { chat_active?: boolean; chat?: boolean; enabled
       max_items_per_window: 2000,
       max_window_days: 7,
       max_runs_per_day: 3,
+      output_project_id: overrides.output_project_id ?? "",
     },
     chat_active: overrides.chat_active ?? false,
     comments_active: false,
@@ -98,6 +102,7 @@ beforeEach(() => {
   state.status = { agent: null };
   state.config = configState();
   state.flag = true;
+  state.projects = [{ id: "p-1", title: "Website", archived_at: null }];
   apiRequest.mockReset();
   apiRequest.mockImplementation(async (path: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -232,5 +237,68 @@ describe("EvolutionConfigSection", () => {
     expect(await screen.findByText(en.chat_active)).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: en.chat_label })).toHaveAttribute("aria-disabled", "true");
     expect(screen.queryByRole("button", { name: en.config_save })).not.toBeInTheDocument();
+  });
+
+  describe("output project", () => {
+    const picker = () => screen.findByRole("combobox", { name: en.output_project });
+
+    beforeEach(() => {
+      state.projects = [
+        { id: "p-1", title: "Website", archived_at: null, visibility: "workspace" },
+        { id: "p-evo", title: "Evolution inbox", archived_at: null, visibility: "workspace" },
+        { id: "p-old", title: "Legacy", archived_at: "2026-11-01T00:00:00Z", visibility: "workspace" },
+        { id: "p-secret", title: "Secret", archived_at: null, visibility: "private" },
+      ];
+    });
+
+    it("offers only public, unarchived projects and saves the chosen one", async () => {
+      const user = userEvent.setup();
+      show(<EvolutionTab />);
+      expect(await picker()).toHaveTextContent(en.output_project_none);
+      await user.click(await picker());
+      expect(await screen.findByRole("option", { name: "Website" })).toBeInTheDocument();
+      expect(screen.getByRole("option", { name: en.output_project_none })).toBeInTheDocument();
+      expect(screen.queryByRole("option", { name: "Legacy" })).toBeNull();
+      expect(screen.queryByRole("option", { name: "Secret" })).toBeNull();
+      await user.click(screen.getByRole("option", { name: "Evolution inbox" }));
+      expect(await picker()).toHaveTextContent("Evolution inbox");
+
+      await user.click(screen.getByRole("button", { name: en.config_save }));
+      await waitFor(() => expect(puts()).toHaveLength(1));
+      expect(JSON.parse(String(puts()[0]?.[1]?.body)).config.output_project_id).toBe("p-evo");
+    });
+
+    it("clears the project with No project", async () => {
+      const user = userEvent.setup();
+      state.config = configState({ output_project_id: "p-evo" });
+      show(<EvolutionTab />);
+      const trigger = await picker();
+      await waitFor(() => expect(trigger).toHaveTextContent("Evolution inbox"));
+      expect(screen.queryByRole("alert")).toBeNull();
+      await user.click(trigger);
+      await user.click(await screen.findByRole("option", { name: en.output_project_none }));
+
+      await user.click(screen.getByRole("button", { name: en.config_save }));
+      await waitFor(() => expect(puts()).toHaveLength(1));
+      expect(JSON.parse(String(puts()[0]?.[1]?.body)).config.output_project_id).toBe("");
+    });
+
+    it.each([
+      ["p-old", "Legacy", en.output_project_archived],
+      ["p-secret", "Secret", en.output_project_private],
+      ["p-gone", en.output_project_unknown, en.output_project_missing],
+    ])("warns when the chosen project %s can no longer hold Evolution's issues", async (id, shown, warning) => {
+      state.config = configState({ output_project_id: id });
+      show(<EvolutionTab />);
+      expect(await screen.findByRole("alert")).toHaveTextContent(warning);
+      expect(await picker()).toHaveTextContent(shown);
+      expect(await picker()).toHaveAttribute("aria-invalid", "true");
+    });
+
+    it("is read-only for members", async () => {
+      state.role = "member";
+      show(<EvolutionTab />);
+      expect(await picker()).toBeDisabled();
+    });
   });
 });
