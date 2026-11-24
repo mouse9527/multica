@@ -30,7 +30,7 @@ func TestParseAllowedOrigins(t *testing.T) {
 			t.Errorf("Allows(%s) = %v, want %v", raw, got, want)
 		}
 	}
-	for _, bad := range []string{"http://gw.lan.test", "https://gw.lan.test/mcp", "https://*.home.test", "https://u@gw.lan.test", "gw.lan.test", "https://gw.lan.test?x=1"} {
+	for _, bad := range []string{"http://gw.lan.test", "https://gw.lan.test/mcp", "https://*.lan.test", "https://u@gw.lan.test", "gw.lan.test", "https://gw.lan.test?x=1"} {
 		if _, err := ParseAllowedOrigins(bad); err == nil {
 			t.Errorf("ParseAllowedOrigins(%q) accepted", bad)
 		}
