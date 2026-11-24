@@ -332,7 +332,8 @@ func TestBuildMetaSkillContentLeanSwitch(t *testing.T) {
 
 // TestLeanBriefByteComparison reports lean against upstream for the three
 // task kinds the rollout compares (run with -v to see the numbers), and fails
-// if a kind stops saving a meaningful amount.
+// if a kind stops saving a meaningful amount. The floors sit 15–20% under
+// the first CI measurement (issue 6191, chat 3106, quick-create 1631 bytes).
 func TestLeanBriefByteComparison(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -340,9 +341,9 @@ func TestLeanBriefByteComparison(t *testing.T) {
 		ctx      TaskContextForEnv
 		minSaved int
 	}{
-		{"issue", leanTestIssueContext(), 4000},
-		{"chat", leanTestContexts()["chat-web"], 2000},
-		{"quick-create", leanTestContexts()["quick-create"], 1200},
+		{"issue", leanTestIssueContext(), 5000},
+		{"chat", leanTestContexts()["chat-web"], 2500},
+		{"quick-create", leanTestContexts()["quick-create"], 1300},
 	}
 	var report strings.Builder
 	for _, tc := range cases {
@@ -354,5 +355,4 @@ func TestLeanBriefByteComparison(t *testing.T) {
 		}
 	}
 	t.Log("\n" + report.String())
-	t.Errorf("TEMP byte report (revert before merge):\n%s\n----- lean issue brief -----\n%s", report.String(), buildMetaSkillContentLean("claude", leanTestIssueContext()))
 }
