@@ -2070,6 +2070,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/connections", h.ListComposioConnections)
 			r.Delete("/connections/{id}", h.DeleteComposioConnection)
 		})
+		// mouse9527/multica fork: finishing an OAuth MCP connect (M-230).
+		// User-scoped like Composio: the session is who connects, the state
+		// names the workspace. 404 unless mcp_oauth_v1 is on.
+		r.Route("/api/mcp-oauth", h.MountMCPOAuth)
 
 		// User-scoped invitation routes (no workspace context required)
 		r.Get("/api/invitations", h.ListMyInvitations)
@@ -2499,6 +2503,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/mcp-servers", h.AddAgentMcpServer)
 					r.Put("/mcp-servers/{serverId}/enabled", h.SetAgentMcpServerEnabled)
 					r.Delete("/mcp-servers/{serverId}", h.RemoveAgentMcpServer)
+					// mouse9527/multica fork: OAuth MCP servers and the owner's
+					// connection to them (M-230), 404 unless mcp_oauth_v1 is on.
+					r.Route("/mcp-oauth", h.MountAgentMCPOAuth)
 					// Dedicated env-management endpoint. Admits the agent
 					// owner or a workspace owner/admin; agent actors are
 					// denied. Every reveal / write is audited to
