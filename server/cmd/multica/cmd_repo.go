@@ -479,7 +479,7 @@ func repoCheckoutOutcome(repoURL string, result repoCheckoutResult) string {
 		repoURL, result.Path, branch,
 		result.UncommittedFiles, pluralS(result.UncommittedFiles),
 		result.UnpushedCommits, pluralS(result.UnpushedCommits),
-		untouched)
+		untouched) + keptCheckoutDeliveryNote // mouse9527/multica fork (M-259)
 }
 
 // repoCheckoutFetchWarning flags a checkout made from the daemon's cached copy
