@@ -70,9 +70,25 @@ func mcpOAuthRouter() http.HandlerFunc {
 	return r.ServeHTTP
 }
 
+// mcpOAuthCall calls as userID signed in with a session JWT, the way the
+// browser and the desktop app reach these routes.
 func mcpOAuthCall(t *testing.T, userID, method, path string, body any) *testutil.Response {
 	t.Helper()
-	return testutil.Call(t, mcpOAuthRouter(), newRequestAs(userID, method, path, body))
+	req := newRequestAs(userID, method, path, body)
+	req.Header.Set("Authorization", "Bearer "+mcpOAuthSession(t, userID, time.Hour, auth.JWTSecret()))
+	return testutil.Call(t, mcpOAuthRouter(), req)
+}
+
+// mcpOAuthSession is a session JWT for userID expiring in ttl, signed with key.
+func mcpOAuthSession(t *testing.T, userID string, ttl time.Duration, key []byte) string {
+	t.Helper()
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": userID, "exp": time.Now().Add(ttl).Unix(),
+	}).SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
 }
 
 func asPAT(req *http.Request) *http.Request {
@@ -139,11 +155,27 @@ func TestMCPOAuthWritesRefuseEveryToken(t *testing.T) {
 		t.Fatalf("servers = %+v", listed.Servers)
 	}
 
-	// A session JWT in the Authorization header (how the desktop app signs
-	// in) is a session, not a token.
-	req := newRequestAs(ownerID, "POST", base, map[string]any{"name": "desktop", "url": "https://mcp.example.com/mcp"})
-	req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln")
-	testutil.Call(t, mcpOAuthRouter(), req).Want(http.StatusCreated)
+	// The guard is an allowlist: a JWT that is not this user's valid
+	// session is refused like any token.
+	for name, session := range map[string]string{
+		"another user's session":     mcpOAuthSession(t, testUserID, time.Hour, auth.JWTSecret()),
+		"an expired session":         mcpOAuthSession(t, ownerID, -time.Minute, auth.JWTSecret()),
+		"a session signed elsewhere": mcpOAuthSession(t, ownerID, time.Hour, []byte("not-this-server's-secret-0123456789")),
+		"no credential at all":       "",
+	} {
+		req := newRequestAs(ownerID, "POST", base, map[string]any{"name": "nope", "url": "https://mcp.example.com/mcp"})
+		if session != "" {
+			req.Header.Set("Authorization", "Bearer "+session)
+		}
+		if resp := testutil.Call(t, mcpOAuthRouter(), req); resp.Code != http.StatusForbidden {
+			t.Errorf("%s: status %d, want 403: %s", name, resp.Code, resp.Body.String())
+		}
+	}
+
+	// The user's own session JWT in the Authorization header (how the
+	// desktop app signs in) is a session, not a token.
+	mcpOAuthCall(t, ownerID, "POST", base, map[string]any{"name": "desktop", "url": "https://mcp.example.com/mcp"}).
+		Want(http.StatusCreated)
 }
 
 func TestMCPOAuthRoutesAreOffWithoutTheFlag(t *testing.T) {
@@ -381,12 +413,7 @@ func TestMCPOAuthSessionGuardMatchesTheAuthMiddleware(t *testing.T) {
 		t.Fatalf("create PAT: %v", err)
 	}
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM personal_access_token WHERE id = $1`, patID) })
-	session, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": ownerID, "exp": time.Now().Add(time.Hour).Unix(),
-	}).SignedString(auth.JWTSecret())
-	if err != nil {
-		t.Fatal(err)
-	}
+	session := mcpOAuthSession(t, ownerID, time.Hour, auth.JWTSecret())
 
 	serve := middleware.Auth(testHandler.Queries, nil, nil, nil)(mcpOAuthRouter()).ServeHTTP
 	send := func(how, token, method, path string, body any) *testutil.Response {

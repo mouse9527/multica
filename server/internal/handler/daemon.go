@@ -3090,6 +3090,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			mcpConfig = resolved
 		}
 	}
+	// mouse9527/multica fork: the agent's connected OAuth MCP servers
+	// (M-230). Makes no call unless mcp_oauth_v1 is on.
+	mcpConfig, mcpOAuthNotices := h.applyMCPOAuthServers(r.Context(), task, agent, mcpConfig)
 	// Layer the per-task overlay (set at enqueue from the initiator
 	// user's active integrations — currently Composio) on top of the
 	// agent's saved mcp_config. Overlay wins on server-name collisions
@@ -3128,6 +3131,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		CustomEnv:             customEnv,
 		CustomArgs:            customArgs,
 		McpConfig:             mcpConfig,
+		MCPOAuthNotices:       mcpOAuthNotices,
 		Model:                 agent.Model.String,
 		ThinkingLevel:         agent.ThinkingLevel.String,
 		ServiceTier:           agent.ServiceTier.String,
