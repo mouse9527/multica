@@ -1,6 +1,6 @@
 # 进化（Evolution）：内置系统 agent
 
-本文件属于 `mouse9527/multica` fork（M-135、M-136、M-137、M-138、M-139、M-140，设计见 M-132）。「进化」是和上游 Mika 同一机制的内置系统 agent：定期分析工作区里的对话和评论，针对 agent、工作流、团队提出改进提案，由所有者或管理员批准后再执行。
+本文件属于 `mouse9527/multica` fork（M-135、M-136、M-137、M-138、M-139、M-140、M-231，设计见 M-132）。「进化」是和上游 Mika 同一机制的内置系统 agent：定期分析工作区里的对话和评论，针对 agent、工作流、团队提出改进提案，由所有者或管理员批准后再执行。
 
 **当前阶段是 P6**：P1 的身份与一键启用、P2 的配置、游标、每日调度和数据通道、P3 的提案接口、P4 的**应用**与**回滚**（每次追加一条版本记录）、P5 的**效果度量**（变差时提示所有者回滚，但**从不自动回滚**）之上，每月一次**精简检查**让进化为指令过长或重复的 agent 提出精简提案（走同一套审批、应用与版本链路），并新增**团队类提案**（新建 agent、合并 agent、工作分派），团队类提案只出文本、由人手工执行。提案本身仍不会改动任何配置，进化 agent 也调不了 apply。
 
@@ -72,8 +72,35 @@
 | `condense_day_of_month`（每月几号开始精简检查，时刻和时区同 `schedule`） | 1 | 1–28 |
 | `condense_min_runes`（指令达到多少字列入精简检查） | 6000 | 1000–100000 |
 | `condense_repeat_percent`（指令里与前面重复的行占多少比例列入精简检查，且至少 2 行） | 15 | 5–90 |
+| `output_project_id`（进化建的 issue 放进哪个项目，见下文「产出归属项目」） | 空（不放进项目） | 本工作区存在、非私有、未归档的项目 |
 
-P3、P5、P6 的这几项设置页暂不展示，用 `PUT /api/evolution/config` 修改；设置页保存时原样带回；请求里不带或为 0 时取默认值。
+P3、P5、P6 的这几项和 `output_project_id` 设置页暂不展示，用 `PUT /api/evolution/config` 修改；设置页保存时原样带回；请求里不带或为 0 时取默认值（`output_project_id` 不带或为空字符串即不放进项目）。
+
+### 产出归属项目（M-231）
+
+进化建的 issue 默认不属于任何项目，所以不在任何 Super Agent 的订阅范围里。`output_project_id` 设成一个项目后，进化建的**所有** issue 都放进这个项目：分析报告（含补跑）、每月精简检查、提案（含精简和团队类提案）。让订阅这个项目的 Super Agent 跟进这些 issue，就是这项配置的用途。去向由所有者或管理员在配置里定，进化自己不改。
+
+- **保存时校验**：项目必须是本工作区的、不能是私有项目（Super Agent 写不进私有项目，进化也不读私有项目）、不能已归档。不满足时 `PUT` 返回 400，配置不变。
+- **之后项目变了**：项目被删除、归档或改成私有后，新建的 issue 退回「无项目」，运行和提案照常进行，不报错（服务端日志记一条 `evolution: output project skipped`）。配置里的值保留：项目取消归档或改回公开后自动重新生效；被删除的项目要重新设置。
+- **只影响新建的 issue**：改配置不会移动已有的 issue；已有的需要时手动移进项目。
+- 为空时行为与之前完全一致。
+
+设置方法（用所有者或管理员本人的个人访问令牌 `$TOKEN`；以 agent 身份或 task token 调用返回 403。`PUT` 整块替换，所以先读出当前配置，只改这一项再写回）：
+
+```bash
+# 1. 读当前配置
+curl -s -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WS" \
+  "$API/api/evolution/config" | jq '.config' > evolution-config.json
+# 2. 设置（清空则写 ""）
+jq --arg p "$PROJECT_ID" '.output_project_id = $p' evolution-config.json > next.json
+# 3. 写回
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WS" \
+  -H "Content-Type: application/json" \
+  -d "$(jq '{config: ., acknowledge_member_notice: false}' next.json)" \
+  "$API/api/evolution/config"
+```
+
+`acknowledge_member_notice` 只在这次保存会开始读 chat 时才需要为 `true`；chat 已经在读或没开时用 `false` 即可。
 
 `workspace.settings` 也能经上游的工作区更新接口整块写入，所以读取时一律按上限夹紧，写入时超限直接拒绝。
 
@@ -270,6 +297,6 @@ P4：提案 issue 的侧栏属性里多一行「提案」：显示未应用 / �
 
 ## 上游触点
 
-见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。P6 没有新的上游触点：精简检查挂在 fork 文件 `internal/evolution/job.go` 的定时任务里（新文件 `condense.go`），`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9022_evolution_review`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认四个配置项。P5 没有新的上游触点：度量挂在 fork 文件 `internal/evolution/job.go` 的定时任务里，`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9021_evolution_effect`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认三个配置项。P4 没有新增上游文件：在已是触点的 `issue-detail.tsx` 里，紧挨 M-194 的两处 fork 行（导入块后的 fork 导入、侧栏属性里的 Super Agent 行）各加一行，不新增独立冲突块；后端路由仍在 fork 文件 `evolution_agent.go`，`workspace_delete_manifest_test.go` 在 P2 那块里登记两张新表。迁移 `9020_evolution_apply`（两张新表，DO 块建表，含 down）。P3 没有新的上游触点：路由加在 fork 文件 `evolution_agent.go` 的 `MountEvolution` 里，其余都是 fork 新文件。P2 没有新的上游文件，在已有 fork 改动的 3 个上游文件上各追加一块：`main.go` 一行注册定时任务（紧挨 `agentrouter.Register`）；`workspace.go` 的删除步骤（紧挨 Router 那块）；`workspace_delete_manifest_test.go` 登记两张新表。前端没有新的上游触点（只改 fork 自己的文件）。
+见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。M-231（产出归属项目）没有新的上游触点：只改 fork 文件 `internal/evolution/` 里三处建 issue 的参数和配置（新文件 `output_project.go`），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认一个配置项。P6 没有新的上游触点：精简检查挂在 fork 文件 `internal/evolution/job.go` 的定时任务里（新文件 `condense.go`），`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9022_evolution_review`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认四个配置项。P5 没有新的上游触点：度量挂在 fork 文件 `internal/evolution/job.go` 的定时任务里，`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9021_evolution_effect`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认三个配置项。P4 没有新增上游文件：在已是触点的 `issue-detail.tsx` 里，紧挨 M-194 的两处 fork 行（导入块后的 fork 导入、侧栏属性里的 Super Agent 行）各加一行，不新增独立冲突块；后端路由仍在 fork 文件 `evolution_agent.go`，`workspace_delete_manifest_test.go` 在 P2 那块里登记两张新表。迁移 `9020_evolution_apply`（两张新表，DO 块建表，含 down）。P3 没有新的上游触点：路由加在 fork 文件 `evolution_agent.go` 的 `MountEvolution` 里，其余都是 fork 新文件。P2 没有新的上游文件，在已有 fork 改动的 3 个上游文件上各追加一块：`main.go` 一行注册定时任务（紧挨 `agentrouter.Register`）；`workspace.go` 的删除步骤（紧挨 Router 那块）；`workspace_delete_manifest_test.go` 登记两张新表。前端没有新的上游触点（只改 fork 自己的文件）。
 
 P1：后端 5 个上游文件各 1 块：`daemon.go` 拼接提示词、`mika_agent.go` 的 `systemInstructionsFor` 展示提示词（两处都调用 fork 的 `service.ComposeForkSystemInstructions` / `ForkSystemInstructions`，以后新增 fork 系统 agent 不用再改这两个文件）、`builtin_skills.go` 的技能映射、`router.go` 挂载路由、`keys.go` 发布开关。前端 11 个上游文件：`package.json` 导出、设置页 3 块、i18n 类型和 8 个语言入口各 2 块，除设置页工作区分组那一处外都紧挨着 Router 已有的 fork 行。
