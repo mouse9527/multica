@@ -20,12 +20,13 @@ func TestReportMCPOAuthNotices(t *testing.T) {
 		`MCP server "gateway" was not mounted: its authorization expired or was revoked.`,
 		`MCP server "other" was not mounted: it is not connected yet.`,
 	}}}
-	d.reportMCPOAuthNotices(context.Background(), task, &seq, quietTaskLog())
+	local := []string{`MCP server "third" was not mounted this time: the local proxy could not start.`}
+	d.reportMCPOAuthNotices(context.Background(), task, local, &seq, quietTaskLog())
 	rows := rec.snapshot()
-	if len(rows) != 2 {
-		t.Fatalf("rows = %+v, want 2", rows)
+	if len(rows) != 3 {
+		t.Fatalf("rows = %+v, want 3", rows)
 	}
-	for i, notice := range task.Agent.MCPOAuthNotices {
+	for i, notice := range append(append([]string(nil), task.Agent.MCPOAuthNotices...), local...) {
 		if rows[i].Type != "text" || rows[i].Content != notice+"\n\n" || rows[i].Seq != i+2 {
 			t.Fatalf("row %d = %+v", i, rows[i])
 		}
@@ -36,8 +37,8 @@ func TestReportMCPOAuthNoticesWithoutNotices(t *testing.T) {
 	t.Parallel()
 	d, rec := newTranscriptRecorder(t)
 	var seq atomic.Int32
-	d.reportMCPOAuthNotices(context.Background(), Task{ID: "task-none", Agent: &AgentData{}}, &seq, quietTaskLog())
-	d.reportMCPOAuthNotices(context.Background(), Task{ID: "task-no-agent"}, &seq, quietTaskLog())
+	d.reportMCPOAuthNotices(context.Background(), Task{ID: "task-none", Agent: &AgentData{}}, nil, &seq, quietTaskLog())
+	d.reportMCPOAuthNotices(context.Background(), Task{ID: "task-no-agent"}, nil, &seq, quietTaskLog())
 	if rows := rec.snapshot(); len(rows) != 0 || seq.Load() != 0 {
 		t.Fatalf("rows = %+v, seq = %d; want nothing", rows, seq.Load())
 	}

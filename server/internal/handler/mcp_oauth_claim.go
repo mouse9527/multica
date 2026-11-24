@@ -24,30 +24,63 @@ const (
 	// mcpOAuthClaimMargin is how long an injected token should still have:
 	// a token with less is refreshed first. TokenSource caps it at half the
 	// token's lifetime, so with one-hour tokens a task starts with at least
-	// 30 minutes. A token expiring mid-task is not renewed in this phase;
-	// see the PR that adds the daemon-side proxy.
+	// 30 minutes. It applies only to a daemon without the proxy; with the
+	// proxy a token expiring mid-task is replaced on the next call.
 	mcpOAuthClaimMargin = 30 * time.Minute
 )
 
-// applyMCPOAuthServers adds the agent's connected OAuth MCP servers to the
-// claim's mcp_config as `{type: "http", url, headers}` entries, using the
-// agent owner's grant.
+// MCPOAuthProxyServer is an OAuth MCP server the daemon serves to the
+// runtime through a local proxy, fetching the token for each call.
+type MCPOAuthProxyServer struct {
+	Name     string `json:"name"`
+	ServerID string `json:"server_id"`
+	URL      string `json:"url"`
+}
+
+// mcpOAuthClaim is what the OAuth MCP servers contribute to a claim.
+type mcpOAuthClaim struct {
+	// Config is the agent's mcp_config with every OAuth server name
+	// withheld and, for a daemon without the proxy, the mountable servers
+	// added with their tokens.
+	Config  json.RawMessage
+	Notices []string
+	// Proxy lists the mountable servers for a daemon that proxies them; it
+	// carries no token.
+	Proxy []MCPOAuthProxyServer
+	// Names are all the names OAuth servers are configured under, mounted
+	// or not. The daemon withholds them from the runtime's own MCP config
+	// too.
+	Names []string
+	// WithholdAll means the names could not be read: the daemon mounts no
+	// MCP server at all for this run.
+	WithholdAll bool
+}
+
+// applyMCPOAuthServers works out the agent's OAuth MCP servers for a claim,
+// using the agent owner's grant.
 //
 // Every name an OAuth server is configured under belongs to that server from
 // then on: any same-named entry the agent's other MCP config carries is
-// withheld first, whatever happens next. A server whose credential cannot be
+// withheld first, whatever happens next, and a proxying daemon withholds it
+// from the runtime's own config as well. A server whose credential cannot be
 // had this time (not connected, needs reconnecting, no owner, no token now,
 // no deployment key) is then simply not mounted, and named in a notice for
 // the run transcript. Falling back to the old entry instead would quietly run
 // the task under whatever static credential that entry holds, after the owner
 // disconnected or the grant was revoked. The task itself never fails over it.
 //
+// With proxy (the daemon advertised protocol.DaemonCapabilityMCPOAuthProxyV1)
+// no token goes into the claim: the daemon fetches one per call, so a token
+// expiring mid-task is replaced and none is written to the runtime's config
+// files. Without it, the token is put in the entry's headers, refreshed first
+// when less than mcpOAuthClaimMargin remains.
+//
 // With mcp_oauth_v1 off it returns mcpConfig untouched without touching the
-// database: the claim behaves as upstream. The token travels only in this
-// claim response; nothing here writes it to agent_task_queue.
-func (h *Handler) applyMCPOAuthServers(ctx context.Context, task *db.AgentTaskQueue, agent db.Agent, mcpConfig json.RawMessage) (json.RawMessage, []string) {
+// database: the claim behaves as upstream. Nothing here writes to
+// agent_task_queue.
+func (h *Handler) applyMCPOAuthServers(ctx context.Context, task *db.AgentTaskQueue, agent db.Agent, mcpConfig json.RawMessage, proxy bool) mcpOAuthClaim {
 	if !featureflags.MCPOAuthV1Enabled(ctx, h.FeatureFlags) {
-		return mcpConfig, nil
+		return mcpOAuthClaim{Config: mcpConfig}
 	}
 	workspaceID, agentID := uuidToString(agent.WorkspaceID), uuidToString(agent.ID)
 	names, err := mcpoauth.ListServerNamesForAgent(ctx, h.DB, workspaceID, agentID)
@@ -58,70 +91,83 @@ func (h *Handler) applyMCPOAuthServers(ctx context.Context, task *db.AgentTaskQu
 		// at all: an empty managed config, which also keeps the runtime from
 		// falling back to its own. The task still runs.
 		slog.Warn("daemon claim: list mcp oauth servers failed; mounting no MCP servers this run", "task_id", uuidToString(task.ID), "error", err)
-		return json.RawMessage(`{"mcpServers":{}}`), []string{mcpOAuthUnreadableNotice}
+		return mcpOAuthClaim{Config: json.RawMessage(`{"mcpServers":{}}`), Notices: []string{mcpOAuthUnreadableNotice}, WithholdAll: true}
 	}
 	if len(names) == 0 {
-		return mcpConfig, nil
+		return mcpOAuthClaim{Config: mcpConfig}
 	}
-	mcpConfig = withoutMCPServers(mcpConfig, names, task)
+	out := mcpOAuthClaim{Config: withoutMCPServers(mcpConfig, names, task), Names: names}
 
-	var notices []string
 	notMounted := func(format string) []string {
-		out := make([]string, 0, len(names))
+		lines := make([]string, 0, len(names))
 		for _, name := range names {
-			out = append(out, fmt.Sprintf(format, name))
+			lines = append(lines, fmt.Sprintf(format, name))
 		}
-		return out
+		return lines
 	}
 	box, err := mcpOAuthBox()
 	if err != nil {
 		slog.Warn("daemon claim: mcp oauth key not configured; OAuth MCP servers not mounted", "task_id", uuidToString(task.ID))
-		return mcpConfig, notMounted("MCP server %q was not mounted: OAuth MCP is not configured on this Multica server. Ask an administrator.")
+		out.Notices = notMounted("MCP server %q was not mounted: OAuth MCP is not configured on this Multica server. Ask an administrator.")
+		return out
 	}
 	store, err := mcpoauth.NewStore(mcpOAuthDatabase{h.DB, h.TxStarter}, box)
 	if err != nil {
-		return mcpConfig, notMounted("MCP server %q was not mounted: OAuth MCP is not configured on this Multica server. Ask an administrator.")
+		out.Notices = notMounted("MCP server %q was not mounted: OAuth MCP is not configured on this Multica server. Ask an administrator.")
+		return out
 	}
 	servers, err := store.ListServersForAgent(ctx, workspaceID, agentID)
 	if err != nil {
 		slog.Warn("daemon claim: list mcp oauth servers failed", "task_id", uuidToString(task.ID), "error", err)
-		return mcpConfig, notMounted("MCP server %q was not mounted this time: its configuration could not be read. The next task will try again.")
+		out.Notices = notMounted("MCP server %q was not mounted this time: its configuration could not be read. The next task will try again.")
+		return out
 	}
 
 	budget, cancel := context.WithTimeout(ctx, mcpOAuthClaimBudget)
 	defer cancel()
 	source := mcpoauth.NewTokenSource(store, mcpoauth.Refresh, slog.Default())
-	source.Margin = mcpOAuthClaimMargin
+	if !proxy {
+		source.Margin = mcpOAuthClaimMargin
+	}
 
 	entries := make(map[string]any, len(servers))
 	for _, server := range servers {
 		if !agent.OwnerID.Valid {
-			notices = append(notices, fmt.Sprintf("MCP server %q was not mounted: the agent has no owner whose connection it could use.", server.Name))
+			out.Notices = append(out.Notices, fmt.Sprintf("MCP server %q was not mounted: the agent has no owner whose connection it could use.", server.Name))
 			continue
 		}
+		// With the proxy this still runs: it confirms the grant is usable
+		// (refreshing it if due) so a dead connection gets its notice now
+		// rather than as failing tool calls.
 		credential, err := source.Credential(budget, server.ID, uuidToString(agent.OwnerID))
 		if err != nil {
-			notices = append(notices, mcpOAuthNotice(server.Name, err))
+			out.Notices = append(out.Notices, mcpOAuthNotice(server.Name, err))
 			slog.Info("daemon claim: mcp oauth server not mounted", "task_id", uuidToString(task.ID), "server_id", server.ID, "reason", mcpOAuthReason(err))
+			continue
+		}
+		if proxy {
+			out.Proxy = append(out.Proxy, MCPOAuthProxyServer{Name: server.Name, ServerID: server.ID, URL: server.URL})
 			continue
 		}
 		entries[server.Name] = map[string]any{"type": "http", "url": server.URL, "headers": credential.Headers()}
 	}
 	if len(entries) == 0 {
-		return mcpConfig, notices
+		return out
 	}
 	overlay, err := json.Marshal(map[string]any{"mcpServers": entries})
 	if err != nil {
-		return mcpConfig, notices
+		return out
 	}
-	merged, err := mergeMCPOverlay(mcpConfig, overlay)
+	merged, err := mergeMCPOverlay(out.Config, overlay)
 	if err != nil {
-		// mcpConfig no longer holds any of these names, so leaving the
+		// out.Config no longer holds any of these names, so leaving the
 		// servers out is still "not mounted", never a fallback.
 		slog.Warn("daemon claim: merge mcp oauth servers failed; mounting none of them", "task_id", uuidToString(task.ID), "error", err)
-		return mcpConfig, notMounted("MCP server %q was not mounted this time: the agent's MCP configuration could not be combined with it.")
+		out.Notices = notMounted("MCP server %q was not mounted this time: the agent's MCP configuration could not be combined with it.")
+		return out
 	}
-	return merged, notices
+	out.Config = merged
+	return out
 }
 
 // withoutMCPServers returns mcpConfig with the named entries removed from its

@@ -20,6 +20,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // mcpOAuthClaimFixture is an agent owned by testUserID with one queued task
@@ -44,10 +45,13 @@ func mcpOAuthClaimFixture(t *testing.T, name, agentMcpConfig string) (runtimeID,
 	return runtimeID, agentID, taskID
 }
 
-func claimTaskAgentForTest(t *testing.T, runtimeID string) *TaskAgentData {
+func claimTaskAgentForTest(t *testing.T, runtimeID string, capabilities ...string) *TaskAgentData {
 	t.Helper()
 	w := httptest.NewRecorder()
 	req := withURLParam(newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil), "runtimeId", runtimeID)
+	if len(capabilities) > 0 {
+		req.Header.Set("X-Client-Capabilities", strings.Join(capabilities, ","))
+	}
 	testHandler.ClaimTaskByRuntime(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("claim: %d %s", w.Code, w.Body.String())
@@ -171,7 +175,8 @@ func TestClaimMCPOAuthWithoutOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent.OwnerID = pgtype.UUID{}
-	mcpConfig, notices := testHandler.applyMCPOAuthServers(context.Background(), &db.AgentTaskQueue{}, agent, nil)
+	result := testHandler.applyMCPOAuthServers(context.Background(), &db.AgentTaskQueue{}, agent, nil, false)
+	mcpConfig, notices := result.Config, result.Notices
 	if len(mcpConfig) != 0 {
 		t.Fatalf("mcp_config = %s, want nothing", mcpConfig)
 	}
@@ -296,7 +301,11 @@ func TestClaimMCPOAuthNamesUnreadableMountsNothing(t *testing.T) {
 	h := &Handler{FeatureFlags: featureflag.NewService(provider), DB: failingDBExecutor{}}
 	static := json.RawMessage(`{"mcpServers":{"gateway":{"url":"https://static.example","headers":{"Authorization":"Bearer static-shared-key"}},"own":{"url":"https://own.example"}}}`)
 
-	mcpConfig, notices := h.applyMCPOAuthServers(context.Background(), &db.AgentTaskQueue{}, db.Agent{}, static)
+	result := h.applyMCPOAuthServers(context.Background(), &db.AgentTaskQueue{}, db.Agent{}, static, true)
+	mcpConfig, notices := result.Config, result.Notices
+	if !result.WithholdAll {
+		t.Fatal("a proxying daemon is not told to mount nothing")
+	}
 	if !mcpConfigJSONEqual(t, mcpConfig, `{"mcpServers":{}}`) {
 		t.Fatalf("mcp_config = %s, want an empty managed config", mcpConfig)
 	}
@@ -341,6 +350,38 @@ func mcpConfigJSONEqual(t *testing.T, got json.RawMessage, want string) bool {
 	ja, _ := json.Marshal(a)
 	jb, _ := json.Marshal(b)
 	return string(ja) == string(jb)
+}
+
+// A daemon that proxies OAuth MCP servers gets no token at all in the claim:
+// the mountable servers come as a proxy list (name, id, URL), every OAuth
+// name is listed for the daemon to withhold from the runtime's own config,
+// and servers that cannot be mounted still get their notices.
+func TestClaimForAProxyingDaemonCarriesNoToken(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	store := withMCPOAuth(t, true)
+	runtimeID, agentID, _ := mcpOAuthClaimFixture(t, "mcp-oauth-claim-proxy",
+		`{"mcpServers":{"own":{"url":"https://own.example"},"gateway":{"url":"https://static.example","headers":{"Authorization":"Bearer static-shared-key"}}}}`)
+	gateway := connectForClaimTest(t, store, agentID, "gateway", "claim-token-proxy", map[string]string{"x-mcp-servers": "browser"})
+	connectForClaimTest(t, store, agentID, "pending", "", nil)
+
+	agent := claimTaskAgentForTest(t, runtimeID, protocol.DaemonCapabilityMCPOAuthProxyV1)
+	if strings.Contains(string(agent.McpConfig), "claim-token-proxy") || strings.Contains(string(agent.McpConfig), "static-shared-key") {
+		t.Fatalf("mcp_config carries a token: %s", agent.McpConfig)
+	}
+	if servers := decodeServers(t, agent.McpConfig); len(servers) != 1 || servers["own"] == nil {
+		t.Fatalf("servers = %v, want only own", serverNames(servers))
+	}
+	if len(agent.MCPOAuthProxy) != 1 || agent.MCPOAuthProxy[0] != (MCPOAuthProxyServer{Name: "gateway", ServerID: gateway.ID, URL: gateway.URL}) {
+		t.Fatalf("proxy = %+v", agent.MCPOAuthProxy)
+	}
+	if strings.Join(agent.MCPOAuthNames, ",") != "gateway,pending" {
+		t.Fatalf("names = %v", agent.MCPOAuthNames)
+	}
+	if len(agent.MCPOAuthNotices) != 1 || !strings.Contains(agent.MCPOAuthNotices[0], `"pending"`) {
+		t.Fatalf("notices = %v", agent.MCPOAuthNotices)
+	}
 }
 
 func TestMCPOAuthNoticeWording(t *testing.T) {

@@ -1695,6 +1695,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// The broker asks for an mcp hook's credential at connection time, so
 		// a secret never sits in a task record.
 		r.Get("/tasks/{id}/plugin-mcp/{contributionId}/credential", h.ResolvePluginMCPCredential)
+		// mouse9527/multica fork: a daemon's OAuth MCP proxy fetches the
+		// current token per call (M-230), 404 unless mcp_oauth_v1 is on.
+		r.Get("/tasks/{id}/mcp-oauth/{serverId}/credential", h.ResolveMCPOAuthCredential)
 
 		r.Post("/runtimes/{runtimeId}/tasks/claim", h.ClaimTaskByRuntime)
 		// Canonical machine-level batch claim (MUL-4257). `/claim` is a
