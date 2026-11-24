@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -30,17 +31,30 @@ func TestExecDDLLetsReadersPass(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 
-	suffix := strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
-	table, fn, trigger := "ddl_probe_"+suffix, "ddl_probe_fn_"+suffix, "ddl_probe_trg_"+suffix
+	// The probe objects live in their own schema: tests in other packages scan
+	// every table in public (the workspace deletion manifest check) and would
+	// see a probe table created there while this test runs.
+	schema := "ddl_probe_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	schemaIdent := pgx.Identifier{schema}.Sanitize()
+	table := pgx.Identifier{schema, "probe"}.Sanitize()
+	fn := pgx.Identifier{schema, "probe_fn"}.Sanitize()
+	trigger := pgx.Identifier{"probe_trg"}.Sanitize()
+	if _, err := pool.Exec(ctx, `CREATE SCHEMA `+schemaIdent); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, `DROP SCHEMA IF EXISTS `+schemaIdent+` CASCADE`); err != nil {
+			t.Logf("drop schema %s: %v", schema, err)
+		}
+	})
 	if _, err := pool.Exec(ctx, `CREATE TABLE `+table+` (id int PRIMARY KEY);
 		INSERT INTO `+table+` VALUES (1);
 		CREATE FUNCTION `+fn+`() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RETURN NEW; END$$;
 		CREATE TRIGGER `+trigger+` BEFORE UPDATE ON `+table+` FOR EACH ROW EXECUTE FUNCTION `+fn+`()`); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DROP TABLE IF EXISTS `+table+`; DROP FUNCTION IF EXISTS `+fn+`()`)
-	})
 
 	holder, err := pool.Begin(ctx)
 	if err != nil {
