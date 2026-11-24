@@ -1,0 +1,49 @@
+{
+  "title": "OAuth MCP servers",
+  "hint": "Runs sign in with the agent owner's connection. Works with the Claude, Codex, Hermes, Qoder and mcode runtimes.",
+  "add": "Add server",
+  "loading": "Loading OAuth MCP servers…",
+  "load_failed": "Could not load the OAuth MCP servers.",
+  "empty": "No OAuth MCP servers yet.",
+  "status": {
+    "connected": "Connected",
+    "needs_reconnect": "Needs reconnecting",
+    "not_connected": "Not connected"
+  },
+  "connect": "Connect",
+  "reconnect": "Reconnect",
+  "disconnect": "Disconnect",
+  "delete": "Delete",
+  "delete_aria": "Delete {{name}}",
+  "owner_only": "Only the agent's owner can connect it.",
+  "action_failed": "Something went wrong. Try again.",
+  "connect_continue": "Finish connecting in your browser.",
+  "added_toast": "Added {{name}}",
+  "deleted_toast": "Deleted {{name}}",
+  "disconnected_toast": "Disconnected {{name}}",
+  "delete_title": "Delete {{name}}?",
+  "delete_description": "Runs stop using this server, and its connection is removed.",
+  "cancel": "Cancel",
+  "dialog": {
+    "title": "Add an OAuth MCP server",
+    "name_label": "Name",
+    "name_hint": "The name runs see. Letters, digits, - and _.",
+    "url_label": "MCP server URL",
+    "scope_label": "Scope (optional)",
+    "headers_label": "Extra headers (optional)",
+    "headers_hint": "One per line, as Name: value. Sent with every request and never shown again.",
+    "headers_invalid": "Write each header on its own line as Name: value.",
+    "save": "Add"
+  },
+  "callback": {
+    "working": "Connecting the MCP server…",
+    "failed_title": "Could not connect the MCP server",
+    "missing": "This page needs the result of an authorization. Start again from the agent's settings.",
+    "denied": "The authorization was cancelled.",
+    "expired": "This link was already used or has expired. Start again from the agent's settings.",
+    "not_allowed": "You can no longer connect this agent.",
+    "sign_in": "Sign in to Multica in this browser, then start again from the agent's settings.",
+    "generic": "The authorization server did not complete the connection. Try again from the agent's settings.",
+    "go_to_app": "Go to Multica"
+  }
+}

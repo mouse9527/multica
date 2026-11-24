@@ -29,6 +29,8 @@ import ruRouter from "./ru/router.json";
 // Modified by the mouse9527/multica fork (M-43): the password login namespace.
 import ruPasswordauth from "./ru/passwordauth.json";
 import ruEvolution from "./ru/evolution.json";
+// mouse9527/multica fork (M-230): the OAuth MCP namespace.
+import ruMcpOAuth from "./ru/mcpoauth.json";
 
 const resources: LocaleResources = {
   common: ruCommon,
@@ -59,6 +61,7 @@ const resources: LocaleResources = {
   router: ruRouter,
   passwordauth: ruPasswordauth,
   evolution: ruEvolution,
+  mcpoauth: ruMcpOAuth,
 };
 
 export default resources;

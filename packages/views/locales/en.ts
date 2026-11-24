@@ -29,6 +29,8 @@ import enRouter from "./en/router.json";
 // Modified by the mouse9527/multica fork (M-43): the password login namespace.
 import enPasswordauth from "./en/passwordauth.json";
 import enEvolution from "./en/evolution.json";
+// mouse9527/multica fork (M-230): the OAuth MCP namespace.
+import enMcpOAuth from "./en/mcpoauth.json";
 
 const resources: LocaleResources = {
   common: enCommon,
@@ -59,6 +61,7 @@ const resources: LocaleResources = {
   router: enRouter,
   passwordauth: enPasswordauth,
   evolution: enEvolution,
+  mcpoauth: enMcpOAuth,
 };
 
 export default resources;

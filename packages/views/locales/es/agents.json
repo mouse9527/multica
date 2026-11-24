@@ -268,6 +268,7 @@
     "custom_args": "Argumentos personalizados",
     "mcp_config": "MCP",
     "composio_mcp": "Aplicaciones",
+    "mcp_oauth": "MCP con OAuth",
     "integrations": "Integraciones",
     "runtime_config": "Enrutado",
     "discard_dialog_title": "¿Descartar los cambios sin guardar?",

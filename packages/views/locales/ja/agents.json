@@ -275,6 +275,7 @@
     "custom_args": "カスタム引数",
     "mcp_config": "MCP",
     "composio_mcp": "アプリ",
+    "mcp_oauth": "OAuth MCP",
     "integrations": "連携",
     "runtime_config": "ルーティング",
     "qoder_agent": "Qoder Cloud Agents",

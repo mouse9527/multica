@@ -29,6 +29,8 @@ import koRouter from "./ko/router.json";
 // Modified by the mouse9527/multica fork (M-43): the password login namespace.
 import koPasswordauth from "./ko/passwordauth.json";
 import koEvolution from "./ko/evolution.json";
+// mouse9527/multica fork (M-230): the OAuth MCP namespace.
+import koMcpOAuth from "./ko/mcpoauth.json";
 
 const resources: LocaleResources = {
   common: koCommon,
@@ -59,6 +61,7 @@ const resources: LocaleResources = {
   router: koRouter,
   passwordauth: koPasswordauth,
   evolution: koEvolution,
+  mcpoauth: koMcpOAuth,
 };
 
 export default resources;

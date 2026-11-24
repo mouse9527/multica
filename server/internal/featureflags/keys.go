@@ -95,5 +95,7 @@ func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service
 	out[RouterChat] = RouterChatEnabled(ctx, flags)
 	// mouse9527/multica fork (M-135): the Evolution settings entry.
 	out[EvolutionV1] = EvolutionV1Enabled(ctx, flags)
+	// mouse9527/multica fork (M-230): the agent's OAuth MCP settings.
+	out[MCPOAuthV1] = MCPOAuthV1Enabled(ctx, flags)
 	return out
 }
