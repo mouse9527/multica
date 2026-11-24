@@ -49,7 +49,11 @@ S2 的迁移 9008–9013 只新增 3 张表（`router_subscription` 上 S2 用�
 
 - **范围**：`issue_tree` 是根 issue 及其后代（最多 32 层），`project` 是项目里的 issue（按 issue 自己的 `project_id`）。
 - **最窄范围**：同一个智能体的多条订阅都覆盖某个 issue 时，事件只记到最窄的那条：离 issue 更近的树根优先，任何树优先于项目，同级取创建最早的。不同智能体各记各的。
-- **self**：事件的 actor 就是订阅的智能体时 `self=true`（S2 不会因为它派发运行）。对账补到的状态和处理人变化不知道 actor，`self=false`。
+- **self**：事件的 actor 是订阅的智能体，**并且**动作来自这个 Super Agent 自己的运行时 `self=true`（S2 不会因为它派发运行）。自己的运行是：订阅绑定的 chat 里的轮次，以及派发为这条订阅启动的运行（含系统重试）。同一个智能体在 issue 任务、别的 chat 里做的事不算（M-193，`run_origin.go` 的 `ownRunSQL`）。动作的运行未知时按 `self=true` 处理：宁可漏一个事件，也不让 Super Agent 被自己叫醒。对账补到的状态和处理人变化不知道 actor，`self=false`。
+- **服务端以智能体名义的写入不算 self（M-233）**：服务端在某个智能体名下写的 issue 和评论，背后没有这个智能体的任何运行，不是 Super Agent 自己的动作，按别人的事件处理，能触发批次。现在只有进化（Evolution）这样写：定时分析和补跑的 issue、精简检查的 issue、提案 issue，以及进化以自己名义加在提案上的评论（补充证据、变差提示）。
+  - 监听路径：这些写入发布的 Bus 事件带 `ServerWrite` 标记（`events.Event.ServerWrite`，建 issue 经 `IssueCreateOpts.ServerWrite`，评论经 `evolution.PublishComment`）。标记只在记录上没有运行时生效：issue 没有发起运行（事件和 `origin` 都没有），评论没有 `source_task_id`。带了运行的动作照旧按运行判定，所以进化在自己 Super Agent chat 里建的 issue、写的评论仍然是 `self`。
+  - 对账路径：没有事件，按进化自己的记录认：issue 没有发起运行，且是同一智能体的 `evolution_run` / `evolution_review` 的 issue，或带 `metadata.evolution_fingerprint`（提案）；评论没有 `source_task_id`，且在提案 issue 上。进化的 run 和 review 是在建完 issue 之后才记下 issue_id，对账有 grace 窗口，这时已经写好。
+  - 其他「运行未知」的动作（没有标记、对账也认不出）仍按 `self=true`，保守默认不变；其他智能体的判定不变。
 - **状态和处理人的 actor**：只有当事件负载里的 issue（状态、处理人、`updated_at`）就是记录变化时数据库里的状态，才记上事件的 actor；否则（这次变化之后又被别人改了）actor 留空。负载时间只精确到秒，同一秒内两次写入、字段又相同的，记到先处理的那个事件上。
 - 事件 `payload` 只放引用和变化的字段，不放评论正文。
 
@@ -409,7 +413,7 @@ Super Agent 的使用说明不再作为 skill 维护（手工导入的 skill 不
 
 ## 已知局限（并行，M-104）
 
-- `self` 仍按智能体判定：同一个智能体的 Super Agent 1 在 Super Agent 2 的范围里做的事，对 Super Agent 2 也算 `self`，不会触发 Super Agent 2 的批次（只跟着下一批被标为已消费）。范围通常不交叉（事件只投最窄订阅，Owner 已认可）；需要交叉时，用不同的智能体。
+- （M-193 起已不成立）原来 `self` 按智能体判定，同一个智能体的 Super Agent 1 在 Super Agent 2 的范围里做的事对 Super Agent 2 也算 `self`。现在按运行判定（见「事件」一节的 self），Super Agent 1 的 chat 轮次不是 Super Agent 2 的运行，会触发 Super Agent 2 的批次。范围通常不交叉（事件只投最窄订阅，Owner 已认可）。
 - 同一个智能体的两条锚点订阅共用一个锚点 issue 时，受上游「同一 issue 同一智能体」唯一索引和认领串行限制，仍然排队。
 
 ## 已知局限（页面设置，M-105）

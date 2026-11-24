@@ -152,7 +152,7 @@ var edgeKinds = []edgeKind{
 		join: "JOIN issue i ON i.id = m.issue_id", ts: "i.created_at", item: "i.id",
 		cols: `'issue:' || i.id::text || ':created' AS event_key, 'issue_created'::text AS kind,
 		       i.id AS issue_id, i.creator_type AS actor_type, i.creator_id AS actor_id,
-		       ` + reconcileSelfSQL("i.creator_type = 'agent' AND i.creator_id = m.agent_id", issueOriginTaskSQL) + `,
+		       ` + reconcileSelfSQL("i.creator_type = 'agent' AND i.creator_id = m.agent_id AND NOT "+serverWrittenIssueSQL, issueOriginTaskSQL) + `,
 		       '{}'::jsonb AS payload, i.created_at AS occurred_at`,
 	},
 	{
@@ -161,7 +161,7 @@ var edgeKinds = []edgeKind{
 		ts: "c.created_at", item: "c.id",
 		cols: `'comment:' || c.id::text AS event_key, 'comment_created'::text AS kind,
 		       c.issue_id AS issue_id, c.author_type AS actor_type, c.author_id AS actor_id,
-		       ` + reconcileSelfSQL("c.author_type = 'agent' AND c.author_id = m.agent_id", "c.source_task_id") + `,
+		       ` + reconcileSelfSQL("c.author_type = 'agent' AND c.author_id = m.agent_id AND NOT "+serverWrittenCommentSQL, "c.source_task_id") + `,
 		       jsonb_strip_nulls(jsonb_build_object('comment_id', c.id::text, 'parent_id', c.parent_id::text)) AS payload,
 		       c.created_at AS occurred_at`,
 	},

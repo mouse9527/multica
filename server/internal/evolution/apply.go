@@ -391,7 +391,9 @@ func addComment(ctx context.Context, queries *db.Queries, workspaceID, issueID, 
 	})
 }
 
-// PublishComment announces a comment written by this package.
+// PublishComment announces a comment written by this package. A comment in
+// the Evolution agent's name is the server's write, not one of the agent's
+// runs, so a Super Agent of that agent hears it like anyone else's (M-233).
 func PublishComment(bus inboxwriter.Publisher, workspaceID string, created db.CreateCommentRow) {
 	if bus == nil {
 		return
@@ -402,6 +404,7 @@ func PublishComment(bus inboxwriter.Publisher, workspaceID string, created db.Cr
 		WorkspaceID: workspaceID,
 		ActorType:   comment.AuthorType,
 		ActorID:     util.UUIDToString(comment.AuthorID),
+		ServerWrite: comment.AuthorType == "agent",
 		Payload: map[string]any{
 			"comment": map[string]any{
 				"id":          util.UUIDToString(comment.ID),

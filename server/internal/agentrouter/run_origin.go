@@ -44,6 +44,35 @@ func ownRunSQL(subID, agentID, taskID string) string {
 	          WHERE own_d.subscription_id = ` + subID + `))`
 }
 
+// serverWriteBy reports whether the event marks the action of actorType and
+// actorID, recorded with no run (taskID nil), as the server writing in that
+// actor's name (events.Event.ServerWrite). Such a write is not any run of the
+// agent, so it is never the Super Agent's own (M-233). Only the Evolution
+// package marks writes today: the issues its scheduler and proposal store
+// create and the comments it adds as the Evolution agent. An action whose run
+// is unknown and that carries no mark stays the Super Agent's own.
+func (t trigger) serverWriteBy(actorType, actorID string, taskID *string) bool {
+	return t.serverWrite && taskID == nil && t.actorType == actorType && t.actorID == actorID
+}
+
+// Reconcile reads rows, not events, so it recognizes the same server writes
+// from what the Evolution package records about them (M-233). Both apply only
+// to a row that records no run.
+const (
+	// serverWrittenIssueSQL: issue i is the issue of an Evolution run or
+	// review, or a proposal, created by that run's agent. The links are
+	// written right after the issue, well within reconcile's grace.
+	serverWrittenIssueSQL = `((` + issueOriginTaskSQL + `) IS NULL AND (
+	    EXISTS (SELECT 1 FROM evolution_run sw_r WHERE sw_r.issue_id = i.id AND sw_r.agent_id = i.creator_id)
+	    OR EXISTS (SELECT 1 FROM evolution_review sw_v WHERE sw_v.issue_id = i.id AND sw_v.agent_id = i.creator_id)
+	    OR (i.metadata->>'evolution_fingerprint') IS NOT NULL))`
+	// serverWrittenCommentSQL: comment c, with no run, is on a proposal; the
+	// Evolution agent writes there only as the server (more evidence, a
+	// regression notice). Its runs' comments always record their task.
+	serverWrittenCommentSQL = `(c.source_task_id IS NULL AND EXISTS (
+	    SELECT 1 FROM issue sw_i WHERE sw_i.id = c.issue_id AND (sw_i.metadata->>'evolution_fingerprint') IS NOT NULL))`
+)
+
 // TaskChatSession returns the chat session a task ran in, or "" when it is not
 // a chat task or does not exist. It is how a request's X-Task-ID tells whether
 // the agent is acting from a chat, such as a Super Agent's.

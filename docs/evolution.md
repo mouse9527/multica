@@ -1,6 +1,6 @@
 # 进化（Evolution）：内置系统 agent
 
-本文件属于 `mouse9527/multica` fork（M-135、M-136、M-137、M-138、M-139、M-140，设计见 M-132）。「进化」是和上游 Mika 同一机制的内置系统 agent：定期分析工作区里的对话和评论，针对 agent、工作流、团队提出改进提案，由所有者或管理员批准后再执行。
+本文件属于 `mouse9527/multica` fork（M-135、M-136、M-137、M-138、M-139、M-140、M-233，设计见 M-132）。「进化」是和上游 Mika 同一机制的内置系统 agent：定期分析工作区里的对话和评论，针对 agent、工作流、团队提出改进提案，由所有者或管理员批准后再执行。
 
 **当前阶段是 P6**：P1 的身份与一键启用、P2 的配置、游标、每日调度和数据通道、P3 的提案接口、P4 的**应用**与**回滚**（每次追加一条版本记录）、P5 的**效果度量**（变差时提示所有者回滚，但**从不自动回滚**）之上，每月一次**精简检查**让进化为指令过长或重复的 agent 提出精简提案（走同一套审批、应用与版本链路），并新增**团队类提案**（新建 agent、合并 agent、工作分派），团队类提案只出文本、由人手工执行。提案本身仍不会改动任何配置，进化 agent 也调不了 apply。
 
@@ -253,6 +253,25 @@ P4 起，新建提案时服务端同时在 `evolution_proposal` 表里存下这�
 结论同时写进提案 issue 的扁平键 `evolution_effect`，便于过滤。
 
 **变差时**（`regressed`，且这次 apply 还没被回滚）：同一个事务里，以进化 agent 的身份在提案 issue 上留一条「建议回滚」评论（列出变差的指标前后值和样本数，按 agent 启用时的语言），并给工作区每位所有者（`role=owner`）发一条 `evolution_regression` 收件箱通知（`attention`，指向提案 issue）；`evolution_effect.notified=true`。**不自动回滚**：是否回滚由人点提案上的「回滚」。前后对比排除不了同期其他改动的影响，结论只作参考，评论里也这样写。
+
+## 进化当 Super Agent（M-233）
+
+Owner 可以让进化自己当它产出项目的 Super Agent（开一个和进化的 chat，设为 Super Agent，订阅这个项目）。进化建的 issue 和评论是服务端以进化的名义写的，背后没有进化的任何运行；Router 把它们当作别人的事件，能触发这个 Super Agent 的批次，不按「自己的操作」吞掉（规则见 [router.md](router.md)「捕获什么」的 self）。
+
+| 写入 | 位置 | 能触发批次 |
+|---|---|---|
+| 定时分析、补跑的 issue | `job.go` | 是 |
+| 精简检查的 issue | `condense.go` | 是 |
+| 提案 issue | `proposal_store.go` | 是 |
+| 补充证据评论（重复提案带来新证据） | `proposal_store.go` | 是 |
+| 变差提示评论（「建议回滚」） | `effect_store.go` | 是 |
+| 应用、回滚、过期说明评论 | `apply.go` | 不涉及：作者是操作的成员 |
+| 提案、效果的 metadata 更新 | 直接写表 | 不涉及：不发事件，也不是 Router 的事件类型 |
+| 变差提示的收件箱通知 | `effect_store.go` | 不涉及：走收件箱，不经 Router 捕获；影子暂扣仍按原规则（没有评论的条目算智能体自己的，不扣） |
+
+进化**自己运行**里的动作照旧按运行判定：分析运行在分析 issue 上发的报告评论、改的状态不是 Super Agent 的运行，会触发批次；进化在 Super Agent chat 里建 issue、发评论、改状态仍是自己的，不会叫醒自己。只有进化这样标记，其他智能体的判定规则不变。
+
+做法：建 issue 时传 `IssueCreateOpts.ServerWrite`，评论由 `evolution.PublishComment` 标记（作者是 agent 时），Bus 事件带 `events.Event.ServerWrite`；对账没有事件，按 `evolution_run` / `evolution_review` 的 `issue_id` 和提案的 `metadata.evolution_fingerprint` 认。上游触点：`events/bus.go` 的 `Event` 和 `service/issue.go` 的 `IssueCreateOpts` 各加一个字段，`publishIssueCreated` 加一行，都紧挨 M-193 的 `ActorTaskID` 行。
 
 ## 前端
 
