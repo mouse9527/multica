@@ -71,7 +71,18 @@ const (
 	DefaultMargin         = 5 * time.Minute
 	DefaultRefreshTimeout = 10 * time.Second
 	DefaultLockTimeout    = 15 * time.Second
+	// DefaultRetryAfterFailure is how long a transient refresh failure is
+	// remembered: within it, callers use the current token while it lasts
+	// (or get ErrUnavailable) instead of each taking the lock and waiting on
+	// a token endpoint that has just failed.
+	DefaultRetryAfterFailure = 30 * time.Second
 )
+
+// commitReserve is the time kept, after the refresh call's own timeout, for
+// the UPDATE and COMMIT that save its result. Without it a refresh that
+// succeeded at the last moment could miss the deadline on the write, and the
+// rotated refresh token — already accepted by the server — would be lost.
+const commitReserve = 5 * time.Second
 
 // TokenSource hands out access tokens, refreshing them on demand.
 type TokenSource struct {
@@ -86,6 +97,8 @@ type TokenSource struct {
 	// LockTimeout bounds the wait for another caller's refresh of the same
 	// connection.
 	LockTimeout time.Duration
+	// RetryAfterFailure: see DefaultRetryAfterFailure.
+	RetryAfterFailure time.Duration
 }
 
 func NewTokenSource(store *Store, refresh Refresher, logger *slog.Logger) *TokenSource {
@@ -95,6 +108,7 @@ func NewTokenSource(store *Store, refresh Refresher, logger *slog.Logger) *Token
 	return &TokenSource{
 		store: store, refresh: refresh, logger: logger,
 		Margin: DefaultMargin, RefreshTimeout: DefaultRefreshTimeout, LockTimeout: DefaultLockTimeout,
+		RetryAfterFailure: DefaultRetryAfterFailure,
 	}
 }
 
@@ -109,6 +123,8 @@ type connectionRow struct {
 	refresh       []byte
 	expiresAt     *time.Time
 	issuedAt      time.Time
+	lastError     string
+	updatedAt     time.Time
 	extraHeaders  []byte
 }
 
@@ -118,7 +134,8 @@ func loadConnection(ctx context.Context, q Querier, serverID, userID string, for
 	sql := `
 		SELECT c.status, c.resource, c.token_endpoint, c.client_id, c.client_secret_ciphertext,
 			c.token_endpoint_auth_method, c.access_token_ciphertext, c.refresh_token_ciphertext,
-			c.expires_at, COALESCE(c.refreshed_at, c.connected_at), srv.extra_headers_ciphertext
+			c.expires_at, COALESCE(c.refreshed_at, c.connected_at), c.last_error, c.updated_at,
+			srv.extra_headers_ciphertext
 		FROM mcp_oauth_connection c
 		JOIN mcp_oauth_server srv ON srv.id = c.server_id AND srv.workspace_id = c.workspace_id
 		WHERE c.server_id = $1::uuid AND c.user_id = $2::uuid`
@@ -127,7 +144,7 @@ func loadConnection(ctx context.Context, q Querier, serverID, userID string, for
 	}
 	var row connectionRow
 	err := q.QueryRow(ctx, sql, serverID, userID).Scan(&row.status, &row.resource, &row.tokenEndpoint,
-		&row.clientID, &row.clientSecret, &row.authMethod, &row.access, &row.refresh, &row.expiresAt, &row.issuedAt, &row.extraHeaders)
+		&row.clientID, &row.clientSecret, &row.authMethod, &row.access, &row.refresh, &row.expiresAt, &row.issuedAt, &row.lastError, &row.updatedAt, &row.extraHeaders)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return connectionRow{}, ErrNotConnected
 	}
@@ -164,6 +181,12 @@ func (row connectionRow) stillValid(now time.Time) bool {
 	return row.expiresAt == nil || row.expiresAt.After(now)
 }
 
+// recentlyFailed reports whether a transient refresh failure was recorded
+// less than window ago.
+func (row connectionRow) recentlyFailed(now time.Time, window time.Duration) bool {
+	return row.lastError == ReasonRefreshFailed && now.Sub(row.updatedAt) < window
+}
+
 // Credential returns a credential for userID's connection to serverID.
 //
 // Errors: ErrNotConnected (no connection), ErrNeedsReconnect (the grant is
@@ -181,6 +204,9 @@ func (s *TokenSource) Credential(ctx context.Context, serverID, userID string) (
 	}
 	if row.usable(now, s.Margin) {
 		return s.credential(ctx, serverID, userID, row)
+	}
+	if row.recentlyFailed(now, s.RetryAfterFailure) {
+		return s.afterRecentFailure(ctx, serverID, userID, row, now)
 	}
 	// The refresh runs detached (see refreshLocked); the caller waits for it
 	// only as long as its own context allows.
@@ -212,7 +238,7 @@ type refreshResult struct {
 // lose the only copy of the new one and force a reconnect. RefreshTimeout
 // and LockTimeout still bound it.
 func (s *TokenSource) refreshLocked(ctx context.Context, serverID, userID string) (Credential, error) {
-	work, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.RefreshTimeout+s.LockTimeout)
+	work, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.LockTimeout+s.RefreshTimeout+commitReserve)
 	defer cancel()
 	tx, err := s.store.db.Begin(work)
 	if err != nil {
@@ -236,6 +262,13 @@ func (s *TokenSource) refreshLocked(ctx context.Context, serverID, userID string
 			return Credential{}, err
 		}
 		return s.credential(ctx, serverID, userID, row)
+	}
+	if row.recentlyFailed(now, s.RetryAfterFailure) {
+		// The caller ahead of this one just failed; do not try again yet.
+		if err := tx.Commit(work); err != nil {
+			return Credential{}, err
+		}
+		return s.afterRecentFailure(ctx, serverID, userID, row, now)
 	}
 
 	refreshToken, err := s.store.open(row.refresh)
@@ -331,6 +364,15 @@ func (s *TokenSource) refreshLocked(ctx context.Context, serverID, userID string
 		row.expiresAt = &t
 	}
 	return s.credential(ctx, serverID, userID, row)
+}
+
+// afterRecentFailure answers without a refresh while a transient failure is
+// recent: the current token while it is still valid, ErrUnavailable after.
+func (s *TokenSource) afterRecentFailure(ctx context.Context, serverID, userID string, row connectionRow, now time.Time) (Credential, error) {
+	if row.stillValid(now) {
+		return s.credential(ctx, serverID, userID, row)
+	}
+	return Credential{}, ErrUnavailable
 }
 
 // markNeedsReconnect drops the tokens and records why, then commits. It

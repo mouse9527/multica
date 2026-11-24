@@ -329,9 +329,13 @@ func (s *Store) CreatePendingAuthorization(ctx context.Context, p PendingAuthori
 		return "", err
 	}
 	now := s.now()
-	// The table only ever holds attempts in flight, so clearing abandoned ones
-	// here keeps it small without a sweeper.
-	if _, err := s.db.Exec(ctx, `DELETE FROM mcp_oauth_state WHERE expires_at < $1`, now); err != nil {
+	// Clear this user's abandoned attempts on this server. The rest go with
+	// their server (DeleteServer) or workspace; each user starts few connects,
+	// so this keeps the table small without a sweeper or a scan of everyone's
+	// rows.
+	if _, err := s.db.Exec(ctx, `
+		DELETE FROM mcp_oauth_state
+		WHERE server_id = $1::uuid AND user_id = $2::uuid AND expires_at < $3`, p.ServerID, p.UserID, now); err != nil {
 		return "", err
 	}
 	_, err = s.db.Exec(ctx, `
