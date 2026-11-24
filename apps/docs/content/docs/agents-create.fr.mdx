@@ -220,6 +220,7 @@ Les exécutions utilisent la connexion du propriétaire. Multica renouvelle le j
 - **Permissions.** Seul le propriétaire de l’agent peut connecter, et uniquement depuis une session de navigateur connectée, pas avec un jeton d’accès personnel. Le propriétaire ou un `owner` ou `admin` de l’espace de travail peut ajouter, supprimer et déconnecter des serveurs.
 - **Runtimes pris en charge.** Les serveurs MCP OAuth fonctionnent avec les runtimes Claude, Codex, Hermes, Qoder et mcode. Le démon leur transmet le serveur via un proxy local, si bien que le jeton n’est jamais écrit dans les fichiers de configuration du runtime. Sur les autres runtimes, comme Cursor et OpenClaw, le serveur n’est pas monté, et le journal de l’exécution le signale.
 - **Noms.** Un serveur OAuth s’approprie son nom. Une entrée du même nom dans le reste de la configuration MCP de l’agent, ou dans la configuration propre du runtime, n’est pas utilisée, même quand le serveur OAuth ne peut pas être monté.
+- **Adresses.** Le serveur et ses points de connexion doivent être des adresses HTTPS publiques avec un certificat valide. Pour en utiliser un sur un réseau privé, le déploiement indique l’origine exacte du serveur, et celle de son serveur de connexion s’il est distinct, par exemple `https://mcp.example.internal:8443`, dans `MULTICA_MCP_OAUTH_ALLOWED_ORIGINS` (séparées par des virgules, vide par défaut). HTTPS et la vérification du certificat s’appliquent toujours.
 - **Disponibilité.** Cette section n’apparaît que si le déploiement active la fonctionnalité.
 
 ## Dupliquer un agent

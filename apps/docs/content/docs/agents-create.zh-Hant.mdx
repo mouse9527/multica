@@ -222,6 +222,7 @@ AI 代理的所有者點選 **連線**，在瀏覽器開啟的伺服器頁面登
 - **權限。** 只有 AI 代理的所有者能連線，而且必須在已登入的瀏覽器中操作，不能使用個人存取權杖。所有者或工作區 `owner`、`admin` 可以新增、刪除與中斷伺服器。
 - **支援的執行環境。** OAuth MCP Server 支援 Claude、Codex、Hermes、Qoder 與 mcode。守護程式透過本機代理把伺服器交給執行環境，token 不會寫入執行環境的設定檔。其他執行環境（如 Cursor、OpenClaw）不會掛載這個伺服器，執行記錄中會說明。
 - **名稱。** OAuth MCP Server 獨占它的名稱。AI 代理其他 MCP 設定或執行環境自身設定中的同名項目都不會被使用，OAuth MCP Server 暫時無法掛載時也一樣。
+- **位址。** 伺服器及其登入相關的端點必須是使用有效憑證的公開 HTTPS 位址。要使用內部網路中的伺服器，部署方需要把它（以及獨立的登入伺服器，如果有）的完整 origin（如 `https://mcp.example.internal:8443`）寫入 `MULTICA_MCP_OAUTH_ALLOWED_ORIGINS`（以逗號分隔，預設為空）。HTTPS 與憑證驗證照常進行。
 - **何時可用。** 部署啟用這項功能後才會顯示這一節。
 
 ## 複製 AI 代理

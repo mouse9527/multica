@@ -222,6 +222,7 @@ multica agent mcp add <agent-id> <server-id>
 - **权限。** 只有智能体的所有者能连接，而且必须在已登录的浏览器里操作，不能用个人访问令牌。所有者或工作区 `owner`、`admin` 可以添加、删除和断开服务器。
 - **支持的运行时。** OAuth MCP Server 支持 Claude、Codex、Hermes、Qoder 和 mcode 运行时。守护进程通过本机代理把服务器交给运行时，token 不会写进运行时的配置文件。其他运行时（如 Cursor、OpenClaw）不会挂载这个服务器，运行记录里会写明。
 - **名称。** OAuth MCP Server 独占它的名称。智能体其他 MCP 配置或运行时自身配置里的同名条目都不会被使用，OAuth MCP Server 暂时无法挂载时也一样。
+- **地址。** 服务器及其登录相关的端点必须是使用有效证书的公网 HTTPS 地址。要使用内网里的服务器，部署方需要把它（以及单独的登录服务器，如果有）的完整 origin（如 `https://mcp.example.internal:8443`）写进 `MULTICA_MCP_OAUTH_ALLOWED_ORIGINS`（逗号分隔，默认为空）。HTTPS 和证书校验照常进行。
 - **何时可用。** 部署开启这个功能后才会显示这一节。
 
 ## 复制智能体
