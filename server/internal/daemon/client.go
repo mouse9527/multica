@@ -215,6 +215,8 @@ func daemonCommonCapabilities() []string {
 		protocol.DaemonCapabilityJoinedWakeupsV1,
 		protocol.DaemonCapabilityWorkflowStatusRulesV1,
 		protocol.DaemonCapabilityCLICommentSteerV1,
+		// mouse9527/multica fork (M-230).
+		protocol.DaemonCapabilityMCPOAuthProxyV1,
 	}
 }
 
