@@ -403,16 +403,35 @@ func PublishComment(bus inboxwriter.Publisher, workspaceID string, created db.Cr
 		ActorType:   comment.AuthorType,
 		ActorID:     util.UUIDToString(comment.AuthorID),
 		Payload: map[string]any{
-			"comment": map[string]any{
-				"id":          util.UUIDToString(comment.ID),
-				"issue_id":    util.UUIDToString(comment.IssueID),
-				"author_type": comment.AuthorType,
-				"author_id":   util.UUIDToString(comment.AuthorID),
-				"content":     comment.Content,
-				"type":        comment.Type,
-				"revision":    comment.Revision,
-			},
+			"comment":        commentEventPayload(comment),
 			"issue_revision": created.IssueRevision,
 		},
 	})
+}
+
+// commentEventPayload is the comment as the comments API returns it. An open
+// issue page inserts the pushed comment into its timeline as is and sorts by
+// created_at, so every field a fetched comment carries must be here (M-229:
+// without created_at the page crashed right after an apply).
+func commentEventPayload(c db.Comment) map[string]any {
+	return map[string]any{
+		"id":               util.UUIDToString(c.ID),
+		"issue_id":         util.UUIDToString(c.IssueID),
+		"author_type":      c.AuthorType,
+		"author_id":        util.UUIDToString(c.AuthorID),
+		"content":          c.Content,
+		"type":             c.Type,
+		"parent_id":        util.UUIDToPtr(c.ParentID),
+		"created_at":       util.TimestampToString(c.CreatedAt),
+		"updated_at":       util.TimestampToString(c.UpdatedAt),
+		"revision":         c.Revision,
+		"resolved_at":      util.TimestampToPtr(c.ResolvedAt),
+		"resolved_by_type": util.TextToPtr(c.ResolvedByType),
+		"resolved_by_id":   util.UUIDToPtr(c.ResolvedByID),
+		"source_task_id":   util.UUIDToPtr(c.SourceTaskID),
+		"deleted_at":       util.TimestampToPtr(c.DeletedAt),
+		"quick_action_id":  util.UUIDToPtr(c.QuickActionID),
+		"reactions":        []any{},
+		"attachments":      []any{},
+	}
 }

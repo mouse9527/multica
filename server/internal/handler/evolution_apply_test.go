@@ -4,14 +4,19 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/evolution"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // proposalTargetApplied is proposalTargetInstructions with the fixture
@@ -611,5 +616,66 @@ func TestEvolutionRollbackKeepsSkillsAddedMeanwhile(t *testing.T) {
 	}
 	if n := countVersions(t, sf.issueID); n != 1 {
 		t.Fatalf("%d version rows, want 1", n)
+	}
+}
+
+// TestEvolutionApplyCommentEventIsAFullComment: the comment:created event an
+// apply or rollback publishes carries every field the comments API returns.
+// An open issue page inserts the pushed comment into its timeline and sorts
+// it by created_at; without that field the page crashed right after an
+// apply (M-229).
+func TestEvolutionApplyCommentEventIsAFullComment(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	f := newProposalFixture(t, evolution.DefaultConfig())
+	issueID := fileProposal(t, f, f.proposal())
+
+	var mu sync.Mutex
+	var got []map[string]any
+	// The bus is shared with other tests: keep only this proposal's comments.
+	testHandler.Bus.Subscribe(protocol.EventCommentCreated, func(e events.Event) {
+		payload, _ := e.Payload.(map[string]any)
+		raw, err := json.Marshal(payload["comment"])
+		if err != nil {
+			return
+		}
+		var comment map[string]any
+		if json.Unmarshal(raw, &comment) != nil || comment["issue_id"] != issueID {
+			return
+		}
+		mu.Lock()
+		got = append(got, comment)
+		mu.Unlock()
+	})
+
+	changeProposal(t, testUserID, issueID, "apply").Want(http.StatusOK)
+	changeProposal(t, testUserID, issueID, "rollback").Want(http.StatusOK)
+
+	// The keys the comments API always sends (omitempty ones aside).
+	raw, err := json.Marshal(commentToResponse(db.Comment{}, nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want map[string]any
+	if err := json.Unmarshal(raw, &want); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("%d comment:created events for the proposal, want 2 (apply, rollback)", len(got))
+	}
+	for i, comment := range got {
+		for key := range want {
+			if _, ok := comment[key]; !ok {
+				t.Errorf("event %d: comment has no %q", i, key)
+			}
+		}
+		createdAt, _ := comment["created_at"].(string)
+		if _, err := time.Parse(time.RFC3339, createdAt); err != nil {
+			t.Errorf("event %d: created_at = %q, want an RFC 3339 time", i, createdAt)
+		}
 	}
 }
