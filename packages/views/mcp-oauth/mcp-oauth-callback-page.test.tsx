@@ -110,5 +110,10 @@ describe("isAppPath", () => {
     expect(isAppPath("/\\evil.example")).toBe(false);
     expect(isAppPath("https://evil.example")).toBe(false);
     expect(isAppPath("")).toBe(false);
+    // The browser drops tab and newlines before parsing: "/\t/evil" is "//evil".
+    expect(isAppPath("/\t/evil.example")).toBe(false);
+    expect(isAppPath("/\n/evil.example")).toBe(false);
+    expect(isAppPath("/a\u0000b")).toBe(false);
+    expect(isAppPath("/acme/agents/a?view=mcp_oauth")).toBe(true);
   });
 });

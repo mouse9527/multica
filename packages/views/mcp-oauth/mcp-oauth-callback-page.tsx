@@ -89,9 +89,22 @@ export function McpOAuthCallbackPage() {
   );
 }
 
-/** An in-app path: starts with one slash, so it cannot leave the app. */
+const PROBE_ORIGIN = "https://app.invalid";
+
+/**
+ * An in-app path. It is resolved the way the browser will resolve it (which
+ * drops tab and newline characters, so "/\t/evil.example" means
+ * "//evil.example") and accepted only if it stays on this origin. Control
+ * characters are refused outright.
+ */
 export function isAppPath(path: string): boolean {
-  return path.startsWith("/") && !path.startsWith("//") && !path.startsWith("/\\");
+  // eslint-disable-next-line no-control-regex -- refusing control characters is the point
+  if (!path.startsWith("/") || /[\u0000-\u001f\u007f]/.test(path)) return false;
+  try {
+    return new URL(path, PROBE_ORIGIN).origin === PROBE_ORIGIN;
+  } catch {
+    return false;
+  }
 }
 
 function failureOf(err: unknown): Failure {
