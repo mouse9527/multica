@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/mcpoauth"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
@@ -50,21 +51,42 @@ func (h *Handler) MountMCPOAuth(r chi.Router) {
 // and any later one in the same form. A session JWT starts "eyJ".
 var tokenPrefix = regexp.MustCompile(`^[A-Za-z]{2,8}_`)
 
-// requireInteractiveSession admits only a signed-in session: the cookie, or a
-// session JWT in the Authorization header. RequireHumanActor is not enough
-// here: it refuses task tokens and cloud PATs, but the auth middleware marks
-// no actor source for a local mul_ PAT, so a script holding one would pass as
-// the user. Connecting puts a person's identity behind an agent, so it takes
-// the person.
+// requireInteractiveSession admits only a signed-in session: a session JWT,
+// whether it came in the auth cookie or in the Authorization header.
+// RequireHumanActor is not enough here: it refuses task tokens and cloud PATs,
+// but the auth middleware marks no actor source for a local mul_ PAT, so a
+// script holding one would pass as the user. Connecting puts a person's
+// identity behind an agent, so it takes the person.
+//
+// The check reads the credential the middleware actually authenticated, not
+// just the Authorization header: the middleware also accepts a PAT placed in
+// the auth cookie, and a PAT holder can compute that cookie's token-bound
+// CSRF value from the PAT itself.
 func requireInteractiveSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bearer, hasBearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if isMachineCredentialActor(r) || (hasBearer && tokenPrefix.MatchString(strings.TrimSpace(bearer))) {
+		if isMachineCredentialActor(r) || tokenPrefix.MatchString(authenticatedCredential(r)) {
 			writeErrorCode(w, http.StatusForbidden, "mcp_oauth_session_only", "this action needs a signed-in session, not a token")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// authenticatedCredential is the credential the auth middleware authenticated
+// the request with, chosen by the middleware's own rule (extractToken): an
+// "Authorization: Bearer" header first, otherwise the auth cookie.
+// TestMCPOAuthSessionGuardMatchesTheAuthMiddleware sends requests through the
+// real middleware, so the two cannot drift apart unnoticed.
+func authenticatedCredential(r *http.Request) string {
+	if header := r.Header.Get("Authorization"); header != "" {
+		if token, ok := strings.CutPrefix(header, "Bearer "); ok {
+			return token
+		}
+	}
+	if cookie, err := r.Cookie(auth.AuthCookieName); err == nil {
+		return cookie.Value
+	}
+	return ""
 }
 
 func (h *Handler) requireMCPOAuthV1(next http.Handler) http.Handler {

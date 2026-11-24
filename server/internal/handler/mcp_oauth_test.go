@@ -6,14 +6,19 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/mcpoauth"
+	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
@@ -80,6 +85,9 @@ func asPAT(req *http.Request) *http.Request {
 // Authorization header shows it.
 var mcpOAuthCredentials = map[string]func(*http.Request){
 	"local PAT": func(r *http.Request) { r.Header.Set("Authorization", "Bearer mul_0123456789abcdef") },
+	"local PAT in the auth cookie": func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: auth.AuthCookieName, Value: "mul_0123456789abcdef"})
+	},
 	"cloud PAT": func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer mcn_0123456789abcdef")
 		r.Header.Set("X-Actor-Source", "cloud_pat")
@@ -349,6 +357,92 @@ func TestMCPOAuthDisconnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	mcpOAuthCall(t, testUserID, "DELETE", disconnect, nil).Want(http.StatusNotFound)
+}
+
+// Through the real auth middleware: a local PAT authenticates whether it is
+// sent as a Bearer header or placed in the auth cookie with a CSRF value
+// computed from it, and the guard refuses it on every write either way. A
+// session JWT, in the cookie or the header, is let through.
+func TestMCPOAuthSessionGuardMatchesTheAuthMiddleware(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withMCPOAuth(t, true)
+	agentID, ownerID, _ := privateAgentTestFixture(t)
+	cleanupMCPOAuth(t, agentID)
+	ctx := context.Background()
+
+	pat := "mul_" + hex.EncodeToString(randomBytes(t, 20))
+	var patID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO personal_access_token (user_id, name, token_hash, token_prefix)
+		VALUES ($1, 'mcp oauth session guard', $2, $3) RETURNING id::text`,
+		ownerID, auth.HashToken(pat), pat[:8]).Scan(&patID); err != nil {
+		t.Fatalf("create PAT: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM personal_access_token WHERE id = $1`, patID) })
+	session, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": ownerID, "exp": time.Now().Add(time.Hour).Unix(),
+	}).SignedString(auth.JWTSecret())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	serve := middleware.Auth(testHandler.Queries, nil, nil, nil)(mcpOAuthRouter()).ServeHTTP
+	send := func(how, token, method, path string, body any) *testutil.Response {
+		t.Helper()
+		req := newRequest(method, path, body)
+		req.Header.Del("X-User-ID") // the middleware sets it from the credential
+		switch how {
+		case "cookie":
+			req.AddCookie(&http.Cookie{Name: auth.AuthCookieName, Value: token})
+			req.Header.Set(auth.CSRFHeaderName, tokenBoundCSRF(t, token))
+		case "bearer":
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		return testutil.Call(t, serve, req)
+	}
+
+	base := "/api/agents/" + agentID + "/mcp-oauth"
+	var server mcpOAuthServerResponse
+	send("cookie", session, "POST", base, map[string]any{"name": "gateway", "url": "https://mcp.example.com/mcp"}).
+		Want(http.StatusCreated).JSON(&server)
+	send("bearer", session, "POST", base, map[string]any{"name": "desktop", "url": "https://mcp.example.com/mcp"}).
+		Want(http.StatusCreated)
+
+	for _, how := range []string{"cookie", "bearer"} {
+		// The middleware accepts the PAT this way: a read goes through.
+		send(how, pat, "GET", base, nil).Want(http.StatusOK)
+		for _, write := range []struct {
+			method, path string
+			body         any
+		}{
+			{"POST", base, map[string]any{"name": "by-pat", "url": "https://mcp.example.com/mcp"}},
+			{"POST", base + "/" + server.ID + "/connect", nil},
+			{"DELETE", base + "/" + server.ID + "/connection", nil},
+			{"DELETE", base + "/" + server.ID, nil},
+			{"POST", "/api/mcp-oauth/complete", map[string]string{"state": "s", "code": "c"}},
+		} {
+			resp := send(how, pat, write.method, write.path, write.body).Want(http.StatusForbidden)
+			if !strings.Contains(resp.Body.String(), "mcp_oauth_session_only") {
+				t.Errorf("%s %s with the PAT as %s: %s", write.method, write.path, how, resp.Body.String())
+			}
+		}
+	}
+	var listed mcpOAuthListResponse
+	send("cookie", session, "GET", base, nil).Want(http.StatusOK).JSON(&listed)
+	if len(listed.Servers) != 2 {
+		t.Fatalf("servers after the PAT writes = %+v, want the two the session made", listed.Servers)
+	}
+}
+
+func randomBytes(t *testing.T, n int) []byte {
+	t.Helper()
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 func TestSafeReturnPath(t *testing.T) {
