@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router notices in the Router chat (M-111), Router inbox S3a (M-118) and S3b (M-133), and quiet batch replies (M-210).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router notices in the Router chat (M-111), Router inbox S3a (M-118) and S3b (M-133), quiet batch replies (M-210), and slim chat batches (M-240).
 
 package agentrouter
 
@@ -52,7 +52,9 @@ type JobRegistrar interface {
 // it also registers the shadow hold as the inbox interceptor (hold.go), which
 // with router_inbox_rules on also records rule verdicts (inbox_rules.go). With
 // router_chat and router_chat_quiet on, a batch turn's quiet reply raises no
-// chat reply alert (chat_quiet.go). With
+// chat reply alert (chat_quiet.go), and with router_chat and router_batch_slim
+// on, chat batches leave out the rules each chat turn already gets
+// (chat_slim.go). With
 // router_v1 off it registers nothing, so the server behaves exactly as
 // upstream. It returns whether it registered capture.
 func Register(ctx context.Context, flags *featureflag.Service, bus *events.Bus, db Database, jobs JobRegistrar, tasks *service.TaskService) bool {
@@ -96,6 +98,10 @@ func Register(ctx context.Context, flags *featureflag.Service, bus *events.Bus, 
 			d.Quiet = true
 			service.SetChatReplyAlertGate(store.ChatReplyAlert)
 			slog.Info("router: quiet batch replies enabled")
+		}
+		if chat && flags.IsEnabled(ctx, FlagBatchSlim, false) {
+			d.Slim = true
+			slog.Info("router: slim chat batches enabled")
 		}
 		if err := jobs.Register(DispatchJob(d)); err != nil {
 			slog.Error("router: register dispatch job", "error", err)
