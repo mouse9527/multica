@@ -21,6 +21,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/evolution"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/mcpoauth"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -1429,6 +1430,11 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			// mouse9527/multica fork: Evolution tables (M-136).
 			name: "delete evolution data",
 			run:  func() error { return evolution.DeleteWorkspaceData(ctx, tx, requester.WorkspaceID) },
+		},
+		{
+			// mouse9527/multica fork: MCP OAuth tables (M-230).
+			name: "delete mcp oauth data",
+			run:  func() error { return mcpoauth.DeleteWorkspaceData(ctx, tx, requester.WorkspaceID) },
 		},
 		{
 			name: "delete squads and skills",
