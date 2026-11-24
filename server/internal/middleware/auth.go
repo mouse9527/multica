@@ -115,8 +115,9 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				hash := auth.HashToken(tokenString)
 				tt, err := queries.GetTaskTokenByHash(r.Context(), hash)
 				if err != nil {
-					slog.Warn("auth: invalid task token", "path", r.URL.Path, "error", err)
-					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					// Modified for the mouse9527/multica fork (M-237): 401
+					// only for an unknown token, 503 when the lookup failed.
+					rejectTokenLookupError(w, r, "auth: invalid task token", err)
 					return
 				}
 				userID := uuidToString(tt.UserID)
@@ -229,8 +230,9 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				}
 				pat, err := queries.GetPersonalAccessTokenByHash(r.Context(), hash)
 				if err != nil {
-					slog.Warn("auth: invalid PAT", "path", r.URL.Path, "error", err)
-					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					// Modified for the mouse9527/multica fork (M-237): same
+					// split as the mat_ branch above.
+					rejectTokenLookupError(w, r, "auth: invalid PAT", err)
 					return
 				}
 
