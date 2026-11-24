@@ -166,14 +166,22 @@ func TestSuperAgentChatWritesNeverWakeIt(t *testing.T) {
 // TestSelfLoopBrake: after selfLoopStreak runs in a row started only by the
 // subscribed agent's events, another such batch waits for the cooldown and
 // the owner is told once; an event from anyone else goes at once and takes
-// the waiting events along.
+// the waiting events along. The same for a chat-bound subscription and one
+// that runs on its anchor issue.
 func TestSelfLoopBrake(t *testing.T) {
+	t.Run("chat", func(t *testing.T) { testSelfLoopBrake(t, true) })
+	t.Run("anchor run", func(t *testing.T) { testSelfLoopBrake(t, false) })
+}
+
+func testSelfLoopBrake(t *testing.T, chat bool) {
 	e, d, calls := newDispatchEnv(t)
-	d.Chat = true
+	d.Chat = chat
 	root := e.issue("router root")
 	child := e.issue("router child", testutil.Cols{"parent_issue_id": root})
 	sub := e.subscribe(e.agentA, ScopeIssueTree, root)
-	e.bindChat(sub)
+	if chat {
+		e.bindChat(sub)
+	}
 
 	// An agent comment with no run: what a Super Agent write that lost its
 	// run id would look like.

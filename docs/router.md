@@ -268,7 +268,7 @@ Super Agent 只做分派、跟踪、转告，不自己干活。实质性工作�
 - 收件人是某个订阅的 Owner，这个订阅启用、未暂停，并绑定了一个 `active`、智能体相同的 chat 会话；
 - issue 在这个订阅的范围内（祖先链加项目）。收件人有多个这样的订阅时取最窄的那个（与 `pickNarrowest` 同一规则，跨智能体比较）；
 - 不在不扣名单里：`router_notice`（Super Agent 自己的通知，含暂停、故障通知）、连接应用的四类条目（`app_action_requested`、`app_action_reminder`、`app_connect_requested`、`app_action_result`）、`autopilot_paused`、`autopilot_quota_exceeded`、`quick_create_failed`、`quick_create_unconfirmed`；
-- 条目不是 Super Agent 自己的动作。和事件的 self 规则相同：actor 是订阅的智能体，并且条目来自它自己运行写的评论（`details.comment_id` 指向的评论的 `source_task_id` 是 Super Agent 自己的运行），才不扣。没有评论的条目（状态变更、指派等）找不到运行，M-233 起按别人的动作处理，会被记为暂扣，在下一批里列出（影子模式，不影响收件箱）。
+- 条目不是 Super Agent 自己的动作。和事件的 self 规则相同：actor 是订阅的智能体，并且条目来自它自己运行写的评论（`details.comment_id` 指向的评论的 `source_task_id` 是 Super Agent 自己的运行），才不扣。没有评论的条目（状态变更、指派等）找不到运行，M-233 起按别人的动作处理，会被记为暂扣，在下一批里列出（影子模式，不影响收件箱）。这也包括 Super Agent 在自己 chat 里改状态带来的条目。改成真正暂扣之前，要给收件箱条目记下运行（例如 actor 的任务 id），否则 Owner 会收到 Super Agent 自己操作的通知；或者明确接受这点噪声。
 
 订阅集合按 30 秒缓存（与捕获相同），订阅变更会让本进程的缓存立刻失效；派发自动暂停不改代数，最多 30 秒后生效。判定只对「收件人有绑定 chat 的订阅」的条目查库（一条递归查询取祖先链和项目），其他条目只读内存。
 

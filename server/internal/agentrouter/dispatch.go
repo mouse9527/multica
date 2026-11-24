@@ -396,7 +396,7 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 	if !batch.hasOthers() {
 		return outcomeWaiting, "", tx.Commit(ctx)
 	}
-	if held, notice, err := selfLoopBrake(ctx, tx, sub, batch, agentName, agentOwner); err != nil || held {
+	if held, notice, err := d.selfLoopBrake(ctx, tx, sub, batch, agentName, agentOwner); err != nil || held {
 		if err != nil {
 			return outcomeWaiting, "", err
 		}

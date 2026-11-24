@@ -36,12 +36,15 @@ const (
 //
 // It reports whether to hold the batch and, when it does, the id of the
 // notice to deliver after the commit (at most one per subscription and hour).
-func selfLoopBrake(ctx context.Context, tx pgx.Tx, sub dispatchSub, b batch, agentName, agentOwner string) (bool, string, error) {
+// The brake is logged when it tells the owner, so once an hour, not on every
+// 15-second tick it keeps holding.
+func (d *Dispatcher) selfLoopBrake(ctx context.Context, tx pgx.Tx, sub dispatchSub, b batch, agentName, agentOwner string) (bool, string, error) {
 	ids := make([]string, len(b.events))
 	for i, e := range b.events {
 		ids[i] = e.ID
 	}
 	var held bool
+	var lastRun *time.Time
 	err := tx.QueryRow(ctx, `
 		WITH recent AS (
 		    SELECT d.task_id, d.created_at FROM router_dispatch d
@@ -62,11 +65,20 @@ func selfLoopBrake(ctx context.Context, tx pgx.Tx, sub dispatchSub, b batch, age
 		           SELECT 1 FROM router_event e
 		           WHERE e.id = ANY($3::uuid[]) AND NOT (e.actor_type = 'agent' AND e.actor_id = $2::uuid))
 		       AND (SELECT count(*) FROM judged WHERE agent_only) = $4
-		       AND (SELECT max(created_at) FROM judged) > now() - make_interval(secs => $5)`,
+		       AND (SELECT max(created_at) FROM judged) > now() - make_interval(secs => $5),
+		       (SELECT max(created_at) FROM judged)`,
 		sub.ID, sub.AgentID, ids, selfLoopStreak, selfLoopCooldown.Seconds(),
-	).Scan(&held)
+	).Scan(&held, &lastRun)
 	if err != nil || !held {
 		return false, "", err
+	}
+	logEngaged := func() {
+		until := time.Now().Add(selfLoopCooldown)
+		if lastRun != nil {
+			until = lastRun.Add(selfLoopCooldown)
+		}
+		d.Logger.Info("router: self-loop brake holds an agent-only batch", "subscription_id", sub.ID, "agent_id", sub.AgentID,
+			"streak", selfLoopStreak, "events", len(b.events), "held_until", until.UTC().Format(time.RFC3339))
 	}
 	recipient := noticeRecipient(sub, agentOwner)
 	if recipient == "" {
@@ -90,5 +102,6 @@ func selfLoopBrake(ctx context.Context, tx pgx.Tx, sub dispatchSub, b batch, age
 	if err != nil || !created {
 		return true, "", err
 	}
+	logEngaged()
 	return true, n.ID, nil
 }

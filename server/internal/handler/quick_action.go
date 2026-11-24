@@ -894,7 +894,7 @@ func (h *Handler) RunQuickAction(w http.ResponseWriter, r *http.Request) {
 		QuickActionID: qa.ID,
 		// The run an agent ran the action from, so a Super Agent's own turn
 		// is not woken by it. mouse9527/multica fork (M-233)
-		SourceTaskID: quickActionSourceTask(h, r, actorType),
+		SourceTaskID: quickActionSourceTask(h, r, actorType, actorID),
 	})
 	if err != nil {
 		slog.Warn("quick action comment create failed", append(logger.RequestAttrs(r), "error", err, "quick_action_id", uuidToString(qa.ID))...)

@@ -41,9 +41,18 @@ func (h *Handler) publishWithActorTask(r *http.Request, eventType, workspaceID, 
 // as the comment's source_task_id the way CreateComment records it; none for
 // a member. Without it a Super Agent's own quick action would have an unknown
 // run and wake its own Super Agent (M-233).
-func quickActionSourceTask(h *Handler, r *http.Request, actorType string) pgtype.UUID {
+//
+// The task must be the acting agent's: a run id on the comment makes the
+// comment that run's, and a wrong one would silence it as the Super Agent's
+// own. resolveActor already ties X-Task-ID to the agent for RunQuickAction;
+// the check keeps that true for any other caller.
+func quickActionSourceTask(h *Handler, r *http.Request, actorType, actorID string) pgtype.UUID {
 	if actorType != "agent" {
 		return pgtype.UUID{}
 	}
-	return h.commentSourceTaskID(r)
+	task, ok := h.taskFromRequestHeader(r)
+	if !ok || uuidToString(task.AgentID) != actorID {
+		return pgtype.UUID{}
+	}
+	return task.ID
 }
