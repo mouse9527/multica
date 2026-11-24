@@ -110,6 +110,16 @@ func asSystemAgent(t *testing.T, ctx context.Context, agentID, systemKey, notes 
 	return name
 }
 
+// withTaskServiceRouterFlags hands the TaskService the flags
+// withRouterChatFlags set on the handler, for the claim only: the setup
+// pointer reads router_v1 from the TaskService.
+func withTaskServiceRouterFlags(t *testing.T) {
+	t.Helper()
+	orig := testHandler.TaskService.FeatureFlags
+	testHandler.TaskService.FeatureFlags = testHandler.FeatureFlags
+	t.Cleanup(func() { testHandler.TaskService.FeatureFlags = orig })
+}
+
 // Evolution's rules that stop a Super Agent from reading and relaying issues.
 var evolutionSuperAgentConflicts = []string{
 	"Outside an analysis issue, do not scan",
@@ -130,6 +140,7 @@ func TestSuperAgentChatEvolutionRunsOnItsIdentity(t *testing.T) {
 	sendDirectChat(t, ctx, rc.agentID, rc.sessionID, "anything new?")
 	const notes = "Answer in Chinese."
 	name := asSystemAgent(t, ctx, rc.agentID, service.EvolutionSystemKey, notes)
+	withTaskServiceRouterFlags(t)
 
 	got := claimAndDecodeAgent(t, rc.runtimeID).Instructions
 	own, _ := service.SuperAgentTurnInstructions(service.EvolutionSystemKey, name, notes)
@@ -160,6 +171,7 @@ func TestOrdinaryChatEvolutionPromptUnchanged(t *testing.T) {
 	})
 	sendDirectChat(t, ctx, agentID, sessionID, "hello")
 	name := asSystemAgent(t, ctx, agentID, service.EvolutionSystemKey, "")
+	withTaskServiceRouterFlags(t)
 	if got, want := claimAndDecodeAgent(t, runtimeID).Instructions, service.ComposeEvolutionInstructions(name, ""); got != want {
 		t.Fatalf("ordinary chat changed Evolution's prompt:\n%s", got)
 	}
@@ -176,6 +188,7 @@ func TestSuperAgentChatMikaKeepsItsPrompt(t *testing.T) {
 	rc := newRouterChat(t, ctx)
 	sendDirectChat(t, ctx, rc.agentID, rc.sessionID, "anything new?")
 	name := asSystemAgent(t, ctx, rc.agentID, service.MikaSystemKey, "")
+	withTaskServiceRouterFlags(t)
 
 	got := claimAndDecodeAgent(t, rc.runtimeID).Instructions
 	if !strings.HasPrefix(got, service.ComposeMikaInstructions(name, "")+"\n\n## Super Agent\n\n"+superAgentNoteMarker) {
@@ -201,10 +214,13 @@ func TestOrdinaryChatMikaGetsTheSetupPointer(t *testing.T) {
 	})
 	sendDirectChat(t, ctx, agentID, sessionID, "make this chat a Super Agent")
 	name := asSystemAgent(t, ctx, agentID, service.MikaSystemKey, "")
+	withTaskServiceRouterFlags(t)
+	pointer := testHandler.TaskService.SuperAgentSetupPointer(ctx, service.MikaSystemKey)
+	if !strings.HasPrefix(pointer, "## Super Agent\n\n") || !strings.Contains(pointer, "`multica router guide`") {
+		t.Fatalf("router_v1 is on, want Mika's setup pointer, got %q", pointer)
+	}
 	got := claimAndDecodeAgent(t, runtimeID).Instructions
-	want := service.ComposeMikaInstructions(name, "") + "\n\n" +
-		testHandler.TaskService.SuperAgentSetupPointer(ctx, service.MikaSystemKey)
-	if got != want || !strings.Contains(got, "`multica router guide`") {
+	if want := service.ComposeMikaInstructions(name, "") + "\n\n" + pointer; got != want {
 		t.Fatalf("want Mika's prompt and the setup pointer; got\n%s", got)
 	}
 	if strings.Contains(got, superAgentNoteMarker) {
