@@ -75,6 +75,69 @@ func asPAT(req *http.Request) *http.Request {
 	return req
 }
 
+// The forms a request reaches the handler in after the auth middleware, for
+// each credential. A local PAT gets no X-Actor-Source; only the
+// Authorization header shows it.
+var mcpOAuthCredentials = map[string]func(*http.Request){
+	"local PAT": func(r *http.Request) { r.Header.Set("Authorization", "Bearer mul_0123456789abcdef") },
+	"cloud PAT": func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer mcn_0123456789abcdef")
+		r.Header.Set("X-Actor-Source", "cloud_pat")
+	},
+	"task token": func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer mat_0123456789abcdef")
+		r.Header.Set("X-Actor-Source", "task_token")
+	},
+}
+
+// Every write takes a signed-in session; no token of any kind, the local
+// mul_ PAT included, may configure, connect, disconnect or complete.
+func TestMCPOAuthWritesRefuseEveryToken(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withMCPOAuth(t, true)
+	agentID, ownerID, _ := privateAgentTestFixture(t)
+	cleanupMCPOAuth(t, agentID)
+	base := "/api/agents/" + agentID + "/mcp-oauth"
+	body := map[string]any{"name": "gateway", "url": "https://mcp.example.com/mcp"}
+	var server mcpOAuthServerResponse
+	mcpOAuthCall(t, ownerID, "POST", base, body).Want(http.StatusCreated).JSON(&server)
+
+	writes := []struct {
+		method, path string
+		body         any
+	}{
+		{"POST", base, map[string]any{"name": "other", "url": "https://mcp.example.com/mcp"}},
+		{"DELETE", base + "/" + server.ID, nil},
+		{"POST", base + "/" + server.ID + "/connect", nil},
+		{"DELETE", base + "/" + server.ID + "/connection", nil},
+		{"POST", "/api/mcp-oauth/complete", map[string]string{"state": "s", "code": "c"}},
+	}
+	for name, credential := range mcpOAuthCredentials {
+		for _, write := range writes {
+			req := newRequestAs(ownerID, write.method, write.path, write.body)
+			credential(req)
+			resp := testutil.Call(t, mcpOAuthRouter(), req).Want(http.StatusForbidden)
+			if !strings.Contains(resp.Body.String(), "mcp_oauth_session_only") {
+				t.Errorf("%s %s with a %s: %s", write.method, write.path, name, resp.Body.String())
+			}
+		}
+	}
+	// The server is still there: nothing above got through.
+	var listed mcpOAuthListResponse
+	mcpOAuthCall(t, ownerID, "GET", base, nil).Want(http.StatusOK).JSON(&listed)
+	if len(listed.Servers) != 1 {
+		t.Fatalf("servers = %+v", listed.Servers)
+	}
+
+	// A session JWT in the Authorization header (how the desktop app signs
+	// in) is a session, not a token.
+	req := newRequestAs(ownerID, "POST", base, map[string]any{"name": "desktop", "url": "https://mcp.example.com/mcp"})
+	req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln")
+	testutil.Call(t, mcpOAuthRouter(), req).Want(http.StatusCreated)
+}
+
 func TestMCPOAuthRoutesAreOffWithoutTheFlag(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -256,6 +319,20 @@ func TestMCPOAuthDisconnect(t *testing.T) {
 		t.Fatalf("list = %+v", listed)
 	}
 
+	// A connect left open in another tab before the disconnect.
+	verifier, err := mcpoauth.NewVerifier()
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleState, err := store.CreatePendingAuthorization(context.Background(), mcpoauth.PendingAuthorization{
+		WorkspaceID: testWorkspaceID, ServerID: server.ID, UserID: ownerID,
+		Resource: "https://mcp.example.com/mcp", TokenEndpoint: "https://mcp.example.com/token",
+		Client: mcpoauth.Client{ID: "client"}, RedirectURI: "https://app.example.test/oauth/mcp", Verifier: verifier,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	disconnect := base + "/" + server.ID + "/connection"
 	mcpOAuthCall(t, memberID, "DELETE", disconnect, nil).Want(http.StatusForbidden)
 	mcpOAuthCall(t, ownerID, "DELETE", disconnect, nil).Want(http.StatusNoContent)
@@ -263,6 +340,15 @@ func TestMCPOAuthDisconnect(t *testing.T) {
 	if listed.Servers[0].Connection != nil {
 		t.Fatalf("still connected after disconnect: %+v", listed.Servers[0].Connection)
 	}
+	// The stale tab cannot reconnect what was just disconnected.
+	mcpOAuthCall(t, ownerID, "POST", "/api/mcp-oauth/complete", map[string]string{"state": staleState, "code": "code"}).
+		Want(http.StatusBadRequest)
+
+	// An agent without an owner has no connection: a clean 404, not a 500.
+	if _, err := testPool.Exec(context.Background(), `UPDATE agent SET owner_id = NULL WHERE id = $1`, agentID); err != nil {
+		t.Fatal(err)
+	}
+	mcpOAuthCall(t, testUserID, "DELETE", disconnect, nil).Want(http.StatusNotFound)
 }
 
 func TestSafeReturnPath(t *testing.T) {

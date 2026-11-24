@@ -264,6 +264,25 @@ func TestPendingAuthorizationIsSingleUse(t *testing.T) {
 	if n != 0 {
 		t.Fatal("an expired state was not cleared")
 	}
+
+	// Someone else's abandoned attempt on another server goes too, in the
+	// bounded batch every start clears.
+	other := newFixture()
+	otherServer := other.server(t, store, "elsewhere", nil)
+	abandoned, err := store.CreatePendingAuthorization(ctx, other.pending(otherServer.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(PendingTTL + time.Second)
+	if _, err := store.CreatePendingAuthorization(ctx, f.pending(server.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM mcp_oauth_state WHERE state_hash = $1`, stateHash(abandoned)).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatal("another user's abandoned state was never cleared")
+	}
 }
 
 func TestGrantIsSealedAndReplacedOnReconnect(t *testing.T) {
@@ -316,8 +335,16 @@ func TestGrantIsSealedAndReplacedOnReconnect(t *testing.T) {
 		t.Fatalf("list statuses = %+v, err = %v", statuses, err)
 	}
 
+	// Disconnecting also cancels this user's connects still in flight.
+	pending, err := store.CreatePendingAuthorization(ctx, f.pending(server.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := store.DeleteConnection(ctx, f.workspaceID, server.ID, f.ownerID); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := store.ConsumePendingAuthorization(ctx, pending, f.ownerID); !errors.Is(err, ErrStateInvalid) {
+		t.Fatalf("a connect in flight survived the disconnect: %v", err)
 	}
 	if err := store.DeleteConnection(ctx, f.workspaceID, server.ID, f.ownerID); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("second disconnect: err = %v", err)

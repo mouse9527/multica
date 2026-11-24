@@ -143,6 +143,12 @@ func (f Flow) Complete(ctx context.Context, state, code, userID string, check fu
 // answer as exactly "HTTP <status>"; 400 (invalid_grant) and 401
 // (invalid_client) mean the grant itself is gone and are reported as
 // ErrGrantRejected. Anything else — 5xx, 429, a network error — is transient.
+//
+// The match on the error text is a contract with pkg/remotemcp, which this
+// fork does not change and which exports no error type for it.
+// TestConnectFlowEndToEnd pins it: if the format ever changes, rejected
+// refreshes would pass as transient and a dead connection would never ask for
+// a reconnect, so that test must fail first.
 func Refresh(ctx context.Context, req RefreshRequest) (remotemcp.OAuthTokenResponse, error) {
 	response, err := remotemcp.RefreshOAuthToken(ctx, req.TokenEndpoint, req.Resource, req.RefreshToken.Reveal(), req.Client)
 	if err != nil {

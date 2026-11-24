@@ -7,7 +7,10 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -22,15 +25,16 @@ import (
 // MCP servers and its owner's connection to each. 404 unless mcp_oauth_v1 is
 // on. Configuring takes the agent owner or a workspace owner/admin, as for
 // the agent's other MCP servers; connecting takes the agent owner, because
-// phase 1 runs the agent with its owner's grant. Writes refuse PATs and task
-// tokens: a machine credential must not attach or detach an identity.
+// phase 1 runs the agent with its owner's grant. Every write takes a signed-in
+// session (requireInteractiveSession): no token of any kind may attach or
+// detach an identity.
 func (h *Handler) MountAgentMCPOAuth(r chi.Router) {
 	r.Use(h.requireMCPOAuthV1)
 	r.Get("/", h.ListAgentMCPOAuthServers)
-	r.With(RequireHumanActor).Post("/", h.CreateAgentMCPOAuthServer)
-	r.With(RequireHumanActor).Delete("/{serverId}", h.DeleteAgentMCPOAuthServer)
-	r.With(RequireHumanActor).Post("/{serverId}/connect", h.ConnectAgentMCPOAuthServer)
-	r.With(RequireHumanActor).Delete("/{serverId}/connection", h.DisconnectAgentMCPOAuthServer)
+	r.With(requireInteractiveSession).Post("/", h.CreateAgentMCPOAuthServer)
+	r.With(requireInteractiveSession).Delete("/{serverId}", h.DeleteAgentMCPOAuthServer)
+	r.With(requireInteractiveSession).Post("/{serverId}/connect", h.ConnectAgentMCPOAuthServer)
+	r.With(requireInteractiveSession).Delete("/{serverId}/connection", h.DisconnectAgentMCPOAuthServer)
 }
 
 // MountMCPOAuth serves /api/mcp-oauth, the user-scoped end of a connect: the
@@ -38,7 +42,29 @@ func (h *Handler) MountAgentMCPOAuth(r chi.Router) {
 // whoever it was that the authorization server sent back.
 func (h *Handler) MountMCPOAuth(r chi.Router) {
 	r.Use(h.requireMCPOAuthV1)
-	r.With(RequireHumanActor).Post("/complete", h.CompleteMCPOAuth)
+	r.With(requireInteractiveSession).Post("/complete", h.CompleteMCPOAuth)
+}
+
+// tokenPrefix matches the prefixed tokens the auth middleware accepts besides
+// a session JWT: local PATs (mul_), cloud PATs (mcn_), task tokens (mat_),
+// and any later one in the same form. A session JWT starts "eyJ".
+var tokenPrefix = regexp.MustCompile(`^[A-Za-z]{2,8}_`)
+
+// requireInteractiveSession admits only a signed-in session: the cookie, or a
+// session JWT in the Authorization header. RequireHumanActor is not enough
+// here: it refuses task tokens and cloud PATs, but the auth middleware marks
+// no actor source for a local mul_ PAT, so a script holding one would pass as
+// the user. Connecting puts a person's identity behind an agent, so it takes
+// the person.
+func requireInteractiveSession(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bearer, hasBearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if isMachineCredentialActor(r) || (hasBearer && tokenPrefix.MatchString(strings.TrimSpace(bearer))) {
+			writeErrorCode(w, http.StatusForbidden, "mcp_oauth_session_only", "this action needs a signed-in session, not a token")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (h *Handler) requireMCPOAuthV1(next http.Handler) http.Handler {
@@ -56,17 +82,43 @@ type mcpOAuthDatabase struct {
 	txStarter
 }
 
+// mcpOAuthBoxCache holds the box built from the deployment key, rebuilt only
+// when the key's value changes, so requests do not redo the AES key schedule.
+// It reads the environment rather than being set at startup so the server
+// wiring needs no new field for a feature that is off by default.
+var mcpOAuthBoxCache struct {
+	sync.Mutex
+	raw string
+	box *secretbox.Box
+}
+
+func mcpOAuthBox() (*secretbox.Box, error) {
+	raw := os.Getenv(mcpoauth.SecretKeyEnv)
+	mcpOAuthBoxCache.Lock()
+	defer mcpOAuthBoxCache.Unlock()
+	if mcpOAuthBoxCache.box != nil && mcpOAuthBoxCache.raw == raw {
+		return mcpOAuthBoxCache.box, nil
+	}
+	key, err := secretbox.LoadKey(mcpoauth.SecretKeyEnv)
+	if err != nil {
+		return nil, err
+	}
+	box, err := secretbox.New(key)
+	if err != nil {
+		return nil, err
+	}
+	mcpOAuthBoxCache.raw, mcpOAuthBoxCache.box = raw, box
+	return box, nil
+}
+
 // mcpOAuthStore opens the store with the deployment key. Without the key the
 // feature is unavailable rather than storing anything unsealed.
 func (h *Handler) mcpOAuthStore(w http.ResponseWriter) (*mcpoauth.Store, bool) {
-	key, err := secretbox.LoadKey(mcpoauth.SecretKeyEnv)
+	box, err := mcpOAuthBox()
 	if err == nil {
-		var box *secretbox.Box
-		if box, err = secretbox.New(key); err == nil {
-			store, storeErr := mcpoauth.NewStore(mcpOAuthDatabase{h.DB, h.TxStarter}, box)
-			if storeErr == nil {
-				return store, true
-			}
+		store, storeErr := mcpoauth.NewStore(mcpOAuthDatabase{h.DB, h.TxStarter}, box)
+		if storeErr == nil {
+			return store, true
 		}
 	}
 	writeErrorCode(w, http.StatusServiceUnavailable, "mcp_oauth_not_configured", "MCP OAuth is not configured on this server")
@@ -308,9 +360,10 @@ func (h *Handler) writeMCPOAuthFlowError(w http.ResponseWriter, serverID string,
 	writeError(w, http.StatusInternalServerError, "failed to connect the MCP server")
 }
 
-// DisconnectAgentMCPOAuthServer forgets the owner's grant for the server.
-// The authorization servers seen so far advertise no revocation endpoint, so
-// the tokens are dropped here and expire at the server on their own.
+// DisconnectAgentMCPOAuthServer forgets the owner's grant for the server and
+// cancels the owner's connects to it still in flight. The authorization
+// servers seen so far advertise no revocation endpoint, so the tokens are
+// dropped here and expire at the server on their own.
 func (h *Handler) DisconnectAgentMCPOAuthServer(w http.ResponseWriter, r *http.Request) {
 	agent, ok := h.requireAgentMcpWriter(w, r)
 	if !ok {
@@ -322,6 +375,11 @@ func (h *Handler) DisconnectAgentMCPOAuthServer(w http.ResponseWriter, r *http.R
 	}
 	server, ok := agentMCPOAuthServer(w, r, store, agent)
 	if !ok {
+		return
+	}
+	if !agent.OwnerID.Valid {
+		// An agent without an owner has no connection to forget.
+		writeError(w, http.StatusNotFound, "this agent has no owner, so it has no connection")
 		return
 	}
 	err := store.DeleteConnection(r.Context(), server.WorkspaceID, server.ID, uuidToString(agent.OwnerID))

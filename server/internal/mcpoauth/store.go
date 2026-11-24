@@ -329,13 +329,16 @@ func (s *Store) CreatePendingAuthorization(ctx context.Context, p PendingAuthori
 		return "", err
 	}
 	now := s.now()
-	// Clear this user's abandoned attempts on this server. The rest go with
-	// their server (DeleteServer) or workspace; each user starts few connects,
-	// so this keeps the table small without a sweeper or a scan of everyone's
-	// rows.
+	// Clear abandoned attempts as new ones start, so the table holds only
+	// attempts in flight without a sweeper: this user's on this server, and a
+	// bounded batch of anyone's. The table is that small, so the unindexed
+	// scan for the batch stays cheap, and the bound keeps one start from
+	// paying for a backlog.
 	if _, err := s.db.Exec(ctx, `
 		DELETE FROM mcp_oauth_state
-		WHERE server_id = $1::uuid AND user_id = $2::uuid AND expires_at < $3`, p.ServerID, p.UserID, now); err != nil {
+		WHERE (server_id = $1::uuid AND user_id = $2::uuid AND expires_at < $3)
+			OR state_hash IN (SELECT state_hash FROM mcp_oauth_state WHERE expires_at < $3 LIMIT 50)`,
+		p.ServerID, p.UserID, now); err != nil {
 		return "", err
 	}
 	_, err = s.db.Exec(ctx, `
@@ -497,13 +500,31 @@ func (s *Store) ListConnectionStatusesForAgent(ctx context.Context, workspaceID,
 	return out, rows.Err()
 }
 
-// DeleteConnection forgets the user's tokens for a server (disconnect).
+// DeleteConnection forgets the user's tokens for a server (disconnect), and
+// cancels the user's connects to it still in flight: an authorization page
+// left open in another tab must not reconnect what was just disconnected.
+// It returns ErrNotConnected when there was no connection; pending
+// authorizations are cancelled either way.
 func (s *Store) DeleteConnection(ctx context.Context, workspaceID, serverID, userID string) error {
-	tag, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM mcp_oauth_state
+		WHERE workspace_id = $1::uuid AND server_id = $2::uuid AND user_id = $3::uuid`,
+		workspaceID, serverID, userID); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `
 		DELETE FROM mcp_oauth_connection
 		WHERE workspace_id = $1::uuid AND server_id = $2::uuid AND user_id = $3::uuid`,
 		workspaceID, serverID, userID)
 	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
