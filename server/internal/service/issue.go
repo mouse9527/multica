@@ -123,11 +123,6 @@ type IssueCreateOpts struct {
 	// created event. mouse9527/multica fork (M-193).
 	ActorTaskID string
 
-	// ServerWrite marks an issue the server creates in an agent's name
-	// outside any run of it, carried on the created event.
-	// mouse9527/multica fork (M-233).
-	ServerWrite bool
-
 	// AnalyticsAgentID is the agent associated with the issue for
 	// analytics purposes (assignee agent or, for agent-created issues,
 	// the creator agent). Resolved by the caller because it depends on
@@ -812,7 +807,6 @@ func (s *IssueService) publishIssueCreated(issue db.Issue, attachments []db.Atta
 		ActorType:   creatorType,
 		ActorID:     actorID,
 		ActorTaskID: opts.ActorTaskID, // mouse9527/multica fork (M-193)
-		ServerWrite: opts.ServerWrite, // mouse9527/multica fork (M-233)
 		Payload:     payload,
 	})
 }

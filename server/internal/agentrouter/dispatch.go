@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), no rate pause (M-111), self-contained owner decisions (M-162), the chat wakeup and batch split (M-164), what "subscribed" means (M-175), own actions by run (M-193), quiet batch replies (M-210), the reply format (M-206), and wakeups on issues in scope (M-208).
+// Modified for the mouse9527/multica fork: Router MVP, slice S2 (M-86), Router v6 slices 1 (M-96) and 2 (M-97), Router parallelism (M-104), the Router's boundary (M-112), no rate pause (M-111), self-contained owner decisions (M-162), the chat wakeup and batch split (M-164), what "subscribed" means (M-175), own actions by run (M-193), the self-loop brake (M-233), quiet batch replies (M-210), the reply format (M-206), and wakeups on issues in scope (M-208).
 
 package agentrouter
 
@@ -395,6 +395,12 @@ func (d *Dispatcher) dispatchOne(ctx context.Context, due dueSub) (dispatchOutco
 	}
 	if !batch.hasOthers() {
 		return outcomeWaiting, "", tx.Commit(ctx)
+	}
+	if held, notice, err := selfLoopBrake(ctx, tx, sub, batch, agentName, agentOwner); err != nil || held {
+		if err != nil {
+			return outcomeWaiting, "", err
+		}
+		return outcomeWaiting, notice, tx.Commit(ctx)
 	}
 	inflight, total, err := loadInFlight(ctx, tx, sub.WorkspaceID, sub.ID)
 	if err != nil {

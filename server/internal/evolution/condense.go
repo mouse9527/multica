@@ -399,7 +399,7 @@ func (s *Scheduler) startReview(ctx context.Context, wa workspaceAgent, cfg Conf
 		CreatorType:    "agent",
 		CreatorID:      agentID,
 		AllowDuplicate: true,
-	}, service.IssueCreateOpts{ActorID: wa.AgentID, AnalyticsAgentID: wa.AgentID, ServerWrite: true})
+	}, service.IssueCreateOpts{ActorID: wa.AgentID, AnalyticsAgentID: wa.AgentID})
 	if err != nil {
 		if ferr := finishReview(ctx, s.DB, review.ID, ReviewFailed, "could not create the review issue"); ferr != nil {
 			err = errors.Join(err, ferr)

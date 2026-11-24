@@ -240,7 +240,7 @@ func (s *Proposals) File(ctx context.Context, req FileRequest) (FileResult, erro
 		CreatorID:      agentID,
 		LabelIDs:       []pgtype.UUID{util.MustParseUUID(labelID)},
 		AllowDuplicate: true,
-	}, service.IssueCreateOpts{ActorID: req.AgentID, AnalyticsAgentID: req.AgentID, ServerWrite: true})
+	}, service.IssueCreateOpts{ActorID: req.AgentID, AnalyticsAgentID: req.AgentID})
 	if err != nil {
 		return FileResult{}, fmt.Errorf("create proposal issue: %w", err)
 	}

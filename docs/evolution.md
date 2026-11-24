@@ -256,22 +256,22 @@ P4 起，新建提案时服务端同时在 `evolution_proposal` 表里存下这�
 
 ## 进化当 Super Agent（M-233）
 
-Owner 可以让进化自己当它产出项目的 Super Agent（开一个和进化的 chat，设为 Super Agent，订阅这个项目）。进化建的 issue 和评论是服务端以进化的名义写的，背后没有进化的任何运行；Router 把它们当作别人的事件，能触发这个 Super Agent 的批次，不按「自己的操作」吞掉（规则见 [router.md](router.md)「捕获什么」的 self）。
+Owner 可以让进化自己当它产出项目的 Super Agent：和进化开一个 chat，设为 Super Agent，订阅这个项目。Router 只把这个 chat 的轮次和派发运行里的动作算作 Super Agent 自己的（规则见 [router.md](router.md)「捕获什么」的 self）。进化的其他写入都按别人的事件处理，能触发这个 Super Agent 的批次，不需要专门标记。
 
 | 写入 | 位置 | 能触发批次 |
 |---|---|---|
-| 定时分析、补跑的 issue | `job.go` | 是 |
-| 精简检查的 issue | `condense.go` | 是 |
-| 提案 issue | `proposal_store.go` | 是 |
-| 补充证据评论（重复提案带来新证据） | `proposal_store.go` | 是 |
-| 变差提示评论（「建议回滚」） | `effect_store.go` | 是 |
+| 定时分析、补跑的 issue | `job.go` | 是（服务端写入，没有运行） |
+| 精简检查的 issue | `condense.go` | 是（同上） |
+| 提案 issue | `proposal_store.go` | 是（同上） |
+| 补充证据评论（重复提案带来新证据） | `proposal_store.go` | 是（同上） |
+| 变差提示评论（「建议回滚」） | `effect_store.go` | 是（同上） |
+| 分析运行在分析 issue 上的报告评论、状态变更 | 进化的 issue 任务 | 是（不是 Super Agent 的运行） |
+| 进化在自己 Super Agent chat 里的评论、改状态、建 issue | chat 轮次 | 否（自己的） |
 | 应用、回滚、过期说明评论 | `apply.go` | 不涉及：作者是操作的成员 |
-| 提案、效果的 metadata 更新 | 直接写表 | 不涉及：不发事件，也不是 Router 的事件类型 |
-| 变差提示的收件箱通知 | `effect_store.go` | 不涉及：走收件箱，不经 Router 捕获；影子暂扣仍按原规则（没有评论的条目算智能体自己的，不扣） |
+| 提案、效果的 metadata 更新 | 直接写表 | 不涉及：不是 Router 的事件类型 |
+| 变差提示的收件箱通知 | `effect_store.go` | 不触发批次。影子暂扣把它记为「会被暂扣」，在下一批里列出 |
 
-进化**自己运行**里的动作照旧按运行判定：分析运行在分析 issue 上发的报告评论、改的状态不是 Super Agent 的运行，会触发批次；进化在 Super Agent chat 里建 issue、发评论、改状态仍是自己的，不会叫醒自己。只有进化这样标记，其他智能体的判定规则不变。
-
-做法：建 issue 时传 `IssueCreateOpts.ServerWrite`，评论由 `evolution.PublishComment` 标记（作者是 agent 时），Bus 事件带 `events.Event.ServerWrite`；对账没有事件，按 `evolution_run` / `evolution_review` 的 `issue_id` 和提案的 `metadata.evolution_fingerprint` 认。上游触点：`events/bus.go` 的 `Event` 和 `service/issue.go` 的 `IssueCreateOpts` 各加一个字段，`publishIssueCreated` 加一行，都紧挨 M-193 的 `ActorTaskID` 行。
+进化的 `max_concurrent_tasks=1`：每日分析和 Super Agent 的批次轮次共用这一个名额，一边长了另一边要排队。
 
 ## 前端
 

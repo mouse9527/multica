@@ -433,7 +433,7 @@ func (s *Scheduler) startRun(ctx context.Context, wa workspaceAgent, plan runPla
 		CreatorType:    "agent",
 		CreatorID:      agentID,
 		AllowDuplicate: true,
-	}, service.IssueCreateOpts{ActorID: wa.AgentID, AnalyticsAgentID: wa.AgentID, ServerWrite: true})
+	}, service.IssueCreateOpts{ActorID: wa.AgentID, AnalyticsAgentID: wa.AgentID})
 	if err != nil {
 		if ferr := finishRun(ctx, s.DB, run.ID, RunFailed, "could not create the analysis issue"); ferr != nil {
 			err = errors.Join(err, ferr)

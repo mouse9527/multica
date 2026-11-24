@@ -93,9 +93,6 @@ type trigger struct {
 	// actorTaskID is the run the actor acted from, when the publisher knew
 	// it (M-193).
 	actorTaskID string
-	// serverWrite is the server writing in the actor's name outside any of
-	// its runs (M-233).
-	serverWrite bool
 	// issueState is the issue as the publisher saw it, for issue events.
 	issueState *payloadIssue
 }
@@ -217,7 +214,6 @@ func parseTrigger(e events.Event) (trigger, bool) {
 		if _, err := uuid.Parse(e.ActorTaskID); err == nil {
 			t.actorTaskID = e.ActorTaskID
 		}
-		t.serverWrite = e.ServerWrite
 	}
 	switch e.Type {
 	case protocol.EventIssueCreated, protocol.EventIssueUpdated:
@@ -328,9 +324,6 @@ type pendingEvent struct {
 	// TaskID is the run the actor acted from; nil when unknown. It decides
 	// whether an action of the subscribed agent is the Super Agent's own.
 	TaskID *string
-	// ServerWrite is a write the server made in the actor's name with no run
-	// behind it (serverWrite); never the Super Agent's own.
-	ServerWrite bool
 }
 
 func (c *Capturer) capture(ctx context.Context, workspaceID string, subs []scopeSub, t trigger) error {
@@ -412,8 +405,7 @@ func (c *Capturer) capture(ctx context.Context, workspaceID string, subs []scope
 			evs = append(evs, pendingEvent{
 				Key: commentKey(t.commentID), Kind: KindCommentCreated, IssueID: issue.ID,
 				ActorType: &at, ActorID: &aid, Payload: payload, OccurredAt: comment.CreatedAt,
-				TaskID:      comment.SourceTask,
-				ServerWrite: t.serverWriteBy(at, aid, comment.SourceTask),
+				TaskID: comment.SourceTask,
 			})
 		case t.taskID != "":
 			at, aid, tid := "agent", task.AgentID, t.taskID
@@ -442,8 +434,7 @@ func (c *Capturer) capture(ctx context.Context, workspaceID string, subs []scope
 			evs = append(evs, pendingEvent{
 				Key: issueCreatedKey(issue.ID), Kind: KindIssueCreated, IssueID: issue.ID,
 				ActorType: &ct, ActorID: &cid, Payload: map[string]any{}, OccurredAt: issue.CreatedAt,
-				TaskID:      creatorTask,
-				ServerWrite: t.serverWriteBy(ct, cid, creatorTask),
+				TaskID: creatorTask,
 			})
 		}
 		levelEvents, err := recordLevel(ctx, tx, workspaceID, sub, issue.ID, levelInput{
@@ -632,7 +623,7 @@ func insertEvents(ctx context.Context, tx pgx.Tx, workspaceID string, sub scopeS
 			WHERE EXISTS (SELECT 1 FROM router_subscription WHERE id = $2::uuid AND enabled)
 			ON CONFLICT (agent_id, event_key) DO NOTHING`,
 			workspaceID, sub.ID, sub.AgentID, ev.Key, ev.Kind, ev.IssueID,
-			ev.ActorType, ev.ActorID, source, actedAsAgent(ev.ActorType, ev.ActorID, sub.AgentID) && !ev.ServerWrite, payload, ev.OccurredAt,
+			ev.ActorType, ev.ActorID, source, actedAsAgent(ev.ActorType, ev.ActorID, sub.AgentID), payload, ev.OccurredAt,
 			ev.TaskID)
 		if err != nil {
 			return inserted, err

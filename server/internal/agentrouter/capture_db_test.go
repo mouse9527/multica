@@ -228,8 +228,9 @@ func TestListenerCapturesInScopeEvents(t *testing.T) {
 	task := e.failedTask(e.agentB, child)
 	e.publishTaskFailed(task, child, e.agentB, false)
 
+	own := e.ownRun(sub, root)
 	e.setAssignee(child, "agent", e.agentA)
-	e.publishIssue(protocol.EventIssueUpdated, child, "agent", e.agentA)
+	e.publishIssueFrom(protocol.EventIssueUpdated, child, own)
 
 	evs := e.events(sub.ID)
 	assertKinds(t, "listener", evs, label,
@@ -242,7 +243,7 @@ func TestListenerCapturesInScopeEvents(t *testing.T) {
 				t.Errorf("status event = %+v", ev)
 			}
 		case KindAssigneeChanged:
-			// The subscribed agent made this change itself.
+			// The Super Agent made this change itself, from its own run.
 			if !ev.Self {
 				t.Errorf("assignee change by the subscribed agent not marked self: %+v", ev)
 			}

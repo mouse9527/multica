@@ -1,5 +1,5 @@
 // Added by the mouse9527/multica fork: name the run an agent acted from on
-// issue events (M-193).
+// issue events (M-193) and on quick-action comments (M-233).
 //
 // A Super Agent leaves its own actions out of its batches. Its agent can also
 // work issue tasks, and those actions must reach the batch, so the capture
@@ -9,6 +9,8 @@ package handler
 
 import (
 	"net/http"
+
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/events"
 )
@@ -33,4 +35,15 @@ func (h *Handler) publishWithActorTask(r *http.Request, eventType, workspaceID, 
 		ActorTaskID: actorTaskID(r, actorType),
 		Payload:     payload,
 	})
+}
+
+// quickActionSourceTask is the run an agent ran a quick action from, recorded
+// as the comment's source_task_id the way CreateComment records it; none for
+// a member. Without it a Super Agent's own quick action would have an unknown
+// run and wake its own Super Agent (M-233).
+func quickActionSourceTask(h *Handler, r *http.Request, actorType string) pgtype.UUID {
+	if actorType != "agent" {
+		return pgtype.UUID{}
+	}
+	return h.commentSourceTaskID(r)
 }

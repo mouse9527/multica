@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router v6, slice 2 (M-97), Router inbox S3b (M-133), and own actions by run (M-193).
+// Modified for the mouse9527/multica fork: Router v6, slice 2 (M-97), Router inbox S3b (M-133), and own actions by run (M-193, M-233).
 
 package agentrouter
 
@@ -180,7 +180,8 @@ func (h *HoldShadow) decide(ctx context.Context, p db.CreateInboxItemParams) (ho
 
 // ownAction reports whether an item the subscribed agent caused came from one
 // of the Super Agent's own runs (ownRunSQL). Only a comment records its run,
-// so an item without a comment_id stays the Super Agent's own (M-193).
+// so an item without a comment_id has an unknown run and is someone else's,
+// like any action whose run is unknown (M-233).
 func (h *HoldShadow) ownAction(ctx context.Context, sub holdSub, p db.CreateInboxItemParams) (bool, error) {
 	var details struct {
 		CommentID string `json:"comment_id"`

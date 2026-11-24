@@ -45,12 +45,6 @@ type Event struct {
 	// the publisher knows it. The Super Agent capture reads it to tell the
 	// Super Agent's own runs from its agent's other work.
 	ActorTaskID string `json:"-"` // mouse9527/multica fork (M-193)
-
-	// ServerWrite marks a write the server made in an agent's name outside
-	// any run of that agent, such as an issue the Evolution scheduler creates
-	// as the Evolution agent. The Super Agent capture never counts it as the
-	// Super Agent's own action. mouse9527/multica fork (M-233)
-	ServerWrite bool `json:"-"`
 }
 
 // Handler is a function that processes an event.
