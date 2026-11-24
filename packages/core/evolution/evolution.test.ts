@@ -119,6 +119,8 @@ describe("getEvolutionConfig", () => {
       condense_min_runes: 6000,
       condense_repeat_percent: 15,
     });
+    // ... nor the output project: none.
+    expect(state.config.output_project_id).toBe("");
     expect(state.chat_active).toBe(true);
     expect(state.runs[0]).toMatchObject({ id: "r1", status: "succeeded", finished_at: null, served_items: 0 });
   });
@@ -160,6 +162,7 @@ describe("saveEvolutionConfig", () => {
     condense_day_of_month: 15,
     condense_min_runes: 8000,
     condense_repeat_percent: 20,
+    output_project_id: "0b0e6a5e-4c1f-4b7e-9a51-2d3c4e5f6a7b",
   };
 
   it("puts the whole config and the member-notice confirmation", async () => {
