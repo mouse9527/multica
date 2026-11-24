@@ -176,6 +176,129 @@ func TestClaimMCPOAuthWithoutOwner(t *testing.T) {
 	}
 }
 
+// Once an OAuth server is configured under a name, the agent's other MCP
+// config cannot supply that name: when the OAuth server cannot be mounted
+// (needs reconnecting, or not connected), the same-named static entry is not
+// mounted either. Falling back to it would run the task under the old shared
+// credential right after the owner's grant was revoked.
+func TestClaimWithholdsSameNamedEntriesWhenNotMounted(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	store := withMCPOAuth(t, true)
+	runtimeID, agentID, _ := mcpOAuthClaimFixture(t, "mcp-oauth-claim-withhold", `{"mcpServers":{`+
+		`"own":{"url":"https://own.example"},`+
+		`"dead":{"url":"https://dead.example","headers":{"Authorization":"Bearer static-shared-key-dead"}},`+
+		`"pending":{"url":"https://pending.example","headers":{"Authorization":"Bearer static-shared-key-pending"}}}}`)
+	connectForClaimTest(t, store, agentID, "pending", "", nil)
+	dead := connectForClaimTest(t, store, agentID, "dead", "claim-token-revoked", nil)
+	if _, err := testPool.Exec(context.Background(), `
+		UPDATE mcp_oauth_connection SET status = 'needs_reconnect', access_token_ciphertext = NULL,
+			refresh_token_ciphertext = NULL, expires_at = NULL
+		WHERE server_id = $1`, dead.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	agent := claimTaskAgentForTest(t, runtimeID)
+	servers := decodeServers(t, agent.McpConfig)
+	if len(servers) != 1 || servers["own"] == nil {
+		t.Fatalf("servers = %v, want only own", serverNames(servers))
+	}
+	if strings.Contains(string(agent.McpConfig), "static-shared-key") {
+		t.Fatalf("a withheld entry's credential reached the claim: %s", agent.McpConfig)
+	}
+	notices := strings.Join(agent.MCPOAuthNotices, "\n")
+	if len(agent.MCPOAuthNotices) != 2 ||
+		!strings.Contains(notices, `"pending" was not mounted: it is not connected yet`) ||
+		!strings.Contains(notices, `"dead" was not mounted: its authorization expired or was revoked`) {
+		t.Fatalf("notices = %v", agent.MCPOAuthNotices)
+	}
+}
+
+// When the withheld entry was the agent's only MCP server, the claim still
+// carries a managed, empty config, so the runtime does not fall back to an
+// MCP config of its own.
+func TestClaimWithholdingTheOnlyEntryLeavesAnEmptyManagedConfig(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	store := withMCPOAuth(t, true)
+	runtimeID, agentID, _ := mcpOAuthClaimFixture(t, "mcp-oauth-claim-only",
+		`{"mcpServers":{"gateway":{"url":"https://static.example","headers":{"Authorization":"Bearer static-shared-key"}}}}`)
+	connectForClaimTest(t, store, agentID, "gateway", "", nil)
+
+	agent := claimTaskAgentForTest(t, runtimeID)
+	if len(agent.McpConfig) == 0 {
+		t.Fatal("mcp_config is absent; the runtime would use its own MCP config")
+	}
+	if servers := decodeServers(t, agent.McpConfig); len(servers) != 0 {
+		t.Fatalf("servers = %v, want none", serverNames(servers))
+	}
+	if len(agent.MCPOAuthNotices) != 1 {
+		t.Fatalf("notices = %v", agent.MCPOAuthNotices)
+	}
+}
+
+// Without the deployment key nothing can be mounted, and the names are still
+// withheld from the agent's other config.
+func TestClaimWithoutMCPOAuthKeyWithholdsAndNotes(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	store := withMCPOAuth(t, true)
+	runtimeID, agentID, _ := mcpOAuthClaimFixture(t, "mcp-oauth-claim-nokey",
+		`{"mcpServers":{"own":{"url":"https://own.example"},"gateway":{"url":"https://static.example"}}}`)
+	connectForClaimTest(t, store, agentID, "gateway", "claim-token-nokey", nil)
+	t.Setenv(mcpoauth.SecretKeyEnv, "")
+
+	agent := claimTaskAgentForTest(t, runtimeID)
+	servers := decodeServers(t, agent.McpConfig)
+	if len(servers) != 1 || servers["own"] == nil {
+		t.Fatalf("servers = %v, want only own", serverNames(servers))
+	}
+	if len(agent.MCPOAuthNotices) != 1 || !strings.Contains(agent.MCPOAuthNotices[0], "not configured on this Multica server") {
+		t.Fatalf("notices = %v", agent.MCPOAuthNotices)
+	}
+}
+
+func TestWithoutMCPServers(t *testing.T) {
+	task := &db.AgentTaskQueue{}
+	names := []string{"gateway"}
+	for name, tc := range map[string]struct{ in, want string }{
+		"removes the name, keeps the rest": {
+			`{"mcpServers":{"gateway":{"url":"https://a"},"own":{"url":"https://b"}},"other":1}`,
+			`{"mcpServers":{"own":{"url":"https://b"}},"other":1}`,
+		},
+		"leaves an empty managed config":    {`{"mcpServers":{"gateway":{"url":"https://a"}}}`, `{"mcpServers":{}}`},
+		"untouched when the name is absent": {`{"mcpServers":{"own":{"url":"https://b"}}}`, `{"mcpServers":{"own":{"url":"https://b"}}}`},
+		"unmanaged stays unmanaged":         {``, ``},
+		"unparsable is withheld":            {`{"mcpServers":`, `{"mcpServers":{}}`},
+		"unparsable servers are withheld":   {`{"mcpServers":[1]}`, `{"mcpServers":{}}`},
+	} {
+		got := withoutMCPServers(json.RawMessage(tc.in), names, task)
+		if !jsonEqual(t, got, tc.want) {
+			t.Errorf("%s: got %s, want %s", name, got, tc.want)
+		}
+	}
+}
+
+func jsonEqual(t *testing.T, got json.RawMessage, want string) bool {
+	t.Helper()
+	if len(got) == 0 || want == "" {
+		return len(got) == 0 && want == ""
+	}
+	var a, b any
+	if err := json.Unmarshal(got, &a); err != nil {
+		t.Fatalf("got %s: %v", got, err)
+	}
+	if err := json.Unmarshal([]byte(want), &b); err != nil {
+		t.Fatal(err)
+	}
+	ja, _ := json.Marshal(a)
+	jb, _ := json.Marshal(b)
+	return string(ja) == string(jb)
+}
+
 func TestMCPOAuthNoticeWording(t *testing.T) {
 	for err, want := range map[error]string{
 		mcpoauth.ErrNotConnected:     "not connected yet",
