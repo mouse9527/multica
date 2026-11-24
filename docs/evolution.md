@@ -260,7 +260,7 @@ P4 起，新建提案时服务端同时在 `evolution_proposal` 表里存下这�
 
 P2 在已启用的 agent 下面加「定时分析」：范围说明、开关、数据源、时间表、上限、排除的项目和 agent、最近的运行（链接到分析 issue）。所有者和管理员可改；普通成员只读（成员能看到进化读什么）。保存会开始读 chat 的配置时先弹确认框。
 
-P4：提案 issue 的侧栏属性里多一行「提案」：显示未应用 / 已应用第 N 版 / 已回滚 / 已过期 / 需手动执行；所有者和管理员看到「应用」「回滚」按钮，点击后弹确认框，应用时显示服务端存下的改动前后文本。只对带 `evolution_fingerprint` 的 issue 请求，开关关闭时不显示也不请求。
+P4：提案 issue 的侧栏「属性」区（默认展开，紧跟工作流那一行；M-229 起，之前在默认折叠的「详情」区）多一行「提案」：显示未应用 / 已应用第 N 版 / 已回滚 / 已过期 / 需手动执行；所有者和管理员看到「应用」「回滚」按钮，点击后弹确认框，应用时显示服务端存下的改动前后文本。只对带 `evolution_fingerprint` 的 issue 请求，开关关闭时不显示也不请求。
 
 代码：`packages/core/evolution/`（接口、zod 校验、查询与变更）；`packages/views/evolution/evolution-proposal-row.tsx`（提案行）；`packages/views/evolution/`（设置页、`evolution-config.tsx` 配置区和挂载钩子）；文案在 `packages/views/locales/*/evolution.json`。runtime 与模型选择复用 Mika 的 `MikaRuntimeChoice`。
 

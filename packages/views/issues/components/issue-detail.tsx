@@ -3228,6 +3228,8 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
             />
           </PropRow>
           <IssueWorkflowPropRow projectId={issue.project_id} status={issue.status} label={t(($) => $.workflows.project.label)} />
+          {/* mouse9527/multica fork (M-138, M-229): apply or roll back an Evolution proposal. */}
+          <EvolutionProposalRow issueId={id} metadata={issue.metadata} />
 
           {/* Optional props — rendered only when set on the issue OR added
               via "+ Add property" in this session. Row order follows the
@@ -3488,8 +3490,6 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
           </PropRow>
           {/* mouse9527/multica fork (M-194): the Super Agents covering this issue. */}
           <IssueSuperAgentsRow issueId={id} />
-          {/* mouse9527/multica fork (M-138): apply or roll back an Evolution proposal. */}
-          <EvolutionProposalRow issueId={id} metadata={issue.metadata} />
         </IssueSidebarPropertyGrid>}
       </div>
     ),
