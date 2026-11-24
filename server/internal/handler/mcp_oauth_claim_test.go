@@ -297,7 +297,7 @@ func TestClaimMCPOAuthNamesUnreadableMountsNothing(t *testing.T) {
 	static := json.RawMessage(`{"mcpServers":{"gateway":{"url":"https://static.example","headers":{"Authorization":"Bearer static-shared-key"}},"own":{"url":"https://own.example"}}}`)
 
 	mcpConfig, notices := h.applyMCPOAuthServers(context.Background(), &db.AgentTaskQueue{}, db.Agent{}, static)
-	if !jsonEqual(t, mcpConfig, `{"mcpServers":{}}`) {
+	if !mcpConfigJSONEqual(t, mcpConfig, `{"mcpServers":{}}`) {
 		t.Fatalf("mcp_config = %s, want an empty managed config", mcpConfig)
 	}
 	if len(notices) != 1 || notices[0] != mcpOAuthUnreadableNotice {
@@ -320,13 +320,13 @@ func TestWithoutMCPServers(t *testing.T) {
 		"unparsable servers are withheld":   {`{"mcpServers":[1]}`, `{"mcpServers":{}}`},
 	} {
 		got := withoutMCPServers(json.RawMessage(tc.in), names, task)
-		if !jsonEqual(t, got, tc.want) {
+		if !mcpConfigJSONEqual(t, got, tc.want) {
 			t.Errorf("%s: got %s, want %s", name, got, tc.want)
 		}
 	}
 }
 
-func jsonEqual(t *testing.T, got json.RawMessage, want string) bool {
+func mcpConfigJSONEqual(t *testing.T, got json.RawMessage, want string) bool {
 	t.Helper()
 	if len(got) == 0 || want == "" {
 		return len(got) == 0 && want == ""
