@@ -540,5 +540,8 @@ func CleanupRuntimeConfig(workDir, provider string) error {
 // legacy verbose brief; the flag has been retired (MUL-4297) and the slim brief
 // is now the only path.
 func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
+	if leanBriefEnabled(ctx.AgentID) { // mouse9527/multica fork (M-259): runtime_config_lean.go
+		return buildMetaSkillContentLean(provider, ctx)
+	}
 	return buildMetaSkillContentSlim(provider, ctx)
 }
