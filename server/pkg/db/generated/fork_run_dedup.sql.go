@@ -195,6 +195,8 @@ WHERE t.issue_id = $2
   AND NOT t.is_leader_task
   AND t.rerun_of_task_id IS NULL
   AND t.retry_of_task_id IS NULL
+  AND t.handoff_note IS NULL
+  AND NOT t.force_fresh_session
   AND COALESCE(t.context->>'wakeup_id', '') = ''
 ORDER BY t.dispatched_at
 `
@@ -210,6 +212,8 @@ type ForkListRunsSupersededByCommentParams struct {
 // before the comment was posted, and whose reply belongs where the comment's
 // would: a run outside any comment thread (an assignment or handoff), or a run
 // in the comment's own thread. Their claims could not include the comment.
+// Runs carrying a legacy handoff note or a forced fresh session are excluded
+// for the same reason as in ForkListSupersededStepRuns.
 func (q *Queries) ForkListRunsSupersededByComment(ctx context.Context, arg ForkListRunsSupersededByCommentParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, forkListRunsSupersededByComment,
 		arg.CommentID,
@@ -248,6 +252,8 @@ WHERE t.issue_id = $1
   AND NOT t.is_leader_task
   AND t.rerun_of_task_id IS NULL
   AND t.retry_of_task_id IS NULL
+  AND t.handoff_note IS NULL
+  AND NOT t.force_fresh_session
   AND COALESCE(t.context->>'wakeup_id', '') = ''
 ORDER BY t.dispatched_at
 `
@@ -261,7 +267,10 @@ type ForkListSupersededStepRunsParams struct {
 
 // The agent's runs on the issue claimed within the grace window and bound to
 // a step the issue has just left. Left alone such a run works under the
-// previous step's brief and has its status changes refused.
+// previous step's brief and has its status changes refused. A run is only
+// superseded when everything it carries is on the issue for its replacement
+// to read: never one with a legacy handoff note or a forced fresh session,
+// which live on the run itself.
 func (q *Queries) ForkListSupersededStepRuns(ctx context.Context, arg ForkListSupersededStepRunsParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, forkListSupersededStepRuns,
 		arg.IssueID,

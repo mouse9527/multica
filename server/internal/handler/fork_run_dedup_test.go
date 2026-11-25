@@ -437,3 +437,51 @@ func TestForkRunDedup_HandoffRebindsQueuedRun(t *testing.T) {
 		t.Fatalf("expected the handoff to coalesce into the queued run, got %d pending runs", n)
 	}
 }
+
+// Review R2 regression: a legacy handoff note and a forced fresh session live
+// on the run itself, not on the issue, so a replacement run would not carry
+// them. A just-claimed run holding either is never superseded, by a comment or
+// by a handoff.
+func TestForkRunDedup_RunCarryingItsOwnInputIsNotSuperseded(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, true)
+	agentID, runtimeID := forkDedupAgent(t)
+
+	carriers := map[string]testutil.Cols{
+		"handoff note":  {"handoff_note": "please review the migration first"},
+		"fresh session": {"force_fresh_session": true},
+	}
+	triggers := map[string]func(t *testing.T, issueID string){
+		"comment": func(t *testing.T, issueID string) { forkDedupPostComment(t, issueID) },
+		"handoff": forkDedupHandoff,
+	}
+	for carrierName, carrier := range carriers {
+		for triggerName, trigger := range triggers {
+			t.Run(carrierName+"/"+triggerName, func(t *testing.T) {
+				issueID := forkDedupIssue(t, "run dedup: "+carrierName+", "+triggerName, "in_review", agentID)
+				cols := testutil.Cols{
+					"runtime_id":            runtimeID,
+					"issue_id":              issueID,
+					"status":                "running",
+					"trigger_evidence_kind": "issue_assignment",
+					"workflow_step":         "todo",
+					"created_at":            testutil.Raw("now() - interval '2 seconds'"),
+					"dispatched_at":         testutil.Raw("now() - interval '1 second'"),
+					"started_at":            testutil.Raw("now() - interval '1 second'"),
+				}
+				for k, v := range carrier {
+					cols[k] = v
+				}
+				first := dbfx.Task(t, agentID, cols)
+
+				trigger(t, issueID)
+
+				if status, _ := forkDedupTaskState(t, first); status != "running" {
+					t.Fatalf("run carrying a %s: got status %q, want running", carrierName, status)
+				}
+			})
+		}
+	}
+}

@@ -22,7 +22,10 @@ RETURNING t.id;
 -- name: ForkListSupersededStepRuns :many
 -- The agent's runs on the issue claimed within the grace window and bound to
 -- a step the issue has just left. Left alone such a run works under the
--- previous step's brief and has its status changes refused.
+-- previous step's brief and has its status changes refused. A run is only
+-- superseded when everything it carries is on the issue for its replacement
+-- to read: never one with a legacy handoff note or a forced fresh session,
+-- which live on the run itself.
 SELECT t.id FROM agent_task_queue t
 WHERE t.issue_id = sqlc.arg(issue_id)
   AND t.agent_id = sqlc.arg(agent_id)
@@ -35,6 +38,8 @@ WHERE t.issue_id = sqlc.arg(issue_id)
   AND NOT t.is_leader_task
   AND t.rerun_of_task_id IS NULL
   AND t.retry_of_task_id IS NULL
+  AND t.handoff_note IS NULL
+  AND NOT t.force_fresh_session
   AND COALESCE(t.context->>'wakeup_id', '') = ''
 ORDER BY t.dispatched_at;
 
@@ -43,6 +48,8 @@ ORDER BY t.dispatched_at;
 -- before the comment was posted, and whose reply belongs where the comment's
 -- would: a run outside any comment thread (an assignment or handoff), or a run
 -- in the comment's own thread. Their claims could not include the comment.
+-- Runs carrying a legacy handoff note or a forced fresh session are excluded
+-- for the same reason as in ForkListSupersededStepRuns.
 SELECT t.id FROM agent_task_queue t
 JOIN comment c ON c.id = sqlc.arg(comment_id)
 WHERE t.issue_id = sqlc.arg(issue_id)
@@ -59,6 +66,8 @@ WHERE t.issue_id = sqlc.arg(issue_id)
   AND NOT t.is_leader_task
   AND t.rerun_of_task_id IS NULL
   AND t.retry_of_task_id IS NULL
+  AND t.handoff_note IS NULL
+  AND NOT t.force_fresh_session
   AND COALESCE(t.context->>'wakeup_id', '') = ''
 ORDER BY t.dispatched_at;
 
