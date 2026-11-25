@@ -1,4 +1,5 @@
 import type { LocaleResources } from "@multica/core/i18n";
+import esDocs from "./es/docs.json";
 import esCommon from "./es/common.json";
 import esAuth from "./es/auth.json";
 import esSettings from "./es/settings.json";
@@ -33,6 +34,7 @@ import esEvolution from "./es/evolution.json";
 import esMcpOAuth from "./es/mcpoauth.json";
 
 const resources: LocaleResources = {
+  docs: esDocs,
   common: esCommon,
   auth: esAuth,
   settings: esSettings,

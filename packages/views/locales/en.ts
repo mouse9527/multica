@@ -1,4 +1,5 @@
 import type { LocaleResources } from "@multica/core/i18n";
+import enDocs from "./en/docs.json";
 import enCommon from "./en/common.json";
 import enAuth from "./en/auth.json";
 import enSettings from "./en/settings.json";
@@ -33,6 +34,7 @@ import enEvolution from "./en/evolution.json";
 import enMcpOAuth from "./en/mcpoauth.json";
 
 const resources: LocaleResources = {
+  docs: enDocs,
   common: enCommon,
   auth: enAuth,
   settings: enSettings,
