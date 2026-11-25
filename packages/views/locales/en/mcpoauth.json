@@ -27,7 +27,7 @@
     "https_required": "OAuth needs an HTTPS URL."
   },
   "callback": {
-    "working": "Connecting the MCP server…",
+    "working": "Connecting the MCP server...",
     "failed_title": "Could not connect the MCP server",
     "missing": "This page needs the result of an authorization. Start again from the MCP settings.",
     "denied": "The authorization was cancelled.",
