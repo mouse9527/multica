@@ -85,7 +85,7 @@
   },
   "board": {
     "title": "Super Agent 看板 · {{chat}}",
-    "description": "记录对话「{{chat}}」里 Super Agent 的运行。由 Super Agent 设置创建。"
+    "description": "记录对话\"{{chat}}\"里 Super Agent 的运行。由 Super Agent 设置创建。"
   },
   "toast": {
     "created": "已设为 Super Agent",
@@ -100,7 +100,7 @@
   },
   "list": {
     "tab": "Super Agent",
-    "empty": "还没有 Super Agent。打开一个对话的菜单，选择「设为 Super Agent」。",
+    "empty": "还没有 Super Agent。打开一个对话的菜单，选择\"设为 Super Agent\"。",
     "agent": "智能体",
     "scopes": "范围",
     "status": "状态",
@@ -124,7 +124,7 @@
     "title": "其他 Super Agent 已经在接收这些范围的事件",
     "item": "{{scope}}：{{agent}}（{{other}}）已接收其中 {{n}} 个任务的事件。",
     "examples": "例如 {{issues}}。",
-    "hint": "两个 Super Agent 会各自处理同一批任务。仍要添加，再点一次「{{action}}」。"
+    "hint": "两个 Super Agent 会各自处理同一批任务。仍要添加，再点一次\"{{action}}\"。"
   },
   "covering": {
     "label": "Super Agent",

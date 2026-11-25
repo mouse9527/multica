@@ -1,7 +1,9 @@
 // Added by the mouse9527/multica fork: Router page settings (M-105).
+// Modified for the mouse9527/multica fork: board link by issue route ref (M-277).
 
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { useIssueRouteRef } from "@multica/core/issues/canonical-id";
 import { issueDetailOptions } from "@multica/core/issues/queries";
 import { projectListOptions } from "@multica/core/projects/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
@@ -61,9 +63,10 @@ export function BoardLink({ issueId }: { issueId: string }) {
   const wsId = useWorkspaceId();
   const paths = useWorkspacePaths();
   const { data: issue } = useQuery({ ...issueDetailOptions(wsId, issueId), retry: false });
+  const ref = useIssueRouteRef(wsId, issueId);
   if (!issue) return null;
   return (
-    <AppLink href={paths.issueDetail(issue.id)} className="shrink-0 text-caption text-muted-foreground hover:text-foreground hover:underline">
+    <AppLink href={paths.issueDetail(ref)} className="shrink-0 text-caption text-muted-foreground hover:text-foreground hover:underline">
       {t(($) => $.scopes.board, { identifier: issue.identifier })}
     </AppLink>
   );

@@ -27,7 +27,7 @@
     "https_required": "OAuth 需要 HTTPS 地址。"
   },
   "callback": {
-    "working": "正在连接 MCP 服务器…",
+    "working": "正在连接 MCP 服务器...",
     "failed_title": "无法连接 MCP 服务器",
     "missing": "这个页面需要授权结果。请从 MCP 设置重新开始。",
     "denied": "授权已取消。",

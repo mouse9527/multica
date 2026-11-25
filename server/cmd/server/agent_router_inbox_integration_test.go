@@ -1,4 +1,5 @@
 // Modified for the mouse9527/multica fork: Router inbox S3a (M-118).
+// Modified for the mouse9527/multica fork: upstream agent-trigger auto-archive muted (M-277).
 
 package main
 
@@ -211,6 +212,12 @@ func TestInboxResolveThroughBatchUpdate(t *testing.T) {
 		_, _ = testPool.Exec(context.Background(), `UPDATE workspace SET settings = settings - $2 WHERE id = $1`,
 			testWorkspaceID, agentrouter.WorkspaceSettingInboxResolve)
 	})
+
+	// Upstream archives the actor's own notifications when their action
+	// triggers an agent (auto_archive_on_agent_trigger, on by default). The
+	// owner is the actor here, so mute it: the item must be left to the
+	// Router's resolver, which is what this test checks.
+	setNotificationPref(t, testUserID, "auto_archive_on_agent_trigger", "muted")
 
 	// A project whose workflow hands in_progress to an agent.
 	fx := testutil.New(testPool, testWorkspaceID, testUserID)

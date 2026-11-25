@@ -1,4 +1,4 @@
-// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slice 2 (M-97), Router inbox S3b (M-133), the Super Agent name in help (M-148), and the creator subscription in subscriber help (M-175).
+// Modified for the mouse9527/multica fork: Router MVP, slices S1 (M-85) and S2 (M-86), Router v6 slice 2 (M-97), Router inbox S3b (M-133), the Super Agent name in help (M-148), and the creator subscription in subscriber help (M-175); renderRouterHelp is named apart from upstream's renderHelp (M-277).
 
 package main
 
@@ -69,8 +69,8 @@ func TestRouterInboxRulesOutput(t *testing.T) {
 	}
 }
 
-// renderHelp returns what `multica <path...> --help` prints.
-func renderHelp(t *testing.T, path ...string) string {
+// renderRouterHelp returns what `multica <path...> --help` prints.
+func renderRouterHelp(t *testing.T, path ...string) string {
 	t.Helper()
 	cmd := rootCmd
 	if len(path) > 0 {
@@ -93,7 +93,7 @@ func renderHelp(t *testing.T, path ...string) string {
 // `issue subscriber add`. The phrase and the way to router must be reachable
 // from the help an agent actually reads.
 func TestHelpLeadsFromSuperAgentToRouter(t *testing.T) {
-	root := renderHelp(t)
+	root := renderRouterHelp(t)
 	var routerLine string
 	for _, line := range strings.Split(root, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "router:") {
@@ -104,13 +104,13 @@ func TestHelpLeadsFromSuperAgentToRouter(t *testing.T) {
 		t.Errorf("`multica --help` must list router as the Super Agent command, got line %q in:\n%s", routerLine, root)
 	}
 
-	if got := renderHelp(t, "router"); !strings.Contains(got, "router subscribe --issue M-12 --anchor-chat current") ||
+	if got := renderRouterHelp(t, "router"); !strings.Contains(got, "router subscribe --issue M-12 --anchor-chat current") ||
 		!strings.Contains(got, "not an issue subscription") {
 		t.Errorf("`multica router --help` must show how to make a chat a Super Agent and how it differs from issue subscribers:\n%s", got)
 	}
 
 	for _, path := range [][]string{{"issue"}, {"issue", "subscriber", "add"}} {
-		if got := renderHelp(t, path...); !strings.Contains(got, "multica router subscribe") {
+		if got := renderRouterHelp(t, path...); !strings.Contains(got, "multica router subscribe") {
 			t.Errorf("`multica %s --help` must point a Super Agent subscription at router:\n%s", strings.Join(path, " "), got)
 		}
 	}
@@ -121,7 +121,7 @@ func TestHelpLeadsFromSuperAgentToRouter(t *testing.T) {
 // subscriber help says that is not a Super Agent scope and how to check one.
 func TestIssueSubscriberHelpExplainsTheCreatorSubscription(t *testing.T) {
 	for _, path := range [][]string{{"issue", "subscriber", "list"}, {"issue", "subscriber", "add"}} {
-		got := renderHelp(t, path...)
+		got := renderRouterHelp(t, path...)
 		for _, want := range []string{"reason `creator`", "multica router scope <subscription-id>"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("`multica %s --help` lacks %q:\n%s", strings.Join(path, " "), want, got)

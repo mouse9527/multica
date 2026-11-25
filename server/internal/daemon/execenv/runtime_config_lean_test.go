@@ -1,4 +1,4 @@
-// This file belongs to the mouse9527/multica fork (not present upstream): M-259.
+// This file belongs to the mouse9527/multica fork (not present upstream): M-259 (upstream sync M-277).
 
 package execenv
 
@@ -71,17 +71,30 @@ func leanTestContexts() map[string]TaskContextForEnv {
 	pinned := issue
 	pinned.Repos = []RepoContextForEnv{{URL: "https://github.com/org/app", Ref: "release/v2"}}
 
+	statusMap := issue
+	statusMap.ProjectWorkflowStatusMap = true
+
+	statusMapLeader := statusMap
+	statusMapLeader.IsSquadLeader = true
+
+	docs := issue
+	docs.DocsEnabled = true
+
 	return map[string]TaskContextForEnv{
-		"issue-project-workflow": issue,
-		"issue-builtin-statuses": builtinStatuses,
-		"issue-squad-leader":     leader,
-		"issue-requesting-user":  requesting,
-		"issue-no-project":       noProject,
-		"issue-pinned-repo":      pinned,
-		"chat-web":               {ChatSessionID: "chat-1", AgentID: leanTestAgentID, AgentName: "Dev", Repos: leanTestRepos(2), AgentSkills: []SkillContextForEnv{platformSkillFixture()}},
-		"chat-slack":             {ChatSessionID: "chat-1", ChatChannelType: ChannelTypeSlack, AgentID: leanTestAgentID, AgentName: "Dev"},
-		"quick-create":           {QuickCreatePrompt: "make an issue", AgentID: leanTestAgentID, AgentName: "Dev", Repos: leanTestRepos(2), ProjectID: "proj-1", ProjectTitle: "app"},
-		"autopilot":              {AutopilotRunID: "run-1", AutopilotID: "ap-1", AgentID: leanTestAgentID, AgentName: "Dev", Repos: leanTestRepos(2)},
+		"issue-project-workflow":  issue,
+		"issue-builtin-statuses":  builtinStatuses,
+		"issue-squad-leader":      leader,
+		"issue-requesting-user":   requesting,
+		"issue-no-project":        noProject,
+		"issue-pinned-repo":       pinned,
+		"issue-status-map":        statusMap,
+		"issue-status-map-leader": statusMapLeader,
+		"issue-docs":              docs,
+		"doc-comment":             {DocID: "doc-1", DocsEnabled: true, AgentID: leanTestAgentID, AgentName: "Dev", Repos: leanTestRepos(2), AgentSkills: []SkillContextForEnv{platformSkillFixture()}},
+		"chat-web":                {ChatSessionID: "chat-1", AgentID: leanTestAgentID, AgentName: "Dev", Repos: leanTestRepos(2), AgentSkills: []SkillContextForEnv{platformSkillFixture()}},
+		"chat-slack":              {ChatSessionID: "chat-1", ChatChannelType: ChannelTypeSlack, AgentID: leanTestAgentID, AgentName: "Dev"},
+		"quick-create":            {QuickCreatePrompt: "make an issue", AgentID: leanTestAgentID, AgentName: "Dev", Repos: leanTestRepos(2), ProjectID: "proj-1", ProjectTitle: "app"},
+		"autopilot":               {AutopilotRunID: "run-1", AutopilotID: "ap-1", AgentID: leanTestAgentID, AgentName: "Dev", Repos: leanTestRepos(2)},
 	}
 }
 
@@ -115,7 +128,7 @@ func TestLeanBriefHeadingsMatchUpstream(t *testing.T) {
 		name, ctx := name, ctx
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			for _, provider := range []string{"claude", "codex", "traecli"} {
+			for _, provider := range []string{"claude", "codex", "traecli", "antigravity"} {
 				assertSameHeadings(t, buildMetaSkillContentSlim(provider, ctx), buildMetaSkillContentLean(provider, ctx))
 			}
 		})
@@ -182,6 +195,9 @@ func TestLeanBriefKeepsHardRules(t *testing.T) {
 		{"stash rule", "never use `git stash` / `git stash pop` there"},
 		{"CLI only", "never `curl` / `wget`"},
 		{"no stdout merge", "never merge them (`2>&1`)"},
+		{"partial description edits", "`multica issue edit-description <id> --old <exact text> --new <text>`"},
+		{"whole-description base revision", "`--description-base-revision <description_revision from issue get>`"},
+		{"parallel opening reads", "issue them together in ONE turn"},
 	}
 	for _, r := range rules {
 		if !strings.Contains(brief, r.phrase) {
@@ -355,4 +371,56 @@ func TestLeanBriefByteComparison(t *testing.T) {
 		}
 	}
 	t.Log("\n" + report.String())
+}
+
+// TestLeanBriefFollowsUpstreamStatusRules checks the status rules the lean
+// brief shares with upstream (MUL-9913) and the doc additions (MUL-9933) that
+// the heading guard cannot see, because they live inside sections.
+func TestLeanBriefFollowsUpstreamStatusRules(t *testing.T) {
+	t.Parallel()
+	contexts := leanTestContexts()
+
+	statusMap := buildMetaSkillContentLean("claude", contexts["issue-status-map"])
+	for _, want := range []string{
+		"This issue's status map is in `[Project workflow]`",
+		"5. Before exiting, confirm the issue's status in `[Project workflow]` matches where things actually stand.",
+		"`[Project workflow]` is this issue's status map.",
+		issueStatusClosedRule,
+		issueStatusNoWriteRule,
+	} {
+		if !strings.Contains(statusMap, want) {
+			t.Errorf("status-map lean brief lacks %q", want)
+		}
+	}
+	if strings.Contains(statusMap, "`[Project workflow]` in the per-turn message is this issue's status contract") {
+		t.Error("status-map lean brief still carries the step-command rules")
+	}
+
+	builtin := buildMetaSkillContentLean("claude", contexts["issue-builtin-statuses"])
+	for _, want := range []string{issueStatusClosedRule, issueStatusNoWriteRule, "The `in_progress` / `in_review` / `blocked` rules above"} {
+		if !strings.Contains(builtin, want) {
+			t.Errorf("built-in status lean brief lacks %q", want)
+		}
+	}
+
+	docs := buildMetaSkillContentLean("claude", contexts["issue-docs"])
+	for _, want := range []string{"`multica doc list|search|get|create|edit|update|move|history|restore|comment|folder`", "`[Doc Title](mention://doc/<doc-id>)`"} {
+		if !strings.Contains(docs, want) {
+			t.Errorf("docs-enabled lean brief lacks %q", want)
+		}
+	}
+	if strings.Contains(buildMetaSkillContentLean("claude", leanTestIssueContext()), "multica doc list") {
+		t.Error("lean brief lists doc commands while docs are off")
+	}
+
+	docComment := buildMetaSkillContentLean("claude", contexts["doc-comment"])
+	for _, want := range []string{"**You were asked for in a discussion on a Multica doc.**", "`multica doc comment add`"} {
+		if !strings.Contains(docComment, want) {
+			t.Errorf("doc-comment lean brief lacks %q", want)
+		}
+	}
+
+	if got, want := buildMetaSkillContentLean("antigravity", leanTestIssueContext()), "Multica marks the task terminal when the `agy -p` process exits"; !strings.Contains(got, want) {
+		t.Errorf("antigravity lean brief lacks %q", want)
+	}
 }

@@ -1,10 +1,14 @@
 // Added by the mouse9527/multica fork: name the run an agent acted from on
 // issue events (M-193).
+// Modified for the mouse9527/multica fork: private blocker redaction (M-277).
 
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/events"
@@ -88,4 +92,42 @@ func eventIssueID(e events.Event) string {
 		return issue.ID
 	}
 	return ""
+}
+
+// TestPublishWithActorTaskRedactsLikePublish: the fork's publisher strips
+// private blocker references exactly as upstream's publish does, so issue
+// events from UpdateIssue and BatchUpdateIssues do not leak them. If upstream
+// changes what publish strips, this fails until publishWithActorTask follows.
+func TestPublishWithActorTaskRedactsLikePublish(t *testing.T) {
+	const projectID = "11111111-1111-4111-8111-111111111111"
+	const otherProjectID = "22222222-2222-4222-8222-222222222222"
+	project := projectID
+	issue := IssueResponse{ID: "public-issue", ProjectID: &project, BlockedBy: []IssueBlockerResponse{
+		{private: true, projectID: parseUUID(otherProjectID), IssueRefResponse: IssueRefResponse{ID: "secret-blocker", Title: "secret blocker"}, Via: "manual"},
+		{private: true, projectID: parseUUID(projectID), IssueRefResponse: IssueRefResponse{ID: "same-project-blocker"}, Via: "manual"},
+		{IssueRefResponse: IssueRefResponse{ID: "public-blocker"}, Via: "manual"},
+	}}
+	capture := func(publish func(h *Handler, payload map[string]any)) string {
+		t.Helper()
+		h := &Handler{Bus: events.New()}
+		var raw []byte
+		h.Bus.Subscribe(protocol.EventIssueUpdated, func(e events.Event) { raw, _ = json.Marshal(e.Payload) })
+		publish(h, map[string]any{"issue": issue})
+		if raw == nil {
+			t.Fatal("nothing published")
+		}
+		return string(raw)
+	}
+	upstream := capture(func(h *Handler, payload map[string]any) {
+		h.publish(protocol.EventIssueUpdated, testWorkspaceID, "member", testUserID, payload)
+	})
+	fork := capture(func(h *Handler, payload map[string]any) {
+		h.publishWithActorTask(httptest.NewRequest(http.MethodPut, "/api/issues/public-issue", nil), protocol.EventIssueUpdated, testWorkspaceID, "member", testUserID, payload)
+	})
+	if fork != upstream {
+		t.Fatalf("publishWithActorTask payload differs from publish:\nfork:     %s\nupstream: %s", fork, upstream)
+	}
+	if strings.Contains(fork, "secret-blocker") || !strings.Contains(fork, "same-project-blocker") || !strings.Contains(fork, "public-blocker") {
+		t.Fatalf("payload = %s", fork)
+	}
 }
