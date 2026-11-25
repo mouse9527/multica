@@ -36,6 +36,12 @@
 - **lean brief（M-259）**：`runtime_config_lean.go` 是上游 brief 的手写精简版，上游每改一次 `runtime_config_sections.go` 就要跟一次。这次补了 `issue edit-description` 与 `--description-base-revision`、docs 命令与 doc 提及链接、doc 讨论任务、项目 workflow 状态映射规则、开头并行读取、Background Task Safety 的 chat wakeup 和 antigravity 分支。标题防漂移测试只看得到标题，段内新增规则要对着 `git diff <合并基> upstream/main -- server/internal/daemon/execenv/runtime_config_sections.go` 逐条看。
 - **私有项目路由登记**：见上一节，Evolution 的 `proposals/{issueId}` 原先只列在「不探测」里，在上游测试下会失败，补进 `forkIssueRouteParams`。
 
+- **上游 main 自己红的测试**：`packages/views/agents/components/agent-detail-inspector.description.test.tsx` 的「saves 128 emoji」期望自动保存同时发 `name`，但 #11495 之后只发改过的字段（上游 main 的 CI 在 `6d54300f3`、`4c6c33f78` 上也是这条红）。fork 把期望改成只有 `description`；上游修了以后，下次同步取上游的版本即可。
+- **fork 的事件发布绕过了上游的脱敏**：上游在 `handler.publish` 里去掉指向私有项目的阻塞项，fork 的 `publishWithActorTask`（M-193）直接 `Bus.Publish`，UpdateIssue 和 BatchUpdateIssues 的 `issue:updated` 会带出私有阻塞项。现在同样脱敏，`TestPublishWithActorTaskRedactsLikePublish` 比对两者的输出。以后上游在 `publish` 里加处理，这个测试会先红。
+- **接口签名变化**：`mergeRuntimeAndAgentMcpConfig` 多了 `cliVersion`（fork 的 OAuth MCP 挂载跟着传）；`paths.issueDetail` 改收 `IssueRouteRef`（Evolution 运行列表、Super Agent 看板链接改用 `useIssueRouteRef`）；上游新加了 `renderHelp`，fork 的 CLI 帮助测试辅助函数改名 `renderRouterHelp`。
+- **上游的文案规范测试**对 fork 的 locale 生效：en 和 zh-Hans 用 ASCII 省略号，zh-Hans 用直引号、`skill` 不译。
+- **上游的「操作触发智能体即归档」**（`auto_archive_on_agent_trigger`，默认开）会在 owner 自己改派时先归档 owner 的条目；`TestInboxResolveThroughBatchUpdate` 关掉这项偏好，只测 Super Agent 的 resolver。
+
 **看过、不用改的**：
 
 - 上游新的 inbox 类型 `doc_comment`、`doc_mentioned`、`app_tool_calls_quota_exceeded` 不带 issue，Super Agent 的 hold（`agentrouter/hold.go`）从不接；`blockers_done` 带 issue，和已有的 `children_done` 一样按影子模式记录。inbox 规则（`agentrouter/inbox_rules.go`）对未命中的类型判给 owner，新类型不会被误判为「规则处理」。
