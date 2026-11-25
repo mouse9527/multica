@@ -1,12 +1,13 @@
 // Added by the mouse9527/multica fork: how the fork's routes register with
 // upstream's TestEveryRouteByProjectObjectIDHidesPrivateProjects (M-166).
+// Modified for the mouse9527/multica fork: issue-naming parameters (M-277).
 //
-// Upstream's test (private_project_routes_test.go, not yet merged into the
-// fork) refuses any route parameter it has no entry for. The fork's entries
-// live here instead of in upstream's tables; after the upstream sync that
-// brings the test in, fork_private_project_routes_hook_test.go merges them
-// in (see docs/fork-upstream-sync.md). Until then
-// TestForkPrivateProjectRouteRegistrations keeps them in step with the router.
+// Upstream's test (private_project_routes_test.go) refuses any route
+// parameter it has no entry for, even on a route it does not probe. The
+// fork's entries live here instead of in upstream's tables, and
+// fork_private_project_routes_hook_test.go merges them in (see
+// docs/fork-upstream-sync.md). TestForkPrivateProjectRouteRegistrations keeps
+// them in step with the fork's routes.
 
 package main
 
@@ -39,8 +40,17 @@ var forkRouteParamsOutsideProjects = map[string]string{
 	"mcp-oauth/{serverId}": "a workspace MCP library entry; it belongs to the workspace, not to a project",
 }
 
-// forkPrivateProjectRoutesNotProbed are fork routes declaring one of
-// upstream's project-scoped parameters that upstream's probe cannot judge,
+// forkIssueRouteParams are fork route parameters that name an issue under a
+// key upstream does not know, each with the reason. They go into upstream's
+// projectScopedRouteParams, resolving to the probe fixture's issue; every
+// route declaring one must be probed or listed in
+// forkPrivateProjectRoutesNotProbed.
+var forkIssueRouteParams = map[string]string{
+	"proposals/{issueId}": "an Evolution proposal is its issue, loaded through loadIssueForUser (M-138)",
+}
+
+// forkPrivateProjectRoutesNotProbed are fork routes declaring a
+// project-scoped parameter that upstream's probe cannot judge,
 // each with the reason. They go into upstream's privateProjectRoutesNotProbed.
 var forkPrivateProjectRoutesNotProbed = map[string]string{
 	"GET /api/router/issues/{id}/covering": "404 unless router_v1 is on, and the probe's router has no feature flags; TestRouterIssueCoveringHidesPrivateProjects probes it with router_v1 on",
@@ -68,9 +78,10 @@ func forkRouteParamKeys(pattern string) []string {
 	return keys
 }
 
-// Every parameter a fork route declares is registered here or the route is
-// listed as not probed, and every registration is still in use, so the
-// upstream sync needs nothing beyond the hook.
+// Every parameter a fork route declares is registered here or upstream knows
+// it, as upstream's test requires even of a route it does not probe; a route
+// with a project-scoped parameter is listed as not probed (none is probed by
+// upstream's test today); and every registration is still in use.
 func TestForkPrivateProjectRouteRegistrations(t *testing.T) {
 	router, _ := NewRouterWithOptions(testPool, realtime.NewHub(), events.New(), analytics.NoopClient{}, nil, RouterOptions{})
 	usedParams := map[string]bool{}
@@ -86,19 +97,38 @@ func TestForkPrivateProjectRouteRegistrations(t *testing.T) {
 			return nil
 		}
 		_, notProbed := forkPrivateProjectRoutesNotProbed[key]
+		scoped := false
 		for _, p := range forkRouteParamKeys(pattern) {
 			if _, ok := forkRouteParamsOutsideProjects[p]; ok {
 				usedParams[p] = true
 				continue
 			}
-			if !notProbed {
-				t.Errorf("%s declares %s: add it to forkRouteParamsOutsideProjects with the reason it cannot name an object inside a project, or list the route in forkPrivateProjectRoutesNotProbed with the test that probes it", key, p)
+			if _, ok := forkIssueRouteParams[p]; ok {
+				usedParams[p] = true
+				scoped = true
+				continue
 			}
+			if _, ok := projectScopedRouteParams[p]; ok {
+				scoped = true
+				continue
+			}
+			if _, ok := routeParamsOutsideProjects[p]; ok {
+				continue
+			}
+			t.Errorf("%s declares %s: add it to forkRouteParamsOutsideProjects with the reason it cannot name an object inside a project, or to forkIssueRouteParams if it names an issue", key, p)
+		}
+		if scoped && !notProbed {
+			t.Errorf("%s declares a project-scoped parameter: list it in forkPrivateProjectRoutesNotProbed with the test that probes it", key)
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("walk router: %v", err)
+	}
+	for key := range forkIssueRouteParams {
+		if !usedParams[key] {
+			t.Errorf("forkIssueRouteParams lists %s, which no fork route declares", key)
+		}
 	}
 	for key := range forkRouteParamsOutsideProjects {
 		if !usedParams[key] {
