@@ -276,7 +276,9 @@ func (h *Handler) ListAgentMCPOAuthServers(w http.ResponseWriter, r *http.Reques
 			Name: entry.Name, Source: entry.Source, WorkspaceServerID: entry.WorkspaceServerID,
 			Scope: entry.Entry.Scope, Shared: entry.Source == mcpOAuthSourceWorkspace, Problem: mcpOAuthProblem(entry.Err),
 		}
-		if status, ok := statuses[entry.Ref]; ok && entry.Ref != "" {
+		// An invalid entry has no URL to judge a connection against; its
+		// problem is what the settings page shows.
+		if status, ok := statuses[entry.Ref]; ok && entry.Ref != "" && entry.Err == nil {
 			item.Connection = mcpOAuthConnectionJSON(&status, entry.Entry.URL)
 		}
 		resp.Servers = append(resp.Servers, item)
@@ -474,7 +476,7 @@ func (h *Handler) ListWorkspaceMCPOAuthServers(w http.ResponseWriter, r *http.Re
 		item := workspaceMCPOAuthServerResponse{
 			ServerID: uuidToString(entry.server.ID), Name: entry.server.Name, Scope: entry.entry.Scope, Problem: mcpOAuthProblem(entry.err),
 		}
-		if status, ok := statuses[target.Ref]; ok {
+		if status, ok := statuses[target.Ref]; ok && entry.err == nil {
 			item.Connection = mcpOAuthConnectionJSON(&status, target.URL)
 		}
 		resp.Servers = append(resp.Servers, item)

@@ -194,34 +194,36 @@ multica agent mcp add <agent-id> <server-id>
 
 ### Serveurs MCP OAuth
 
-Certains serveurs MCP, comme une passerelle où chacun se connecte, exigent OAuth plutôt qu’un jeton fixe. Un agent ne peut pas se connecter seul pendant son exécution : Multica conserve donc la connexion pour lui. Le propriétaire de l’agent connecte le serveur une fois, et chaque exécution utilise cette connexion.
+Certains serveurs MCP, comme une passerelle où chacun se connecte, exigent OAuth plutôt qu’un jeton fixe. Un agent ne peut pas se connecter seul pendant son exécution : Multica conserve donc la connexion pour lui. OAuth est une option d’authentification d’un serveur MCP HTTP, aussi bien pour les serveurs propres d’un agent que pour les serveurs MCP de l’espace de travail.
 
 <Steps>
 <Step>
 
-Ouvrez les paramètres **MCP OAuth** de l’agent, cliquez sur **Ajouter un serveur**, puis saisissez un nom et l’URL HTTPS du serveur. Les en-têtes supplémentaires sont facultatifs et, comme le reste de la configuration MCP, ne sont plus jamais affichés.
+Ajoutez ou modifiez un serveur HTTP, dans l’onglet **MCP** de l’agent ou dans **Paramètres → Serveurs MCP** pour l’espace de travail, et réglez **Authentification** sur **OAuth 2.1**. L’URL doit être en HTTPS ; le scope est facultatif.
 
 </Step>
 <Step>
 
-Le propriétaire de l’agent clique sur **Connecter** et se connecte sur la page du serveur dans le navigateur.
+Cliquez sur **Connecter** sur la ligne du serveur et connectez-vous sur la page du serveur dans le navigateur. Sur un agent, c’est le propriétaire de l’agent qui connecte. Un serveur de l’espace de travail est connecté par chacun pour soi, et cette connexion unique sert à tous ses agents auxquels le serveur est ajouté.
 
 </Step>
 <Step>
 
-Les exécutions utilisent la connexion du propriétaire. Multica renouvelle le jeton au besoin. Si l’autorisation expire ou est révoquée, le serveur affiche **À reconnecter**, les exécutions démarrent sans lui et leur journal en indique la raison.
+Les exécutions utilisent la connexion du propriétaire de l’agent. Multica renouvelle le jeton au besoin. Si l’autorisation expire, est révoquée ou si l’URL du serveur change, la ligne affiche **À reconnecter**, les exécutions démarrent sans le serveur et le journal de chaque exécution indique pourquoi.
 
 </Step>
 </Steps>
 
-À savoir :
+À retenir :
 
-- **Quelle identité les exécutions utilisent.** Toute personne qui peut lancer l’agent agit en tant que son propriétaire sur ce serveur. Ne connectez des serveurs que sur des agents que vous acceptez de partager ainsi.
-- **Permissions.** Seul le propriétaire de l’agent peut connecter, et uniquement depuis une session de navigateur connectée, pas avec un jeton d’accès personnel. Le propriétaire ou un `owner` ou `admin` de l’espace de travail peut ajouter, supprimer et déconnecter des serveurs.
-- **Runtimes pris en charge.** Les serveurs MCP OAuth fonctionnent avec les runtimes Claude, Codex, Hermes, Qoder et mcode. Le démon leur transmet le serveur via un proxy local, si bien que le jeton n’est jamais écrit dans les fichiers de configuration du runtime. Sur les autres runtimes, comme Cursor et OpenClaw, le serveur n’est pas monté, et le journal de l’exécution le signale.
-- **Noms.** Un serveur OAuth s’approprie son nom. Une entrée du même nom dans le reste de la configuration MCP de l’agent, ou dans la configuration propre du runtime, n’est pas utilisée, même quand le serveur OAuth ne peut pas être monté.
-- **Adresses.** Le serveur et ses points de connexion doivent être des adresses HTTPS publiques avec un certificat valide. Pour en utiliser un sur un réseau privé, le déploiement indique l’origine exacte du serveur, et celle de son serveur de connexion s’il est distinct, par exemple `https://mcp.example.internal:8443`, dans `MULTICA_MCP_OAUTH_ALLOWED_ORIGINS` (séparées par des virgules, vide par défaut). HTTPS et la vérification du certificat s’appliquent toujours.
-- **Disponibilité.** Cette section n’apparaît que si le déploiement active la fonctionnalité.
+- **Identité utilisée.** Toute personne qui peut exécuter l’agent agit en tant que son propriétaire sur ce serveur. Ne connectez des serveurs que sur des agents que vous acceptez de partager ainsi.
+- **Permissions.** La connexion se fait depuis une session de navigateur connectée, pas avec un jeton d’accès personnel. Seul le propriétaire de l’agent connecte les serveurs de l’agent ; tout membre connecte un serveur de l’espace de travail pour lui-même. Qui peut ajouter et modifier les serveurs ne change pas.
+- **Aucun autre identifiant.** Un serveur OAuth ne prend pas d’en-têtes fixes. Le jeton est son seul identifiant, et il n’est jamais stocké dans la configuration MCP.
+- **Modifier un serveur.** Renommer ou supprimer un serveur d’un agent, ou supprimer un serveur de l’espace de travail, supprime ses connexions. Quand un serveur de l’espace de travail est retiré d’un agent, la connexion du propriétaire est supprimée dès qu’aucun de ses agents ne l’utilise plus.
+- **Runtimes pris en charge.** Les serveurs MCP OAuth fonctionnent avec les runtimes Claude, Codex, Hermes, Qoder et mcode. Le daemon leur transmet le serveur par un proxy local, si bien que le jeton n’est jamais écrit dans les fichiers de configuration du runtime. Sur les autres runtimes, comme Cursor et OpenClaw, le serveur n’est pas monté et le journal de l’exécution l’indique.
+- **Noms.** Un serveur OAuth possède son nom. Une entrée du même nom dans la configuration propre du runtime n’est pas utilisée, même tant que le serveur OAuth ne peut pas être monté.
+- **Adresses.** Le serveur et ses points de connexion doivent être des adresses HTTPS publiques avec un certificat valide. Pour en utiliser un sur un réseau privé, le déploiement indique l’origine exacte du serveur, et de son serveur de connexion s’il est distinct, par exemple `https://mcp.example.internal:8443`, dans `MULTICA_MCP_OAUTH_ALLOWED_ORIGINS` (séparées par des virgules, vide par défaut). Les vérifications HTTPS et de certificat s’appliquent toujours.
+- **Disponibilité.** L’option **OAuth 2.1** n’apparaît que si le déploiement active la fonctionnalité.
 
 ## Dupliquer un agent
 

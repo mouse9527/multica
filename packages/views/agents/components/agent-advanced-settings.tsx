@@ -5,7 +5,6 @@ import type { Agent, AgentRuntime, MemberWithUser } from "@multica/core/types";
 import { providerSupportsMcpConfig } from "@multica/core/agents";
 import { useFeatureEnabled } from "@multica/core/config";
 import { COMPOSIO_MCP_APPS_FLAG } from "@multica/core/feature-flags";
-import { MCP_OAUTH_FLAG } from "@multica/core/mcp-oauth";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,7 +28,6 @@ import { EnvTab } from "./tabs/env-tab";
 import { CustomArgsTab } from "./tabs/custom-args-tab";
 import { McpConfigTab } from "./tabs/mcp-config-tab";
 import { AgentAppsTab } from "./tabs/agent-apps-tab";
-import { McpOAuthTab } from "./tabs/mcp-oauth-tab";
 import { QoderAgentTab } from "./tabs/qoder-agent-tab";
 import { RuntimeConfigTab } from "./tabs/runtime-config-tab";
 import { AgentDetailInspector } from "./agent-detail-inspector";
@@ -44,9 +42,7 @@ export type AdvancedSection =
   | "runtime_config"
   | "skills"
   | "mcp_config"
-  | "composio_mcp"
-  // mouse9527/multica fork (M-230).
-  | "mcp_oauth";
+  | "composio_mcp";
 
 type SectionLabelKey =
   | "general"
@@ -57,8 +53,7 @@ type SectionLabelKey =
   | "qoder_agent"
   | "skills"
   | "mcp_config"
-  | "composio_mcp"
-  | "mcp_oauth";
+  | "composio_mcp";
 
 type SectionDef = { id: AdvancedSection; labelKey: SectionLabelKey };
 
@@ -74,7 +69,6 @@ const CAPABILITY_SECTIONS: SectionDef[] = [
   { id: "skills", labelKey: "skills" },
   { id: "mcp_config", labelKey: "mcp_config" },
   { id: "composio_mcp", labelKey: "composio_mcp" },
-  { id: "mcp_oauth", labelKey: "mcp_oauth" },
 ];
 
 const ADVANCED_SECTIONS = new Set<string>(
@@ -119,7 +113,6 @@ export function AgentAdvancedSettings({
     COMPOSIO_MCP_APPS_FLAG,
     false,
   );
-  const mcpOAuthEnabled = useFeatureEnabled(MCP_OAUTH_FLAG, false);
   const [dirty, setDirty] = useState(false);
   // `undefined` = no pending move; `null` = a pending close.
   const [pending, setPending] = useState<AdvancedSection | null | undefined>(
@@ -155,15 +148,11 @@ export function AgentAdvancedSettings({
     return CAPABILITY_SECTIONS.filter((item) => {
       if (item.id === "mcp_config") return showMcp;
       if (item.id === "composio_mcp") return showComposioMcp;
-      // The owner or a workspace admin manages the servers (canEdit); the
-      // list endpoint admits no one else.
-      if (item.id === "mcp_oauth") return mcpOAuthEnabled && canEdit && showMcp;
       return true;
     });
   }, [
     canEdit,
     composioMCPAppsEnabled,
-    mcpOAuthEnabled,
     qoderRuntime,
     runtime,
   ]);
@@ -333,7 +322,6 @@ export function AgentAdvancedSettings({
                     />
                   )}
                   {active.id === "composio_mcp" && <AgentAppsTab agent={agent} />}
-                  {active.id === "mcp_oauth" && <McpOAuthTab agent={agent} />}
                 </div>
               </div>
             </section>

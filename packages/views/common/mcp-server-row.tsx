@@ -122,6 +122,7 @@ export function McpServerRow({
   transport,
   status,
   meta,
+  connection,
   canManage,
   actionsDisabled = false,
   rename,
@@ -135,6 +136,12 @@ export function McpServerRow({
   status?: ReactNode;
   /** Extra context after the transport, e.g. how many agents use it. */
   meta?: ReactNode;
+  /**
+   * Modified for the mouse9527/multica fork (M-269): an OAuth entry's
+   * connection state and actions. Shown to everyone, including viewers who
+   * cannot manage the entry: connecting is per person.
+   */
+  connection?: ReactNode;
   canManage: boolean;
   actionsDisabled?: boolean;
   rename?: McpServerRenameState;
@@ -222,6 +229,8 @@ export function McpServerRow({
           {meta ? <> · {meta}</> : null}
         </p>
       </div>
+
+      {connection && !rename ? connection : null}
 
       {canManage && !rename ? (
         <div className="flex shrink-0 items-center gap-0.5 text-muted-foreground">

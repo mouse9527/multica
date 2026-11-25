@@ -1,49 +1,40 @@
 {
-  "title": "OAuth MCP サーバー",
-  "hint": "実行はエージェントのオーナーの接続でサインインします。Claude、Codex、Hermes、Qoder、mcode ランタイムで使えます。",
-  "add": "サーバーを追加",
-  "loading": "OAuth MCP サーバーを読み込み中…",
-  "load_failed": "OAuth MCP サーバーを読み込めませんでした。",
-  "empty": "OAuth MCP サーバーはまだありません。",
   "status": {
     "connected": "接続済み",
     "needs_reconnect": "再接続が必要",
-    "not_connected": "未接続"
+    "not_connected": "未接続",
+    "invalid": "OAuth 設定が無効"
   },
   "connect": "接続",
   "reconnect": "再接続",
   "disconnect": "切断",
-  "delete": "削除",
-  "delete_aria": "{{name}} を削除",
+  "connect_aria": "{{name}} に接続",
+  "reconnect_aria": "{{name}} に再接続",
+  "disconnect_aria": "{{name}} を切断",
   "owner_only": "接続できるのはエージェントのオーナーだけです。",
+  "shared_agent": "オーナーの接続。オーナーのすべてのエージェントで共有されます",
+  "shared_workspace": "あなたの接続。あなたのすべてのエージェントで共有されます",
   "action_failed": "問題が発生しました。もう一度お試しください。",
   "connect_continue": "ブラウザーで接続を完了してください。",
-  "added_toast": "{{name}} を追加しました",
-  "deleted_toast": "{{name}} を削除しました",
   "disconnected_toast": "{{name}} を切断しました",
-  "delete_title": "{{name}} を削除しますか？",
-  "delete_description": "実行はこのサーバーを使わなくなり、接続も削除されます。",
-  "cancel": "キャンセル",
-  "dialog": {
-    "title": "OAuth MCP サーバーを追加",
-    "name_label": "名前",
-    "name_hint": "実行で使われる名前。英数字、- と _ が使えます。",
-    "url_label": "MCP サーバーの URL",
+  "auth": {
+    "label": "認証方式",
+    "none": "なし",
+    "headers": "固定ヘッダー",
+    "oauth": "OAuth 2.1",
     "scope_label": "スコープ（任意）",
-    "headers_label": "追加ヘッダー（任意）",
-    "headers_hint": "1 行に 1 つ、名前: 値 の形式で。すべてのリクエストに付き、保存後は表示されません。",
-    "headers_invalid": "ヘッダーは 1 行ずつ 名前: 値 の形式で書いてください。",
-    "save": "追加"
+    "oauth_hint": "保存後、サーバー一覧から接続してください。",
+    "https_required": "OAuth には HTTPS の URL が必要です。"
   },
   "callback": {
     "working": "MCP サーバーに接続しています…",
     "failed_title": "MCP サーバーに接続できませんでした",
-    "missing": "このページには認可の結果が必要です。エージェントの設定からやり直してください。",
+    "missing": "このページには認可の結果が必要です。MCP 設定からやり直してください。",
     "denied": "認可はキャンセルされました。",
-    "expired": "このリンクは使用済みか期限切れです。エージェントの設定からやり直してください。",
-    "not_allowed": "このエージェントはもう接続できません。",
-    "sign_in": "このブラウザーで Multica にサインインしてから、エージェントの設定からやり直してください。",
-    "generic": "認可サーバーが接続を完了しませんでした。エージェントの設定から再試行してください。",
+    "expired": "このリンクは使用済みか期限切れです。MCP 設定からやり直してください。",
+    "not_allowed": "この MCP サーバーにはもう接続できません。",
+    "sign_in": "このブラウザーで Multica にサインインしてから、MCP 設定からやり直してください。",
+    "generic": "認可サーバーが接続を完了しませんでした。MCP 設定から再試行してください。",
     "go_to_app": "Multica へ"
   }
 }

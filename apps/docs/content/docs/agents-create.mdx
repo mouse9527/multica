@@ -196,22 +196,22 @@ multica agent mcp add <agent-id> <server-id>
 
 ### OAuth MCP servers
 
-Some MCP servers, such as a gateway that has each person sign in, require OAuth instead of a fixed token. An agent can't sign in by itself while it runs, so Multica keeps the connection for it: the agent's owner connects the server once, and every run uses that connection.
+Some MCP servers, such as a gateway that has each person sign in, require OAuth instead of a fixed token. An agent can't sign in by itself while it runs, so Multica keeps the connection for it. OAuth is an authentication option of an HTTP MCP server, both for an agent's own servers and for the workspace's MCP servers.
 
 <Steps>
 <Step>
 
-Open the agent's **OAuth MCP** settings, click **Add server**, and enter a name and the server's HTTPS URL. Extra headers are optional and, like other MCP configuration, are never shown again.
+Add or edit an HTTP server, on the agent's **MCP** tab or in **Settings → MCP servers** for the workspace, and set **Authentication** to **OAuth 2.1**. The URL must be HTTPS; a scope is optional.
 
 </Step>
 <Step>
 
-The agent's owner clicks **Connect** and signs in on the server's page in the browser.
+Click **Connect** on the server's row and sign in on the server's page in the browser. On an agent, the agent's owner connects. A workspace server is connected by each person for themselves, and that one connection is used by all of their agents the server is added to.
 
 </Step>
 <Step>
 
-Runs use the owner's connection. Multica refreshes the token as needed. If the authorization expires or is revoked, the server shows **Needs reconnecting**, runs start without it, and each run's transcript says why.
+Runs use the agent owner's connection. Multica refreshes the token as needed. If the authorization expires or is revoked, or the server's URL changes, the row shows **Needs reconnecting**, runs start without the server, and each run's transcript says why.
 
 </Step>
 </Steps>
@@ -219,11 +219,13 @@ Runs use the owner's connection. Multica refreshes the token as needed. If the a
 Keep in mind:
 
 - **Whose identity runs use.** Everyone who can run the agent acts as its owner on that server. Only connect servers on agents you are willing to share that way.
-- **Permissions.** Only the agent's owner can connect, and only from a signed-in browser session, not with a personal access token. The owner or a workspace `owner` or `admin` can add, remove, and disconnect servers.
+- **Permissions.** Connecting takes a signed-in browser session, not a personal access token. Only the agent's owner connects the agent's servers; any member connects a workspace server for themselves. Who can add and edit servers is unchanged.
+- **No other credentials.** An OAuth server takes no fixed headers. The token is its only credential, and it is never stored in the MCP configuration.
+- **Changing a server.** Renaming or removing an agent's server, or deleting a workspace server, removes its connections. When a workspace server is removed from an agent, the owner's connection is removed once none of their agents uses it.
 - **Supported runtimes.** OAuth MCP servers work with the Claude, Codex, Hermes, Qoder, and mcode runtimes. The daemon hands the server to them through a local proxy, so the token is never written to the runtime's configuration files. On other runtimes, such as Cursor and OpenClaw, the server is not mounted, and the run's transcript says so.
-- **Names.** An OAuth server owns its name. An entry with the same name in the agent's other MCP configuration, or in the runtime's own configuration, is not used, even while the OAuth server can't be mounted.
+- **Names.** An OAuth server owns its name. An entry with the same name in the runtime's own configuration is not used, even while the OAuth server can't be mounted.
 - **Addresses.** The server and its sign-in endpoints must be public HTTPS addresses with a valid certificate. To use one on a private network, the deployment lists the exact origin of the server, and of its sign-in server if that is separate, such as `https://mcp.example.internal:8443`, in `MULTICA_MCP_OAUTH_ALLOWED_ORIGINS` (comma separated, empty by default). HTTPS and certificate checks still apply.
-- **Availability.** The section appears only when the deployment turns the feature on.
+- **Availability.** The **OAuth 2.1** option appears only when the deployment turns the feature on.
 
 ## Duplicating an agent
 

@@ -1,26 +1,29 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
+// Modified for the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
 //
-// Endpoints of an agent's OAuth MCP servers (`/api/agents/{id}/mcp-oauth`)
-// and the end of a connect (`/api/mcp-oauth/complete`). They answer 404
-// while `mcp_oauth_v1` is off.
+// Connections to OAuth MCP entries. The entries themselves are ordinary MCP
+// entries (`"auth": {"type": "oauth"}`) saved through the agent's mcp_config
+// and the workspace MCP library; these endpoints only show and change
+// connections:
+//   /api/agents/{id}/mcp-oauth          the agent owner's, per entry name
+//   /api/workspaces/{id}/mcp-oauth      the caller's own, per library entry
+//   /api/mcp-oauth/complete             the end of any connect
+// They answer 404 while `mcp_oauth_v1` is off.
 
 import { api, ApiError, parseWithFallback } from "../api";
 import {
+  McpOAuthAgentListSchema,
   McpOAuthCompletionSchema,
   McpOAuthConnectSchema,
-  McpOAuthServerListSchema,
-  McpOAuthServerSchema,
+  McpOAuthWorkspaceListSchema,
 } from "./schemas";
 import type {
   CompleteMcpOAuthInput,
-  CreateMcpOAuthServerInput,
+  McpOAuthAgentList,
   McpOAuthCompletion,
-  McpOAuthServer,
-  McpOAuthServerList,
+  McpOAuthWorkspaceList,
 } from "./types";
 
-// Callers pass headers as a plain object; they are kept, and the workspace
-// headers are added on top.
 function scoped(wsId: string, init: RequestInit = {}): RequestInit {
   return {
     ...init,
@@ -32,77 +35,73 @@ function scoped(wsId: string, init: RequestInit = {}): RequestInit {
   };
 }
 
-function base(agentId: string): string {
+function agentBase(agentId: string): string {
   return `/api/agents/${encodeURIComponent(agentId)}/mcp-oauth`;
 }
 
-function serverPath(agentId: string, serverId: string, suffix = ""): string {
-  return `${base(agentId)}/${encodeURIComponent(serverId)}${suffix}`;
+function workspaceBase(wsId: string): string {
+  return `/api/workspaces/${encodeURIComponent(wsId)}/mcp-oauth`;
 }
 
-const UNAVAILABLE: McpOAuthServerList = { servers: [], can_connect: false, available: false };
-
-export async function listMcpOAuthServers(wsId: string, agentId: string): Promise<McpOAuthServerList> {
-  let raw: unknown;
+/** The endpoint's body, or `unavailable` when it answers 404 (mcp_oauth_v1 off). */
+async function requestOrUnavailable(
+  path: string,
+  init: RequestInit,
+): Promise<{ unavailable: false; raw: unknown } | { unavailable: true }> {
   try {
-    raw = await api.request(base(agentId), scoped(wsId));
+    return { unavailable: false, raw: await api.request(path, init) };
   } catch (err) {
-    if (err instanceof ApiError && err.status === 404) return UNAVAILABLE;
+    if (err instanceof ApiError && err.status === 404) return { unavailable: true };
     throw err;
   }
-  const parsed = parseWithFallback(raw, McpOAuthServerListSchema, { servers: [], can_connect: false }, {
+}
+
+async function startConnect(path: string, wsId: string, returnTo: string): Promise<string> {
+  const raw = await api.request(path, scoped(wsId, { method: "POST", body: JSON.stringify({ return_to: returnTo }) }));
+  const parsed = McpOAuthConnectSchema.safeParse(raw);
+  if (!parsed.success) throw new Error("POST mcp-oauth connect: unexpected response");
+  return parsed.data.authorization_url;
+}
+
+/** The OAuth entries an agent runs with and its owner's connection to each. */
+export async function listAgentMcpOAuth(wsId: string, agentId: string): Promise<McpOAuthAgentList> {
+  const result = await requestOrUnavailable(agentBase(agentId), scoped(wsId));
+  if (result.unavailable) return { servers: [], can_connect: false, available: false };
+  const parsed = parseWithFallback(result.raw, McpOAuthAgentListSchema, { servers: [], can_connect: false }, {
     endpoint: "GET /api/agents/{id}/mcp-oauth",
   });
   return { ...parsed, available: true };
 }
 
-export async function createMcpOAuthServer(
-  wsId: string,
-  agentId: string,
-  input: CreateMcpOAuthServerInput,
-): Promise<McpOAuthServer> {
-  const raw = await api.request(
-    base(agentId),
-    scoped(wsId, {
-      method: "POST",
-      body: JSON.stringify({
-        name: input.name,
-        url: input.url,
-        scope: input.scope ?? "",
-        extra_headers: input.extraHeaders ?? {},
-      }),
-    }),
-  );
-  const parsed = McpOAuthServerSchema.safeParse(raw);
-  if (!parsed.success) throw new Error("POST /api/agents/{id}/mcp-oauth: unexpected response");
-  return parsed.data;
-}
-
-export async function deleteMcpOAuthServer(wsId: string, agentId: string, serverId: string): Promise<void> {
-  await api.request(serverPath(agentId, serverId), scoped(wsId, { method: "DELETE" }));
-}
-
 /**
- * Starts a connect and returns the authorization server's URL to open. Only
- * the agent's owner may; returnTo is the app path to come back to.
+ * Starts connecting the agent owner to the entry under `name` and returns the
+ * authorization server's URL to open. Only the agent's owner may.
  */
-export async function connectMcpOAuthServer(
-  wsId: string,
-  agentId: string,
-  serverId: string,
-  returnTo: string,
-): Promise<string> {
-  const raw = await api.request(
-    serverPath(agentId, serverId, "/connect"),
-    scoped(wsId, { method: "POST", body: JSON.stringify({ return_to: returnTo }) }),
-  );
-  const parsed = McpOAuthConnectSchema.safeParse(raw);
-  if (!parsed.success) throw new Error("POST /api/agents/{id}/mcp-oauth/{serverId}/connect: unexpected response");
-  return parsed.data.authorization_url;
+export function connectAgentMcpOAuth(wsId: string, agentId: string, name: string, returnTo: string): Promise<string> {
+  return startConnect(`${agentBase(agentId)}/${encodeURIComponent(name)}/connect`, wsId, returnTo);
 }
 
-export async function disconnectMcpOAuthServer(wsId: string, agentId: string, serverId: string): Promise<void> {
-  await api.request(serverPath(agentId, serverId, "/connection"), scoped(wsId, { method: "DELETE" }));
+export async function disconnectAgentMcpOAuth(wsId: string, agentId: string, name: string): Promise<void> {
+  await api.request(`${agentBase(agentId)}/${encodeURIComponent(name)}/connection`, scoped(wsId, { method: "DELETE" }));
+}
+
+/** The workspace library's OAuth entries and the caller's own connection to each. */
+export async function listWorkspaceMcpOAuth(wsId: string): Promise<McpOAuthWorkspaceList> {
+  const result = await requestOrUnavailable(workspaceBase(wsId), scoped(wsId));
+  if (result.unavailable) return { servers: [], available: false };
+  const parsed = parseWithFallback(result.raw, McpOAuthWorkspaceListSchema, { servers: [] }, {
+    endpoint: "GET /api/workspaces/{id}/mcp-oauth",
+  });
+  return { ...parsed, available: true };
+}
+
+/** Starts connecting the caller to a workspace library entry. */
+export function connectWorkspaceMcpOAuth(wsId: string, serverId: string, returnTo: string): Promise<string> {
+  return startConnect(`${workspaceBase(wsId)}/${encodeURIComponent(serverId)}/connect`, wsId, returnTo);
+}
+
+export async function disconnectWorkspaceMcpOAuth(wsId: string, serverId: string): Promise<void> {
+  await api.request(`${workspaceBase(wsId)}/${encodeURIComponent(serverId)}/connection`, scoped(wsId, { method: "DELETE" }));
 }
 
 /**

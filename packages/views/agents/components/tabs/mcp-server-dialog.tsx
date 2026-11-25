@@ -36,6 +36,11 @@ import { Textarea } from "@multica/ui/components/ui/textarea";
 import { useT } from "../../../i18n";
 import type { ManagedMcpServer } from "./mcp-config-model";
 import { isRecord, mcpTransport } from "./mcp-config-model";
+import {
+  McpOAuthAuthPicker,
+  oauthFormAuthFromConfig,
+  type McpFormAuth,
+} from "../../../mcp-oauth/mcp-oauth-auth";
 
 type EditorMode = "form" | "json";
 type FormTransport = "stdio" | "http";
@@ -47,6 +52,11 @@ type McpFormState = {
   env: KeyValue[];
   url: string;
   headers: KeyValue[];
+  // mouse9527/multica fork (M-269): how an HTTP entry authenticates. Only
+  // read and written when OAuth is available; otherwise `auth` stays in
+  // `extras` untouched, as upstream.
+  auth: McpFormAuth;
+  scope: string;
   extras: Record<string, unknown>;
 };
 
@@ -57,6 +67,8 @@ const emptyForm = (): McpFormState => ({
   env: [],
   url: "",
   headers: [],
+  auth: "none",
+  scope: "",
   extras: {},
 });
 
@@ -67,7 +79,7 @@ function pairsFromRecord(value: unknown): KeyValue[] {
   );
 }
 
-function formFromConfig(config: Record<string, unknown>): McpFormState {
+function formFromConfig(config: Record<string, unknown>, oauthAvailable = false): McpFormState {
   const extras = { ...config };
   for (const key of [
     "type",
@@ -98,13 +110,18 @@ function formFromConfig(config: Record<string, unknown>): McpFormState {
     );
   }
 
+  const headers = pairsFromRecord(config.headers);
+  const oauth = oauthAvailable ? oauthFormAuthFromConfig(config) : null;
+  if (oauth) delete extras.auth;
   return {
     transport,
     command,
     args,
     env: pairsFromRecord(config.env ?? config.environment),
     url: typeof config.url === "string" ? config.url : "",
-    headers: pairsFromRecord(config.headers),
+    headers,
+    auth: oauth ? "oauth" : headers.length > 0 ? "headers" : "none",
+    scope: oauth?.scope ?? "",
     extras,
   };
 }
@@ -159,7 +176,7 @@ function formCanExpressConfig(config: Record<string, unknown>): boolean {
   return config.command !== undefined || config.url !== undefined;
 }
 
-function configFromForm(form: McpFormState): Record<string, unknown> {
+function configFromForm(form: McpFormState, oauthAvailable = false): Record<string, unknown> {
   const config = { ...form.extras };
   if (form.transport === "stdio") {
     config.command = form.command.trim();
@@ -169,8 +186,18 @@ function configFromForm(form: McpFormState): Record<string, unknown> {
   } else {
     config.type = "http";
     config.url = form.url.trim();
-    const headers = recordFromPairs(form.headers);
-    if (headers) config.headers = headers;
+    if (oauthAvailable && form.auth === "oauth") {
+      // An OAuth entry carries no credential of its own: the token is the
+      // connection's, added when a run starts.
+      const scope = form.scope.trim();
+      config.auth = scope ? { type: "oauth", scope } : { type: "oauth" };
+    } else {
+      const headers =
+        !oauthAvailable || form.auth === "headers"
+          ? recordFromPairs(form.headers)
+          : undefined;
+      if (headers) config.headers = headers;
+    }
   }
   return config;
 }
@@ -213,6 +240,7 @@ export function McpServerDialog({
   lockName = false,
   replacementMode = false,
   hideNameWhenEditing = false,
+  oauthAvailable = false,
   onOpenChange,
   onSave,
 }: {
@@ -236,10 +264,16 @@ export function McpServerDialog({
    * name still participates in validation and is passed back unchanged.
    */
   hideNameWhenEditing?: boolean;
+  /**
+   * mouse9527/multica fork (M-269): offer OAuth 2.1 as an HTTP entry's
+   * authentication (mcp_oauth_v1 on). Off, the form is upstream's.
+   */
+  oauthAvailable?: boolean;
   onOpenChange: (open: boolean) => void;
   onSave: (name: string, config: Record<string, unknown>) => Promise<void>;
 }) {
   const { t } = useT("agents");
+  const { t: tOAuth } = useT("mcpoauth");
   const [name, setName] = useState("");
   const [mode, setMode] = useState<EditorMode>("form");
   const [form, setForm] = useState<McpFormState>(emptyForm);
@@ -265,13 +299,13 @@ export function McpServerDialog({
       !server
         ? emptyForm()
         : Object.keys(config).length > 0
-          ? formFromConfig(config)
+          ? formFromConfig(config, oauthAvailable)
           : { ...emptyForm(), transport: server.transport === "stdio" ? "stdio" : "http" },
     );
     setJsonText(JSON.stringify(config, null, 2));
     setMode(server && !formSupportsServer(server) ? "json" : "form");
     setSaveAttempted(false);
-  }, [open, replacementMode, server]);
+  }, [oauthAvailable, open, replacementMode, server]);
 
   // The form is unavailable — not merely unselected — for entries it cannot
   // represent, so switching to it cannot rewrite them either.
@@ -300,7 +334,9 @@ export function McpServerDialog({
         : null
       : form.url.trim() === ""
         ? "url"
-        : null;
+        : oauthAvailable && form.auth === "oauth" && !/^https:\/\//i.test(form.url.trim())
+          ? "url_https"
+          : null;
   const visibleNameError = saveAttempted ? nameError : null;
   const visibleFormError = saveAttempted ? formError : null;
   const visibleJsonError = saveAttempted && !jsonResult.ok ? jsonResult : null;
@@ -318,7 +354,9 @@ export function McpServerDialog({
       ? t(($) => $.tab_body.mcp_config.dialog_command_required)
       : mode === "form" && visibleFormError === "url"
         ? t(($) => $.tab_body.mcp_config.dialog_url_required)
-        : "";
+        : mode === "form" && visibleFormError === "url_https"
+          ? tOAuth(($) => $.auth.https_required)
+          : "";
   const jsonErrorMessage =
     mode === "json" && visibleJsonError?.error === "not_object"
       ? t(($) => $.tab_body.mcp_config.dialog_json_object)
@@ -339,9 +377,9 @@ export function McpServerDialog({
   const handleModeChange = (next: string | number | null) => {
     if (next !== "form" && next !== "json") return;
     if (next === "json" && mode === "form") {
-      setJsonText(JSON.stringify(configFromForm(form), null, 2));
+      setJsonText(JSON.stringify(configFromForm(form, oauthAvailable), null, 2));
     } else if (next === "form" && mode === "json" && jsonResult.ok) {
-      setForm(formFromConfig(jsonResult.value));
+      setForm(formFromConfig(jsonResult.value, oauthAvailable));
     }
     setSaveAttempted(false);
     setMode(next);
@@ -357,11 +395,11 @@ export function McpServerDialog({
       if (nameError !== null) nameInputRef.current?.focus();
       else if (mode === "json") jsonInputRef.current?.focus();
       else if (formError === "command") commandInputRef.current?.focus();
-      else if (formError === "url") urlInputRef.current?.focus();
+      else if (formError === "url" || formError === "url_https") urlInputRef.current?.focus();
       return;
     }
     let config: Record<string, unknown>;
-    if (mode === "form") config = configFromForm(form);
+    if (mode === "form") config = configFromForm(form, oauthAvailable);
     else if (jsonResult.ok) config = jsonResult.value;
     else return;
     setSaving(true);
@@ -600,18 +638,33 @@ export function McpServerDialog({
                               </FieldError>
                             ) : null}
                           </Field>
-                          <KeyValueEditor
-                            label={t(($) => $.tab_body.mcp_config.dialog_headers_label)}
-                            description={t(($) => $.tab_body.mcp_config.dialog_headers_hint)}
-                            addLabel={t(($) => $.tab_body.mcp_config.dialog_add_header)}
-                            removeLabel={t(($) => $.tab_body.mcp_config.dialog_remove_header)}
-                            keyLabel={t(($) => $.tab_body.mcp_config.dialog_header_key)}
-                            valueLabel={t(($) => $.tab_body.mcp_config.dialog_value)}
-                            rows={form.headers}
-                            onChange={(headers) =>
-                              setForm((current) => ({ ...current, headers }))
-                            }
-                          />
+                          {oauthAvailable ? (
+                            <McpOAuthAuthPicker
+                              value={form.auth}
+                              scope={form.scope}
+                              onChange={(auth) => {
+                                setSaveAttempted(false);
+                                setForm((current) => ({ ...current, auth }));
+                              }}
+                              onScopeChange={(scope) =>
+                                setForm((current) => ({ ...current, scope }))
+                              }
+                            />
+                          ) : null}
+                          {!oauthAvailable || form.auth === "headers" ? (
+                            <KeyValueEditor
+                              label={t(($) => $.tab_body.mcp_config.dialog_headers_label)}
+                              description={t(($) => $.tab_body.mcp_config.dialog_headers_hint)}
+                              addLabel={t(($) => $.tab_body.mcp_config.dialog_add_header)}
+                              removeLabel={t(($) => $.tab_body.mcp_config.dialog_remove_header)}
+                              keyLabel={t(($) => $.tab_body.mcp_config.dialog_header_key)}
+                              valueLabel={t(($) => $.tab_body.mcp_config.dialog_value)}
+                              rows={form.headers}
+                              onChange={(headers) =>
+                                setForm((current) => ({ ...current, headers }))
+                              }
+                            />
+                          ) : null}
                         </FieldGroup>
                       )}
                     </TabsContent>

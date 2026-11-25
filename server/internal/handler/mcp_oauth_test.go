@@ -267,6 +267,27 @@ func TestMCPOAuthAgentList(t *testing.T) {
 	}
 }
 
+// An entry that is not a valid OAuth entry shows its problem and no
+// connection state: there is no URL to judge a saved connection against, and
+// "needs reconnecting" would send the owner to a connect that cannot work.
+func TestMCPOAuthAgentListInvalidEntryHasNoConnection(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	store := withMCPOAuth(t, true)
+	agentID, ownerID, _ := privateAgentTestFixture(t)
+	cleanupMCPOAuth(t, agentID)
+	connectForTest(t, store, mcpoauth.AgentRef(agentID, "gateway"), mcpOAuthTestURL, ownerID, "token-of-a-broken-entry")
+	// Saved directly, as an entry stored while the flag was off would be.
+	setAgentMcpConfig(t, agentID, `{"mcpServers":{"gateway":{"url":"https://mcp.example.com/mcp","headers":{"x-api-key":"k"},"auth":{"type":"oauth"}}}}`)
+
+	var listed mcpOAuthListResponse
+	mcpOAuthCall(t, ownerID, "GET", "/api/agents/"+agentID+"/mcp-oauth", nil).Want(http.StatusOK).JSON(&listed)
+	if len(listed.Servers) != 1 || listed.Servers[0].Problem == "" || listed.Servers[0].Connection != nil {
+		t.Fatalf("list = %+v", listed.Servers)
+	}
+}
+
 // Connecting an agent entry is the agent owner's alone, in person, and the
 // SSRF boundary holds: an entry on a non-public address fails discovery.
 func TestMCPOAuthConnectPermissions(t *testing.T) {

@@ -37,6 +37,8 @@ func TestParseEntry(t *testing.T) {
 	invalid := map[string]string{
 		"not an object":         `[1]`,
 		"auth not an object":    `{"url":"https://mcp.example.com/mcp","auth":"oauth"}`,
+		"auth without a type":   `{"url":"https://mcp.example.com/mcp","auth":{}}`,
+		"auth with scope only":  `{"url":"https://mcp.example.com/mcp","auth":{"scope":"mcp"}}`,
 		"other auth type":       `{"url":"https://mcp.example.com/mcp","auth":{"type":"bearer"}}`,
 		"auth type in capitals": `{"url":"https://mcp.example.com/mcp","auth":{"type":"OAuth"}}`,
 		"unknown auth field":    `{"url":"https://mcp.example.com/mcp","auth":{"type":"oauth","client_secret":"s"}}`,
@@ -155,6 +157,7 @@ func TestValidateForSave(t *testing.T) {
 		t.Fatalf("valid entry: %v", err)
 	}
 	for _, raw := range []string{
+		`{"url":"https://mcp.example.com/mcp","auth":{}}`,
 		`{"url":"https://mcp.example.com/mcp","auth":{"type":"none"}}`,
 		`{"url":"https://127.0.0.1/mcp","auth":{"type":"oauth"}}`,
 		`{"url":"https://mcp.example.com/mcp","headers":{"Authorization":"Bearer x"},"auth":{"type":"oauth"}}`,
