@@ -48,12 +48,9 @@ func TestSecretNeverPrintsItsValue(t *testing.T) {
 }
 
 func TestCredentialHeaders(t *testing.T) {
-	c := Credential{
-		AccessToken:  NewSecret("at-1"),
-		ExtraHeaders: map[string]Secret{"x-gateway-key": NewSecret("k-1")},
-	}
+	c := Credential{AccessToken: NewSecret("at-1")}
 	got := c.Headers()
-	if got["Authorization"] != "Bearer at-1" || got["x-gateway-key"] != "k-1" || len(got) != 2 {
+	if got["Authorization"] != "Bearer at-1" || len(got) != 1 {
 		t.Fatalf("headers = %v", got)
 	}
 	if strings.Contains(fmt.Sprintf("%v %+v", c, c), "at-1") {

@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
+// Modified for the mouse9527/multica fork: connections keyed by entry ref (M-269).
 
 package mcpoauth
 
@@ -83,109 +84,40 @@ func newFixture() fixture {
 	return fixture{workspaceID: uuid.NewString(), agentID: uuid.NewString(), ownerID: uuid.NewString()}
 }
 
-func (f fixture) server(t *testing.T, store *Store, name string, headers map[string]string) Server {
-	t.Helper()
-	server, err := store.CreateServer(context.Background(), ServerInput{
-		WorkspaceID: f.workspaceID, AgentID: f.agentID, CreatedBy: f.ownerID,
-		Name: name, URL: "https://mcp.example.com/" + name, ExtraHeaders: headers,
-	})
-	if err != nil {
-		t.Fatalf("create server %s: %v", name, err)
-	}
-	return server
+const testServerURL = "https://mcp.example.com/gateway"
+
+// target is the fixture agent's own entry under name.
+func (f fixture) target(name string) Target {
+	return Target{WorkspaceID: f.workspaceID, Ref: AgentRef(f.agentID, name), URL: testServerURL}
 }
 
-func (f fixture) grant(serverID, access, refresh string, expiresIn int64) Grant {
+func (f fixture) grant(ref, access, refresh string, expiresIn int64) Grant {
 	return Grant{
-		WorkspaceID: f.workspaceID, ServerID: serverID, UserID: f.ownerID,
-		Resource: "https://mcp.example.com/gateway", TokenEndpoint: "https://auth.example.com/token",
+		WorkspaceID: f.workspaceID, ServerRef: ref, ServerURL: testServerURL, UserID: f.ownerID,
+		Resource: testServerURL, TokenEndpoint: "https://auth.example.com/token",
 		Client:      Client{ID: "client-1", Secret: NewSecret("client-secret-1"), TokenEndpointAuthMethod: "client_secret_post"},
 		AccessToken: NewSecret(access), RefreshToken: NewSecret(refresh), ExpiresIn: expiresIn, Scope: "mcp",
 	}
 }
 
-func TestServerLifecycle(t *testing.T) {
-	ctx := context.Background()
-	pool := testPool(t)
-	store := newTestStore(t, pool, newClock())
-	f := newFixture()
-
-	gateway := f.server(t, store, "gateway", map[string]string{"x-gateway-key": "gw-key-value"})
-	if !gateway.HasExtraHeaders || gateway.Name != "gateway" || gateway.AgentID != f.agentID {
-		t.Fatalf("created server = %+v", gateway)
-	}
-	plain := f.server(t, store, "plain", nil)
-	if plain.HasExtraHeaders {
-		t.Fatal("a server without headers reports headers")
-	}
-
-	// The name is unique per agent, not per workspace.
-	if _, err := store.CreateServer(ctx, ServerInput{
-		WorkspaceID: f.workspaceID, AgentID: f.agentID, CreatedBy: f.ownerID, Name: "gateway", URL: "https://other.example.com/mcp",
-	}); !errors.Is(err, ErrNameTaken) {
-		t.Fatalf("duplicate name: err = %v", err)
-	}
-	if _, err := store.CreateServer(ctx, ServerInput{
-		WorkspaceID: f.workspaceID, AgentID: uuid.NewString(), CreatedBy: f.ownerID, Name: "gateway", URL: "https://other.example.com/mcp",
-	}); err != nil {
-		t.Fatalf("same name on another agent: %v", err)
-	}
-
-	// Header values are sealed.
-	var sealed []byte
-	if err := pool.QueryRow(ctx, `SELECT extra_headers_ciphertext FROM mcp_oauth_server WHERE id = $1::uuid`, gateway.ID).Scan(&sealed); err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(sealed, []byte("gw-key-value")) {
-		t.Fatal("extra header value stored in plaintext")
-	}
-
-	listed, err := store.ListServersForAgent(ctx, f.workspaceID, f.agentID)
-	if err != nil || len(listed) != 2 || listed[0].Name != "gateway" || listed[1].Name != "plain" {
-		t.Fatalf("list = %+v, err = %v", listed, err)
-	}
-	// Another workspace does not see it.
-	if _, err := store.GetServer(ctx, uuid.NewString(), gateway.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("cross-workspace get: err = %v", err)
-	}
-
-	// Deleting a server takes its connections and pending authorizations.
-	if err := store.SaveGrant(ctx, f.grant(gateway.ID, "at-1", "rt-1", 3600)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.CreatePendingAuthorization(ctx, f.pending(gateway.ID)); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.DeleteServer(ctx, f.workspaceID, gateway.ID); err != nil {
-		t.Fatal(err)
-	}
-	for _, table := range []string{"mcp_oauth_server", "mcp_oauth_connection", "mcp_oauth_state"} {
-		column := "server_id"
-		if table == "mcp_oauth_server" {
-			column = "id"
-		}
-		var n int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM `+table+` WHERE `+column+` = $1::uuid`, gateway.ID).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		if n != 0 {
-			t.Errorf("%s keeps %d rows of the deleted server", table, n)
-		}
-	}
-	if err := store.DeleteServer(ctx, f.workspaceID, gateway.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("second delete: err = %v", err)
-	}
-}
-
-func (f fixture) pending(serverID string) PendingAuthorization {
+func (f fixture) pending(ref string) PendingAuthorization {
 	return PendingAuthorization{
-		WorkspaceID: f.workspaceID, ServerID: serverID, UserID: f.ownerID,
-		Resource: "https://mcp.example.com/gateway", TokenEndpoint: "https://auth.example.com/token",
+		WorkspaceID: f.workspaceID, ServerRef: ref, ServerURL: testServerURL, UserID: f.ownerID,
+		Resource: testServerURL, TokenEndpoint: "https://auth.example.com/token",
 		Client:      Client{ID: "client-1", Secret: NewSecret("client-secret-1"), TokenEndpointAuthMethod: "client_secret_basic"},
 		RedirectURI: "https://multica.example.com/api/mcp-oauth/callback",
 		Verifier:    NewSecret("verifier-value-0123456789-0123456789-0123456"),
 		ReturnTo:    "/settings",
 	}
+}
+
+func rowCount(t *testing.T, pool *pgxpool.Pool, table, ref string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM `+table+` WHERE server_ref = $1`, ref).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func TestPendingAuthorizationIsSingleUse(t *testing.T) {
@@ -194,9 +126,9 @@ func TestPendingAuthorizationIsSingleUse(t *testing.T) {
 	clock := newClock()
 	store := newTestStore(t, pool, clock)
 	f := newFixture()
-	server := f.server(t, store, "gateway", nil)
+	ref := f.target("gateway").Ref
 
-	state, err := store.CreatePendingAuthorization(ctx, f.pending(server.ID))
+	state, err := store.CreatePendingAuthorization(ctx, f.pending(ref))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,8 +148,8 @@ func TestPendingAuthorizationIsSingleUse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := f.pending(server.ID)
-	if got.ServerID != server.ID || got.Verifier.Reveal() != want.Verifier.Reveal() || got.Client.Secret.Reveal() != "client-secret-1" ||
+	want := f.pending(ref)
+	if got.ServerRef != ref || got.ServerURL != testServerURL || got.Verifier.Reveal() != want.Verifier.Reveal() || got.Client.Secret.Reveal() != "client-secret-1" ||
 		got.Client.TokenEndpointAuthMethod != "client_secret_basic" || got.RedirectURI != want.RedirectURI || got.ReturnTo != "/settings" {
 		t.Fatalf("consumed = %+v", got)
 	}
@@ -226,7 +158,7 @@ func TestPendingAuthorizationIsSingleUse(t *testing.T) {
 	}
 
 	// Another user's callback cannot use it, and the attempt burns it.
-	state, err = store.CreatePendingAuthorization(ctx, f.pending(server.ID))
+	state, err = store.CreatePendingAuthorization(ctx, f.pending(ref))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +170,7 @@ func TestPendingAuthorizationIsSingleUse(t *testing.T) {
 	}
 
 	// An expired state fails, and the next start clears it.
-	state, err = store.CreatePendingAuthorization(ctx, f.pending(server.ID))
+	state, err = store.CreatePendingAuthorization(ctx, f.pending(ref))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,12 +181,12 @@ func TestPendingAuthorizationIsSingleUse(t *testing.T) {
 	if _, err := store.ConsumePendingAuthorization(ctx, "", f.ownerID); !errors.Is(err, ErrStateInvalid) {
 		t.Fatalf("empty state: err = %v", err)
 	}
-	stale, err := store.CreatePendingAuthorization(ctx, f.pending(server.ID))
+	stale, err := store.CreatePendingAuthorization(ctx, f.pending(ref))
 	if err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(PendingTTL + time.Second)
-	if _, err := store.CreatePendingAuthorization(ctx, f.pending(server.ID)); err != nil {
+	if _, err := store.CreatePendingAuthorization(ctx, f.pending(ref)); err != nil {
 		t.Fatal(err)
 	}
 	var n int
@@ -265,16 +197,15 @@ func TestPendingAuthorizationIsSingleUse(t *testing.T) {
 		t.Fatal("an expired state was not cleared")
 	}
 
-	// Someone else's abandoned attempt on another server goes too, in the
+	// Someone else's abandoned attempt on another entry goes too, in the
 	// bounded batch every start clears.
 	other := newFixture()
-	otherServer := other.server(t, store, "elsewhere", nil)
-	abandoned, err := store.CreatePendingAuthorization(ctx, other.pending(otherServer.ID))
+	abandoned, err := store.CreatePendingAuthorization(ctx, other.pending(WorkspaceRef(uuid.NewString())))
 	if err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(PendingTTL + time.Second)
-	if _, err := store.CreatePendingAuthorization(ctx, f.pending(server.ID)); err != nil {
+	if _, err := store.CreatePendingAuthorization(ctx, f.pending(ref)); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM mcp_oauth_state WHERE state_hash = $1`, stateHash(abandoned)).Scan(&n); err != nil {
@@ -282,6 +213,11 @@ func TestPendingAuthorizationIsSingleUse(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatal("another user's abandoned state was never cleared")
+	}
+
+	// A ref that is not one is refused before anything is stored.
+	if _, err := store.CreatePendingAuthorization(ctx, f.pending("gateway")); err == nil {
+		t.Fatal("a pending authorization with an invalid ref was stored")
 	}
 }
 
@@ -291,18 +227,18 @@ func TestGrantIsSealedAndReplacedOnReconnect(t *testing.T) {
 	clock := newClock()
 	store := newTestStore(t, pool, clock)
 	f := newFixture()
-	server := f.server(t, store, "gateway", nil)
+	ref := f.target("gateway").Ref
 
-	if _, err := store.GetConnectionStatus(ctx, f.workspaceID, server.ID, f.ownerID); !errors.Is(err, ErrNotConnected) {
+	if _, err := store.GetConnectionStatus(ctx, f.workspaceID, ref, f.ownerID); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("before connect: err = %v", err)
 	}
-	if err := store.SaveGrant(ctx, f.grant(server.ID, "access-token-one", "refresh-token-one", 3600)); err != nil {
+	if err := store.SaveGrant(ctx, f.grant(ref, "access-token-one", "refresh-token-one", 3600)); err != nil {
 		t.Fatal(err)
 	}
 	var access, refresh, clientSecret []byte
 	if err := pool.QueryRow(ctx, `
 		SELECT access_token_ciphertext, refresh_token_ciphertext, client_secret_ciphertext
-		FROM mcp_oauth_connection WHERE server_id = $1::uuid`, server.ID).Scan(&access, &refresh, &clientSecret); err != nil {
+		FROM mcp_oauth_connection WHERE server_ref = $1`, ref).Scan(&access, &refresh, &clientSecret); err != nil {
 		t.Fatal(err)
 	}
 	for name, sealed := range map[string][]byte{"access": access, "refresh": refresh, "client secret": clientSecret} {
@@ -310,44 +246,134 @@ func TestGrantIsSealedAndReplacedOnReconnect(t *testing.T) {
 			t.Errorf("%s token is missing or stored in plaintext", name)
 		}
 	}
-	status, err := store.GetConnectionStatus(ctx, f.workspaceID, server.ID, f.ownerID)
+	status, err := store.GetConnectionStatus(ctx, f.workspaceID, ref, f.ownerID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Status != StatusConnected || status.ExpiresAt == nil || !status.ExpiresAt.Equal(clock.Now().Add(time.Hour)) || status.GrantedScope != "mcp" {
+	if status.Status != StatusConnected || status.ServerURL != testServerURL || status.ExpiresAt == nil ||
+		!status.ExpiresAt.Equal(clock.Now().Add(time.Hour)) || status.GrantedScope != "mcp" {
 		t.Fatalf("status = %+v", status)
+	}
+	// Read against an entry whose URL moved, it is a connection to reconnect.
+	if moved := status.ForURL("https://elsewhere.example.com/mcp"); moved.Status != StatusNeedsReconnect || moved.LastError != ReasonURLChanged {
+		t.Fatalf("status for another URL = %+v", moved)
+	}
+	if same := status.ForURL(testServerURL); same.Status != StatusConnected {
+		t.Fatalf("status for its own URL = %+v", same)
 	}
 
 	// A token endpoint that gives no lifetime leaves expires_at empty.
 	clock.Advance(time.Minute)
-	if err := store.SaveGrant(ctx, f.grant(server.ID, "access-token-two", "", 0)); err != nil {
+	if err := store.SaveGrant(ctx, f.grant(ref, "access-token-two", "", 0)); err != nil {
 		t.Fatal(err)
 	}
-	status, err = store.GetConnectionStatus(ctx, f.workspaceID, server.ID, f.ownerID)
+	status, err = store.GetConnectionStatus(ctx, f.workspaceID, ref, f.ownerID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if status.ExpiresAt != nil || !status.ConnectedAt.Equal(clock.Now()) {
 		t.Fatalf("after reconnect: %+v", status)
 	}
-	statuses, err := store.ListConnectionStatusesForAgent(ctx, f.workspaceID, f.agentID)
-	if err != nil || len(statuses) != 1 || statuses[0].ServerID != server.ID {
+	other := f.target("other").Ref
+	statuses, err := store.ListConnectionStatuses(ctx, f.workspaceID, f.ownerID, []string{ref, other})
+	if err != nil || len(statuses) != 1 || statuses[ref].ServerRef != ref {
 		t.Fatalf("list statuses = %+v, err = %v", statuses, err)
+	}
+	if statuses, err := store.ListConnectionStatuses(ctx, f.workspaceID, uuid.NewString(), []string{ref}); err != nil || len(statuses) != 0 {
+		t.Fatalf("another user's statuses = %+v, err = %v", statuses, err)
 	}
 
 	// Disconnecting also cancels this user's connects still in flight.
-	pending, err := store.CreatePendingAuthorization(ctx, f.pending(server.ID))
+	pending, err := store.CreatePendingAuthorization(ctx, f.pending(ref))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.DeleteConnection(ctx, f.workspaceID, server.ID, f.ownerID); err != nil {
+	if err := store.DeleteConnection(ctx, f.workspaceID, ref, f.ownerID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ConsumePendingAuthorization(ctx, pending, f.ownerID); !errors.Is(err, ErrStateInvalid) {
 		t.Fatalf("a connect in flight survived the disconnect: %v", err)
 	}
-	if err := store.DeleteConnection(ctx, f.workspaceID, server.ID, f.ownerID); !errors.Is(err, ErrNotConnected) {
+	if err := store.DeleteConnection(ctx, f.workspaceID, ref, f.ownerID); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("second disconnect: err = %v", err)
+	}
+}
+
+// One workspace entry has one connection per user; deleting the entry takes
+// every user's.
+func TestWorkspaceEntryConnectionsPerUser(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	store := newTestStore(t, pool, newClock())
+	f := newFixture()
+	second := f
+	second.ownerID = uuid.NewString()
+	ref := WorkspaceRef(uuid.NewString())
+	for _, fx := range []fixture{f, second} {
+		if err := store.SaveGrant(ctx, fx.grant(ref, "at-"+fx.ownerID, "rt", 3600)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.CreatePendingAuthorization(ctx, fx.pending(ref)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := rowCount(t, pool, "mcp_oauth_connection", ref); n != 2 {
+		t.Fatalf("%d connections, want one per user", n)
+	}
+	// One user's disconnect leaves the other's.
+	if removed, err := DeleteUserConnection(ctx, pool, f.workspaceID, ref, f.ownerID); err != nil || !removed {
+		t.Fatalf("DeleteUserConnection = %v, %v", removed, err)
+	}
+	if _, err := store.GetConnectionStatus(ctx, f.workspaceID, ref, second.ownerID); err != nil {
+		t.Fatalf("the other user's connection: %v", err)
+	}
+	if err := DeleteEntryData(ctx, pool, f.workspaceID, ref); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"mcp_oauth_connection", "mcp_oauth_state"} {
+		if n := rowCount(t, pool, table, ref); n != 0 {
+			t.Errorf("%s keeps %d rows of the deleted entry", table, n)
+		}
+	}
+}
+
+// Connections to an agent's own entries are forgotten when the entries are,
+// and nothing else is.
+func TestDeleteAgentEntryDataExcept(t *testing.T) {
+	ctx := context.Background()
+	pool := testPool(t)
+	store := newTestStore(t, pool, newClock())
+	f := newFixture()
+	other := f
+	other.agentID = uuid.NewString()
+	kept, dropped := f.target("kept").Ref, f.target("dropped").Ref
+	otherAgent := other.target("dropped").Ref
+	workspace := WorkspaceRef(uuid.NewString())
+	for _, ref := range []string{kept, dropped, otherAgent, workspace} {
+		if err := store.SaveGrant(ctx, f.grant(ref, "at", "rt", 3600)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.CreatePendingAuthorization(ctx, f.pending(dropped)); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteAgentEntryDataExcept(ctx, pool, f.workspaceID, f.agentID, []string{kept}); err != nil {
+		t.Fatal(err)
+	}
+	for ref, want := range map[string]int{kept: 1, dropped: 0, otherAgent: 1, workspace: 1} {
+		if n := rowCount(t, pool, "mcp_oauth_connection", ref); n != want {
+			t.Errorf("%s: %d connections, want %d", ref, n, want)
+		}
+	}
+	if n := rowCount(t, pool, "mcp_oauth_state", dropped); n != 0 {
+		t.Error("a connect in flight to a removed entry survived")
+	}
+	// No entry left at all.
+	if err := DeleteAgentEntryDataExcept(ctx, pool, f.workspaceID, f.agentID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := rowCount(t, pool, "mcp_oauth_connection", kept); n != 0 {
+		t.Error("the last entry's connection survived")
 	}
 }
 
@@ -357,18 +383,18 @@ func TestDeleteWorkspaceData(t *testing.T) {
 	store := newTestStore(t, pool, newClock())
 	f, other := newFixture(), newFixture()
 	for _, fx := range []fixture{f, other} {
-		server := fx.server(t, store, "gateway", nil)
-		if err := store.SaveGrant(ctx, fx.grant(server.ID, "at", "rt", 3600)); err != nil {
+		ref := fx.target("gateway").Ref
+		if err := store.SaveGrant(ctx, fx.grant(ref, "at", "rt", 3600)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.CreatePendingAuthorization(ctx, fx.pending(server.ID)); err != nil {
+		if _, err := store.CreatePendingAuthorization(ctx, fx.pending(ref)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := DeleteWorkspaceData(ctx, pool, f.workspaceID); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"mcp_oauth_server", "mcp_oauth_connection", "mcp_oauth_state"} {
+	for _, table := range []string{"mcp_oauth_connection", "mcp_oauth_state"} {
 		var mine, theirs int
 		if err := pool.QueryRow(ctx, `
 			SELECT count(*) FILTER (WHERE workspace_id = $1::uuid), count(*) FILTER (WHERE workspace_id = $2::uuid)

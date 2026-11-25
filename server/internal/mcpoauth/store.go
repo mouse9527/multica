@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
+// Modified for the mouse9527/multica fork: connections keyed by entry ref (M-269).
 
 package mcpoauth
 
@@ -7,7 +8,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -20,8 +20,7 @@ import (
 )
 
 // SecretKeyEnv is the base64 32-byte secretbox key that seals every token,
-// client secret, PKCE verifier and extra header value. Without it the feature
-// stays unavailable.
+// client secret and PKCE verifier. Without it the feature stays unavailable.
 const SecretKeyEnv = "MULTICA_MCP_OAUTH_SECRET_KEY"
 
 // PendingTTL is how long a started authorization may take to come back.
@@ -41,18 +40,21 @@ const (
 	ReasonRefreshFailed   = "refresh_failed"
 	ReasonNoRefreshToken  = "no_refresh_token"
 	ReasonUndecryptable   = "undecryptable"
+	// ReasonURLChanged: the entry's URL is no longer the one the grant was
+	// made for. The token is never sent to the new URL; only a new connect,
+	// to the new URL, brings the entry back.
+	ReasonURLChanged = "url_changed"
 )
 
 var (
-	ErrNotFound     = errors.New("MCP OAuth server not found")
-	ErrNameTaken    = errors.New("this agent already has an MCP server with that name")
 	ErrNotConnected = errors.New("MCP OAuth server is not connected")
 	ErrStateInvalid = errors.New("authorization state is invalid, used or expired")
 	ErrNoKey        = errors.New(SecretKeyEnv + " is not configured")
 )
 
 // Querier is the slice of a pgx pool or transaction the store uses. All SQL
-// here is hand-written against tables sqlc does not see (migration 9023).
+// here is hand-written against tables sqlc does not see (migrations 9023 and
+// 9026).
 type Querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
@@ -80,44 +82,39 @@ func NewStore(db Database, box *secretbox.Box) (*Store, error) {
 	return &Store{db: db, box: box, now: time.Now}, nil
 }
 
-// Server is an OAuth MCP server definition. Extra header values are not part
-// of it: they are write-only.
-type Server struct {
-	ID              string    `json:"id"`
-	WorkspaceID     string    `json:"workspace_id"`
-	AgentID         string    `json:"agent_id"`
-	Name            string    `json:"name"`
-	URL             string    `json:"url"`
-	Scope           string    `json:"scope"`
-	HasExtraHeaders bool      `json:"has_extra_headers"`
-	CreatedBy       string    `json:"created_by"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
-}
-
-// ServerInput creates a server. ExtraHeaders are sent with every MCP request
-// next to the OAuth token (for example a gateway's own API key header).
-type ServerInput struct {
-	WorkspaceID  string
-	AgentID      string
-	CreatedBy    string
-	Name         string
-	URL          string
-	Scope        string
-	ExtraHeaders map[string]string
+// Target is the entry a connect or a credential is for: its ref and the URL
+// the entry has now. A grant is only ever used for the URL it was made for.
+type Target struct {
+	WorkspaceID string
+	Ref         string
+	URL         string
+	Scope       string
 }
 
 // ConnectionStatus is what may be shown about a connection: no token, no
 // client secret.
 type ConnectionStatus struct {
-	ServerID     string     `json:"server_id"`
+	ServerRef    string     `json:"server_ref"`
 	UserID       string     `json:"user_id"`
 	Status       string     `json:"status"`
+	ServerURL    string     `json:"-"`
 	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 	GrantedScope string     `json:"granted_scope"`
 	LastError    string     `json:"last_error,omitempty"`
 	ConnectedAt  time.Time  `json:"connected_at"`
 	RefreshedAt  *time.Time `json:"refreshed_at,omitempty"`
+}
+
+// ForURL is the status as an entry whose URL is now entryURL sees it: a grant
+// made for another URL is not used (TokenSource marks it on first use), so it
+// already reads as needing a reconnect.
+func (c ConnectionStatus) ForURL(entryURL string) ConnectionStatus {
+	if c.Status == StatusConnected && c.ServerURL != entryURL {
+		c.Status = StatusNeedsReconnect
+		c.LastError = ReasonURLChanged
+		c.ExpiresAt = nil
+	}
+	return c
 }
 
 // Client is an OAuth client registration as the connect flow obtained it.
@@ -137,8 +134,11 @@ func (c Client) registration() remotemcp.OAuthClientRegistration {
 
 // PendingAuthorization is one started authorization, kept until its callback.
 type PendingAuthorization struct {
-	WorkspaceID   string
-	ServerID      string
+	WorkspaceID string
+	ServerRef   string
+	// ServerURL is the entry's URL when the connect started; the grant is
+	// bound to it.
+	ServerURL     string
 	UserID        string
 	Resource      string
 	TokenEndpoint string
@@ -152,7 +152,8 @@ type PendingAuthorization struct {
 // Grant is the result of a completed authorization.
 type Grant struct {
 	WorkspaceID   string
-	ServerID      string
+	ServerRef     string
+	ServerURL     string
 	UserID        string
 	Resource      string
 	TokenEndpoint string
@@ -194,126 +195,6 @@ func normalizeAuthMethod(method string) (string, error) {
 	}
 }
 
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
-}
-
-const serverColumns = `id::text, workspace_id::text, agent_id::text, name, url, scope,
-	extra_headers_ciphertext IS NOT NULL, created_by::text, created_at, updated_at`
-
-func scanServer(row pgx.Row) (Server, error) {
-	var out Server
-	err := row.Scan(&out.ID, &out.WorkspaceID, &out.AgentID, &out.Name, &out.URL, &out.Scope,
-		&out.HasExtraHeaders, &out.CreatedBy, &out.CreatedAt, &out.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Server{}, ErrNotFound
-	}
-	return out, err
-}
-
-// CreateServer stores a new server definition for an agent.
-func (s *Store) CreateServer(ctx context.Context, in ServerInput) (Server, error) {
-	if err := validateServerInput(in); err != nil {
-		return Server{}, err
-	}
-	var headers []byte
-	if len(in.ExtraHeaders) > 0 {
-		raw, err := json.Marshal(in.ExtraHeaders)
-		if err != nil {
-			return Server{}, err
-		}
-		if headers, err = s.box.Seal(raw); err != nil {
-			return Server{}, err
-		}
-	}
-	now := s.now()
-	out, err := scanServer(s.db.QueryRow(ctx, `
-		INSERT INTO mcp_oauth_server (workspace_id, agent_id, name, url, scope, extra_headers_ciphertext, created_by, created_at, updated_at)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::uuid, $8, $8)
-		RETURNING `+serverColumns,
-		in.WorkspaceID, in.AgentID, in.Name, in.URL, in.Scope, headers, in.CreatedBy, now))
-	if isUniqueViolation(err) {
-		return Server{}, ErrNameTaken
-	}
-	return out, err
-}
-
-// GetServer returns one server of the workspace.
-func (s *Store) GetServer(ctx context.Context, workspaceID, serverID string) (Server, error) {
-	return scanServer(s.db.QueryRow(ctx, `
-		SELECT `+serverColumns+` FROM mcp_oauth_server
-		WHERE workspace_id = $1::uuid AND id = $2::uuid`, workspaceID, serverID))
-}
-
-// ListServersForAgent returns the agent's servers ordered by name.
-func (s *Store) ListServersForAgent(ctx context.Context, workspaceID, agentID string) ([]Server, error) {
-	rows, err := s.db.Query(ctx, `
-		SELECT `+serverColumns+` FROM mcp_oauth_server
-		WHERE workspace_id = $1::uuid AND agent_id = $2::uuid
-		ORDER BY name`, workspaceID, agentID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []Server{}
-	for rows.Next() {
-		server, err := scanServer(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, server)
-	}
-	return out, rows.Err()
-}
-
-// ListServerNamesForAgent returns the names the agent's OAuth MCP servers
-// take in its mcpServers, ordered. It opens no secret, so a claim can hold
-// those names back from the agent's other MCP config even when the
-// deployment key is missing.
-func ListServerNamesForAgent(ctx context.Context, q Querier, workspaceID, agentID string) ([]string, error) {
-	rows, err := q.Query(ctx, `
-		SELECT name FROM mcp_oauth_server
-		WHERE workspace_id = $1::uuid AND agent_id = $2::uuid
-		ORDER BY name`, workspaceID, agentID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	names := []string{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		names = append(names, name)
-	}
-	return names, rows.Err()
-}
-
-// DeleteServer removes a server with its connections and pending
-// authorizations. There are no foreign keys, so this is the cascade.
-func (s *Store) DeleteServer(ctx context.Context, workspaceID, serverID string) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	tag, err := tx.Exec(ctx, `DELETE FROM mcp_oauth_server WHERE workspace_id = $1::uuid AND id = $2::uuid`, workspaceID, serverID)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	for _, table := range []string{"mcp_oauth_connection", "mcp_oauth_state"} {
-		if _, err := tx.Exec(ctx, `DELETE FROM `+table+` WHERE workspace_id = $1::uuid AND server_id = $2::uuid`, workspaceID, serverID); err != nil {
-			return fmt.Errorf("delete %s: %w", table, err)
-		}
-	}
-	return tx.Commit(ctx)
-}
-
 // NewVerifier returns a PKCE code verifier: 32 random bytes, base64url, which
 // is 43 characters from the unreserved set RFC 7636 requires.
 func NewVerifier() (Secret, error) {
@@ -335,6 +216,9 @@ func (s *Store) CreatePendingAuthorization(ctx context.Context, p PendingAuthori
 	if p.Verifier.Empty() || p.Client.ID == "" {
 		return "", errors.New("pending authorization needs a verifier and a client id")
 	}
+	if _, ok := ParseRef(p.ServerRef); !ok {
+		return "", errors.New("pending authorization has an invalid server ref")
+	}
 	method, err := normalizeAuthMethod(p.Client.TokenEndpointAuthMethod)
 	if err != nil {
 		return "", err
@@ -354,23 +238,23 @@ func (s *Store) CreatePendingAuthorization(ctx context.Context, p PendingAuthori
 	}
 	now := s.now()
 	// Clear abandoned attempts as new ones start, so the table holds only
-	// attempts in flight without a sweeper: this user's on this server, and a
+	// attempts in flight without a sweeper: this user's on this entry, and a
 	// bounded batch of anyone's. The table is that small, so the unindexed
 	// scan for the batch stays cheap, and the bound keeps one start from
 	// paying for a backlog.
 	if _, err := s.db.Exec(ctx, `
 		DELETE FROM mcp_oauth_state
-		WHERE (server_id = $1::uuid AND user_id = $2::uuid AND expires_at < $3)
+		WHERE (server_ref = $1 AND user_id = $2::uuid AND expires_at < $3)
 			OR state_hash IN (SELECT state_hash FROM mcp_oauth_state WHERE expires_at < $3 LIMIT 50)`,
-		p.ServerID, p.UserID, now); err != nil {
+		p.ServerRef, p.UserID, now); err != nil {
 		return "", err
 	}
 	_, err = s.db.Exec(ctx, `
-		INSERT INTO mcp_oauth_state (state_hash, workspace_id, server_id, user_id, resource, token_endpoint,
+		INSERT INTO mcp_oauth_state (state_hash, workspace_id, server_ref, server_url, user_id, resource, token_endpoint,
 			client_id, client_secret_ciphertext, token_endpoint_auth_method, redirect_uri, verifier_ciphertext,
 			return_to, expires_at, created_at)
-		VALUES ($1, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-		stateHash(state), p.WorkspaceID, p.ServerID, p.UserID, p.Resource, p.TokenEndpoint,
+		VALUES ($1, $2::uuid, $3, $4, $5::uuid, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		stateHash(state), p.WorkspaceID, p.ServerRef, p.ServerURL, p.UserID, p.Resource, p.TokenEndpoint,
 		p.Client.ID, clientSecret, method, p.RedirectURI, verifier, p.ReturnTo, now.Add(PendingTTL), now)
 	if err != nil {
 		return "", err
@@ -392,10 +276,10 @@ func (s *Store) ConsumePendingAuthorization(ctx context.Context, state, userID s
 	)
 	err := s.db.QueryRow(ctx, `
 		DELETE FROM mcp_oauth_state WHERE state_hash = $1
-		RETURNING workspace_id::text, server_id::text, user_id::text, resource, token_endpoint,
+		RETURNING workspace_id::text, server_ref, server_url, user_id::text, resource, token_endpoint,
 			client_id, client_secret_ciphertext, token_endpoint_auth_method, redirect_uri,
 			verifier_ciphertext, return_to, expires_at`, stateHash(state)).Scan(
-		&p.WorkspaceID, &p.ServerID, &p.UserID, &p.Resource, &p.TokenEndpoint,
+		&p.WorkspaceID, &p.ServerRef, &p.ServerURL, &p.UserID, &p.Resource, &p.TokenEndpoint,
 		&p.Client.ID, &clientSecret, &p.Client.TokenEndpointAuthMethod, &p.RedirectURI,
 		&verifier, &p.ReturnTo, &p.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -421,10 +305,13 @@ func (s *Store) ConsumePendingAuthorization(ctx context.Context, state, userID s
 }
 
 // SaveGrant stores a completed authorization as the user's connection to the
-// server, replacing any earlier one (a reconnect).
+// entry, replacing any earlier one (a reconnect).
 func (s *Store) SaveGrant(ctx context.Context, g Grant) error {
 	if g.AccessToken.Empty() {
 		return errors.New("grant has no access token")
+	}
+	if _, ok := ParseRef(g.ServerRef); !ok {
+		return errors.New("grant has an invalid server ref")
 	}
 	method, err := normalizeAuthMethod(g.Client.TokenEndpointAuthMethod)
 	if err != nil {
@@ -444,12 +331,13 @@ func (s *Store) SaveGrant(ctx context.Context, g Grant) error {
 	}
 	now := s.now()
 	_, err = s.db.Exec(ctx, `
-		INSERT INTO mcp_oauth_connection (server_id, user_id, workspace_id, status, resource, token_endpoint,
+		INSERT INTO mcp_oauth_connection (server_ref, user_id, workspace_id, server_url, status, resource, token_endpoint,
 			client_id, client_secret_ciphertext, token_endpoint_auth_method, access_token_ciphertext,
 			refresh_token_ciphertext, expires_at, granted_scope, last_error, connected_at, refreshed_at, updated_at)
-		VALUES ($1::uuid, $2::uuid, $3::uuid, 'connected', $4, $5, $6, $7, $8, $9, $10, $11, $12, '', $13, NULL, $13)
-		ON CONFLICT (server_id, user_id) DO UPDATE SET
+		VALUES ($1, $2::uuid, $3::uuid, $4, 'connected', $5, $6, $7, $8, $9, $10, $11, $12, $13, '', $14, NULL, $14)
+		ON CONFLICT (server_ref, user_id) DO UPDATE SET
 			workspace_id = EXCLUDED.workspace_id,
+			server_url = EXCLUDED.server_url,
 			status = 'connected',
 			resource = EXCLUDED.resource,
 			token_endpoint = EXCLUDED.token_endpoint,
@@ -464,7 +352,7 @@ func (s *Store) SaveGrant(ctx context.Context, g Grant) error {
 			connected_at = EXCLUDED.connected_at,
 			refreshed_at = NULL,
 			updated_at = EXCLUDED.updated_at`,
-		g.ServerID, g.UserID, g.WorkspaceID, g.Resource, g.TokenEndpoint,
+		g.ServerRef, g.UserID, g.WorkspaceID, g.ServerURL, g.Resource, g.TokenEndpoint,
 		g.Client.ID, clientSecret, method, access, refresh, expiryArg(now, g.ExpiresIn), g.Scope, now)
 	return err
 }
@@ -477,12 +365,12 @@ func expiryArg(now time.Time, expiresIn int64) any {
 	return expiry
 }
 
-const connectionStatusColumns = `server_id::text, user_id::text, status, expires_at, granted_scope,
+const connectionStatusColumns = `server_ref, user_id::text, status, server_url, expires_at, granted_scope,
 	last_error, connected_at, refreshed_at`
 
 func scanConnectionStatus(row pgx.Row) (ConnectionStatus, error) {
 	var out ConnectionStatus
-	err := row.Scan(&out.ServerID, &out.UserID, &out.Status, &out.ExpiresAt, &out.GrantedScope,
+	err := row.Scan(&out.ServerRef, &out.UserID, &out.Status, &out.ServerURL, &out.ExpiresAt, &out.GrantedScope,
 		&out.LastError, &out.ConnectedAt, &out.RefreshedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ConnectionStatus{}, ErrNotConnected
@@ -490,69 +378,112 @@ func scanConnectionStatus(row pgx.Row) (ConnectionStatus, error) {
 	return out, err
 }
 
-// GetConnectionStatus returns the user's connection to a server, without
+// GetConnectionStatus returns the user's connection to an entry, without
 // secrets, or ErrNotConnected.
-func (s *Store) GetConnectionStatus(ctx context.Context, workspaceID, serverID, userID string) (ConnectionStatus, error) {
+func (s *Store) GetConnectionStatus(ctx context.Context, workspaceID, ref, userID string) (ConnectionStatus, error) {
 	return scanConnectionStatus(s.db.QueryRow(ctx, `
 		SELECT `+connectionStatusColumns+` FROM mcp_oauth_connection
-		WHERE workspace_id = $1::uuid AND server_id = $2::uuid AND user_id = $3::uuid`,
-		workspaceID, serverID, userID))
+		WHERE workspace_id = $1::uuid AND server_ref = $2 AND user_id = $3::uuid`,
+		workspaceID, ref, userID))
 }
 
-// ListConnectionStatusesForAgent returns every connection to the agent's
-// servers, without secrets.
-func (s *Store) ListConnectionStatusesForAgent(ctx context.Context, workspaceID, agentID string) ([]ConnectionStatus, error) {
+// ListConnectionStatuses returns the user's connections to the given entries,
+// without secrets, keyed by ref. An entry the user has not connected is
+// absent.
+func (s *Store) ListConnectionStatuses(ctx context.Context, workspaceID, userID string, refs []string) (map[string]ConnectionStatus, error) {
+	out := map[string]ConnectionStatus{}
+	if len(refs) == 0 {
+		return out, nil
+	}
 	rows, err := s.db.Query(ctx, `
-		SELECT c.server_id::text, c.user_id::text, c.status, c.expires_at, c.granted_scope,
-			c.last_error, c.connected_at, c.refreshed_at
-		FROM mcp_oauth_connection c
-		JOIN mcp_oauth_server srv ON srv.id = c.server_id AND srv.workspace_id = c.workspace_id
-		WHERE c.workspace_id = $1::uuid AND srv.agent_id = $2::uuid
-		ORDER BY srv.name, c.user_id`, workspaceID, agentID)
+		SELECT `+connectionStatusColumns+` FROM mcp_oauth_connection
+		WHERE workspace_id = $1::uuid AND user_id = $2::uuid AND server_ref = ANY($3::text[])`,
+		workspaceID, userID, refs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []ConnectionStatus{}
 	for rows.Next() {
 		status, err := scanConnectionStatus(rows)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, status)
+		out[status.ServerRef] = status
 	}
 	return out, rows.Err()
 }
 
-// DeleteConnection forgets the user's tokens for a server (disconnect), and
+// DeleteConnection forgets the user's tokens for an entry (disconnect), and
 // cancels the user's connects to it still in flight: an authorization page
 // left open in another tab must not reconnect what was just disconnected.
 // It returns ErrNotConnected when there was no connection; pending
 // authorizations are cancelled either way.
-func (s *Store) DeleteConnection(ctx context.Context, workspaceID, serverID, userID string) error {
+func (s *Store) DeleteConnection(ctx context.Context, workspaceID, ref, userID string) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `
-		DELETE FROM mcp_oauth_state
-		WHERE workspace_id = $1::uuid AND server_id = $2::uuid AND user_id = $3::uuid`,
-		workspaceID, serverID, userID); err != nil {
-		return err
-	}
-	tag, err := tx.Exec(ctx, `
-		DELETE FROM mcp_oauth_connection
-		WHERE workspace_id = $1::uuid AND server_id = $2::uuid AND user_id = $3::uuid`,
-		workspaceID, serverID, userID)
+	removed, err := DeleteUserConnection(ctx, tx, workspaceID, ref, userID)
 	if err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	if !removed {
 		return ErrNotConnected
+	}
+	return nil
+}
+
+// DeleteUserConnection removes one user's connection to an entry and their
+// connects to it in flight. It needs no key, so it can run inside another
+// write's transaction. It reports whether a connection was there.
+func DeleteUserConnection(ctx context.Context, q Querier, workspaceID, ref, userID string) (bool, error) {
+	if _, err := q.Exec(ctx, `
+		DELETE FROM mcp_oauth_state
+		WHERE workspace_id = $1::uuid AND server_ref = $2 AND user_id = $3::uuid`,
+		workspaceID, ref, userID); err != nil {
+		return false, err
+	}
+	tag, err := q.Exec(ctx, `
+		DELETE FROM mcp_oauth_connection
+		WHERE workspace_id = $1::uuid AND server_ref = $2 AND user_id = $3::uuid`,
+		workspaceID, ref, userID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// DeleteEntryData removes every user's connection to an entry and every
+// connect to it in flight: the entry was deleted. Like DeleteUserConnection
+// it needs no key.
+func DeleteEntryData(ctx context.Context, q Querier, workspaceID, ref string) error {
+	for _, table := range []string{"mcp_oauth_state", "mcp_oauth_connection"} {
+		if _, err := q.Exec(ctx, `DELETE FROM `+table+` WHERE workspace_id = $1::uuid AND server_ref = $2`, workspaceID, ref); err != nil {
+			return fmt.Errorf("delete %s: %w", table, err)
+		}
+	}
+	return nil
+}
+
+// DeleteAgentEntryDataExcept removes the connections to the agent's own
+// entries (refs AgentRefPrefix(agentID)...) except those in keep: the entries
+// were removed from the agent's mcp_config, renamed, or no longer use OAuth.
+func DeleteAgentEntryDataExcept(ctx context.Context, q Querier, workspaceID, agentID string, keep []string) error {
+	if keep == nil {
+		keep = []string{}
+	}
+	prefix := AgentRefPrefix(agentID)
+	for _, table := range []string{"mcp_oauth_state", "mcp_oauth_connection"} {
+		if _, err := q.Exec(ctx, `
+			DELETE FROM `+table+`
+			WHERE workspace_id = $1::uuid AND left(server_ref, length($2::text)) = $2::text AND NOT (server_ref = ANY($3::text[]))`,
+			workspaceID, prefix, keep); err != nil {
+			return fmt.Errorf("delete %s: %w", table, err)
+		}
 	}
 	return nil
 }
@@ -560,7 +491,7 @@ func (s *Store) DeleteConnection(ctx context.Context, workspaceID, serverID, use
 // DeleteWorkspaceData removes every MCP OAuth row of a workspace. It runs
 // inside the workspace delete transaction; the tables have no foreign keys.
 func DeleteWorkspaceData(ctx context.Context, q Querier, workspaceID any) error {
-	for _, table := range []string{"mcp_oauth_state", "mcp_oauth_connection", "mcp_oauth_server"} {
+	for _, table := range []string{"mcp_oauth_state", "mcp_oauth_connection"} {
 		if _, err := q.Exec(ctx, `DELETE FROM `+table+` WHERE workspace_id = $1`, workspaceID); err != nil {
 			return fmt.Errorf("delete %s: %w", table, err)
 		}

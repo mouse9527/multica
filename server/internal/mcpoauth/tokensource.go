@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
+// Modified for the mouse9527/multica fork: connections keyed by entry ref, bound to its URL (M-269).
 
 package mcpoauth
 
@@ -7,7 +8,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -27,10 +27,6 @@ var (
 	// ErrUnavailable means no usable token right now, for a reason that may
 	// pass (the authorization server did not answer). The grant is kept.
 	ErrUnavailable = errors.New("MCP OAuth token is temporarily unavailable")
-	// ErrServerUnreadable means the server's sealed extra headers cannot be
-	// opened (the key changed). Reconnecting does not help; the server's
-	// headers have to be saved again.
-	ErrServerUnreadable = errors.New("MCP OAuth server extra headers cannot be decrypted")
 	// ErrGrantRejected is what a Refresher returns, wrapped, when the
 	// authorization server refused the refresh token itself (HTTP 400 or 401
 	// from the token endpoint: invalid_grant, invalid_client). Any other
@@ -54,19 +50,13 @@ type Refresher func(ctx context.Context, req RefreshRequest) (remotemcp.OAuthTok
 type Credential struct {
 	AccessToken Secret
 	// ExpiresAt is zero when the authorization server gave no lifetime.
-	ExpiresAt    time.Time
-	ExtraHeaders map[string]Secret
+	ExpiresAt time.Time
 }
 
-// Headers returns the HTTP headers to send: the server's extra headers and
-// the bearer token. This is the only place the token is put into a header.
+// Headers returns the HTTP headers to send: the bearer token, the entry's
+// only credential. This is the only place the token is put into a header.
 func (c Credential) Headers() map[string]string {
-	out := make(map[string]string, len(c.ExtraHeaders)+1)
-	for name, value := range c.ExtraHeaders {
-		out[name] = value.Reveal()
-	}
-	out["Authorization"] = "Bearer " + c.AccessToken.Reveal()
-	return out
+	return map[string]string{"Authorization": "Bearer " + c.AccessToken.Reveal()}
 }
 
 // Default TokenSource settings.
@@ -117,6 +107,7 @@ func NewTokenSource(store *Store, refresh Refresher, logger *slog.Logger) *Token
 
 type connectionRow struct {
 	status        string
+	serverURL     string
 	resource      string
 	tokenEndpoint string
 	clientID      string
@@ -128,26 +119,21 @@ type connectionRow struct {
 	issuedAt      time.Time
 	lastError     string
 	updatedAt     time.Time
-	extraHeaders  []byte
 }
 
-func loadConnection(ctx context.Context, q Querier, serverID, userID string, forUpdate bool) (connectionRow, error) {
-	// The join reads the extra headers in the same statement; FOR UPDATE OF
-	// c locks only the connection row.
+func loadConnection(ctx context.Context, q Querier, target Target, userID string, forUpdate bool) (connectionRow, error) {
 	sql := `
-		SELECT c.status, c.resource, c.token_endpoint, c.client_id, c.client_secret_ciphertext,
-			c.token_endpoint_auth_method, c.access_token_ciphertext, c.refresh_token_ciphertext,
-			c.expires_at, COALESCE(c.refreshed_at, c.connected_at), c.last_error, c.updated_at,
-			srv.extra_headers_ciphertext
-		FROM mcp_oauth_connection c
-		JOIN mcp_oauth_server srv ON srv.id = c.server_id AND srv.workspace_id = c.workspace_id
-		WHERE c.server_id = $1::uuid AND c.user_id = $2::uuid`
+		SELECT status, server_url, resource, token_endpoint, client_id, client_secret_ciphertext,
+			token_endpoint_auth_method, access_token_ciphertext, refresh_token_ciphertext,
+			expires_at, COALESCE(refreshed_at, connected_at), last_error, updated_at
+		FROM mcp_oauth_connection
+		WHERE workspace_id = $1::uuid AND server_ref = $2 AND user_id = $3::uuid`
 	if forUpdate {
-		sql += ` FOR UPDATE OF c`
+		sql += ` FOR UPDATE`
 	}
 	var row connectionRow
-	err := q.QueryRow(ctx, sql, serverID, userID).Scan(&row.status, &row.resource, &row.tokenEndpoint,
-		&row.clientID, &row.clientSecret, &row.authMethod, &row.access, &row.refresh, &row.expiresAt, &row.issuedAt, &row.lastError, &row.updatedAt, &row.extraHeaders)
+	err := q.QueryRow(ctx, sql, target.WorkspaceID, target.Ref, userID).Scan(&row.status, &row.serverURL, &row.resource, &row.tokenEndpoint,
+		&row.clientID, &row.clientSecret, &row.authMethod, &row.access, &row.refresh, &row.expiresAt, &row.issuedAt, &row.lastError, &row.updatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return connectionRow{}, ErrNotConnected
 	}
@@ -190,14 +176,21 @@ func (row connectionRow) recentlyFailed(now time.Time, window time.Duration) boo
 	return row.lastError == ReasonRefreshFailed && now.Sub(row.updatedAt) < window
 }
 
-// Credential returns a credential for userID's connection to serverID.
+// Credential returns a credential for userID's connection to the target
+// entry.
+//
+// The grant is bound to the URL it was made for: when target.URL is another
+// one (the entry was edited since), no token is handed out and the connection
+// is marked as needing a reconnect, so a token is never sent to an address
+// its owner did not authorize.
 //
 // Errors: ErrNotConnected (no connection), ErrNeedsReconnect (the grant is
-// gone; the row is marked so the settings page can say so), ErrUnavailable
-// (try again later; the grant is kept). The caller decides what a task does
-// without the server — the claim path mounts nothing and tells the task why.
-func (s *TokenSource) Credential(ctx context.Context, serverID, userID string) (Credential, error) {
-	return s.credentialReplacing(ctx, serverID, userID, "")
+// gone or was made for another URL; the row is marked so the settings page
+// can say so), ErrUnavailable (try again later; the grant is kept). The
+// caller decides what a task does without the server — the claim path mounts
+// nothing and tells the task why.
+func (s *TokenSource) Credential(ctx context.Context, target Target, userID string) (Credential, error) {
+	return s.credentialReplacing(ctx, target, userID, "")
 }
 
 // CredentialReplacing is Credential for a caller whose last token was just
@@ -205,8 +198,8 @@ func (s *TokenSource) Credential(ctx context.Context, serverID, userID string) (
 // While it is still the stored token, it counts as expired: it is refreshed
 // now rather than handed back, whatever its stated lifetime says. If someone
 // already replaced it, the current token is returned without another refresh.
-func (s *TokenSource) CredentialReplacing(ctx context.Context, serverID, userID, rejectedHash string) (Credential, error) {
-	return s.credentialReplacing(ctx, serverID, userID, rejectedHash)
+func (s *TokenSource) CredentialReplacing(ctx context.Context, target Target, userID, rejectedHash string) (Credential, error) {
+	return s.credentialReplacing(ctx, target, userID, rejectedHash)
 }
 
 // TokenHash identifies an access token without carrying it: hex SHA-256.
@@ -232,8 +225,8 @@ func (s *TokenSource) expireIfRejected(row *connectionRow, rejectedHash string, 
 	}
 }
 
-func (s *TokenSource) credentialReplacing(ctx context.Context, serverID, userID, rejectedHash string) (Credential, error) {
-	row, err := loadConnection(ctx, s.store.db, serverID, userID, false)
+func (s *TokenSource) credentialReplacing(ctx context.Context, target Target, userID, rejectedHash string) (Credential, error) {
+	row, err := loadConnection(ctx, s.store.db, target, userID, false)
 	if err != nil {
 		return Credential{}, err
 	}
@@ -241,18 +234,21 @@ func (s *TokenSource) credentialReplacing(ctx context.Context, serverID, userID,
 	if row.status == StatusNeedsReconnect {
 		return Credential{}, ErrNeedsReconnect
 	}
+	if row.serverURL != target.URL {
+		return Credential{}, s.markInOwnTx(ctx, target, userID, ReasonURLChanged)
+	}
 	s.expireIfRejected(&row, rejectedHash, now)
 	if row.usable(now, s.Margin) {
-		return s.credential(ctx, serverID, userID, row)
+		return s.credential(ctx, target, userID, row)
 	}
 	if row.recentlyFailed(now, s.RetryAfterFailure) {
-		return s.afterRecentFailure(ctx, serverID, userID, row, now)
+		return s.afterRecentFailure(ctx, target, userID, row, now)
 	}
 	// The refresh runs detached (see refreshLocked); the caller waits for it
 	// only as long as its own context allows.
 	done := make(chan refreshResult, 1)
 	go func() {
-		credential, err := s.refreshLocked(ctx, serverID, userID, rejectedHash)
+		credential, err := s.refreshLocked(ctx, target, userID, rejectedHash)
 		done <- refreshResult{credential, err}
 	}()
 	select {
@@ -277,7 +273,7 @@ type refreshResult struct {
 // the token endpoint has rotated the refresh token, abandoning the write would
 // lose the only copy of the new one and force a reconnect. RefreshTimeout
 // and LockTimeout still bound it.
-func (s *TokenSource) refreshLocked(ctx context.Context, serverID, userID, rejectedHash string) (Credential, error) {
+func (s *TokenSource) refreshLocked(ctx context.Context, target Target, userID, rejectedHash string) (Credential, error) {
 	work, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.LockTimeout+s.RefreshTimeout+commitReserve)
 	defer cancel()
 	tx, err := s.store.db.Begin(work)
@@ -288,7 +284,7 @@ func (s *TokenSource) refreshLocked(ctx context.Context, serverID, userID, rejec
 	if _, err := tx.Exec(work, fmt.Sprintf(`SET LOCAL lock_timeout = '%dms'`, s.LockTimeout.Milliseconds())); err != nil {
 		return Credential{}, err
 	}
-	row, err := loadConnection(work, tx, serverID, userID, true)
+	row, err := loadConnection(work, tx, target, userID, true)
 	if err != nil {
 		return Credential{}, s.unavailableOnLockTimeout(err)
 	}
@@ -296,25 +292,29 @@ func (s *TokenSource) refreshLocked(ctx context.Context, serverID, userID, rejec
 	if row.status == StatusNeedsReconnect {
 		return Credential{}, ErrNeedsReconnect
 	}
+	if row.serverURL != target.URL {
+		// Reconnected to another URL while this caller waited for the lock.
+		return Credential{}, s.markNeedsReconnect(work, tx, target, userID, ReasonURLChanged)
+	}
 	s.expireIfRejected(&row, rejectedHash, now)
 	if row.usable(now, s.Margin) {
 		// Someone else refreshed while this caller waited for the lock.
 		if err := tx.Commit(work); err != nil {
 			return Credential{}, err
 		}
-		return s.credential(ctx, serverID, userID, row)
+		return s.credential(ctx, target, userID, row)
 	}
 	if row.recentlyFailed(now, s.RetryAfterFailure) {
 		// The caller ahead of this one just failed; do not try again yet.
 		if err := tx.Commit(work); err != nil {
 			return Credential{}, err
 		}
-		return s.afterRecentFailure(ctx, serverID, userID, row, now)
+		return s.afterRecentFailure(ctx, target, userID, row, now)
 	}
 
 	refreshToken, err := s.store.open(row.refresh)
 	if err != nil {
-		return Credential{}, s.markNeedsReconnect(work, tx, serverID, userID, ReasonUndecryptable)
+		return Credential{}, s.markNeedsReconnect(work, tx, target, userID, ReasonUndecryptable)
 	}
 	if refreshToken == "" {
 		if row.stillValid(now) {
@@ -322,13 +322,13 @@ func (s *TokenSource) refreshLocked(ctx context.Context, serverID, userID, rejec
 			if err := tx.Commit(work); err != nil {
 				return Credential{}, err
 			}
-			return s.credential(ctx, serverID, userID, row)
+			return s.credential(ctx, target, userID, row)
 		}
-		return Credential{}, s.markNeedsReconnect(work, tx, serverID, userID, ReasonNoRefreshToken)
+		return Credential{}, s.markNeedsReconnect(work, tx, target, userID, ReasonNoRefreshToken)
 	}
 	clientSecret, err := s.store.open(row.clientSecret)
 	if err != nil {
-		return Credential{}, s.markNeedsReconnect(work, tx, serverID, userID, ReasonUndecryptable)
+		return Credential{}, s.markNeedsReconnect(work, tx, target, userID, ReasonUndecryptable)
 	}
 
 	call, cancelCall := context.WithTimeout(work, s.RefreshTimeout)
@@ -341,24 +341,25 @@ func (s *TokenSource) refreshLocked(ctx context.Context, serverID, userID, rejec
 	cancelCall()
 	if refreshErr != nil {
 		if errors.Is(refreshErr, ErrGrantRejected) {
-			return Credential{}, s.markNeedsReconnect(work, tx, serverID, userID, ReasonRefreshRejected)
+			return Credential{}, s.markNeedsReconnect(work, tx, target, userID, ReasonRefreshRejected)
 		}
 		// Transient. The error text is not logged: it comes from the network.
-		s.logger.Warn("mcp oauth: refresh failed; keeping the grant", "server_id", serverID, "user_id", userID)
+		s.logger.Warn("mcp oauth: refresh failed; keeping the grant", "server_ref", target.Ref, "user_id", userID)
 		// The call may have taken until RefreshTimeout, so whether the old
 		// token is still usable is judged at the time it failed, not at the
 		// time it started.
 		failedAt := s.store.now()
 		if _, err := tx.Exec(work, `
-			UPDATE mcp_oauth_connection SET last_error = $3, updated_at = $4
-			WHERE server_id = $1::uuid AND user_id = $2::uuid`, serverID, userID, ReasonRefreshFailed, failedAt); err != nil {
+			UPDATE mcp_oauth_connection SET last_error = $4, updated_at = $5
+			WHERE workspace_id = $1::uuid AND server_ref = $2 AND user_id = $3::uuid`,
+			target.WorkspaceID, target.Ref, userID, ReasonRefreshFailed, failedAt); err != nil {
 			return Credential{}, err
 		}
 		if err := tx.Commit(work); err != nil {
 			return Credential{}, err
 		}
 		if row.stillValid(failedAt) {
-			return s.credential(ctx, serverID, userID, row)
+			return s.credential(ctx, target, userID, row)
 		}
 		return Credential{}, ErrUnavailable
 	}
@@ -384,15 +385,15 @@ func (s *TokenSource) refreshLocked(ctx context.Context, serverID, userID, rejec
 	expiry := expiryArg(now, response.ExpiresIn)
 	if _, err := tx.Exec(work, `
 		UPDATE mcp_oauth_connection SET
-			access_token_ciphertext = $3,
-			refresh_token_ciphertext = $4,
-			expires_at = $5,
-			granted_scope = CASE WHEN $6 = '' THEN granted_scope ELSE $6 END,
+			access_token_ciphertext = $4,
+			refresh_token_ciphertext = $5,
+			expires_at = $6,
+			granted_scope = CASE WHEN $7 = '' THEN granted_scope ELSE $7 END,
 			last_error = '',
-			refreshed_at = $7,
-			updated_at = $7
-		WHERE server_id = $1::uuid AND user_id = $2::uuid`,
-		serverID, userID, access, refreshSealed, expiry, response.Scope, now); err != nil {
+			refreshed_at = $8,
+			updated_at = $8
+		WHERE workspace_id = $1::uuid AND server_ref = $2 AND user_id = $3::uuid`,
+		target.WorkspaceID, target.Ref, userID, access, refreshSealed, expiry, response.Scope, now); err != nil {
 		return Credential{}, err
 	}
 	if err := tx.Commit(work); err != nil {
@@ -404,31 +405,32 @@ func (s *TokenSource) refreshLocked(ctx context.Context, serverID, userID, rejec
 	if t, ok := expiry.(time.Time); ok {
 		row.expiresAt = &t
 	}
-	return s.credential(ctx, serverID, userID, row)
+	return s.credential(ctx, target, userID, row)
 }
 
 // afterRecentFailure answers without a refresh while a transient failure is
 // recent: the current token while it is still valid, ErrUnavailable after.
-func (s *TokenSource) afterRecentFailure(ctx context.Context, serverID, userID string, row connectionRow, now time.Time) (Credential, error) {
+func (s *TokenSource) afterRecentFailure(ctx context.Context, target Target, userID string, row connectionRow, now time.Time) (Credential, error) {
 	if row.stillValid(now) {
-		return s.credential(ctx, serverID, userID, row)
+		return s.credential(ctx, target, userID, row)
 	}
 	return Credential{}, ErrUnavailable
 }
 
 // markNeedsReconnect drops the tokens and records why, then commits. It
 // returns ErrNeedsReconnect so callers can return it directly.
-func (s *TokenSource) markNeedsReconnect(ctx context.Context, tx pgx.Tx, serverID, userID, reason string) error {
-	s.logger.Warn("mcp oauth: connection needs reconnect", "server_id", serverID, "user_id", userID, "reason", reason)
+func (s *TokenSource) markNeedsReconnect(ctx context.Context, tx pgx.Tx, target Target, userID, reason string) error {
+	s.logger.Warn("mcp oauth: connection needs reconnect", "server_ref", target.Ref, "user_id", userID, "reason", reason)
 	if _, err := tx.Exec(ctx, `
 		UPDATE mcp_oauth_connection SET
 			status = 'needs_reconnect',
 			access_token_ciphertext = NULL,
 			refresh_token_ciphertext = NULL,
 			expires_at = NULL,
-			last_error = $3,
-			updated_at = $4
-		WHERE server_id = $1::uuid AND user_id = $2::uuid`, serverID, userID, reason, s.store.now()); err != nil {
+			last_error = $4,
+			updated_at = $5
+		WHERE workspace_id = $1::uuid AND server_ref = $2 AND user_id = $3::uuid`,
+		target.WorkspaceID, target.Ref, userID, reason, s.store.now()); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -450,35 +452,22 @@ func isLockTimeout(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "55P03"
 }
 
-func (s *TokenSource) credential(ctx context.Context, serverID, userID string, row connectionRow) (Credential, error) {
+func (s *TokenSource) credential(ctx context.Context, target Target, userID string, row connectionRow) (Credential, error) {
 	access, err := s.store.open(row.access)
 	if err != nil || access == "" {
-		return Credential{}, s.markUndecryptable(ctx, serverID, userID)
+		// A token sealed under another key can never be used again.
+		return Credential{}, s.markInOwnTx(ctx, target, userID, ReasonUndecryptable)
 	}
 	out := Credential{AccessToken: NewSecret(access)}
 	if row.expiresAt != nil {
 		out.ExpiresAt = *row.expiresAt
 	}
-	if len(row.extraHeaders) > 0 {
-		raw, err := s.store.box.Open(row.extraHeaders)
-		if err != nil {
-			return Credential{}, ErrServerUnreadable
-		}
-		var headers map[string]string
-		if err := json.Unmarshal(raw, &headers); err != nil {
-			return Credential{}, ErrServerUnreadable
-		}
-		out.ExtraHeaders = make(map[string]Secret, len(headers))
-		for name, value := range headers {
-			out.ExtraHeaders[name] = NewSecret(value)
-		}
-	}
 	return out, nil
 }
 
-// markUndecryptable handles a token sealed under another key: it can never
-// be used again, so the connection asks for a reconnect.
-func (s *TokenSource) markUndecryptable(ctx context.Context, serverID, userID string) error {
+// markInOwnTx marks the connection as needing a reconnect outside any
+// refresh transaction, and returns ErrNeedsReconnect.
+func (s *TokenSource) markInOwnTx(ctx context.Context, target Target, userID, reason string) error {
 	work, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.LockTimeout)
 	defer cancel()
 	tx, err := s.store.db.Begin(work)
@@ -486,5 +475,5 @@ func (s *TokenSource) markUndecryptable(ctx context.Context, serverID, userID st
 		return err
 	}
 	defer func() { _ = tx.Rollback(work) }()
-	return s.markNeedsReconnect(work, tx, serverID, userID, ReasonUndecryptable)
+	return s.markNeedsReconnect(work, tx, target, userID, reason)
 }

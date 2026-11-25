@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
+// Modified for the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
 
 package handler
 
@@ -20,7 +21,7 @@ var tokenHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type mcpOAuthCredentialResponse struct {
 	// Headers are the request headers for the MCP server: Authorization
-	// with the access token, and the server's extra headers.
+	// with the access token.
 	Headers map[string]string `json:"headers"`
 	// ExpiresAt is when the access token expires; absent when the
 	// authorization server gave no lifetime.
@@ -29,10 +30,12 @@ type mcpOAuthCredentialResponse struct {
 
 // ResolveMCPOAuthCredential (GET /api/daemon/tasks/{id}/mcp-oauth/{serverId}/credential[?rejected=<token hash>])
 // is how a daemon's local proxy gets the current token for an OAuth MCP
-// server while the task runs, so a token that expires mid-task is replaced
-// rather than failing every later call. It serves only a task this daemon may
-// access that is still dispatched or running, and only a server of that
-// task's agent, with the agent owner's grant (refreshed here when due).
+// entry while the task runs, so a token that expires mid-task is replaced
+// rather than failing every later call. {serverId} is the entry's ref, as the
+// claim listed it. It serves only a task this daemon may access that is still
+// dispatched or running, and only an OAuth entry the task's agent runs with
+// now, for the entry's current URL, with the agent owner's grant (refreshed
+// here when due).
 func (h *Handler) ResolveMCPOAuthCredential(w http.ResponseWriter, r *http.Request) {
 	if !featureflags.MCPOAuthV1Enabled(r.Context(), h.FeatureFlags) {
 		writeError(w, http.StatusNotFound, "not found")
@@ -46,8 +49,9 @@ func (h *Handler) ResolveMCPOAuthCredential(w http.ResponseWriter, r *http.Reque
 		writeErrorCode(w, http.StatusConflict, "task_not_active", "the task is no longer running")
 		return
 	}
-	serverUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "serverId"), "server id")
-	if !ok {
+	ref := chi.URLParam(r, "serverId")
+	if _, ok := mcpoauth.ParseRef(ref); !ok {
+		writeError(w, http.StatusNotFound, "MCP OAuth server not found")
 		return
 	}
 	agent, err := h.Queries.GetAgent(r.Context(), task.AgentID)
@@ -69,8 +73,19 @@ func (h *Handler) ResolveMCPOAuthCredential(w http.ResponseWriter, r *http.Reque
 		writeErrorCode(w, http.StatusServiceUnavailable, "mcp_oauth_not_configured", "MCP OAuth is not configured on this server")
 		return
 	}
-	server, err := store.GetServer(r.Context(), workspaceID, uuidToString(serverUUID))
-	if err != nil || server.AgentID != uuidToString(agent.ID) {
+	entries, err := h.agentMCPOAuthEntries(r.Context(), agent)
+	if err != nil {
+		writeErrorCode(w, http.StatusServiceUnavailable, "mcp_oauth_unavailable", "the agent's MCP configuration could not be read")
+		return
+	}
+	var target *mcpoauth.Target
+	for _, entry := range entries {
+		if entry.Ref == ref && entry.Err == nil && !entry.Entry.Disabled {
+			target = &mcpoauth.Target{WorkspaceID: workspaceID, Ref: ref, URL: entry.Entry.URL}
+			break
+		}
+	}
+	if target == nil {
 		writeError(w, http.StatusNotFound, "MCP OAuth server not found")
 		return
 	}
@@ -83,7 +98,7 @@ func (h *Handler) ResolveMCPOAuthCredential(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "rejected must be a hex SHA-256")
 		return
 	}
-	credential, err := mcpoauth.NewTokenSource(store, mcpoauth.Refresh, slog.Default()).CredentialReplacing(r.Context(), server.ID, uuidToString(agent.OwnerID), rejected)
+	credential, err := mcpoauth.NewTokenSource(store, mcpoauth.Refresh, slog.Default()).CredentialReplacing(r.Context(), *target, uuidToString(agent.OwnerID), rejected)
 	switch {
 	case errors.Is(err, mcpoauth.ErrNotConnected):
 		writeErrorCode(w, http.StatusNotFound, "mcp_oauth_not_connected", "the MCP server is not connected")
@@ -92,7 +107,7 @@ func (h *Handler) ResolveMCPOAuthCredential(w http.ResponseWriter, r *http.Reque
 		writeErrorCode(w, http.StatusConflict, "mcp_oauth_needs_reconnect", "the MCP server needs to be reconnected")
 		return
 	case err != nil:
-		slog.Warn("mcp oauth: credential for daemon unavailable", "task_id", uuidToString(task.ID), "server_id", server.ID, "reason", mcpOAuthReason(err))
+		slog.Warn("mcp oauth: credential for daemon unavailable", "task_id", uuidToString(task.ID), "server_ref", ref, "reason", mcpOAuthReason(err))
 		writeErrorCode(w, http.StatusServiceUnavailable, "mcp_oauth_unavailable", "a current token could not be obtained")
 		return
 	}

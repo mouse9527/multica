@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
+// Modified for the mouse9527/multica fork: connect an MCP entry by ref (M-269).
 
 package mcpoauth
 
@@ -62,12 +63,14 @@ type Flow struct {
 	Store *Store
 }
 
-// Start begins connecting userID to server: discovery (RFC 9728, then RFC
-// 8414 or OIDC), dynamic client registration (RFC 7591), a PKCE verifier and
-// a one-time state. It returns the URL to send the browser to.
-func (f Flow) Start(ctx context.Context, server Server, userID, redirectURI, returnTo string) (string, error) {
+// Start begins connecting userID to the target entry: discovery (RFC 9728,
+// then RFC 8414 or OIDC), dynamic client registration (RFC 7591), a PKCE
+// verifier and a one-time state. It returns the URL to send the browser to.
+// The pending authorization records target.URL, and the grant it ends in is
+// bound to it.
+func (f Flow) Start(ctx context.Context, target Target, userID, redirectURI, returnTo string) (string, error) {
 	ctx = withAllowedOrigins(ctx)
-	metadata, err := remotemcp.DiscoverOAuth(ctx, server.URL, nil)
+	metadata, err := remotemcp.DiscoverOAuth(ctx, target.URL, nil)
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrDiscovery, err)
 	}
@@ -87,8 +90,9 @@ func (f Flow) Start(ctx context.Context, server Server, userID, redirectURI, ret
 		return "", err
 	}
 	state, err := f.Store.CreatePendingAuthorization(ctx, PendingAuthorization{
-		WorkspaceID:   server.WorkspaceID,
-		ServerID:      server.ID,
+		WorkspaceID:   target.WorkspaceID,
+		ServerRef:     target.Ref,
+		ServerURL:     target.URL,
 		UserID:        userID,
 		Resource:      metadata.ResourceEndpoint,
 		TokenEndpoint: metadata.TokenEndpoint,
@@ -100,7 +104,7 @@ func (f Flow) Start(ctx context.Context, server Server, userID, redirectURI, ret
 	if err != nil {
 		return "", err
 	}
-	return remotemcp.BuildAuthorizationURL(metadata, registration, redirectURI, state, verifier.Reveal(), server.Scope)
+	return remotemcp.BuildAuthorizationURL(metadata, registration, redirectURI, state, verifier.Reveal(), target.Scope)
 }
 
 // Complete finishes a connect: it takes the pending authorization the state
@@ -127,7 +131,8 @@ func (f Flow) Complete(ctx context.Context, state, code, userID string, check fu
 	}
 	err = f.Store.SaveGrant(ctx, Grant{
 		WorkspaceID:   pending.WorkspaceID,
-		ServerID:      pending.ServerID,
+		ServerRef:     pending.ServerRef,
+		ServerURL:     pending.ServerURL,
 		UserID:        pending.UserID,
 		Resource:      pending.Resource,
 		TokenEndpoint: pending.TokenEndpoint,

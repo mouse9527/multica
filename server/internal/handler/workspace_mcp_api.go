@@ -174,6 +174,11 @@ func (h *Handler) CreateWorkspaceMcpServer(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// mouse9527/multica fork: an entry declaring "auth" must be a valid OAuth entry (M-269).
+	if err := h.validateMCPOAuthWorkspaceEntry(r.Context(), req.Config); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
@@ -251,6 +256,11 @@ func (h *Handler) UpdateWorkspaceMcpServer(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		// mouse9527/multica fork: see CreateWorkspaceMcpServer (M-269).
+		if err := h.validateMCPOAuthWorkspaceEntry(r.Context(), req.Config); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		params.Config = append([]byte(nil), req.Config...)
 	}
 
@@ -321,6 +331,12 @@ func (h *Handler) DeleteWorkspaceMcpServer(w http.ResponseWriter, r *http.Reques
 	}
 	if err := qtx.DeleteAgentMcpServersByServer(r.Context(), serverUUID); err != nil {
 		slog.Warn("sweep agent mcp bindings failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
+		writeError(w, http.StatusInternalServerError, "failed to delete the MCP server")
+		return
+	}
+	// mouse9527/multica fork: every member's OAuth connection to the entry goes with it (M-269).
+	if err := forgetWorkspaceMCPOAuthEntry(r.Context(), tx, idUUID, serverUUID); err != nil {
+		slog.Warn("forget mcp oauth connections failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete the MCP server")
 		return
 	}
@@ -515,6 +531,8 @@ func (h *Handler) RemoveAgentMcpServer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "this MCP server is not assigned to the agent")
 		return
 	}
+	// mouse9527/multica fork: the owner's OAuth connection to the entry, once no agent of theirs uses it (M-269).
+	h.forgetUnboundMCPOAuthConnection(r.Context(), agent, serverUUID)
 	slog.Info("agent mcp server removed", append(logger.RequestAttrs(r),
 		"agent_id", uuidToString(agent.ID), "server_id", uuidToString(serverUUID))...)
 	h.writeAgentMcpServers(w, r, agent.ID)

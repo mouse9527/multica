@@ -1,43 +1,24 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
+// Modified for the mouse9527/multica fork: OAuth entries in MCP configs (M-269).
 
 package mcpoauth
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"net/url"
-	"regexp"
 	"strings"
+
+	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
 
-// ErrInvalidInput wraps every validation failure of a server definition.
+// ErrInvalidInput wraps every validation failure of an OAuth MCP entry.
 var ErrInvalidInput = errors.New("invalid MCP OAuth server")
 
-var (
-	serverNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
-	headerNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,63}$`)
-)
-
-const (
-	maxExtraHeaders     = 8
-	maxHeaderValueBytes = 4096
-	maxScopeBytes       = 1024
-)
-
-// reservedHeaders are set by the MCP client or by this package. An extra
-// header may not replace them: Authorization carries the OAuth token, and the
-// rest belong to the transport.
-var reservedHeaders = map[string]struct{}{
-	"authorization":        {},
-	"host":                 {},
-	"content-type":         {},
-	"content-length":       {},
-	"accept":               {},
-	"connection":           {},
-	"transfer-encoding":    {},
-	"mcp-session-id":       {},
-	"mcp-protocol-version": {},
-}
+const maxScopeBytes = 1024
 
 // ValidateServerURL checks the shape of an MCP server URL as stored. Whether
 // its host may be reached is decided each time it is contacted, because DNS
@@ -54,40 +35,40 @@ func ValidateServerURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-func validateServerInput(in ServerInput) error {
-	if !serverNamePattern.MatchString(in.Name) {
-		return fmt.Errorf("%w: name must be 1 to 64 letters, digits, '-' or '_', starting with a letter or digit", ErrInvalidInput)
-	}
-	if _, err := ValidateServerURL(in.URL); err != nil {
-		return err
-	}
-	if len(in.Scope) > maxScopeBytes || strings.ContainsAny(in.Scope, "\r\n\x00\"\\") {
+func validateScope(scope string) error {
+	if len(scope) > maxScopeBytes || strings.ContainsAny(scope, "\r\n\x00\"\\") {
 		return fmt.Errorf("%w: scope is too long or has invalid characters", ErrInvalidInput)
 	}
-	return validateExtraHeaders(in.ExtraHeaders)
+	return nil
 }
 
-func validateExtraHeaders(headers map[string]string) error {
-	if len(headers) > maxExtraHeaders {
-		return fmt.Errorf("%w: at most %d extra headers", ErrInvalidInput, maxExtraHeaders)
-	}
-	seen := make(map[string]struct{}, len(headers))
-	for name, value := range headers {
-		if !headerNamePattern.MatchString(name) {
-			return fmt.Errorf("%w: header name %q is not valid", ErrInvalidInput, name)
-		}
-		lower := strings.ToLower(name)
-		if _, reserved := reservedHeaders[lower]; reserved {
-			return fmt.Errorf("%w: header %q cannot be set here", ErrInvalidInput, name)
-		}
-		if _, dup := seen[lower]; dup {
-			return fmt.Errorf("%w: header %q is given twice", ErrInvalidInput, name)
-		}
-		seen[lower] = struct{}{}
-		// The value is never echoed back in an error: it is usually a key.
-		if value == "" || len(value) > maxHeaderValueBytes || strings.ContainsAny(value, "\r\n\x00") {
-			return fmt.Errorf("%w: header %q value must be 1 to %d bytes on one line", ErrInvalidInput, name, maxHeaderValueBytes)
-		}
+// EntryURLAllowed applies, when an entry is saved, the address rules that
+// need no DNS lookup: the URL must be public HTTPS, so localhost and a
+// literal private, loopback or link-local address are refused unless the
+// operator listed that exact origin (AllowedOriginsEnv) or it is a
+// development origin. A host name passes here; what it resolves to is
+// checked each time it is contacted (Flow, Refresh), because DNS can change
+// in between.
+func EntryURLAllowed(ctx context.Context, rawURL string) error {
+	if _, err := remotemcp.ValidatePublicHTTPSEndpoint(withAllowedOrigins(ctx), rawURL, nil, literalOnlyResolver{}); err != nil {
+		return fmt.Errorf("%w: url must be a public HTTPS address, or an origin the operator allowed", ErrInvalidInput)
 	}
 	return nil
+}
+
+// literalOnlyResolver answers an IP literal with itself and any host name
+// with a public placeholder address, so the save-time check judges literals
+// and leaves names to contact time without making a DNS query.
+type literalOnlyResolver struct{}
+
+var publicPlaceholder = netip.MustParseAddr("1.1.1.1")
+
+func (literalOnlyResolver) LookupNetIP(_ context.Context, _ string, host string) ([]netip.Addr, error) {
+	if addr, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
+		return []netip.Addr{addr}, nil
+	}
+	if host == "" {
+		return nil, &net.DNSError{Err: "no host", Name: host}
+	}
+	return []netip.Addr{publicPlaceholder}, nil
 }
