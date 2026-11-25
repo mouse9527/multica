@@ -208,7 +208,6 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"evolution_review":         workspaceDelete,
 	// mouse9527/multica fork: MCP OAuth tables (M-230), deleted by
 	// mcpoauth.DeleteWorkspaceData.
-	"mcp_oauth_server":     workspaceDelete,
 	"mcp_oauth_connection": workspaceDelete,
 	"mcp_oauth_state":      workspaceDelete,
 	// Modified for the mouse9527/multica fork: password login. A password

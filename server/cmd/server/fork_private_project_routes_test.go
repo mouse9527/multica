@@ -24,16 +24,19 @@ import (
 )
 
 // forkRoutePrefixes are the route trees only the fork registers.
-var forkRoutePrefixes = []string{"/api/router/", "/api/evolution/", "/api/agents/{id}/mcp-oauth/", "/api/mcp-oauth/"}
+var forkRoutePrefixes = []string{"/api/router/", "/api/evolution/", "/api/agents/{id}/mcp-oauth/", "/api/workspaces/{id}/mcp-oauth/", "/api/mcp-oauth/"}
 
 // forkRouteParamsOutsideProjects are fork route parameters that cannot name
 // an object inside a project, keyed as upstream keys them ("subscriptions/{id}"),
 // each with the reason. They go into upstream's routeParamsOutsideProjects.
 var forkRouteParamsOutsideProjects = map[string]string{
 	"subscriptions/{id}": "a Super Agent subscription, a workspace object like an agent: its scope can span projects, and the issues and events it reaches drop out for a caller outside their private project instead (TestRouterSubscriptionFiltersPrivateProjects)",
-	// M-230: OAuth MCP servers hang off an agent.
+	// M-230, M-269: OAuth connections to MCP entries of an agent or of the
+	// workspace MCP library.
 	"agents/{id}":          "an agent, a workspace object: agents are not inside projects",
-	"mcp-oauth/{serverId}": "an OAuth MCP server configured on an agent; it belongs to the agent, not to a project",
+	"workspaces/{id}":      "the workspace itself, which contains the projects",
+	"mcp-oauth/{name}":     "the name of an MCP entry in an agent's own mcp_config; it belongs to the agent, not to a project",
+	"mcp-oauth/{serverId}": "a workspace MCP library entry; it belongs to the workspace, not to a project",
 }
 
 // forkPrivateProjectRoutesNotProbed are fork routes declaring one of

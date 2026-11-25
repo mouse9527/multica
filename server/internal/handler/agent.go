@@ -862,13 +862,12 @@ type TaskAgentData struct {
 	// servers left out of McpConfig and why; the daemon writes each into
 	// the run transcript.
 	MCPOAuthNotices []string `json:"mcp_oauth_notices,omitempty"`
-	// MCPOAuthProxy, MCPOAuthNames, MCPOAuthWithholdAll (fork, M-230) go to
-	// a daemon that proxies OAuth MCP servers: the servers to proxy (no
-	// token), every OAuth server name to withhold from the runtime's own MCP
-	// config, and whether to mount no MCP server at all. See mcp_oauth_claim.go.
-	MCPOAuthProxy       []MCPOAuthProxyServer `json:"mcp_oauth_proxy,omitempty"`
-	MCPOAuthNames       []string              `json:"mcp_oauth_names,omitempty"`
-	MCPOAuthWithholdAll bool                  `json:"mcp_oauth_withhold_all,omitempty"`
+	// MCPOAuthProxy, MCPOAuthNames (fork, M-230) go to a daemon that proxies
+	// OAuth MCP servers: the servers to proxy (no token) and every OAuth
+	// server name to withhold from the runtime's own MCP config. See
+	// mcp_oauth_claim.go.
+	MCPOAuthProxy []MCPOAuthProxyServer `json:"mcp_oauth_proxy,omitempty"`
+	MCPOAuthNames []string              `json:"mcp_oauth_names,omitempty"`
 	// RuntimeConfig is the agent's saved runtime_config JSON as-is. The
 	// daemon decodes it per-provider — e.g. the openclaw backend reads
 	// `mode` + `gateway.*` to choose between embedded and gateway routing
@@ -1646,6 +1645,11 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	if rawMcpConfig, ok := rawFields["mcp_config"]; ok && !bytes.Equal(bytes.TrimSpace(rawMcpConfig), []byte("null")) {
 		mc = append([]byte(nil), rawMcpConfig...)
 	}
+	// mouse9527/multica fork: an entry declaring "auth" must be a valid OAuth entry (M-269).
+	if err := h.validateMCPOAuthAgentConfig(r.Context(), mc); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	// composio_toolkit_allowlist: the JSON field is a list-of-slugs that gets
 	// stored as TEXT[]. We normalise here (lowercase + trim + dedupe) so the
@@ -2102,6 +2106,11 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	shouldClearMcpConfig := hasMcpConfig && bytes.Equal(bytes.TrimSpace(rawMcpConfig), []byte("null"))
 	if hasMcpConfig && !shouldClearMcpConfig {
 		params.McpConfig = append([]byte(nil), rawMcpConfig...)
+		// mouse9527/multica fork: see CreateAgent (M-269).
+		if err := h.validateMCPOAuthAgentConfig(r.Context(), params.McpConfig); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	// Resolve the runtime that will be in force after this update so the
@@ -2571,6 +2580,10 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to clear mcp_config")
 			return
 		}
+	}
+	// mouse9527/multica fork: OAuth connections of entries this update removed go with them (M-269).
+	if hasMcpConfig {
+		h.forgetRemovedAgentMCPOAuthEntries(r.Context(), updated)
 	}
 	if shouldClearThinkingLevel {
 		updated, err = h.Queries.ClearAgentThinkingLevel(r.Context(), updated.ID)

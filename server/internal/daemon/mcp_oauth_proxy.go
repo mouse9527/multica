@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
+// Modified for the mouse9527/multica fork: refuse a credential for another URL (M-269).
 
 package daemon
 
@@ -24,7 +25,8 @@ import (
 )
 
 // MCPOAuthProxyServerData is an OAuth MCP server the server asked this daemon
-// to serve through a local proxy. It carries no token.
+// to serve through a local proxy. It carries no token. ServerID is opaque
+// here: the daemon passes it back to fetch a credential.
 type MCPOAuthProxyServerData struct {
 	Name     string `json:"name"`
 	ServerID string `json:"server_id"`
@@ -36,7 +38,15 @@ type MCPOAuthProxyServerData struct {
 type mcpOAuthCredential struct {
 	Headers   map[string]string
 	ExpiresAt time.Time
+	// URL is the only URL the server allows the token to be sent to; empty
+	// from a server that does not say (before M-269, when an OAuth server's
+	// URL could not change).
+	URL string
 }
+
+// errMCPOAuthCredentialForAnotherURL: the server handed out a credential for
+// a URL other than the one this proxy sends to. It is never used.
+var errMCPOAuthCredentialForAnotherURL = errors.New("the credential is for another URL than this proxy's target")
 
 // mcpOAuthCredentialFetcher gets the current credential for a server of the
 // running task from the Multica server. rejectedHash, when set, is the hex
@@ -80,11 +90,14 @@ var proxyDroppedRequestHeaders = map[string]bool{"Authorization": true, "Cookie"
 type mcpOAuthProxy struct {
 	name     string
 	serverID string
-	target   *url.URL
-	path     string
-	fetch    mcpOAuthCredentialFetcher
-	client   *http.Client
-	logger   *slog.Logger
+	// targetURL is the target as the server gave it, what a credential's
+	// URL must equal.
+	targetURL string
+	target    *url.URL
+	path      string
+	fetch     mcpOAuthCredentialFetcher
+	client    *http.Client
+	logger    *slog.Logger
 
 	mu     sync.Mutex
 	cached *mcpOAuthCredential
@@ -112,7 +125,7 @@ func newMCPOAuthProxy(server MCPOAuthProxyServerData, fetch mcpOAuthCredentialFe
 		transport = defaultTransport
 	}
 	return &mcpOAuthProxy{
-		name: server.Name, serverID: server.ServerID, target: target,
+		name: server.Name, serverID: server.ServerID, targetURL: server.URL, target: target,
 		path:  "/" + hex.EncodeToString(pathToken),
 		fetch: fetch, logger: logger,
 		client: &http.Client{
@@ -145,6 +158,13 @@ func (p *mcpOAuthProxy) credential(ctx context.Context, rejected *mcpOAuthCreden
 	if err != nil {
 		p.cached = nil
 		return mcpOAuthCredential{}, err
+	}
+	// Checked before the token is ever sent: a token the server issued for
+	// another URL (the entry was edited during the run) must not go to this
+	// proxy's target.
+	if credential.URL != "" && credential.URL != p.targetURL {
+		p.cached = nil
+		return mcpOAuthCredential{}, errMCPOAuthCredentialForAnotherURL
 	}
 	p.cached = &credential
 	return credential, nil

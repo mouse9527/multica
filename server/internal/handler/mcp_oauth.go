@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
+// Modified for the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
 
 package handler
 
@@ -23,20 +24,33 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// MountAgentMCPOAuth serves /api/agents/{id}/mcp-oauth: the agent's OAuth
-// MCP servers and its owner's connection to each. 404 unless mcp_oauth_v1 is
-// on. Configuring takes the agent owner or a workspace owner/admin, as for
-// the agent's other MCP servers; connecting takes the agent owner, because
-// phase 1 runs the agent with its owner's grant. Every write takes a signed-in
-// session (requireInteractiveSession): no token of any kind may attach or
-// detach an identity.
+// OAuth is an auth mode of an MCP entry (mcpoauth.AuthTypeOAuth): the entries
+// themselves are configured through the agent's mcp_config and the workspace
+// MCP library as any other. These routes only show and change connections.
+// Every write takes a signed-in session (requireInteractiveSession): no token
+// of any kind may attach or detach an identity. All are 404 unless
+// mcp_oauth_v1 is on.
+
+// MountAgentMCPOAuth serves /api/agents/{id}/mcp-oauth: the OAuth entries the
+// agent runs with and its owner's connection to each. Listing takes the agent
+// owner or a workspace owner/admin, as the agent's other MCP settings do;
+// connecting takes the agent owner, because tasks run with the owner's grant.
 func (h *Handler) MountAgentMCPOAuth(r chi.Router) {
 	r.Use(h.requireMCPOAuthV1)
 	r.Get("/", h.ListAgentMCPOAuthServers)
-	r.With(requireInteractiveSession).Post("/", h.CreateAgentMCPOAuthServer)
-	r.With(requireInteractiveSession).Delete("/{serverId}", h.DeleteAgentMCPOAuthServer)
-	r.With(requireInteractiveSession).Post("/{serverId}/connect", h.ConnectAgentMCPOAuthServer)
-	r.With(requireInteractiveSession).Delete("/{serverId}/connection", h.DisconnectAgentMCPOAuthServer)
+	r.With(requireInteractiveSession).Post("/{name}/connect", h.ConnectAgentMCPOAuthServer)
+	r.With(requireInteractiveSession).Delete("/{name}/connection", h.DisconnectAgentMCPOAuthServer)
+}
+
+// MountWorkspaceMCPOAuth serves /api/workspaces/{id}/mcp-oauth: the
+// workspace library's OAuth entries and the caller's own connection to each.
+// Any member connects for themselves; the connection is then used by every
+// agent of theirs the entry is bound to.
+func (h *Handler) MountWorkspaceMCPOAuth(r chi.Router) {
+	r.Use(h.requireMCPOAuthV1)
+	r.Get("/", h.ListWorkspaceMCPOAuthServers)
+	r.With(requireInteractiveSession).Post("/{serverId}/connect", h.ConnectWorkspaceMCPOAuthServer)
+	r.With(requireInteractiveSession).Delete("/{serverId}/connection", h.DisconnectWorkspaceMCPOAuthServer)
 }
 
 // MountMCPOAuth serves /api/mcp-oauth, the user-scoped end of a connect: the
@@ -179,13 +193,40 @@ type mcpOAuthConnectionResponse struct {
 	RefreshedAt *time.Time `json:"refreshed_at,omitempty"`
 }
 
+func mcpOAuthConnectionJSON(status *mcpoauth.ConnectionStatus, entryURL string) *mcpOAuthConnectionResponse {
+	if status == nil {
+		return nil
+	}
+	current := status.ForURL(entryURL)
+	return &mcpOAuthConnectionResponse{
+		Status: current.Status, ExpiresAt: current.ExpiresAt, LastError: current.LastError,
+		ConnectedAt: current.ConnectedAt, RefreshedAt: current.RefreshedAt,
+	}
+}
+
+// mcpOAuthProblem is why an entry cannot be connected, for the settings page.
+// It is the validation message, which names fields and never values.
+func mcpOAuthProblem(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 type mcpOAuthServerResponse struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	URL             string    `json:"url"`
-	Scope           string    `json:"scope"`
-	HasExtraHeaders bool      `json:"has_extra_headers"`
-	CreatedAt       time.Time `json:"created_at"`
+	// Name is the entry's name in the agent's MCP config, and the path key
+	// of connect and disconnect.
+	Name string `json:"name"`
+	// Source is "agent" for an entry of the agent's own mcp_config and
+	// "workspace" for a workspace library entry bound to the agent.
+	Source            string `json:"source"`
+	WorkspaceServerID string `json:"workspace_server_id,omitempty"`
+	Scope             string `json:"scope"`
+	// Shared: the connection is the owner's one connection to this
+	// workspace entry, used by every agent of theirs it is bound to.
+	Shared bool `json:"shared"`
+	// Problem is why the entry cannot be connected; empty when it can.
+	Problem string `json:"problem,omitempty"`
 	// Connection is the agent owner's connection, the one tasks use. Null
 	// until the owner connects.
 	Connection *mcpOAuthConnectionResponse `json:"connection"`
@@ -198,23 +239,9 @@ type mcpOAuthListResponse struct {
 	CanConnect bool `json:"can_connect"`
 }
 
-func mcpOAuthServerJSON(server mcpoauth.Server, connection *mcpoauth.ConnectionStatus) mcpOAuthServerResponse {
-	out := mcpOAuthServerResponse{
-		ID: server.ID, Name: server.Name, URL: server.URL, Scope: server.Scope,
-		HasExtraHeaders: server.HasExtraHeaders, CreatedAt: server.CreatedAt,
-	}
-	if connection != nil {
-		out.Connection = &mcpOAuthConnectionResponse{
-			Status: connection.Status, ExpiresAt: connection.ExpiresAt, LastError: connection.LastError,
-			ConnectedAt: connection.ConnectedAt, RefreshedAt: connection.RefreshedAt,
-		}
-	}
-	return out
-}
-
-// ListAgentMCPOAuthServers returns the agent's OAuth MCP servers and the
-// owner's connection to each. Extra header values and tokens are never part
-// of it.
+// ListAgentMCPOAuthServers returns the OAuth entries the agent runs with —
+// its own and its bound workspace entries — and the owner's connection to
+// each. URLs and tokens are never part of it.
 func (h *Handler) ListAgentMCPOAuthServers(w http.ResponseWriter, r *http.Request) {
 	agent, ok := h.requireAgentMcpWriter(w, r)
 	if !ok {
@@ -224,110 +251,55 @@ func (h *Handler) ListAgentMCPOAuthServers(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	workspaceID, agentID, ownerID := uuidToString(agent.WorkspaceID), uuidToString(agent.ID), uuidToString(agent.OwnerID)
-	servers, err := store.ListServersForAgent(r.Context(), workspaceID, agentID)
+	entries, err := h.agentMCPOAuthEntries(r.Context(), agent)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list MCP OAuth servers")
 		return
 	}
-	statuses, err := store.ListConnectionStatusesForAgent(r.Context(), workspaceID, agentID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list MCP OAuth servers")
-		return
-	}
-	owned := map[string]*mcpoauth.ConnectionStatus{}
-	for i := range statuses {
-		if statuses[i].UserID == ownerID {
-			owned[statuses[i].ServerID] = &statuses[i]
+	ownerID := uuidToString(agent.OwnerID)
+	statuses := map[string]mcpoauth.ConnectionStatus{}
+	if agent.OwnerID.Valid {
+		refs := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			if entry.Ref != "" {
+				refs = append(refs, entry.Ref)
+			}
+		}
+		if statuses, err = store.ListConnectionStatuses(r.Context(), uuidToString(agent.WorkspaceID), ownerID, refs); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list MCP OAuth servers")
+			return
 		}
 	}
-	resp := mcpOAuthListResponse{Servers: make([]mcpOAuthServerResponse, 0, len(servers)), CanConnect: agent.OwnerID.Valid && ownerID == requestUserID(r)}
-	for _, server := range servers {
-		resp.Servers = append(resp.Servers, mcpOAuthServerJSON(server, owned[server.ID]))
+	resp := mcpOAuthListResponse{Servers: make([]mcpOAuthServerResponse, 0, len(entries)), CanConnect: agent.OwnerID.Valid && ownerID == requestUserID(r)}
+	for _, entry := range entries {
+		item := mcpOAuthServerResponse{
+			Name: entry.Name, Source: entry.Source, WorkspaceServerID: entry.WorkspaceServerID,
+			Scope: entry.Entry.Scope, Shared: entry.Source == mcpOAuthSourceWorkspace, Problem: mcpOAuthProblem(entry.Err),
+		}
+		if status, ok := statuses[entry.Ref]; ok && entry.Ref != "" {
+			item.Connection = mcpOAuthConnectionJSON(&status, entry.Entry.URL)
+		}
+		resp.Servers = append(resp.Servers, item)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
-type createMCPOAuthServerRequest struct {
-	Name         string            `json:"name"`
-	URL          string            `json:"url"`
-	Scope        string            `json:"scope"`
-	ExtraHeaders map[string]string `json:"extra_headers"`
-}
-
-func (h *Handler) CreateAgentMCPOAuthServer(w http.ResponseWriter, r *http.Request) {
-	agent, ok := h.requireAgentMcpWriter(w, r)
-	if !ok {
-		return
-	}
-	store, ok := h.mcpOAuthStore(w)
-	if !ok {
-		return
-	}
-	var req createMCPOAuthServerRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	server, err := store.CreateServer(r.Context(), mcpoauth.ServerInput{
-		WorkspaceID:  uuidToString(agent.WorkspaceID),
-		AgentID:      uuidToString(agent.ID),
-		CreatedBy:    requestUserID(r),
-		Name:         strings.TrimSpace(req.Name),
-		URL:          strings.TrimSpace(req.URL),
-		Scope:        strings.TrimSpace(req.Scope),
-		ExtraHeaders: req.ExtraHeaders,
-	})
-	switch {
-	case errors.Is(err, mcpoauth.ErrInvalidInput):
-		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, mcpoauth.ErrNameTaken):
-		writeError(w, http.StatusConflict, err.Error())
-	case err != nil:
-		writeError(w, http.StatusInternalServerError, "failed to create the MCP OAuth server")
-	default:
-		writeJSON(w, http.StatusCreated, mcpOAuthServerJSON(server, nil))
-	}
-}
-
-// agentMCPOAuthServer loads the server named in the path and checks it
-// belongs to the agent in the path.
-func agentMCPOAuthServer(w http.ResponseWriter, r *http.Request, store *mcpoauth.Store, agent db.Agent) (mcpoauth.Server, bool) {
-	serverID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "serverId"), "server id")
-	if !ok {
-		return mcpoauth.Server{}, false
-	}
-	server, err := store.GetServer(r.Context(), uuidToString(agent.WorkspaceID), uuidToString(serverID))
-	if errors.Is(err, mcpoauth.ErrNotFound) || (err == nil && server.AgentID != uuidToString(agent.ID)) {
-		writeError(w, http.StatusNotFound, "MCP OAuth server not found")
-		return mcpoauth.Server{}, false
-	}
+// agentMCPOAuthEntry finds the OAuth entry named in the path among those the
+// agent runs with.
+func (h *Handler) agentMCPOAuthEntry(w http.ResponseWriter, r *http.Request, agent db.Agent) (mcpOAuthEntry, bool) {
+	name := chi.URLParam(r, "name")
+	entries, err := h.agentMCPOAuthEntries(r.Context(), agent)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load the MCP OAuth server")
-		return mcpoauth.Server{}, false
+		writeError(w, http.StatusInternalServerError, "failed to load the agent's MCP configuration")
+		return mcpOAuthEntry{}, false
 	}
-	return server, true
-}
-
-// DeleteAgentMCPOAuthServer removes the server and every connection to it.
-func (h *Handler) DeleteAgentMCPOAuthServer(w http.ResponseWriter, r *http.Request) {
-	agent, ok := h.requireAgentMcpWriter(w, r)
-	if !ok {
-		return
+	for _, entry := range entries {
+		if entry.Name == name && entry.Ref != "" {
+			return entry, true
+		}
 	}
-	store, ok := h.mcpOAuthStore(w)
-	if !ok {
-		return
-	}
-	server, ok := agentMCPOAuthServer(w, r, store, agent)
-	if !ok {
-		return
-	}
-	if err := store.DeleteServer(r.Context(), server.WorkspaceID, server.ID); err != nil && !errors.Is(err, mcpoauth.ErrNotFound) {
-		writeError(w, http.StatusInternalServerError, "failed to delete the MCP OAuth server")
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	writeError(w, http.StatusNotFound, "MCP OAuth server not found")
+	return mcpOAuthEntry{}, false
 }
 
 type connectMCPOAuthRequest struct {
@@ -340,7 +312,9 @@ type connectMCPOAuthResponse struct {
 }
 
 // ConnectAgentMCPOAuthServer starts the authorization code flow for the
-// agent owner and returns the URL to open. Only the owner, in person.
+// agent owner and returns the URL to open. Only the owner, in person. For a
+// workspace entry this is the owner's one connection to it, the same one the
+// workspace MCP settings connect.
 func (h *Handler) ConnectAgentMCPOAuthServer(w http.ResponseWriter, r *http.Request) {
 	agent, ok := h.requireAgentMcpWriter(w, r)
 	if !ok {
@@ -355,8 +329,20 @@ func (h *Handler) ConnectAgentMCPOAuthServer(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	server, ok := agentMCPOAuthServer(w, r, store, agent)
+	entry, ok := h.agentMCPOAuthEntry(w, r, agent)
 	if !ok {
+		return
+	}
+	h.startMCPOAuthConnect(w, r, store, entry.Err, mcpoauth.Target{
+		WorkspaceID: uuidToString(agent.WorkspaceID), Ref: entry.Ref, URL: entry.Entry.URL, Scope: entry.Entry.Scope,
+	}, userID)
+}
+
+// startMCPOAuthConnect runs Flow.Start for userID and answers with the URL to
+// open.
+func (h *Handler) startMCPOAuthConnect(w http.ResponseWriter, r *http.Request, store *mcpoauth.Store, entryErr error, target mcpoauth.Target, userID string) {
+	if entryErr != nil {
+		writeErrorCode(w, http.StatusBadRequest, "mcp_oauth_invalid_entry", entryErr.Error())
 		return
 	}
 	redirectURI, err := mcpoauth.RedirectURI(h.cfg.AppURL)
@@ -371,12 +357,312 @@ func (h *Handler) ConnectAgentMCPOAuthServer(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
-	authorizationURL, err := mcpoauth.Flow{Store: store}.Start(r.Context(), server, userID, redirectURI, safeReturnPath(req.ReturnTo))
+	authorizationURL, err := mcpoauth.Flow{Store: store}.Start(r.Context(), target, userID, redirectURI, safeReturnPath(req.ReturnTo))
 	if err != nil {
-		h.writeMCPOAuthFlowError(w, server.ID, err)
+		h.writeMCPOAuthFlowError(w, target.Ref, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, connectMCPOAuthResponse{AuthorizationURL: authorizationURL})
+}
+
+// DisconnectAgentMCPOAuthServer forgets the owner's grant for the entry and
+// cancels the owner's connects to it still in flight. For a workspace entry
+// that is the owner's one connection, so every agent of theirs it is bound to
+// loses it. The authorization servers seen so far advertise no revocation
+// endpoint, so the tokens are dropped here and expire at the server on their
+// own.
+func (h *Handler) DisconnectAgentMCPOAuthServer(w http.ResponseWriter, r *http.Request) {
+	agent, ok := h.requireAgentMcpWriter(w, r)
+	if !ok {
+		return
+	}
+	store, ok := h.mcpOAuthStore(w)
+	if !ok {
+		return
+	}
+	entry, ok := h.agentMCPOAuthEntry(w, r, agent)
+	if !ok {
+		return
+	}
+	if !agent.OwnerID.Valid {
+		// An agent without an owner has no connection to forget.
+		writeError(w, http.StatusNotFound, "this agent has no owner, so it has no connection")
+		return
+	}
+	err := store.DeleteConnection(r.Context(), uuidToString(agent.WorkspaceID), entry.Ref, uuidToString(agent.OwnerID))
+	if err != nil && !errors.Is(err, mcpoauth.ErrNotConnected) {
+		writeError(w, http.StatusInternalServerError, "failed to disconnect the MCP server")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type workspaceMCPOAuthServerResponse struct {
+	ServerID string `json:"server_id"`
+	Name     string `json:"name"`
+	Scope    string `json:"scope"`
+	// Problem is why the entry cannot be connected; empty when it can.
+	Problem string `json:"problem,omitempty"`
+	// Connection is the caller's own connection, shared by every agent of
+	// theirs the entry is bound to. Null until they connect.
+	Connection *mcpOAuthConnectionResponse `json:"connection"`
+}
+
+type workspaceMCPOAuthListResponse struct {
+	Servers []workspaceMCPOAuthServerResponse `json:"servers"`
+}
+
+// workspaceMCPOAuthEntry is one OAuth entry of the workspace library.
+type workspaceMCPOAuthEntry struct {
+	server db.WorkspaceMcpServer
+	entry  mcpoauth.Entry
+	err    error
+}
+
+func (e workspaceMCPOAuthEntry) target() mcpoauth.Target {
+	return mcpoauth.Target{
+		WorkspaceID: uuidToString(e.server.WorkspaceID), Ref: mcpoauth.WorkspaceRef(uuidToString(e.server.ID)),
+		URL: e.entry.URL, Scope: e.entry.Scope,
+	}
+}
+
+func parseWorkspaceMCPOAuthEntry(server db.WorkspaceMcpServer) (workspaceMCPOAuthEntry, bool) {
+	if !mcpoauth.IsOAuthEntry(server.Config) {
+		return workspaceMCPOAuthEntry{}, false
+	}
+	entry, err := mcpoauth.ParseEntry(server.Config)
+	return workspaceMCPOAuthEntry{server: server, entry: entry, err: err}, true
+}
+
+// ListWorkspaceMCPOAuthServers returns the workspace library's OAuth entries
+// and the caller's connection to each. Member-visible, like the library list;
+// URLs and tokens are never part of it.
+func (h *Handler) ListWorkspaceMCPOAuthServers(w http.ResponseWriter, r *http.Request) {
+	workspaceID := workspaceIDFromURL(r, "id")
+	workspaceUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
+		return
+	}
+	store, ok := h.mcpOAuthStore(w)
+	if !ok {
+		return
+	}
+	servers, err := h.Queries.ListWorkspaceMcpServers(r.Context(), workspaceUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list MCP OAuth servers")
+		return
+	}
+	var entries []workspaceMCPOAuthEntry
+	refs := []string{}
+	for _, server := range servers {
+		if entry, ok := parseWorkspaceMCPOAuthEntry(server); ok {
+			entries = append(entries, entry)
+			refs = append(refs, entry.target().Ref)
+		}
+	}
+	statuses, err := store.ListConnectionStatuses(r.Context(), workspaceID, requestUserID(r), refs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list MCP OAuth servers")
+		return
+	}
+	resp := workspaceMCPOAuthListResponse{Servers: make([]workspaceMCPOAuthServerResponse, 0, len(entries))}
+	for _, entry := range entries {
+		target := entry.target()
+		item := workspaceMCPOAuthServerResponse{
+			ServerID: uuidToString(entry.server.ID), Name: entry.server.Name, Scope: entry.entry.Scope, Problem: mcpOAuthProblem(entry.err),
+		}
+		if status, ok := statuses[target.Ref]; ok {
+			item.Connection = mcpOAuthConnectionJSON(&status, target.URL)
+		}
+		resp.Servers = append(resp.Servers, item)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// workspaceMCPOAuthEntryFromPath loads the library entry named in the path,
+// checking the caller is a member, and that the entry uses OAuth.
+func (h *Handler) workspaceMCPOAuthEntryFromPath(w http.ResponseWriter, r *http.Request) (workspaceMCPOAuthEntry, bool) {
+	workspaceID := workspaceIDFromURL(r, "id")
+	workspaceUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return workspaceMCPOAuthEntry{}, false
+	}
+	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
+		return workspaceMCPOAuthEntry{}, false
+	}
+	serverUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "serverId"), "server id")
+	if !ok {
+		return workspaceMCPOAuthEntry{}, false
+	}
+	server, err := h.Queries.GetWorkspaceMcpServer(r.Context(), db.GetWorkspaceMcpServerParams{ID: serverUUID, WorkspaceID: workspaceUUID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "MCP OAuth server not found")
+		return workspaceMCPOAuthEntry{}, false
+	}
+	entry, ok := parseWorkspaceMCPOAuthEntry(server)
+	if !ok {
+		writeError(w, http.StatusNotFound, "MCP OAuth server not found")
+		return workspaceMCPOAuthEntry{}, false
+	}
+	return entry, true
+}
+
+// ConnectWorkspaceMCPOAuthServer starts connecting the caller, in person, to
+// a workspace library entry.
+func (h *Handler) ConnectWorkspaceMCPOAuthServer(w http.ResponseWriter, r *http.Request) {
+	entry, ok := h.workspaceMCPOAuthEntryFromPath(w, r)
+	if !ok {
+		return
+	}
+	store, ok := h.mcpOAuthStore(w)
+	if !ok {
+		return
+	}
+	h.startMCPOAuthConnect(w, r, store, entry.err, entry.target(), requestUserID(r))
+}
+
+// DisconnectWorkspaceMCPOAuthServer forgets the caller's own grant for a
+// workspace library entry, and their connects to it still in flight.
+func (h *Handler) DisconnectWorkspaceMCPOAuthServer(w http.ResponseWriter, r *http.Request) {
+	entry, ok := h.workspaceMCPOAuthEntryFromPath(w, r)
+	if !ok {
+		return
+	}
+	store, ok := h.mcpOAuthStore(w)
+	if !ok {
+		return
+	}
+	target := entry.target()
+	if err := store.DeleteConnection(r.Context(), target.WorkspaceID, target.Ref, requestUserID(r)); err != nil && !errors.Is(err, mcpoauth.ErrNotConnected) {
+		writeError(w, http.StatusInternalServerError, "failed to disconnect the MCP server")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type completeMCPOAuthRequest struct {
+	State string `json:"state"`
+	Code  string `json:"code"`
+	// Error is the authorization server's error parameter, when the user
+	// declined. The state is still consumed.
+	Error string `json:"error"`
+}
+
+type completeMCPOAuthResponse struct {
+	WorkspaceID string `json:"workspace_id"`
+	// AgentID is set for an agent's own entry.
+	AgentID string `json:"agent_id"`
+	// ServerID is set for a workspace library entry.
+	ServerID  string `json:"server_id"`
+	ServerRef string `json:"server_ref"`
+	ReturnTo  string `json:"return_to"`
+}
+
+var errMCPOAuthNoLongerAllowed = errors.New("you can no longer connect this MCP server")
+
+// CompleteMCPOAuth finishes a connect started by the same user. Before the
+// code is exchanged it checks that the user is still a member of the
+// workspace, that the entry still exists, still uses OAuth and still has the
+// URL the connect started with, and, for an agent's own entry, that the user
+// still owns the agent.
+func (h *Handler) CompleteMCPOAuth(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	store, ok := h.mcpOAuthStore(w)
+	if !ok {
+		return
+	}
+	var req completeMCPOAuthRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	code := req.Code
+	if req.Error != "" {
+		code = ""
+	}
+	var ref mcpoauth.Ref
+	pending, err := mcpoauth.Flow{Store: store}.Complete(r.Context(), req.State, code, userID, func(p mcpoauth.PendingAuthorization) error {
+		var err error
+		ref, err = h.mcpOAuthCompletionAllowed(r, p, userID)
+		return err
+	})
+	switch {
+	case errors.Is(err, mcpoauth.ErrStateInvalid):
+		writeErrorCode(w, http.StatusBadRequest, "mcp_oauth_state_invalid", err.Error())
+	case errors.Is(err, errMCPOAuthNoLongerAllowed):
+		writeErrorCode(w, http.StatusForbidden, "mcp_oauth_not_allowed", err.Error())
+	case errors.Is(err, mcpoauth.ErrAuthorizationDenied):
+		writeErrorCode(w, http.StatusBadRequest, "mcp_oauth_denied", err.Error())
+	case err != nil:
+		h.writeMCPOAuthFlowError(w, pending.ServerRef, err)
+	default:
+		writeJSON(w, http.StatusOK, completeMCPOAuthResponse{
+			WorkspaceID: pending.WorkspaceID, AgentID: ref.AgentID, ServerID: ref.WorkspaceServerID,
+			ServerRef: pending.ServerRef, ReturnTo: pending.ReturnTo,
+		})
+	}
+}
+
+// mcpOAuthCompletionAllowed is the check Complete runs before exchanging the
+// code. Every refusal is errMCPOAuthNoLongerAllowed.
+func (h *Handler) mcpOAuthCompletionAllowed(r *http.Request, p mcpoauth.PendingAuthorization, userID string) (mcpoauth.Ref, error) {
+	ctx := r.Context()
+	ref, ok := mcpoauth.ParseRef(p.ServerRef)
+	if !ok {
+		return mcpoauth.Ref{}, errMCPOAuthNoLongerAllowed
+	}
+	workspaceUUID, err := parseUUIDStrict(p.WorkspaceID)
+	if err != nil {
+		return mcpoauth.Ref{}, errMCPOAuthNoLongerAllowed
+	}
+	userUUID, err := parseUUIDStrict(userID)
+	if err != nil {
+		return mcpoauth.Ref{}, errMCPOAuthNoLongerAllowed
+	}
+	if _, err := h.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+		UserID: userUUID, WorkspaceID: workspaceUUID,
+	}); err != nil {
+		return mcpoauth.Ref{}, errMCPOAuthNoLongerAllowed
+	}
+	if ref.WorkspaceServerID != "" {
+		serverUUID, err := parseUUIDStrict(ref.WorkspaceServerID)
+		if err != nil {
+			return mcpoauth.Ref{}, errMCPOAuthNoLongerAllowed
+		}
+		server, err := h.Queries.GetWorkspaceMcpServer(ctx, db.GetWorkspaceMcpServerParams{ID: serverUUID, WorkspaceID: workspaceUUID})
+		if err != nil {
+			return mcpoauth.Ref{}, errMCPOAuthNoLongerAllowed
+		}
+		entry, ok := parseWorkspaceMCPOAuthEntry(server)
+		if !ok || entry.err != nil || entry.entry.URL != p.ServerURL {
+			return mcpoauth.Ref{}, errMCPOAuthNoLongerAllowed
+		}
+		return ref, nil
+	}
+	agentUUID, err := parseUUIDStrict(ref.AgentID)
+	if err != nil {
+		return mcpoauth.Ref{}, errMCPOAuthNoLongerAllowed
+	}
+	agent, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: agentUUID, WorkspaceID: workspaceUUID})
+	if err != nil || !agent.OwnerID.Valid || uuidToString(agent.OwnerID) != userID {
+		return mcpoauth.Ref{}, errMCPOAuthNoLongerAllowed
+	}
+	entries, err := h.agentMCPOAuthEntries(ctx, agent)
+	if err != nil {
+		return mcpoauth.Ref{}, errMCPOAuthNoLongerAllowed
+	}
+	for _, entry := range entries {
+		if entry.Ref == p.ServerRef && entry.Err == nil && entry.Entry.URL == p.ServerURL {
+			return ref, nil
+		}
+	}
+	return mcpoauth.Ref{}, errMCPOAuthNoLongerAllowed
 }
 
 // safeReturnPath keeps only an app-relative path, so the page that finishes a
@@ -397,129 +683,15 @@ func safeReturnPath(path string) string {
 // writeMCPOAuthFlowError answers with the flow's own message, which is safe
 // for the user, and logs the cause. Causes carry hosts and HTTP statuses,
 // never a token: the token endpoint's body is not read on failure.
-func (h *Handler) writeMCPOAuthFlowError(w http.ResponseWriter, serverID string, err error) {
+func (h *Handler) writeMCPOAuthFlowError(w http.ResponseWriter, serverRef string, err error) {
 	for _, known := range []error{mcpoauth.ErrDiscovery, mcpoauth.ErrRegistration, mcpoauth.ErrNeedsPreregistered,
 		mcpoauth.ErrUnsupportedClient, mcpoauth.ErrExchange} {
 		if errors.Is(err, known) {
-			slog.Warn("mcp oauth: connect step failed", "server_id", serverID, "error", err)
+			slog.Warn("mcp oauth: connect step failed", "server_ref", serverRef, "error", err)
 			writeErrorCode(w, http.StatusBadGateway, "mcp_oauth_upstream", known.Error())
 			return
 		}
 	}
-	slog.Error("mcp oauth: connect failed", "server_id", serverID, "error", err)
+	slog.Error("mcp oauth: connect failed", "server_ref", serverRef, "error", err)
 	writeError(w, http.StatusInternalServerError, "failed to connect the MCP server")
-}
-
-// DisconnectAgentMCPOAuthServer forgets the owner's grant for the server and
-// cancels the owner's connects to it still in flight. The authorization
-// servers seen so far advertise no revocation endpoint, so the tokens are
-// dropped here and expire at the server on their own.
-func (h *Handler) DisconnectAgentMCPOAuthServer(w http.ResponseWriter, r *http.Request) {
-	agent, ok := h.requireAgentMcpWriter(w, r)
-	if !ok {
-		return
-	}
-	store, ok := h.mcpOAuthStore(w)
-	if !ok {
-		return
-	}
-	server, ok := agentMCPOAuthServer(w, r, store, agent)
-	if !ok {
-		return
-	}
-	if !agent.OwnerID.Valid {
-		// An agent without an owner has no connection to forget.
-		writeError(w, http.StatusNotFound, "this agent has no owner, so it has no connection")
-		return
-	}
-	err := store.DeleteConnection(r.Context(), server.WorkspaceID, server.ID, uuidToString(agent.OwnerID))
-	if err != nil && !errors.Is(err, mcpoauth.ErrNotConnected) {
-		writeError(w, http.StatusInternalServerError, "failed to disconnect the MCP server")
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-type completeMCPOAuthRequest struct {
-	State string `json:"state"`
-	Code  string `json:"code"`
-	// Error is the authorization server's error parameter, when the user
-	// declined. The state is still consumed.
-	Error string `json:"error"`
-}
-
-type completeMCPOAuthResponse struct {
-	WorkspaceID string `json:"workspace_id"`
-	AgentID     string `json:"agent_id"`
-	ServerID    string `json:"server_id"`
-	ReturnTo    string `json:"return_to"`
-}
-
-var errMCPOAuthNoLongerAllowed = errors.New("you can no longer connect this agent")
-
-// CompleteMCPOAuth finishes a connect started by the same user. Before the
-// code is exchanged it checks that the server still exists and that the user
-// is still a member of its workspace and the owner of its agent.
-func (h *Handler) CompleteMCPOAuth(w http.ResponseWriter, r *http.Request) {
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return
-	}
-	store, ok := h.mcpOAuthStore(w)
-	if !ok {
-		return
-	}
-	var req completeMCPOAuthRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	code := req.Code
-	if req.Error != "" {
-		code = ""
-	}
-	var agentID string
-	pending, err := mcpoauth.Flow{Store: store}.Complete(r.Context(), req.State, code, userID, func(p mcpoauth.PendingAuthorization) error {
-		server, err := store.GetServer(r.Context(), p.WorkspaceID, p.ServerID)
-		if err != nil {
-			return errMCPOAuthNoLongerAllowed
-		}
-		workspaceUUID, err := parseUUIDStrict(p.WorkspaceID)
-		if err != nil {
-			return errMCPOAuthNoLongerAllowed
-		}
-		agentUUID, err := parseUUIDStrict(server.AgentID)
-		if err != nil {
-			return errMCPOAuthNoLongerAllowed
-		}
-		userUUID, err := parseUUIDStrict(userID)
-		if err != nil {
-			return errMCPOAuthNoLongerAllowed
-		}
-		if _, err := h.Queries.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{
-			UserID: userUUID, WorkspaceID: workspaceUUID,
-		}); err != nil {
-			return errMCPOAuthNoLongerAllowed
-		}
-		agent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{ID: agentUUID, WorkspaceID: workspaceUUID})
-		if err != nil || !agent.OwnerID.Valid || uuidToString(agent.OwnerID) != userID {
-			return errMCPOAuthNoLongerAllowed
-		}
-		agentID = server.AgentID
-		return nil
-	})
-	switch {
-	case errors.Is(err, mcpoauth.ErrStateInvalid):
-		writeErrorCode(w, http.StatusBadRequest, "mcp_oauth_state_invalid", err.Error())
-	case errors.Is(err, errMCPOAuthNoLongerAllowed):
-		writeErrorCode(w, http.StatusForbidden, "mcp_oauth_not_allowed", err.Error())
-	case errors.Is(err, mcpoauth.ErrAuthorizationDenied):
-		writeErrorCode(w, http.StatusBadRequest, "mcp_oauth_denied", err.Error())
-	case err != nil:
-		h.writeMCPOAuthFlowError(w, pending.ServerID, err)
-	default:
-		writeJSON(w, http.StatusOK, completeMCPOAuthResponse{
-			WorkspaceID: pending.WorkspaceID, AgentID: agentID, ServerID: pending.ServerID, ReturnTo: pending.ReturnTo,
-		})
-	}
 }

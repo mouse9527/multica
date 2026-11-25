@@ -1867,6 +1867,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// The payload is names and transports only; the stored
 					// entries are write-only.
 					r.Get("/mcp-servers", h.ListWorkspaceMcpServers)
+					// mouse9527/multica fork: each member's own OAuth
+					// connection to the library's OAuth entries (M-269),
+					// 404 unless mcp_oauth_v1 is on.
+					r.Route("/mcp-oauth", h.MountWorkspaceMCPOAuth)
 					// Installed Plugins are member-visible so a member can
 					// see what is mounted in their workspace and which scopes
 					// it holds; install / configure / remove stay admin-only.
@@ -2506,8 +2510,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/mcp-servers", h.AddAgentMcpServer)
 					r.Put("/mcp-servers/{serverId}/enabled", h.SetAgentMcpServerEnabled)
 					r.Delete("/mcp-servers/{serverId}", h.RemoveAgentMcpServer)
-					// mouse9527/multica fork: OAuth MCP servers and the owner's
-					// connection to them (M-230), 404 unless mcp_oauth_v1 is on.
+					// mouse9527/multica fork: the owner's connection to the
+					// agent's OAuth MCP entries (M-230, M-269), 404 unless
+					// mcp_oauth_v1 is on.
 					r.Route("/mcp-oauth", h.MountAgentMCPOAuth)
 					// Dedicated env-management endpoint. Admits the agent
 					// owner or a workspace owner/admin; agent actors are

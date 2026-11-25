@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
+// Modified for the mouse9527/multica fork: connect an MCP entry by ref (M-269).
 
 package mcpoauth
 
@@ -17,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
@@ -179,28 +182,23 @@ func (f *fakeOAuthServer) tokenRequestCount() int {
 
 const testRedirectURI = "https://app.example.test" + CallbackPath
 
-func newFlowHarness(t *testing.T) (*fakeOAuthServer, *Store, fixture, Server) {
+func newFlowHarness(t *testing.T) (*fakeOAuthServer, *Store, fixture, Target) {
 	t.Helper()
 	fake := newFakeOAuthServer(t)
 	store := newTestStore(t, testPool(t), newClock())
 	f := newFixture()
-	server, err := store.CreateServer(context.Background(), ServerInput{
-		WorkspaceID: f.workspaceID, AgentID: f.agentID, CreatedBy: f.ownerID, Name: "gateway", URL: fake.srv.URL + "/mcp",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return fake, store, f, server
+	target := Target{WorkspaceID: f.workspaceID, Ref: WorkspaceRef(uuid.NewString()), URL: fake.srv.URL + "/mcp"}
+	return fake, store, f, target
 }
 
 // End to end against the fake server: discovery, registration, PKCE,
 // exchange, storage, then refresh through the production Refresher.
 func TestConnectFlowEndToEnd(t *testing.T) {
 	ctx := context.Background()
-	fake, store, f, server := newFlowHarness(t)
+	fake, store, f, target := newFlowHarness(t)
 	flow := Flow{Store: store}
 
-	authorizationURL, err := flow.Start(ctx, server, f.ownerID, testRedirectURI, "/ws/agents/x")
+	authorizationURL, err := flow.Start(ctx, target, f.ownerID, testRedirectURI, "/ws/agents/x")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -210,7 +208,7 @@ func TestConnectFlowEndToEnd(t *testing.T) {
 	code, state := fake.authorize(t, authorizationURL)
 
 	pending, err := flow.Complete(ctx, state, code, f.ownerID, func(p PendingAuthorization) error {
-		if p.ServerID != server.ID || p.ReturnTo != "/ws/agents/x" {
+		if p.ServerRef != target.Ref || p.ServerURL != target.URL || p.ReturnTo != "/ws/agents/x" {
 			t.Errorf("pending = %+v", p)
 		}
 		return nil
@@ -218,11 +216,11 @@ func TestConnectFlowEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("complete: %v", err)
 	}
-	if pending.ServerID != server.ID {
+	if pending.ServerRef != target.Ref {
 		t.Fatalf("completed %+v", pending)
 	}
-	status, err := store.GetConnectionStatus(ctx, f.workspaceID, server.ID, f.ownerID)
-	if err != nil || status.Status != StatusConnected || status.ExpiresAt == nil {
+	status, err := store.GetConnectionStatus(ctx, f.workspaceID, target.Ref, f.ownerID)
+	if err != nil || status.Status != StatusConnected || status.ExpiresAt == nil || status.ServerURL != target.URL {
 		t.Fatalf("status = %+v, err = %v", status, err)
 	}
 
@@ -256,7 +254,7 @@ func TestConnectFlowEndToEnd(t *testing.T) {
 		t.Fatalf("refresh = %+v, err = %v", response, err)
 	}
 	// The stored token from the exchange is fresh, so the source hands it out.
-	credential, err := source.Credential(ctx, server.ID, f.ownerID)
+	credential, err := source.Credential(ctx, target, f.ownerID)
 	if err != nil || credential.AccessToken.Reveal() != "at-1" {
 		t.Fatalf("credential = %v, err = %v", credential.AccessToken.Reveal(), err)
 	}
@@ -265,10 +263,10 @@ func TestConnectFlowEndToEnd(t *testing.T) {
 // Completing as someone else, or refusing in check, never exchanges the code.
 func TestCompleteRefusesBeforeExchanging(t *testing.T) {
 	ctx := context.Background()
-	fake, store, f, server := newFlowHarness(t)
+	fake, store, f, target := newFlowHarness(t)
 	flow := Flow{Store: store}
 
-	authorizationURL, err := flow.Start(ctx, server, f.ownerID, testRedirectURI, "")
+	authorizationURL, err := flow.Start(ctx, target, f.ownerID, testRedirectURI, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +275,7 @@ func TestCompleteRefusesBeforeExchanging(t *testing.T) {
 		t.Fatalf("another user: err = %v", err)
 	}
 
-	authorizationURL, err = flow.Start(ctx, server, f.ownerID, testRedirectURI, "")
+	authorizationURL, err = flow.Start(ctx, target, f.ownerID, testRedirectURI, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +285,7 @@ func TestCompleteRefusesBeforeExchanging(t *testing.T) {
 		t.Fatalf("refused check: err = %v", err)
 	}
 
-	authorizationURL, err = flow.Start(ctx, server, f.ownerID, testRedirectURI, "")
+	authorizationURL, err = flow.Start(ctx, target, f.ownerID, testRedirectURI, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +297,7 @@ func TestCompleteRefusesBeforeExchanging(t *testing.T) {
 	if n := fake.tokenRequestCount(); n != 0 {
 		t.Fatalf("%d token requests, want none", n)
 	}
-	if _, err := store.GetConnectionStatus(ctx, f.workspaceID, server.ID, f.ownerID); !errors.Is(err, ErrNotConnected) {
+	if _, err := store.GetConnectionStatus(ctx, f.workspaceID, target.Ref, f.ownerID); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("a refused completion connected: %v", err)
 	}
 }
@@ -307,9 +305,9 @@ func TestCompleteRefusesBeforeExchanging(t *testing.T) {
 // Without the operator opt-in pkg/remotemcp refuses a non-public address: the
 // SSRF boundary holds for every server an agent owner can name.
 func TestStartRefusesNonPublicServers(t *testing.T) {
-	_, store, f, server := newFlowHarness(t)
+	_, store, f, target := newFlowHarness(t)
 	t.Setenv(remotemcp.DevOriginsEnv, "")
-	if _, err := (Flow{Store: store}).Start(context.Background(), server, f.ownerID, testRedirectURI, ""); !errors.Is(err, ErrDiscovery) {
+	if _, err := (Flow{Store: store}).Start(context.Background(), target, f.ownerID, testRedirectURI, ""); !errors.Is(err, ErrDiscovery) {
 		t.Fatalf("err = %v, want ErrDiscovery", err)
 	}
 }

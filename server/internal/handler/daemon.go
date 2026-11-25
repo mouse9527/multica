@@ -3135,7 +3135,6 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		MCPOAuthNotices:       mcpOAuth.Notices,
 		MCPOAuthProxy:         mcpOAuth.Proxy,
 		MCPOAuthNames:         mcpOAuth.Names,
-		MCPOAuthWithholdAll:   mcpOAuth.WithholdAll,
 		Model:                 agent.Model.String,
 		ThinkingLevel:         agent.ThinkingLevel.String,
 		ServiceTier:           agent.ServiceTier.String,

@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
+// Modified for the mouse9527/multica fork: connections keyed by entry ref, bound to its URL (M-269).
 
 package mcpoauth
 
@@ -76,7 +77,7 @@ type tokenHarness struct {
 	auth   *fakeAuthServer
 	source *TokenSource
 	f      fixture
-	server Server
+	target Target
 }
 
 // newTokenHarness connects the fixture owner with at-1 / rt-1, valid for
@@ -87,8 +88,8 @@ func newTokenHarness(t *testing.T, lifetime time.Duration, refreshToken string) 
 	h.store = newTestStore(t, h.pool, h.clock)
 	h.auth = &fakeAuthServer{current: refreshToken, expiresIn: int64(lifetime / time.Second), rotate: true}
 	h.source = NewTokenSource(h.store, h.auth.refresh, slog.New(slog.DiscardHandler))
-	h.server = h.f.server(t, h.store, "gateway", map[string]string{"x-gateway-key": "gw-key"})
-	if err := h.store.SaveGrant(context.Background(), h.f.grant(h.server.ID, "at-1", refreshToken, int64(lifetime/time.Second))); err != nil {
+	h.target = h.f.target("gateway")
+	if err := h.store.SaveGrant(context.Background(), h.f.grant(h.target.Ref, "at-1", refreshToken, int64(lifetime/time.Second))); err != nil {
 		t.Fatal(err)
 	}
 	return h
@@ -96,7 +97,7 @@ func newTokenHarness(t *testing.T, lifetime time.Duration, refreshToken string) 
 
 func (h *tokenHarness) credential(t *testing.T) (Credential, error) {
 	t.Helper()
-	return h.source.Credential(context.Background(), h.server.ID, h.f.ownerID)
+	return h.source.Credential(context.Background(), h.target, h.f.ownerID)
 }
 
 func (h *tokenHarness) mustToken(t *testing.T, want string) Credential {
@@ -113,7 +114,7 @@ func (h *tokenHarness) mustToken(t *testing.T, want string) Credential {
 
 func (h *tokenHarness) status(t *testing.T) ConnectionStatus {
 	t.Helper()
-	status, err := h.store.GetConnectionStatus(context.Background(), h.f.workspaceID, h.server.ID, h.f.ownerID)
+	status, err := h.store.GetConnectionStatus(context.Background(), h.f.workspaceID, h.target.Ref, h.f.ownerID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +124,7 @@ func (h *tokenHarness) status(t *testing.T) ConnectionStatus {
 func TestFreshTokenIsNotRefreshed(t *testing.T) {
 	h := newTokenHarness(t, time.Hour, "rt-1")
 	c := h.mustToken(t, "at-1")
-	if headers := c.Headers(); headers["Authorization"] != "Bearer at-1" || headers["x-gateway-key"] != "gw-key" {
+	if headers := c.Headers(); headers["Authorization"] != "Bearer at-1" || len(headers) != 1 {
 		t.Fatalf("headers = %v", headers)
 	}
 	if !c.ExpiresAt.Equal(h.clock.Now().Add(time.Hour)) {
@@ -145,9 +146,6 @@ func TestRefreshRotatesAndPersistsTheRefreshToken(t *testing.T) {
 	if !c.ExpiresAt.Equal(h.clock.Now().Add(time.Hour)) {
 		t.Fatalf("refreshed token expires at %v", c.ExpiresAt)
 	}
-	if c.Headers()["x-gateway-key"] != "gw-key" {
-		t.Fatal("refreshed credential lost the extra header")
-	}
 	// The stored token is the new one: no refresh until the next margin.
 	h.mustToken(t, "at-2")
 	h.clock.Advance(time.Hour - DefaultMargin + time.Second)
@@ -160,7 +158,7 @@ func TestRefreshRotatesAndPersistsTheRefreshToken(t *testing.T) {
 	if first.RefreshToken.Reveal() != "rt-1" || second.RefreshToken.Reveal() != "rt-2" {
 		t.Fatalf("refresh tokens presented: %q then %q", first.RefreshToken.Reveal(), second.RefreshToken.Reveal())
 	}
-	if first.TokenEndpoint != "https://auth.example.com/token" || first.Resource != "https://mcp.example.com/gateway" ||
+	if first.TokenEndpoint != "https://auth.example.com/token" || first.Resource != testServerURL ||
 		first.Client.ClientID != "client-1" || first.Client.ClientSecret != "client-secret-1" || first.Client.TokenEndpointAuthMethod != "client_secret_post" {
 		t.Fatalf("refresh request = %+v", first)
 	}
@@ -201,7 +199,7 @@ func TestConcurrentClaimsRefreshOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c, err := h.source.Credential(context.Background(), h.server.ID, h.f.ownerID)
+			c, err := h.source.Credential(context.Background(), h.target, h.f.ownerID)
 			errs[i] = err
 			results[i] = c.AccessToken.Reveal()
 		}()
@@ -252,8 +250,8 @@ func TestRejectedRefreshNeedsReconnect(t *testing.T) {
 	var tokens int
 	if err := h.pool.QueryRow(context.Background(), `
 		SELECT count(*) FROM mcp_oauth_connection
-		WHERE server_id = $1::uuid AND (access_token_ciphertext IS NOT NULL OR refresh_token_ciphertext IS NOT NULL)`,
-		h.server.ID).Scan(&tokens); err != nil {
+		WHERE server_ref = $1 AND (access_token_ciphertext IS NOT NULL OR refresh_token_ciphertext IS NOT NULL)`,
+		h.target.Ref).Scan(&tokens); err != nil {
 		t.Fatal(err)
 	}
 	if tokens != 0 {
@@ -267,7 +265,7 @@ func TestRejectedRefreshNeedsReconnect(t *testing.T) {
 		t.Fatalf("%d refreshes, want 1", n)
 	}
 	// Connecting again restores it.
-	if err := h.store.SaveGrant(context.Background(), h.f.grant(h.server.ID, "at-new", "rt-new", 3600)); err != nil {
+	if err := h.store.SaveGrant(context.Background(), h.f.grant(h.target.Ref, "at-new", "rt-new", 3600)); err != nil {
 		t.Fatal(err)
 	}
 	h.mustToken(t, "at-new")
@@ -370,7 +368,7 @@ func TestCancelledCallerDoesNotLoseTheRotatedToken(t *testing.T) {
 	h.clock.Advance(time.Hour)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	if _, err := h.source.Credential(ctx, h.server.ID, h.f.ownerID); !errors.Is(err, ErrUnavailable) {
+	if _, err := h.source.Credential(ctx, h.target, h.f.ownerID); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("err = %v, want ErrUnavailable", err)
 	}
 	close(h.auth.gate)
@@ -400,7 +398,7 @@ func TestUndecryptableTokenNeedsReconnect(t *testing.T) {
 	}
 	other.now = h.clock.Now
 	source := NewTokenSource(other, h.auth.refresh, slog.New(slog.DiscardHandler))
-	if _, err := source.Credential(context.Background(), h.server.ID, h.f.ownerID); !errors.Is(err, ErrNeedsReconnect) {
+	if _, err := source.Credential(context.Background(), h.target, h.f.ownerID); !errors.Is(err, ErrNeedsReconnect) {
 		t.Fatalf("err = %v, want ErrNeedsReconnect", err)
 	}
 	if status := h.status(t); status.Status != StatusNeedsReconnect || status.LastError != ReasonUndecryptable {
@@ -410,8 +408,12 @@ func TestUndecryptableTokenNeedsReconnect(t *testing.T) {
 
 func TestCredentialForUnknownConnection(t *testing.T) {
 	h := newTokenHarness(t, time.Hour, "rt-1")
-	if _, err := h.source.Credential(context.Background(), h.server.ID, h.f.agentID); !errors.Is(err, ErrNotConnected) {
+	if _, err := h.source.Credential(context.Background(), h.target, h.f.agentID); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("err = %v, want ErrNotConnected", err)
+	}
+	// The same user's grant for one entry is not another entry's.
+	if _, err := h.source.Credential(context.Background(), h.f.target("other"), h.f.ownerID); !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("another entry: err = %v, want ErrNotConnected", err)
 	}
 }
 
@@ -422,15 +424,15 @@ func TestCredentialReplacingARejectedToken(t *testing.T) {
 	h := newTokenHarness(t, time.Hour, "rt-1")
 	ctx := context.Background()
 
-	c, err := h.source.CredentialReplacing(ctx, h.server.ID, h.f.ownerID, TokenHash("at-1"))
+	c, err := h.source.CredentialReplacing(ctx, h.target, h.f.ownerID, TokenHash("at-1"))
 	if err != nil || c.AccessToken.Reveal() != "at-2" {
 		t.Fatalf("after rejecting at-1: %q, %v; want at-2", c.AccessToken.Reveal(), err)
 	}
-	c, err = h.source.CredentialReplacing(ctx, h.server.ID, h.f.ownerID, TokenHash("at-1"))
+	c, err = h.source.CredentialReplacing(ctx, h.target, h.f.ownerID, TokenHash("at-1"))
 	if err != nil || c.AccessToken.Reveal() != "at-2" {
 		t.Fatalf("stale rejection: %q, %v; want at-2", c.AccessToken.Reveal(), err)
 	}
-	c, err = h.source.CredentialReplacing(ctx, h.server.ID, h.f.ownerID, TokenHash("some-other-token"))
+	c, err = h.source.CredentialReplacing(ctx, h.target, h.f.ownerID, TokenHash("some-other-token"))
 	if err != nil || c.AccessToken.Reveal() != "at-2" {
 		t.Fatalf("unknown hash: %q, %v; want at-2", c.AccessToken.Reveal(), err)
 	}
@@ -441,10 +443,10 @@ func TestCredentialReplacingARejectedToken(t *testing.T) {
 	// A rejected token is never handed back, not even while a transient
 	// failure is being waited out.
 	h.auth.fail = errors.New("HTTP 503")
-	if _, err := h.source.CredentialReplacing(ctx, h.server.ID, h.f.ownerID, TokenHash("at-2")); !errors.Is(err, ErrUnavailable) {
+	if _, err := h.source.CredentialReplacing(ctx, h.target, h.f.ownerID, TokenHash("at-2")); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("rejected token with the endpoint down: err = %v, want ErrUnavailable", err)
 	}
-	if _, err := h.source.CredentialReplacing(ctx, h.server.ID, h.f.ownerID, TokenHash("at-2")); !errors.Is(err, ErrUnavailable) {
+	if _, err := h.source.CredentialReplacing(ctx, h.target, h.f.ownerID, TokenHash("at-2")); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("inside the retry window: err = %v, want ErrUnavailable", err)
 	}
 	// Callers that were not refused still get the token while it lasts.
@@ -454,5 +456,41 @@ func TestCredentialReplacingARejectedToken(t *testing.T) {
 func TestTokenHash(t *testing.T) {
 	if got := TokenHash("abc"); got != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" {
 		t.Fatalf("TokenHash = %s", got)
+	}
+}
+
+// A grant is bound to the URL it was made for. Once the entry points
+// elsewhere no token is handed out — not even a fresh one, and no refresh is
+// tried — and the connection asks for a reconnect; pointing the entry back
+// does not revive it.
+func TestCredentialRefusesAnotherURL(t *testing.T) {
+	h := newTokenHarness(t, time.Hour, "rt-1")
+	moved := h.target
+	moved.URL = "https://attacker.example.com/mcp"
+	if _, err := h.source.Credential(context.Background(), moved, h.f.ownerID); !errors.Is(err, ErrNeedsReconnect) {
+		t.Fatalf("err = %v, want ErrNeedsReconnect", err)
+	}
+	if n := h.auth.calls.Load(); n != 0 {
+		t.Fatalf("%d refreshes for a moved entry", n)
+	}
+	status := h.status(t)
+	if status.Status != StatusNeedsReconnect || status.LastError != ReasonURLChanged || status.ExpiresAt != nil {
+		t.Fatalf("status = %+v", status)
+	}
+	if _, err := h.credential(t); !errors.Is(err, ErrNeedsReconnect) {
+		t.Fatalf("back at the old URL: err = %v, want ErrNeedsReconnect", err)
+	}
+
+	// Inside the refresh too: a token due for refresh is not refreshed for
+	// a moved entry.
+	h = newTokenHarness(t, time.Hour, "rt-1")
+	h.clock.Advance(time.Hour)
+	moved = h.target
+	moved.URL = "https://attacker.example.com/mcp"
+	if _, err := h.source.CredentialReplacing(context.Background(), moved, h.f.ownerID, TokenHash("at-1")); !errors.Is(err, ErrNeedsReconnect) {
+		t.Fatalf("expired token, moved entry: err = %v, want ErrNeedsReconnect", err)
+	}
+	if n := h.auth.calls.Load(); n != 0 {
+		t.Fatalf("%d refreshes for a moved entry", n)
 	}
 }
