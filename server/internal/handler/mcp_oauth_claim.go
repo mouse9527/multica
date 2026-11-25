@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
+// Modified for the mouse9527/multica fork: correct what the claim margin promises (M-279).
 
 package handler
 
@@ -22,11 +23,20 @@ const (
 	// its result is there for the next claim; this one mounts the entry
 	// without it.
 	mcpOAuthClaimBudget = 5 * time.Second
-	// mcpOAuthClaimMargin is how long an injected token should still have:
-	// a token with less is refreshed first. TokenSource caps it at half the
-	// token's lifetime, so with one-hour tokens a task starts with at least
-	// 30 minutes. It applies only to a daemon without the proxy; with the
-	// proxy a token expiring mid-task is replaced on the next call.
+	// mcpOAuthClaimMargin applies only to a daemon without the proxy, which
+	// gets the token in the claim and keeps it for the whole task: a stored
+	// token expiring within the margin is refreshed before it is injected.
+	// TokenSource caps the margin at half the token's lifetime, so with
+	// one-hour tokens the injected token has at least 30 minutes left —
+	// unless no refresh can be made (a recent transient failure, no refresh
+	// token), in which case the current token goes in with what it has left.
+	//
+	// With the proxy no token goes into the claim, and nothing here promises
+	// a remaining lifetime: the claim and the daemon's per-call credential
+	// fetch (mcp_oauth_daemon.go) both use TokenSource's DefaultMargin, so a
+	// token the daemon gets may have only a few minutes left. The daemon
+	// caches it until shortly before it expires and fetches again after that
+	// or on a 401, so an expired token is not sent.
 	mcpOAuthClaimMargin = 30 * time.Minute
 )
 
