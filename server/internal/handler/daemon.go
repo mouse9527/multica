@@ -5175,6 +5175,7 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// input is not silently dropped. Agent replays are restricted to explicit
 	// mentions and recorded worker inputs; see reconcileCommentsOnCompletion.
 	h.reconcileCommentsOnCompletion(r.Context(), task)
+	h.forkFoldCoveredRuns(r.Context(), task) // mouse9527/multica fork (M-280)
 	// The terminal transaction and completion reconciliation are committed.
 	// Wake the owning runtime now so queued work that was blocked by this
 	// task's agent capacity or serialization key is re-claimed immediately.
