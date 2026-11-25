@@ -14,6 +14,17 @@
 
 `TestForkPrivateProjectRouteRegistrations` 按上游同样的规则检查 fork 路由：每个参数要么在 fork 表里、要么上游已登记；带项目内参数的 fork 路由必须列为「不探测」；每条登记都还在用。包级变量在所有 `init` 之前初始化，所以钩子改到的是上游已经建好的表；上游文件一行不改。上游如果改了这几个表的名字或类型，按新名字改钩子文件即可。
 
+## `pkg/remotemcp` 的内网 origin 放行（M-230）
+
+上游文件 `server/pkg/remotemcp/client.go` 里有两处 fork 钩子（#184 加的），都标着 `Modified for the mouse9527/multica fork (M-230)`：
+
+- `ValidatePublicHTTPSEndpoint`：HTTPS、userinfo、query、fragment 的检查之后，localhost 和公网地址的检查之前，`originAllowedByContext(ctx, endpoint)` 为真（并且 `allowedHosts` 为空或包含这个 host）就直接返回。
+- `NewSecureHTTPClient` 的 `DialContext`：拒绝非公网地址的条件里多一个 `!originAllowedByContext(ctx, endpoint)`。
+
+其余代码在 fork 文件 `server/pkg/remotemcp/allowed_origins_fork.go`（`AllowedOrigins`、`WithAllowedOrigins`、`originAllowedByContext`）。放行名单只放在 context 里传递，目前只有 `server/internal/mcpoauth` 的 `withAllowedOrigins` 会挂上它（环境变量 `MULTICA_MCP_OAUTH_ALLOWED_ORIGINS`），Plugin 发现和 daemon broker 不受影响。
+
+同步时：上游改了这两个函数，文本冲突会落在这两处。解冲突时要保证：放行只跳过「地址必须是公网」这一条，HTTPS、证书校验、主机钉住、不跟随重定向、不走代理都照旧；拨号器仍对每个候选地址逐个判断。上游如果把这些检查挪到别的函数或文件，钩子要跟着搬过去，这种情况文本合并可能不报冲突，这时 `allowed_origins_fork_test.go` 里的 `TestValidatePublicHTTPSEndpointHonorsContextOrigins`、`TestSecureClientDialHonorsContextOrigins` 会先失败。
+
 ## 2026-11-25 同步（M-277）
 
 合并基 `cd969f848`（M-131），上游 `1fda78b0d`。
