@@ -29,11 +29,13 @@ import (
 	"strings"
 )
 
-// leanBriefAgentsEnv names the daemon environment variable that lists, by
+// LeanBriefAgentsEnv names the daemon environment variable that lists, by
 // agent ID, the agents that get the lean brief. Agent IDs are UUIDs and unique
 // across workspaces, so one daemon serving several workspaces cannot apply the
-// list to an agent of another workspace by accident.
-const leanBriefAgentsEnv = "MULTICA_BRIEF_LEAN_AGENTS"
+// list to an agent of another workspace by accident. Exported for the CLI,
+// which carries it into the macOS LaunchAgent
+// (cmd_daemon_autostart_lean_brief.go).
+const LeanBriefAgentsEnv = "MULTICA_BRIEF_LEAN_AGENTS"
 
 // leanRepoListLimit caps the Repositories section when the repos are the
 // workspace-wide fallback rather than the project's own.
@@ -43,7 +45,7 @@ const leanRepoListLimit = 5
 // reads the daemon's environment on every call; changing the list takes a
 // daemon restart because the process environment is fixed at start.
 func leanBriefEnabled(agentID string) bool {
-	return leanBriefListed(os.Getenv(leanBriefAgentsEnv), agentID)
+	return leanBriefListed(os.Getenv(LeanBriefAgentsEnv), agentID)
 }
 
 func leanBriefListed(list, agentID string) bool {

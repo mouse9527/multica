@@ -304,17 +304,17 @@ func TestBuildMetaSkillContentLeanSwitch(t *testing.T) {
 		t.Fatal("fixture renders the same brief both ways")
 	}
 
-	t.Setenv(leanBriefAgentsEnv, "")
+	t.Setenv(LeanBriefAgentsEnv, "")
 	if got := buildMetaSkillContent("claude", ctx); got != slim {
 		t.Fatal("empty list must render the upstream brief byte for byte")
 	}
 
-	t.Setenv(leanBriefAgentsEnv, leanTestOtherAgentID)
+	t.Setenv(LeanBriefAgentsEnv, leanTestOtherAgentID)
 	if got := buildMetaSkillContent("claude", ctx); got != slim {
 		t.Fatal("an unlisted agent must render the upstream brief")
 	}
 
-	t.Setenv(leanBriefAgentsEnv, leanTestOtherAgentID+","+leanTestAgentID)
+	t.Setenv(LeanBriefAgentsEnv, leanTestOtherAgentID+","+leanTestAgentID)
 	if got := buildMetaSkillContent("claude", ctx); got != lean {
 		t.Fatal("a listed agent must render the lean brief")
 	}

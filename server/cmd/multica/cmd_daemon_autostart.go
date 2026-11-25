@@ -623,6 +623,7 @@ func launchAgentPlistContent(spec autostartSpec, label string) string {
 	if launchAgentProcessTypeOverridden(spec) {
 		writePlistEntry(&b, launchAgentProcessTypeEnv, launchAgentProcessType(spec))
 	}
+	writeLaunchAgentLeanBriefEnv(&b) // Modified by the mouse9527/multica fork (M-265).
 	writePlistEntry(&b, launchAgentSupervisorEnv, label)
 	b.WriteString("\t</dict>\n")
 	b.WriteString("\t<key>RunAtLoad</key>\n\t<true/>\n")
