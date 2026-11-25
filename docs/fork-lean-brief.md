@@ -21,6 +21,29 @@ daemon 进程的环境变量 `MULTICA_BRIEF_LEAN_AGENTS`，值是逗号分隔的
 - 变量在 daemon 启动时读入进程环境，改了要重启 daemon 才生效；正在跑的任务不受影响，下一次运行才换。
 - 回滚：从变量里删掉 ID（或清空变量），重启 daemon。
 
+### macOS 开机自启动的 daemon（LaunchAgent，M-265）
+
+LaunchAgent 启动的 daemon 只有 plist 里 `EnvironmentVariables` 的环境变量，而每次 `daemon start` 都会按代码重写这个 plist。从 M-265（`v0.10.0-mouse.7`）起，生成 plist 的进程环境里有非空的 `MULTICA_BRIEF_LEAN_AGENTS` 时，plist 会写进这个变量；launchd 拉起的 daemon 因此也有它，之后每次重写都会保留。没有这个变量（或为空）时，plist 和以前逐字节一致。
+
+打开（在已登录的终端里，daemon 空闲时做）：
+
+```bash
+MULTICA_BRIEF_LEAN_AGENTS=<智能体 ID>[,<智能体 ID>...] multica daemon autostart enable
+# 确认 plist 里有这个变量
+plutil -p ~/Library/LaunchAgents/ai.multica.daemon.plist | grep MULTICA_BRIEF_LEAN_AGENTS
+# 让 launchd 按新 plist 重新加载（会重启 daemon，正在跑的任务会中断）
+launchctl bootout gui/$(id -u)/ai.multica.daemon
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.multica.daemon.plist
+```
+
+带 `--profile` 的 daemon，plist 名和 label 是 `ai.multica.daemon.<profile>`。只改 plist 不重新加载，要到下次登录才生效；升级二进制后的自动重启沿用 launchd 已加载的那份环境。
+
+回滚：在**没有**这个变量的终端里再跑一次 `multica daemon autostart enable`（它会按当前环境重写 plist，变量就没了），然后同样 bootout + bootstrap。也可以手工删掉 plist 里那一项再 bootout + bootstrap；新起的 daemon 没有这个变量，之后的重写也不会再写回去。
+
+注意：在没有这个变量的终端里跑 `autostart enable`，会把它从 plist 里去掉，想保留就带上它再跑。
+
+Linux（systemd 用户 unit、XDG 自启动项）和 Windows（Run 键）这次没改。systemd unit 也是每次 `daemon start` 按代码重写，只写 `PATH`，手工加进 unit 的 `Environment=` 同样会被抹掉；要在 Linux 上长期打开，用 drop-in（`systemctl --user edit <unit>` 写进 `<unit>.d/override.conf`），它不会被重写。Windows 的 Run 键只存命令行，daemon 继承用户的环境变量，用户级环境变量不受重写影响。
+
 ## 同一个 daemon 跑多个工作区
 
 名单只按智能体 ID 匹配，不看工作区。智能体 ID 是全局唯一的 UUID，所以只列工作区 A 某个智能体的 ID，不会让同一 daemon 上工作区 B 的智能体切到 lean 版。以工作区 B 为例：
@@ -34,4 +57,4 @@ daemon 进程的环境变量 `MULTICA_BRIEF_LEAN_AGENTS`，值是逗号分隔的
 - `TestLeanBriefHeadingsMatchUpstream`：对一组覆盖所有任务类型的上下文，比较上游和 lean 两个装配器输出的标题（`#` 到 `###`）序列，不一致就失败。上游加了、改了、删了或挪了一个段落，这个测试会挂；按上游的改动在 `runtime_config_lean.go` 里补上对应段落（新段落一般先直接调用上游的 writer）。
 - `TestLeanBriefKeepsHardRules`：钉住 lean 版不能丢的规则原句（turn 结束即终止、不 background-and-yield、不 watch/poll CI 及唯一例外、不按名字杀 multica 进程、评论是唯一交付、`--content-file` 写在工作目录、step 2 必须扫评论、何时拆子任务等）。
 - 上游改了 lean 版沿用的 writer，lean 版自动跟着变；改了 lean 版已经重写的段落，上游的新规则要手工搬进 lean 版。同步 PR 里用 `git diff <旧 main>..<新 main> -- server/internal/daemon/execenv/runtime_config_sections.go` 看上游改了哪些段。
-- 钩子冲突只可能出现在 `runtime_config.go` 的 `buildMetaSkillContent` 和 `cmd_repo.go` 的 `repoCheckoutOutcome` 各一行。
+- 钩子冲突只可能出现在 `runtime_config.go` 的 `buildMetaSkillContent`、`cmd_repo.go` 的 `repoCheckoutOutcome` 和 `cmd_daemon_autostart.go` 的 `launchAgentPlistContent`（M-265，逻辑在 `cmd_daemon_autostart_lean_brief.go`）各一行。
