@@ -32,7 +32,9 @@ const (
 
 // MCPOAuthProxyServer is an OAuth MCP entry the daemon serves to the runtime
 // through a local proxy, fetching the token for each call. ServerID is the
-// entry's ref, which the daemon passes back to the credential endpoint.
+// entry's proxy handle (mcpoauth.ProxyHandle: its ref bound to URL), which the
+// daemon passes back to the credential endpoint, so the token it gets is only
+// ever one for the URL it proxies to.
 type MCPOAuthProxyServer struct {
 	Name     string `json:"name"`
 	ServerID string `json:"server_id"`
@@ -141,7 +143,7 @@ func (h *Handler) applyMCPOAuthServers(ctx context.Context, task *db.AgentTaskQu
 			continue
 		}
 		if proxy {
-			out.Proxy = append(out.Proxy, MCPOAuthProxyServer{Name: entry.Name, ServerID: entry.Ref, URL: entry.Entry.URL})
+			out.Proxy = append(out.Proxy, MCPOAuthProxyServer{Name: entry.Name, ServerID: mcpoauth.ProxyHandle(entry.Ref, entry.Entry.URL), URL: entry.Entry.URL})
 			continue
 		}
 		mounted, err := json.Marshal(map[string]any{"type": "http", "url": entry.Entry.URL, "headers": credential.Headers()})

@@ -241,6 +241,35 @@ func TestMCPOAuthProxyWithoutACredentialCallsNothing(t *testing.T) {
 	}
 }
 
+// The entry was pointed at another URL and reconnected during the run: the
+// server's credential now names that URL. The proxy, still targeting the old
+// one, refuses it before anything is sent, so the new token never reaches
+// the old endpoint. A credential naming the proxy's own target is used.
+func TestMCPOAuthProxyRefusesACredentialForAnotherURL(t *testing.T) {
+	upstream := newUpstreamMCP(t, "tok-new", nil)
+	var credentialURL atomic.Value
+	credentialURL.Store("https://moved.example.com/mcp")
+	fetch := func(context.Context, string, string) (mcpOAuthCredential, error) {
+		return mcpOAuthCredential{
+			Headers:   map[string]string{"Authorization": "Bearer tok-new"},
+			ExpiresAt: time.Now().Add(time.Hour),
+			URL:       credentialURL.Load().(string),
+		}, nil
+	}
+	proxyURL, _ := startTestProxy(t, upstream, fetch)
+	if resp := postMCP(t, proxyURL, `{}`, nil); resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status %d, want 502", resp.StatusCode)
+	}
+	if seen, _ := upstream.requests(); len(seen) != 0 {
+		t.Fatalf("upstream saw %d requests with a token for another URL", len(seen))
+	}
+
+	credentialURL.Store(upstream.srv.URL + "/mcp")
+	if resp := postMCP(t, proxyURL, `{}`, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("own URL: status %d, want 200", resp.StatusCode)
+	}
+}
+
 // Only the random path is served: another local process that finds the port
 // cannot use the token behind it.
 func TestMCPOAuthProxyServesOnlyItsPath(t *testing.T) {

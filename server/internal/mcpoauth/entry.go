@@ -5,6 +5,8 @@ package mcpoauth
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -70,6 +72,37 @@ func ParseRef(ref string) (Ref, bool) {
 		return Ref{}, false
 	}
 	return Ref{AgentID: agentID, Name: name}, true
+}
+
+// A proxy handle names an entry together with the URL a claim gave a
+// daemon's proxy for it: ref + "~" + URLDigest(url). The daemon passes it back
+// verbatim when it fetches a token, so the server can refuse a token for any
+// URL but the one that proxy sends to — the entry may be edited, and
+// reconnected for its new URL, while the task still runs. "~" is unreserved,
+// so the handle survives path escaping unchanged.
+const proxyHandleSeparator = "~"
+
+// URLDigest identifies an entry URL without spelling it out: hex SHA-256.
+func URLDigest(entryURL string) string {
+	sum := sha256.Sum256([]byte(entryURL))
+	return hex.EncodeToString(sum[:])
+}
+
+// ProxyHandle is the handle for ref proxied to entryURL.
+func ProxyHandle(ref, entryURL string) string {
+	return ref + proxyHandleSeparator + URLDigest(entryURL)
+}
+
+// ParseProxyHandle splits a handle into its ref and URL digest.
+func ParseProxyHandle(handle string) (ref, digest string, ok bool) {
+	ref, digest, found := strings.Cut(handle, proxyHandleSeparator)
+	if !found || len(digest) != sha256.Size*2 || strings.Trim(digest, "0123456789abcdef") != "" {
+		return "", "", false
+	}
+	if _, valid := ParseRef(ref); !valid {
+		return "", "", false
+	}
+	return ref, digest, true
 }
 
 func isCanonicalUUID(s string) bool {

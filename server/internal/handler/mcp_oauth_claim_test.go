@@ -401,7 +401,8 @@ func mcpConfigJSONEqual(t *testing.T, got json.RawMessage, want string) bool {
 }
 
 // A daemon that proxies OAuth MCP gets no token at all in the claim: the
-// mountable entries come as a proxy list (name, ref, URL), every OAuth name
+// mountable entries come as a proxy list (name, handle binding the ref to the
+// URL, URL), every OAuth name
 // is listed for the daemon to withhold from the runtime's own config, and
 // entries that cannot be mounted still get their notices.
 func TestClaimForAProxyingDaemonCarriesNoToken(t *testing.T) {
@@ -423,7 +424,7 @@ func TestClaimForAProxyingDaemonCarriesNoToken(t *testing.T) {
 	if servers := decodeServers(t, agent.McpConfig); len(servers) != 1 || servers["own"] == nil {
 		t.Fatalf("servers = %v, want only own", serverNames(servers))
 	}
-	if len(agent.MCPOAuthProxy) != 1 || agent.MCPOAuthProxy[0] != (MCPOAuthProxyServer{Name: "gateway", ServerID: ref, URL: "https://mcp.example.com/gateway"}) {
+	if len(agent.MCPOAuthProxy) != 1 || agent.MCPOAuthProxy[0] != (MCPOAuthProxyServer{Name: "gateway", ServerID: mcpoauth.ProxyHandle(ref, "https://mcp.example.com/gateway"), URL: "https://mcp.example.com/gateway"}) {
 		t.Fatalf("proxy = %+v", agent.MCPOAuthProxy)
 	}
 	if strings.Join(agent.MCPOAuthNames, ",") != "gateway,pending" {

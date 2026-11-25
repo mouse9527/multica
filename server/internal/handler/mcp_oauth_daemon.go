@@ -26,16 +26,22 @@ type mcpOAuthCredentialResponse struct {
 	// ExpiresAt is when the access token expires; absent when the
 	// authorization server gave no lifetime.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// URL is the only URL the token may be sent to. The daemon's proxy
+	// refuses a credential for any URL but its own target.
+	URL string `json:"url"`
 }
 
 // ResolveMCPOAuthCredential (GET /api/daemon/tasks/{id}/mcp-oauth/{serverId}/credential[?rejected=<token hash>])
 // is how a daemon's local proxy gets the current token for an OAuth MCP
 // entry while the task runs, so a token that expires mid-task is replaced
-// rather than failing every later call. {serverId} is the entry's ref, as the
-// claim listed it. It serves only a task this daemon may access that is still
-// dispatched or running, and only an OAuth entry the task's agent runs with
-// now, for the entry's current URL, with the agent owner's grant (refreshed
-// here when due).
+// rather than failing every later call. {serverId} is the proxy handle the
+// claim gave (mcpoauth.ProxyHandle: the entry's ref bound to the URL the
+// proxy sends to). It serves only a task this daemon may access that is
+// still dispatched or running, only an OAuth entry the task's agent runs with
+// now, and only while that entry still has the URL the proxy was given: an
+// entry edited during the task, and perhaps reconnected for its new URL,
+// gets no token for the proxy still pointing at the old one. The grant used
+// is the agent owner's, refreshed here when due.
 func (h *Handler) ResolveMCPOAuthCredential(w http.ResponseWriter, r *http.Request) {
 	if !featureflags.MCPOAuthV1Enabled(r.Context(), h.FeatureFlags) {
 		writeError(w, http.StatusNotFound, "not found")
@@ -49,8 +55,8 @@ func (h *Handler) ResolveMCPOAuthCredential(w http.ResponseWriter, r *http.Reque
 		writeErrorCode(w, http.StatusConflict, "task_not_active", "the task is no longer running")
 		return
 	}
-	ref := chi.URLParam(r, "serverId")
-	if _, ok := mcpoauth.ParseRef(ref); !ok {
+	ref, proxiedURLDigest, ok := mcpoauth.ParseProxyHandle(chi.URLParam(r, "serverId"))
+	if !ok {
 		writeError(w, http.StatusNotFound, "MCP OAuth server not found")
 		return
 	}
@@ -89,6 +95,10 @@ func (h *Handler) ResolveMCPOAuthCredential(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotFound, "MCP OAuth server not found")
 		return
 	}
+	if mcpoauth.URLDigest(target.URL) != proxiedURLDigest {
+		writeErrorCode(w, http.StatusConflict, "mcp_oauth_entry_changed", "the MCP server's URL changed during the task; the next task uses the new one")
+		return
+	}
 
 	// rejected is mcpoauth.TokenHash of the token the MCP server just
 	// answered 401 to: while it is still the stored token it is refreshed
@@ -111,7 +121,7 @@ func (h *Handler) ResolveMCPOAuthCredential(w http.ResponseWriter, r *http.Reque
 		writeErrorCode(w, http.StatusServiceUnavailable, "mcp_oauth_unavailable", "a current token could not be obtained")
 		return
 	}
-	resp := mcpOAuthCredentialResponse{Headers: credential.Headers()}
+	resp := mcpOAuthCredentialResponse{Headers: credential.Headers(), URL: target.URL}
 	if !credential.ExpiresAt.IsZero() {
 		expiresAt := credential.ExpiresAt
 		resp.ExpiresAt = &expiresAt

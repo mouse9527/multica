@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
+// Modified for the mouse9527/multica fork: credentials name the URL they are for (M-269).
 
 package daemon
 
@@ -20,6 +21,7 @@ func (c *Client) ResolveMCPOAuthCredential(ctx context.Context, taskID, serverID
 	var response struct {
 		Headers   map[string]string `json:"headers"`
 		ExpiresAt *time.Time        `json:"expires_at"`
+		URL       string            `json:"url"`
 	}
 	path := fmt.Sprintf("/api/daemon/tasks/%s/mcp-oauth/%s/credential", url.PathEscape(taskID), url.PathEscape(serverID))
 	if rejectedHash != "" {
@@ -31,7 +33,7 @@ func (c *Client) ResolveMCPOAuthCredential(ctx context.Context, taskID, serverID
 	if len(response.Headers) == 0 {
 		return mcpOAuthCredential{}, errors.New("MCP OAuth credential response has no headers")
 	}
-	credential := mcpOAuthCredential{Headers: response.Headers}
+	credential := mcpOAuthCredential{Headers: response.Headers, URL: response.URL}
 	if response.ExpiresAt != nil {
 		credential.ExpiresAt = *response.ExpiresAt
 	}
