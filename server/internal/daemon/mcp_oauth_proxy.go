@@ -352,7 +352,9 @@ type mcpOAuthMountInput struct {
 //   - each server to mount is added as a local proxy entry; a runtime the
 //     proxy is not offered to (outside the set the Remote MCP broker
 //     supports) does not get the server at all, since the only alternative
-//     is a token in its config file.
+//     is a token in its config file;
+//   - when the server could not read the names (WithholdAll), no MCP server
+//     is mounted at all.
 //
 // A config that was unmanaged becomes managed (the runtime's own servers,
 // minus the withheld names), since an unmanaged runtime would load its own
@@ -361,8 +363,11 @@ type mcpOAuthMountInput struct {
 // Effective unchanged.
 func applyMCPOAuthServers(in mcpOAuthMountInput) (json.RawMessage, *mcpOAuthProxySet, []string) {
 	agent := in.Agent
-	if agent == nil || (len(agent.MCPOAuthNames) == 0 && len(agent.MCPOAuthProxy) == 0) {
+	if agent == nil || (!agent.MCPOAuthWithholdAll && len(agent.MCPOAuthNames) == 0 && len(agent.MCPOAuthProxy) == 0) {
 		return in.Effective, nil, nil
+	}
+	if agent.MCPOAuthWithholdAll {
+		return json.RawMessage(`{"mcpServers":{}}`), nil, nil
 	}
 	effective := in.Effective
 	if trimmed := bytes.TrimSpace(effective); len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {

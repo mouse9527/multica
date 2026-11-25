@@ -257,11 +257,16 @@ type AgentData struct {
 	// MCPOAuthNotices (mouse9527/multica fork, M-230): OAuth MCP servers the
 	// server left out of McpConfig, each with the reason, for the transcript.
 	MCPOAuthNotices []string `json:"mcp_oauth_notices,omitempty"`
-	// MCPOAuthProxy, MCPOAuthNames (fork, M-230): OAuth MCP servers to serve
-	// through local proxies, and every OAuth server name to withhold from
-	// the run's MCP config. See applyMCPOAuthServers.
-	MCPOAuthProxy []MCPOAuthProxyServerData `json:"mcp_oauth_proxy,omitempty"`
-	MCPOAuthNames []string                  `json:"mcp_oauth_names,omitempty"`
+	// MCPOAuthProxy, MCPOAuthNames, MCPOAuthWithholdAll (fork, M-230): OAuth
+	// MCP servers to serve through local proxies, every OAuth server name to
+	// withhold from the run's MCP config, and whether to mount none at all.
+	// See applyMCPOAuthServers. Servers since M-269 never set
+	// MCPOAuthWithholdAll, but a daemon must keep honoring it while it may
+	// still talk to an M-230 server, which sets it when it cannot read the
+	// agent's OAuth server names.
+	MCPOAuthProxy       []MCPOAuthProxyServerData `json:"mcp_oauth_proxy,omitempty"`
+	MCPOAuthNames       []string                  `json:"mcp_oauth_names,omitempty"`
+	MCPOAuthWithholdAll bool                      `json:"mcp_oauth_withhold_all,omitempty"`
 	// RuntimeConfig is the per-provider runtime_config JSON as stored on
 	// the agent record, forwarded verbatim by the claim endpoint. The
 	// daemon decodes provider-specific fields (e.g. openclaw mode +
