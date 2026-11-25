@@ -1,6 +1,5 @@
 -- Added by the mouse9527/multica fork: one run per operation (M-280).
--- The rules these queries encode, and why the windows are safe, are in
--- server/internal/service/fork_run_dedup.go.
+-- The rules these queries encode are in server/internal/service/fork_run_dedup.go.
 
 -- name: ForkRebindQueuedRunsToStep :many
 -- A workflow handoff reached an agent whose run on the issue is still queued
@@ -21,10 +20,9 @@ WHERE t.issue_id = sqlc.arg(issue_id)
 RETURNING t.id;
 
 -- name: ForkListSupersededStepRuns :many
--- The agent's runs on the issue that were claimed within the grace window and
--- are bound to a step the issue has just left. Claimed that recently, the run
--- has not read the issue yet; left alone it would work under the previous
--- step's brief and have its status changes refused.
+-- The agent's runs on the issue claimed within the grace window and bound to
+-- a step the issue has just left. Left alone such a run works under the
+-- previous step's brief and has its status changes refused.
 SELECT t.id FROM agent_task_queue t
 WHERE t.issue_id = sqlc.arg(issue_id)
   AND t.agent_id = sqlc.arg(agent_id)
@@ -40,29 +38,52 @@ WHERE t.issue_id = sqlc.arg(issue_id)
   AND COALESCE(t.context->>'wakeup_id', '') = ''
 ORDER BY t.dispatched_at;
 
+-- name: ForkListRunsSupersededByComment :many
+-- The agent's runs on the issue that were claimed within the grace window
+-- before the comment was posted, and whose reply belongs where the comment's
+-- would: a run outside any comment thread (an assignment or handoff), or a run
+-- in the comment's own thread. Their claims could not include the comment.
+SELECT t.id FROM agent_task_queue t
+JOIN comment c ON c.id = sqlc.arg(comment_id)
+WHERE t.issue_id = sqlc.arg(issue_id)
+  AND t.agent_id = sqlc.arg(agent_id)
+  AND c.issue_id = t.issue_id
+  AND t.status IN ('dispatched', 'running')
+  AND t.dispatched_at >= now() - sqlc.arg(grace_seconds)::float8 * interval '1 second'
+  AND t.dispatched_at < c.created_at
+  AND (t.comment_thread_id IS NULL OR t.comment_thread_id = comment_thread_root_id(c.id))
+  AND t.trigger_comment_id IS DISTINCT FROM c.id
+  AND t.chat_session_id IS NULL
+  AND t.trigger_evidence_kind IN ('issue_assignment', 'comment')
+  AND t.squad_id IS NULL
+  AND NOT t.is_leader_task
+  AND t.rerun_of_task_id IS NULL
+  AND t.retry_of_task_id IS NULL
+  AND COALESCE(t.context->>'wakeup_id', '') = ''
+ORDER BY t.dispatched_at;
+
 -- name: ForkFoldCoveredQueuedRuns :many
 -- Cancels, as folded into the run that just completed, every queued run of the
--- same agent on the same issue whose every input that run could read:
+-- same agent on the same issue whose every input provably reached that run:
 --
---   * an assignment arrived between lead_seconds before the completed run was
---     created and grace_seconds after it was claimed;
---   * every comment input arrived in that same window, and one that arrived
---     after the claim counts only when the claim did not tell the run to skip
---     its comment scan (the daemon claim's NewCommentsDeltaKnown with a zero
---     count; that is only possible for a comment-triggered run resuming an
---     earlier one with no new comment since it started);
+--   * a comment input is in the run's delivered_comment_ids receipt, or already
+--     existed when the run was claimed (and at most lead_seconds before it was
+--     created), so the claim counted it in the run's comment delta or left the
+--     run to scan for it. A comment posted after the claim never counts;
+--   * an assignment input (a queued run without a trigger comment) was created
+--     in that same window, before the claim;
 --   * no status, assignee, title or description change landed between the
---     completed run's creation and the end of the window, so its claim saw
---     the step and issue the folded run would have seen.
+--     run's creation and its claim, so the claim rendered the step and issue
+--     the queued run was created under.
 --
--- The input checks run in the UPDATE itself, so a comment merged into the
--- queued run concurrently is re-checked against the row it lands on.
+-- The checks run in the UPDATE itself, so a comment merged into the queued run
+-- concurrently is re-checked against the row it lands on.
 WITH done AS (
     SELECT t.id, t.issue_id, t.agent_id, t.squad_id, t.is_leader_task,
-           t.trigger_comment_id, t.created_at, t.dispatched_at,
+           t.created_at, t.dispatched_at,
+           COALESCE(t.delivered_comment_ids, '{}'::uuid[]) AS delivered_comment_ids,
            t.context->>'head_sha' AS head_sha,
-           t.created_at - sqlc.arg(lead_seconds)::float8 * interval '1 second' AS window_start,
-           t.dispatched_at + sqlc.arg(grace_seconds)::float8 * interval '1 second' AS window_end
+           t.created_at - sqlc.arg(lead_seconds)::float8 * interval '1 second' AS window_start
     FROM agent_task_queue t
     WHERE t.id = sqlc.arg(completed_task_id)
       AND t.status = 'completed'
@@ -70,46 +91,20 @@ WITH done AS (
       AND t.dispatched_at IS NOT NULL
       AND t.chat_session_id IS NULL
       AND t.trigger_evidence_kind IN ('issue_assignment', 'comment')
-),
-prior AS (
-    -- The newest earlier run of the pair that had started when this one was
-    -- claimed. The claim's comment count is anchored at or before it.
-    SELECT max(p.started_at) AS started_at
-    FROM agent_task_queue p
-    JOIN done ON p.issue_id = done.issue_id AND p.agent_id = done.agent_id
-    WHERE p.id <> done.id
-      AND p.started_at < done.dispatched_at
-),
-covering AS (
-    SELECT done.id, done.issue_id, done.agent_id, done.squad_id, done.is_leader_task,
-           done.created_at, done.dispatched_at, done.head_sha,
-           done.window_start, done.window_end,
-           (done.trigger_comment_id IS NULL
-            OR prior.started_at IS NULL
-            OR EXISTS (
-                SELECT 1 FROM comment c
-                WHERE c.issue_id = done.issue_id
-                  AND c.deleted_at IS NULL
-                  AND c.created_at > prior.started_at
-                  AND c.created_at <= done.dispatched_at
-                  AND c.id <> done.trigger_comment_id
-                  AND NOT (c.author_type = 'agent' AND c.author_id = done.agent_id)
-            ))::boolean AS reads_comments
-    FROM done CROSS JOIN prior
 )
 UPDATE agent_task_queue b
 SET status = 'cancelled',
     completed_at = now(),
     prepare_lease_expires_at = NULL,
-    error = 'Folded into run ' || covering.id::text || ', which could read every input of this run.',
+    error = 'Folded into run ' || done.id::text || ', which received every input of this run.',
     failure_reason = sqlc.arg(failure_reason)::text,
     cancelled_by_type = 'system',
     cancelled_by_id = NULL,
     cancelled_by_name = NULL
-FROM covering
-WHERE b.issue_id = covering.issue_id
-  AND b.agent_id = covering.agent_id
-  AND b.id <> covering.id
+FROM done
+WHERE b.issue_id = done.issue_id
+  AND b.agent_id = done.agent_id
+  AND b.id <> done.id
   AND b.status = 'queued'
   AND b.chat_session_id IS NULL
   AND b.trigger_evidence_kind IN ('issue_assignment', 'comment')
@@ -122,26 +117,26 @@ WHERE b.issue_id = covering.issue_id
   AND b.handoff_note IS NULL
   AND COALESCE(b.context->>'wakeup_id', '') = ''
   AND COALESCE(b.context->>'fresh_rerun', '') <> 'true'
-  AND b.squad_id IS NOT DISTINCT FROM covering.squad_id
-  AND b.is_leader_task = covering.is_leader_task
-  AND (b.context->>'head_sha') IS NOT DISTINCT FROM covering.head_sha
+  AND b.squad_id IS NOT DISTINCT FROM done.squad_id
+  AND b.is_leader_task = done.is_leader_task
+  AND (b.context->>'head_sha') IS NOT DISTINCT FROM done.head_sha
   AND (b.trigger_comment_id IS NOT NULL
-       OR b.created_at BETWEEN covering.window_start AND covering.window_end)
+       OR b.created_at BETWEEN done.window_start AND done.dispatched_at)
   AND NOT EXISTS (
       SELECT 1
       FROM unnest(array_append(b.coalesced_comment_ids, b.trigger_comment_id)) AS input(id)
       LEFT JOIN comment c ON c.id = input.id
       WHERE input.id IS NOT NULL
+        AND NOT (input.id = ANY(done.delivered_comment_ids))
         AND (c.id IS NULL
-             OR c.created_at < covering.window_start
-             OR c.created_at > covering.window_end
-             OR (c.created_at > covering.dispatched_at AND NOT covering.reads_comments))
+             OR c.created_at < done.window_start
+             OR c.created_at > done.dispatched_at)
   )
   AND NOT EXISTS (
       SELECT 1 FROM activity_log al
-      WHERE al.issue_id = covering.issue_id
+      WHERE al.issue_id = done.issue_id
         AND al.action IN ('status_changed', 'assignee_changed', 'title_changed', 'description_updated')
-        AND al.created_at > covering.created_at
-        AND al.created_at <= covering.window_end
+        AND al.created_at > done.created_at
+        AND al.created_at <= done.dispatched_at
   )
 RETURNING b.*;

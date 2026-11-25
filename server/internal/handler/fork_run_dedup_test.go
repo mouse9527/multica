@@ -36,9 +36,9 @@ func forkDedupIssue(t *testing.T, title, status, agentID string) string {
 	return issueID
 }
 
-// forkDedupAssignmentRun is the run an assignment or handoff started: claimed
-// 59s ago, running, bound to step.
-func forkDedupAssignmentRun(t *testing.T, agentID, runtimeID, issueID, step string) string {
+// forkDedupRun is a running assignment run of agentID bound to step, created
+// and claimed at the given SQL times.
+func forkDedupRun(t *testing.T, agentID, runtimeID, issueID, step, createdAt, dispatchedAt string) string {
 	t.Helper()
 	return dbfx.Task(t, agentID, testutil.Cols{
 		"runtime_id":            runtimeID,
@@ -46,30 +46,28 @@ func forkDedupAssignmentRun(t *testing.T, agentID, runtimeID, issueID, step stri
 		"status":                "running",
 		"trigger_evidence_kind": "issue_assignment",
 		"workflow_step":         step,
-		"created_at":            testutil.Raw("now() - interval '60 seconds'"),
-		"dispatched_at":         testutil.Raw("now() - interval '59 seconds'"),
-		"started_at":            testutil.Raw("now() - interval '58 seconds'"),
+		"created_at":            testutil.Raw(createdAt),
+		"dispatched_at":         testutil.Raw(dispatchedAt),
+		"started_at":            testutil.Raw(dispatchedAt),
 	})
 }
 
 // forkDedupCommentRun is the queued run a top-level comment created at
 // createdAt (a SQL expression) earned for agentID.
-func forkDedupCommentRun(t *testing.T, agentID, runtimeID, issueID, createdAt string) (taskID, commentID string) {
+func forkDedupCommentRun(t *testing.T, agentID, runtimeID, issueID, createdAt string) string {
 	t.Helper()
-	commentID = dbfx.Comment(t, issueID, "please take it from here", testutil.Cols{
+	commentID := dbfx.Comment(t, issueID, "please take it from here", testutil.Cols{
 		"created_at": testutil.Raw(createdAt),
 	})
-	taskID = dbfx.Task(t, agentID, testutil.Cols{
+	return dbfx.Task(t, agentID, testutil.Cols{
 		"runtime_id":              runtimeID,
 		"issue_id":                issueID,
 		"status":                  "queued",
 		"trigger_comment_id":      commentID,
-		"comment_thread_id":       commentID,
 		"trigger_evidence_kind":   "comment",
 		"trigger_evidence_ref_id": commentID,
 		"created_at":              testutil.Raw(createdAt),
 	})
-	return taskID, commentID
 }
 
 func forkDedupTaskState(t *testing.T, taskID string) (status, failureReason string) {
@@ -87,10 +85,46 @@ func forkDedupComplete(t *testing.T, taskID string) {
 	}
 }
 
+// forkDedupPostComment posts a member comment on issueID through the comment
+// trigger path and returns its id.
+func forkDedupPostComment(t *testing.T, issueID string) string {
+	t.Helper()
+	ctx := context.Background()
+	commentID := dbfx.Comment(t, issueID, "please take it from here")
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatalf("load issue: %v", err)
+	}
+	comment, err := testHandler.Queries.GetComment(ctx, parseUUID(commentID))
+	if err != nil {
+		t.Fatalf("load comment: %v", err)
+	}
+	testHandler.triggerTasksForComment(ctx, issue, comment, nil, "member", testUserID, testUserID, nil, commentSteerRequest{})
+	return commentID
+}
+
+// forkDedupHandoff dispatches a workflow handoff run for the issue's agent
+// assignee, as UpdateIssue does after moving it into a handing-off step.
+func forkDedupHandoff(t *testing.T, issueID string) {
+	t.Helper()
+	ctx := context.Background()
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatalf("load issue: %v", err)
+	}
+	testHandler.dispatchIssueRun(ctx, issue, service.IssueRunTrigger{
+		IssueID:         issue.ID,
+		AgentID:         issue.AssigneeID,
+		AssigneeType:    "agent",
+		WorkflowHandoff: true,
+	}, "member", testUserID, "")
+}
+
 // Scenario 2: the issue moves into the agent's step (its run is claimed at
-// once) and a comment mentioning the agent lands a second later. The comment's
-// run is folded into the first run when that run completes.
-func TestForkRunDedup_CommentRightAfterClaimFoldsIntoRun(t *testing.T) {
+// once) and a comment for the agent lands a second later. The comment's run
+// supersedes the just-claimed one, so one run remains and its claim comes
+// after both inputs.
+func TestForkRunDedup_CommentRightAfterClaimSupersedesRun(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -98,8 +132,98 @@ func TestForkRunDedup_CommentRightAfterClaimFoldsIntoRun(t *testing.T) {
 	agentID, runtimeID := forkDedupAgent(t)
 	issueID := forkDedupIssue(t, "run dedup: comment after claim", "in_review", agentID)
 
-	first := forkDedupAssignmentRun(t, agentID, runtimeID, issueID, "in_review")
-	second, _ := forkDedupCommentRun(t, agentID, runtimeID, issueID, "now() - interval '58 seconds'")
+	first := forkDedupRun(t, agentID, runtimeID, issueID, "in_review", "now() - interval '2 seconds'", "now() - interval '1 second'")
+	commentID := forkDedupPostComment(t, issueID)
+
+	if status, reason := forkDedupTaskState(t, first); status != "cancelled" || reason != service.ForkSupersedeFailureReason {
+		t.Fatalf("just-claimed run: got status %q reason %q, want cancelled %q", status, reason, service.ForkSupersedeFailureReason)
+	}
+	if n := dbfx.Count(t,
+		`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched', 'running')`,
+		issueID, agentID); n != 1 {
+		t.Fatalf("expected exactly one live run, got %d", n)
+	}
+	if n := dbfx.Count(t,
+		`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued' AND trigger_comment_id = $3`,
+		issueID, agentID, commentID); n != 1 {
+		t.Fatalf("expected the comment's run to be queued, got %d", n)
+	}
+}
+
+// A run claimed before the grace window may already be reading: the comment's
+// run follows it, as upstream.
+func TestForkRunDedup_LaterCommentLeavesRun(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, true)
+	agentID, runtimeID := forkDedupAgent(t)
+	issueID := forkDedupIssue(t, "run dedup: later comment", "in_review", agentID)
+
+	first := forkDedupRun(t, agentID, runtimeID, issueID, "in_review", "now() - interval '6 seconds'", "now() - interval '5 seconds'")
+	forkDedupPostComment(t, issueID)
+
+	if status, _ := forkDedupTaskState(t, first); status != "running" {
+		t.Fatalf("run claimed 5s before the comment: got status %q, want running", status)
+	}
+	if n := queuedTaskCountForAgentIssue(t, issueID, agentID); n != 1 {
+		t.Fatalf("expected the comment's run to be queued, got %d", n)
+	}
+}
+
+// A comment supersedes only its own agent's run on its own issue.
+func TestForkRunDedup_CommentLeavesOtherAgentsAndIssues(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, true)
+	agentID, runtimeID := forkDedupAgent(t)
+	otherRuntime := dbfx.Runtime(t, "run dedup other runtime")
+	otherAgent := dbfx.Agent(t, "run dedup other agent", otherRuntime)
+	issueID := forkDedupIssue(t, "run dedup: comment isolation", "in_review", agentID)
+	otherIssueID := forkDedupIssue(t, "run dedup: comment isolation, other issue", "in_review", agentID)
+
+	otherAgentRun := forkDedupRun(t, otherAgent, otherRuntime, issueID, "in_review", "now() - interval '2 seconds'", "now() - interval '1 second'")
+	otherIssueRun := forkDedupRun(t, agentID, runtimeID, otherIssueID, "in_review", "now() - interval '2 seconds'", "now() - interval '1 second'")
+	forkDedupPostComment(t, issueID)
+
+	for name, id := range map[string]string{"other agent": otherAgentRun, "other issue": otherIssueRun} {
+		if status, _ := forkDedupTaskState(t, id); status != "running" {
+			t.Errorf("%s: got status %q, want running", name, status)
+		}
+	}
+}
+
+// With the flag off a comment leaves the just-claimed run alone, as upstream.
+func TestForkRunDedup_FlagOffCommentKeepsRun(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, false)
+	agentID, runtimeID := forkDedupAgent(t)
+	issueID := forkDedupIssue(t, "run dedup: flag off, comment", "in_review", agentID)
+
+	first := forkDedupRun(t, agentID, runtimeID, issueID, "in_review", "now() - interval '2 seconds'", "now() - interval '1 second'")
+	forkDedupPostComment(t, issueID)
+
+	if status, _ := forkDedupTaskState(t, first); status != "running" {
+		t.Fatalf("flag off: got status %q, want running", status)
+	}
+}
+
+// A comment that was already on the issue when the run was claimed reached
+// it through the claim: its queued run is folded when the run completes.
+func TestForkRunDedup_CommentBeforeClaimFoldsIntoRun(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, true)
+	agentID, runtimeID := forkDedupAgent(t)
+	issueID := forkDedupIssue(t, "run dedup: comment before claim", "in_review", agentID)
+
+	// Queued at -60s, claimed at -50s; the comment came at -55s.
+	first := forkDedupRun(t, agentID, runtimeID, issueID, "in_review", "now() - interval '60 seconds'", "now() - interval '50 seconds'")
+	second := forkDedupCommentRun(t, agentID, runtimeID, issueID, "now() - interval '55 seconds'")
 
 	forkDedupComplete(t, first)
 
@@ -111,147 +235,30 @@ func TestForkRunDedup_CommentRightAfterClaimFoldsIntoRun(t *testing.T) {
 	}
 }
 
-// With the flag off the comment's run stays queued, as upstream.
-func TestForkRunDedup_FlagOffKeepsUpstreamBehavior(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, false)
-	agentID, runtimeID := forkDedupAgent(t)
-	issueID := forkDedupIssue(t, "run dedup: flag off", "in_review", agentID)
-
-	first := forkDedupAssignmentRun(t, agentID, runtimeID, issueID, "in_review")
-	second, _ := forkDedupCommentRun(t, agentID, runtimeID, issueID, "now() - interval '58 seconds'")
-
-	forkDedupComplete(t, first)
-
-	if status, _ := forkDedupTaskState(t, second); status != "queued" {
-		t.Fatalf("comment run with the flag off: got status %q, want queued", status)
-	}
-}
-
-// A comment that arrives after the grace window may not have been read: its
-// run is kept.
-func TestForkRunDedup_LaterCommentKeepsItsRun(t *testing.T) {
+// Review R1 regression: a comment posted one second after the claim may say
+// something the run never read (it could have finished reading by then). Its
+// run survives the completion, however short the gap.
+func TestForkRunDedup_CommentAfterClaimKeepsItsRun(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, true)
 	agentID, runtimeID := forkDedupAgent(t)
-	issueID := forkDedupIssue(t, "run dedup: later comment", "in_review", agentID)
+	issueID := forkDedupIssue(t, "run dedup: comment after claim", "in_review", agentID)
 
-	first := forkDedupAssignmentRun(t, agentID, runtimeID, issueID, "in_review")
-	// Claimed 59s ago; this comment came 10s after the claim.
-	second, _ := forkDedupCommentRun(t, agentID, runtimeID, issueID, "now() - interval '49 seconds'")
-
-	forkDedupComplete(t, first)
-
-	if status, _ := forkDedupTaskState(t, second); status != "queued" {
-		t.Fatalf("run of a comment posted after the window: got status %q, want queued", status)
-	}
-}
-
-// A comment-triggered run that resumed an earlier one with no new comment
-// since may have been told to skip its comment scan, so a comment that came
-// after its claim is not counted as read, however soon.
-func TestForkRunDedup_SkippedScanKeepsCommentAfterClaim(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, true)
-	agentID, runtimeID := forkDedupAgent(t)
-	issueID := forkDedupIssue(t, "run dedup: skipped scan", "in_review", agentID)
-
-	dbfx.Task(t, agentID, testutil.Cols{
-		"runtime_id":            runtimeID,
-		"issue_id":              issueID,
-		"status":                "completed",
-		"trigger_evidence_kind": "issue_assignment",
-		"created_at":            testutil.Raw("now() - interval '10 minutes'"),
-		"dispatched_at":         testutil.Raw("now() - interval '10 minutes'"),
-		"started_at":            testutil.Raw("now() - interval '10 minutes'"),
-		"completed_at":          testutil.Raw("now() - interval '9 minutes'"),
-	})
-	trigger := dbfx.Comment(t, issueID, "one more thing", testutil.Cols{
-		"created_at": testutil.Raw("now() - interval '61 seconds'"),
-	})
-	first := dbfx.Task(t, agentID, testutil.Cols{
-		"runtime_id":              runtimeID,
-		"issue_id":                issueID,
-		"status":                  "running",
-		"trigger_comment_id":      trigger,
-		"comment_thread_id":       trigger,
-		"delivered_comment_ids":   testutil.Raw("ARRAY['" + trigger + "'::uuid]"),
-		"trigger_evidence_kind":   "comment",
-		"trigger_evidence_ref_id": trigger,
-		"workflow_step":           "in_review",
-		"created_at":              testutil.Raw("now() - interval '60 seconds'"),
-		"dispatched_at":           testutil.Raw("now() - interval '59 seconds'"),
-		"started_at":              testutil.Raw("now() - interval '58 seconds'"),
-	})
-	second, _ := forkDedupCommentRun(t, agentID, runtimeID, issueID, "now() - interval '58 seconds'")
+	first := forkDedupRun(t, agentID, runtimeID, issueID, "in_review", "now() - interval '60 seconds'", "now() - interval '59 seconds'")
+	second := forkDedupCommentRun(t, agentID, runtimeID, issueID, "now() - interval '58 seconds'")
 
 	forkDedupComplete(t, first)
 
 	if status, _ := forkDedupTaskState(t, second); status != "queued" {
-		t.Fatalf("comment after a claim that may have skipped the scan: got status %q, want queued", status)
+		t.Fatalf("run of a comment posted after the claim: got status %q, want queued", status)
 	}
 }
 
-// A status change after the first run was created means its claim did not see
-// the step the queued run is for: the queued run is kept.
-func TestForkRunDedup_StatusChangeInWindowKeepsRun(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, true)
-	agentID, runtimeID := forkDedupAgent(t)
-	issueID := forkDedupIssue(t, "run dedup: status change", "in_review", agentID)
-
-	first := forkDedupAssignmentRun(t, agentID, runtimeID, issueID, "todo")
-	dbfx.Exec(t, `
-		INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details, created_at)
-		VALUES ($1, $2, 'member', $3, 'status_changed', '{"from":"todo","to":"in_review"}'::jsonb, now() - interval '58 seconds' - interval '500 milliseconds')
-	`, testWorkspaceID, issueID, testUserID)
-	second, _ := forkDedupCommentRun(t, agentID, runtimeID, issueID, "now() - interval '58 seconds'")
-
-	forkDedupComplete(t, first)
-
-	if status, _ := forkDedupTaskState(t, second); status != "queued" {
-		t.Fatalf("run after a status change in the window: got status %q, want queued", status)
-	}
-}
-
-// The fold touches only the completed run's own agent and issue.
-func TestForkRunDedup_OtherAgentsAndIssuesUntouched(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, true)
-	agentID, runtimeID := forkDedupAgent(t)
-	otherRuntime := dbfx.Runtime(t, "run dedup other runtime")
-	otherAgent := dbfx.Agent(t, "run dedup other agent", otherRuntime)
-
-	issueID := forkDedupIssue(t, "run dedup: isolation", "in_review", agentID)
-	otherIssueID := forkDedupIssue(t, "run dedup: isolation, other issue", "in_review", agentID)
-
-	first := forkDedupAssignmentRun(t, agentID, runtimeID, issueID, "in_review")
-	otherAgentRun, _ := forkDedupCommentRun(t, otherAgent, otherRuntime, issueID, "now() - interval '58 seconds'")
-	otherIssueRun, _ := forkDedupCommentRun(t, agentID, runtimeID, otherIssueID, "now() - interval '58 seconds'")
-
-	forkDedupComplete(t, first)
-
-	for name, id := range map[string]string{"other agent": otherAgentRun, "other issue": otherIssueRun} {
-		if status, _ := forkDedupTaskState(t, id); status != "queued" {
-			t.Errorf("%s: got status %q, want queued", name, status)
-		}
-	}
-}
-
-// Upstream #7237: a comment in the run's own thread that arrived right after
-// the claim is replayed by completion reconciliation; the replayed run is
-// folded too, because the completed run read the comment.
-func TestForkRunDedup_ReplayOfCommentReadByRunIsFolded(t *testing.T) {
+// The same holds for upstream's completion replay: a reply in the run's own
+// thread, one second after its claim, is replayed and the replay is kept.
+func TestForkRunDedup_ReplayOfCommentAfterClaimIsKept(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -267,7 +274,6 @@ func TestForkRunDedup_ReplayOfCommentReadByRunIsFolded(t *testing.T) {
 		"issue_id":                issueID,
 		"status":                  "running",
 		"trigger_comment_id":      trigger,
-		"comment_thread_id":       trigger,
 		"delivered_comment_ids":   testutil.Raw("ARRAY['" + trigger + "'::uuid]"),
 		"trigger_evidence_kind":   "comment",
 		"trigger_evidence_ref_id": trigger,
@@ -276,7 +282,6 @@ func TestForkRunDedup_ReplayOfCommentReadByRunIsFolded(t *testing.T) {
 		"dispatched_at":           testutil.Raw("now() - interval '59 seconds'"),
 		"started_at":              testutil.Raw("now() - interval '58 seconds'"),
 	})
-	// A reply in the run's thread, one second after the claim.
 	dbfx.Comment(t, issueID, "and also this", testutil.Cols{
 		"parent_id":  trigger,
 		"created_at": testutil.Raw("now() - interval '58 seconds'"),
@@ -284,13 +289,76 @@ func TestForkRunDedup_ReplayOfCommentReadByRunIsFolded(t *testing.T) {
 
 	forkDedupComplete(t, first)
 
-	if n := pendingTaskCountForAgentIssue(t, issueID, agentID); n != 0 {
-		t.Fatalf("expected the replay to be folded, got %d pending runs", n)
+	if n := pendingTaskCountForAgentIssue(t, issueID, agentID); n != 1 {
+		t.Fatalf("expected the replayed comment to keep its run, got %d pending runs", n)
 	}
-	if n := dbfx.Count(t,
-		`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'cancelled' AND failure_reason = $3`,
-		issueID, agentID, service.ForkFoldFailureReason); n != 1 {
-		t.Fatalf("expected one folded replay, got %d", n)
+}
+
+// A status change between the run's creation and its claim means the claim
+// did not render the step the queued run was created under: it is kept.
+func TestForkRunDedup_StatusChangeBeforeClaimKeepsRun(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, true)
+	agentID, runtimeID := forkDedupAgent(t)
+	issueID := forkDedupIssue(t, "run dedup: status change", "in_review", agentID)
+
+	first := forkDedupRun(t, agentID, runtimeID, issueID, "todo", "now() - interval '60 seconds'", "now() - interval '50 seconds'")
+	dbfx.Exec(t, `
+		INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details, created_at)
+		VALUES ($1, $2, 'member', $3, 'status_changed', '{"from":"todo","to":"in_review"}'::jsonb, now() - interval '56 seconds')
+	`, testWorkspaceID, issueID, testUserID)
+	second := forkDedupCommentRun(t, agentID, runtimeID, issueID, "now() - interval '55 seconds'")
+
+	forkDedupComplete(t, first)
+
+	if status, _ := forkDedupTaskState(t, second); status != "queued" {
+		t.Fatalf("run after a status change before the claim: got status %q, want queued", status)
+	}
+}
+
+// The fold touches only the completed run's own agent and issue.
+func TestForkRunDedup_FoldLeavesOtherAgentsAndIssues(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, true)
+	agentID, runtimeID := forkDedupAgent(t)
+	otherRuntime := dbfx.Runtime(t, "run dedup other runtime")
+	otherAgent := dbfx.Agent(t, "run dedup other agent", otherRuntime)
+	issueID := forkDedupIssue(t, "run dedup: fold isolation", "in_review", agentID)
+	otherIssueID := forkDedupIssue(t, "run dedup: fold isolation, other issue", "in_review", agentID)
+
+	first := forkDedupRun(t, agentID, runtimeID, issueID, "in_review", "now() - interval '60 seconds'", "now() - interval '50 seconds'")
+	otherAgentRun := forkDedupCommentRun(t, otherAgent, otherRuntime, issueID, "now() - interval '55 seconds'")
+	otherIssueRun := forkDedupCommentRun(t, agentID, runtimeID, otherIssueID, "now() - interval '55 seconds'")
+
+	forkDedupComplete(t, first)
+
+	for name, id := range map[string]string{"other agent": otherAgentRun, "other issue": otherIssueRun} {
+		if status, _ := forkDedupTaskState(t, id); status != "queued" {
+			t.Errorf("%s: got status %q, want queued", name, status)
+		}
+	}
+}
+
+// With the flag off nothing is folded, as upstream.
+func TestForkRunDedup_FlagOffFoldsNothing(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, false)
+	agentID, runtimeID := forkDedupAgent(t)
+	issueID := forkDedupIssue(t, "run dedup: flag off, fold", "in_review", agentID)
+
+	first := forkDedupRun(t, agentID, runtimeID, issueID, "in_review", "now() - interval '60 seconds'", "now() - interval '50 seconds'")
+	second := forkDedupCommentRun(t, agentID, runtimeID, issueID, "now() - interval '55 seconds'")
+
+	forkDedupComplete(t, first)
+
+	if status, _ := forkDedupTaskState(t, second); status != "queued" {
+		t.Fatalf("flag off: got status %q, want queued", status)
 	}
 }
 
@@ -302,34 +370,19 @@ func TestForkRunDedup_HandoffSupersedesJustClaimedRun(t *testing.T) {
 		t.Skip("database not available")
 	}
 	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, true)
-	ctx := context.Background()
 	agentID, runtimeID := forkDedupAgent(t)
 	issueID := forkDedupIssue(t, "run dedup: handoff", "in_review", agentID)
 
-	first := dbfx.Task(t, agentID, testutil.Cols{
-		"runtime_id":            runtimeID,
-		"issue_id":              issueID,
-		"status":                "running",
-		"trigger_evidence_kind": "issue_assignment",
-		"workflow_step":         "todo",
-		"created_at":            testutil.Raw("now() - interval '2 seconds'"),
-		"dispatched_at":         testutil.Raw("now() - interval '1 second'"),
-		"started_at":            testutil.Raw("now() - interval '500 milliseconds'"),
-	})
-
-	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
-	if err != nil {
-		t.Fatalf("load issue: %v", err)
-	}
-	testHandler.dispatchIssueRun(ctx, issue, service.IssueRunTrigger{
-		IssueID:         issue.ID,
-		AgentID:         issue.AssigneeID,
-		AssigneeType:    "agent",
-		WorkflowHandoff: true,
-	}, "member", testUserID, "")
+	first := forkDedupRun(t, agentID, runtimeID, issueID, "todo", "now() - interval '2 seconds'", "now() - interval '1 second'")
+	forkDedupHandoff(t, issueID)
 
 	if status, reason := forkDedupTaskState(t, first); status != "cancelled" || reason != service.ForkSupersedeFailureReason {
 		t.Fatalf("first run: got status %q reason %q, want cancelled %q", status, reason, service.ForkSupersedeFailureReason)
+	}
+	if n := dbfx.Count(t,
+		`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched', 'running')`,
+		issueID, agentID); n != 1 {
+		t.Fatalf("expected exactly one live run, got %d", n)
 	}
 	if n := dbfx.Count(t,
 		`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued' AND workflow_step = 'in_review'`,
@@ -345,22 +398,11 @@ func TestForkRunDedup_HandoffLeavesWorkingRun(t *testing.T) {
 		t.Skip("database not available")
 	}
 	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, true)
-	ctx := context.Background()
 	agentID, runtimeID := forkDedupAgent(t)
 	issueID := forkDedupIssue(t, "run dedup: handoff, working run", "in_review", agentID)
 
-	first := forkDedupAssignmentRun(t, agentID, runtimeID, issueID, "todo")
-
-	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
-	if err != nil {
-		t.Fatalf("load issue: %v", err)
-	}
-	testHandler.dispatchIssueRun(ctx, issue, service.IssueRunTrigger{
-		IssueID:         issue.ID,
-		AgentID:         issue.AssigneeID,
-		AssigneeType:    "agent",
-		WorkflowHandoff: true,
-	}, "member", testUserID, "")
+	first := forkDedupRun(t, agentID, runtimeID, issueID, "todo", "now() - interval '60 seconds'", "now() - interval '59 seconds'")
+	forkDedupHandoff(t, issueID)
 
 	if status, _ := forkDedupTaskState(t, first); status != "running" {
 		t.Fatalf("working run: got status %q, want running", status)
@@ -374,7 +416,6 @@ func TestForkRunDedup_HandoffRebindsQueuedRun(t *testing.T) {
 		t.Skip("database not available")
 	}
 	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, true)
-	ctx := context.Background()
 	agentID, runtimeID := forkDedupAgent(t)
 	issueID := forkDedupIssue(t, "run dedup: handoff, queued run", "in_review", agentID)
 
@@ -385,17 +426,7 @@ func TestForkRunDedup_HandoffRebindsQueuedRun(t *testing.T) {
 		"trigger_evidence_kind": "issue_assignment",
 		"workflow_step":         "todo",
 	})
-
-	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(issueID))
-	if err != nil {
-		t.Fatalf("load issue: %v", err)
-	}
-	testHandler.dispatchIssueRun(ctx, issue, service.IssueRunTrigger{
-		IssueID:         issue.ID,
-		AgentID:         issue.AssigneeID,
-		AssigneeType:    "agent",
-		WorkflowHandoff: true,
-	}, "member", testUserID, "")
+	forkDedupHandoff(t, issueID)
 
 	var step string
 	dbfx.QueryRow(t, `SELECT COALESCE(workflow_step, '') FROM agent_task_queue WHERE id = $1`, queued).Scan(&step)
