@@ -73,7 +73,7 @@ WHERE b.issue_id = done.issue_id
         AND al.created_at > done.created_at
         AND al.created_at <= done.dispatched_at
   )
-RETURNING b.id, b.agent_id, b.issue_id, b.status, b.priority, b.dispatched_at, b.started_at, b.completed_at, b.result, b.error, b.created_at, b.context, b.runtime_id, b.session_id, b.work_dir, b.trigger_comment_id, b.chat_session_id, b.autopilot_run_id, b.attempt, b.max_attempts, b.parent_task_id, b.failure_reason, b.trigger_summary, b.force_fresh_session, b.is_leader_task, b.wait_reason, b.initiator_user_id, b.handoff_note, b.prepare_lease_expires_at, b.squad_id, b.runtime_mcp_overlay, b.escalation_for_task_id, b.fire_at, b.originator_user_id, b.runtime_connected_apps, b.coalesced_comment_ids, b.delivered_comment_ids, b.chat_input_task_id, b.chat_finalize_deferred_at, b.originator_source, b.delegated_from_task_id, b.retry_of_task_id, b.rerun_of_task_id, b.rule_version_id, b.trigger_evidence_kind, b.trigger_evidence_ref_id, b.accountable_user_id, b.session_rollout_missing, b.retired_session_id, b.quick_actions_disabled, b.regenerate_quick_actions_for, b.branch_name, b.durable_work_dir, b.channel_context_revision, b.comment_thread_id, b.cancelled_by_type, b.cancelled_by_id, b.cancelled_by_name, b.issue_snapshot, b.workflow_step
+RETURNING b.id, b.agent_id, b.issue_id, b.status, b.priority, b.dispatched_at, b.started_at, b.completed_at, b.result, b.error, b.created_at, b.context, b.runtime_id, b.session_id, b.work_dir, b.trigger_comment_id, b.chat_session_id, b.autopilot_run_id, b.attempt, b.max_attempts, b.parent_task_id, b.failure_reason, b.trigger_summary, b.force_fresh_session, b.is_leader_task, b.wait_reason, b.initiator_user_id, b.handoff_note, b.prepare_lease_expires_at, b.squad_id, b.runtime_mcp_overlay, b.escalation_for_task_id, b.fire_at, b.originator_user_id, b.runtime_connected_apps, b.coalesced_comment_ids, b.delivered_comment_ids, b.chat_input_task_id, b.chat_finalize_deferred_at, b.originator_source, b.delegated_from_task_id, b.retry_of_task_id, b.rerun_of_task_id, b.rule_version_id, b.trigger_evidence_kind, b.trigger_evidence_ref_id, b.accountable_user_id, b.session_rollout_missing, b.retired_session_id, b.quick_actions_disabled, b.regenerate_quick_actions_for, b.branch_name, b.durable_work_dir, b.channel_context_revision, b.comment_thread_id, b.cancelled_by_type, b.cancelled_by_id, b.cancelled_by_name, b.issue_snapshot, b.workflow_step, b.usage_squad_id, b.doc_id, b.doc_thread_id, b.doc_comment_id
 `
 
 type ForkFoldCoveredQueuedRunsParams struct {
@@ -167,6 +167,10 @@ func (q *Queries) ForkFoldCoveredQueuedRuns(ctx context.Context, arg ForkFoldCov
 			&i.CancelledByName,
 			&i.IssueSnapshot,
 			&i.WorkflowStep,
+			&i.UsageSquadID,
+			&i.DocID,
+			&i.DocThreadID,
+			&i.DocCommentID,
 		); err != nil {
 			return nil, err
 		}

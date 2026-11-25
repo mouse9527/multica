@@ -104,6 +104,7 @@ export function ChatThreadList({
   activeSessionId,
   onSelectSession,
   onArchive,
+  onPrefetchSession,
 }: {
   sessions: ChatSession[];
   agents: Agent[];
@@ -113,6 +114,8 @@ export function ChatThreadList({
   // aware (desktop advances to the next chat; mobile drops back to the list)
   // and routes through the shared controller — see ChatPage.handleArchive.
   onArchive: (session: ChatSession) => void;
+  /** Warm a session's messages and context on pointer hover or keyboard focus. */
+  onPrefetchSession?: (sessionId: string) => void;
 }) {
   const { t } = useT("chat");
   const { t: tLayout } = useT("layout");
@@ -400,8 +403,15 @@ export function ChatThreadList({
     return (
       <div
         key={session.id}
+        data-chat-thread-row={session.id}
         aria-current={isCurrent ? "true" : undefined}
         tabIndex={0}
+        onPointerEnter={() => {
+          if (!isConfirmingAction) onPrefetchSession?.(session.id);
+        }}
+        onFocus={() => {
+          if (!isConfirmingAction) onPrefetchSession?.(session.id);
+        }}
         onClick={(e) => {
           if (isConfirmingAction || isRenaming || e.defaultPrevented) return;
           // Plain click keeps the master-detail selection. On web, a modifier
@@ -613,7 +623,12 @@ export function ChatThreadList({
           </span>
         </button>
         <div className="min-h-0 flex-1">
-          <SessionHistoryList sessions={archivedSessions} renderRow={renderRow} />
+          <SessionHistoryList
+            key="archived"
+            sessions={archivedSessions}
+            renderRow={renderRow}
+            animateExit
+          />
         </div>
         {rowContextMenu}
       </div>
@@ -650,9 +665,11 @@ export function ChatThreadList({
   return (
     <>
       <SessionHistoryList
+        key="history"
         sessions={historySessions}
         renderRow={renderRow}
         footer={archivedEntry}
+        animateExit
       />
       {rowContextMenu}
     </>

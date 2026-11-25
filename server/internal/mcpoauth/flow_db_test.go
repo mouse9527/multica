@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: connect an MCP entry by ref (M-269).
+// Modified for the mouse9527/multica fork: token endpoint errors with an OAuth error body (M-277).
 
 package mcpoauth
 
@@ -10,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -35,8 +38,10 @@ type fakeOAuthServer struct {
 	redirectURIs  []string
 	codes         map[string]url.Values
 	tokenRequests []url.Values
-	// refreshStatus, when non-zero, is the status the refresh grant answers.
+	// refreshStatus, when non-zero, is the status the refresh grant answers,
+	// with refreshError as the RFC 6749 error code in the body when set.
 	refreshStatus int
+	refreshError  string
 }
 
 const fakeAccessLifetime = 3600
@@ -153,6 +158,12 @@ func (f *fakeOAuthServer) token(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(w, map[string]any{"access_token": "at-1", "token_type": "Bearer", "expires_in": fakeAccessLifetime, "refresh_token": "rt-1"})
 	case "refresh_token":
 		if f.refreshStatus != 0 {
+			if f.refreshError != "" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(f.refreshStatus)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": f.refreshError})
+				return
+			}
 			w.WriteHeader(f.refreshStatus)
 			return
 		}
@@ -163,9 +174,16 @@ func (f *fakeOAuthServer) token(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeOAuthServer) setRefreshStatus(status int) {
+	f.setRefreshError(status, "")
+}
+
+// setRefreshError makes the refresh grant answer status with an OAuth error
+// body {"error": code}, as real authorization servers do; "" sends no body.
+func (f *fakeOAuthServer) setRefreshError(status int, code string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.refreshStatus = status
+	f.refreshError = code
 }
 
 func (f *fakeOAuthServer) registered() []string {
@@ -236,16 +254,28 @@ func TestConnectFlowEndToEnd(t *testing.T) {
 		TokenEndpoint: fake.srv.URL + "/token", Resource: fake.srv.URL + "/mcp", RefreshToken: NewSecret("rt-1"),
 		Client: remotemcp.OAuthClientRegistration{ClientID: "client-xyz", TokenEndpointAuthMethod: "none"},
 	}
-	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized} {
-		fake.setRefreshStatus(status)
-		if _, err := Refresh(ctx, request); !errors.Is(err, ErrGrantRejected) {
-			t.Errorf("refresh answered %d: err = %v, want ErrGrantRejected", status, err)
+	for _, answer := range []struct {
+		status   int
+		code     string
+		rejected bool
+	}{
+		{http.StatusBadRequest, "invalid_grant", true},
+		{http.StatusUnauthorized, "invalid_client", true},
+		{http.StatusBadRequest, "unauthorized_client", true},
+		{http.StatusBadRequest, "", true},
+		{http.StatusUnauthorized, "", true},
+		{http.StatusServiceUnavailable, "", false},
+		{http.StatusTooManyRequests, "", false},
+		{http.StatusInternalServerError, "server_error", false},
+		{http.StatusBadRequest, "invalid_request", false},
+	} {
+		fake.setRefreshError(answer.status, answer.code)
+		_, err := Refresh(ctx, request)
+		if answer.rejected && !errors.Is(err, ErrGrantRejected) {
+			t.Errorf("refresh answered %d %q: err = %v, want ErrGrantRejected", answer.status, answer.code, err)
 		}
-	}
-	for _, status := range []int{http.StatusServiceUnavailable, http.StatusTooManyRequests, http.StatusInternalServerError} {
-		fake.setRefreshStatus(status)
-		if _, err := Refresh(ctx, request); err == nil || errors.Is(err, ErrGrantRejected) {
-			t.Errorf("refresh answered %d: err = %v, want a transient error", status, err)
+		if !answer.rejected && (err == nil || errors.Is(err, ErrGrantRejected)) {
+			t.Errorf("refresh answered %d %q: err = %v, want a transient error", answer.status, answer.code, err)
 		}
 	}
 	fake.setRefreshStatus(0)
@@ -261,6 +291,53 @@ func TestConnectFlowEndToEnd(t *testing.T) {
 }
 
 // Completing as someone else, or refusing in check, never exchanges the code.
+// A connection whose refresh the token endpoint rejects with 400 or 401
+// — with the OAuth error body real servers send, or without one — needs a
+// reconnect, through the production Refresher end to end.
+func TestTokenEndpointRejectionNeedsReconnect(t *testing.T) {
+	for _, answer := range []struct {
+		status int
+		code   string
+	}{
+		{http.StatusBadRequest, "invalid_grant"},
+		{http.StatusUnauthorized, "invalid_client"},
+		{http.StatusBadRequest, ""},
+		{http.StatusUnauthorized, ""},
+	} {
+		t.Run(fmt.Sprintf("%d %s", answer.status, answer.code), func(t *testing.T) {
+			ctx := context.Background()
+			fake := newFakeOAuthServer(t)
+			clock := newClock()
+			store := newTestStore(t, testPool(t), clock)
+			f := newFixture()
+			target := Target{WorkspaceID: f.workspaceID, Ref: WorkspaceRef(uuid.NewString()), URL: fake.srv.URL + "/mcp"}
+			flow := Flow{Store: store}
+			authorizationURL, err := flow.Start(ctx, target, f.ownerID, testRedirectURI, "/ws/agents/x")
+			if err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			code, state := fake.authorize(t, authorizationURL)
+			if _, err := flow.Complete(ctx, state, code, f.ownerID, nil); err != nil {
+				t.Fatalf("complete: %v", err)
+			}
+
+			fake.setRefreshError(answer.status, answer.code)
+			clock.Advance(fakeAccessLifetime*time.Second - time.Minute)
+			source := NewTokenSource(store, Refresh, nil)
+			if _, err := source.Credential(ctx, target, f.ownerID); !errors.Is(err, ErrNeedsReconnect) {
+				t.Fatalf("credential: err = %v, want ErrNeedsReconnect", err)
+			}
+			status, err := store.GetConnectionStatus(ctx, f.workspaceID, target.Ref, f.ownerID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.Status != StatusNeedsReconnect || status.LastError != ReasonRefreshRejected {
+				t.Fatalf("status = %+v", status)
+			}
+		})
+	}
+}
+
 func TestCompleteRefusesBeforeExchanging(t *testing.T) {
 	ctx := context.Background()
 	fake, store, f, target := newFlowHarness(t)

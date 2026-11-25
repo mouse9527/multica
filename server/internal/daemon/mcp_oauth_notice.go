@@ -29,14 +29,15 @@ func (d *Daemon) reportMCPOAuthNotices(ctx context.Context, task Task, local []s
 
 // mountMCPOAuthServers applies the claim's OAuth MCP decisions to the run's
 // MCP config (applyMCPOAuthServers), fetching tokens from the server for
-// this task.
-func (d *Daemon) mountMCPOAuthServers(task Task, provider string, effective json.RawMessage, taskLog *slog.Logger) (json.RawMessage, *mcpOAuthProxySet, []string) {
+// this task. cliVersion is the runtime CLI version the runtime's own MCP
+// config is read for, as in the upstream merge.
+func (d *Daemon) mountMCPOAuthServers(task Task, provider, cliVersion string, effective json.RawMessage, taskLog *slog.Logger) (json.RawMessage, *mcpOAuthProxySet, []string) {
 	return applyMCPOAuthServers(mcpOAuthMountInput{
 		Agent:     task.Agent,
 		Provider:  provider,
 		Effective: effective,
 		RuntimeConfig: func(config json.RawMessage) (json.RawMessage, error) {
-			return mergeRuntimeAndAgentMcpConfig(provider, config)
+			return mergeRuntimeAndAgentMcpConfig(provider, cliVersion, config)
 		},
 		Fetch: func(ctx context.Context, serverID, rejectedHash string) (mcpOAuthCredential, error) {
 			return d.client.ResolveMCPOAuthCredential(ctx, task.ID, serverID, rejectedHash)

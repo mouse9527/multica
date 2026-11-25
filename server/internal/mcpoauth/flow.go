@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: connect an MCP entry by ref (M-269).
+// Modified for the mouse9527/multica fork: rejected refreshes via remotemcp.OAuthError (M-277).
 
 package mcpoauth
 
@@ -146,22 +147,17 @@ func (f Flow) Complete(ctx context.Context, state, code, userID string, check fu
 }
 
 // Refresh is the Refresher TokenSource uses in production: the refresh_token
-// grant through pkg/remotemcp. pkg/remotemcp reports a non-2xx token endpoint
-// answer as exactly "HTTP <status>"; 400 (invalid_grant) and 401
-// (invalid_client) mean the grant itself is gone and are reported as
-// ErrGrantRejected. Anything else — 5xx, 429, a network error — is transient.
-//
-// The match on the error text is a contract with pkg/remotemcp, which this
-// fork does not change and which exports no error type for it.
-// TestConnectFlowEndToEnd pins it: if the format ever changes, rejected
-// refreshes would pass as transient and a dead connection would never ask for
-// a reconnect, so that test must fail first.
+// grant through pkg/remotemcp. A token endpoint answer that
+// remotemcp.OAuthError reports as Rejected (invalid_grant, invalid_client,
+// unauthorized_client, or a bare 400/401) means the grant itself is gone and
+// is reported as ErrGrantRejected. Anything else — 5xx, 429, another OAuth
+// error code, a network error — is transient.
 func Refresh(ctx context.Context, req RefreshRequest) (remotemcp.OAuthTokenResponse, error) {
 	response, err := remotemcp.RefreshOAuthToken(withAllowedOrigins(ctx), req.TokenEndpoint, req.Resource, req.RefreshToken.Reveal(), req.Client)
 	if err != nil {
-		switch err.Error() {
-		case "HTTP 400", "HTTP 401":
-			return remotemcp.OAuthTokenResponse{}, fmt.Errorf("%w: %s", ErrGrantRejected, err.Error())
+		var oauthErr *remotemcp.OAuthError
+		if errors.As(err, &oauthErr) && oauthErr.Rejected() {
+			return remotemcp.OAuthTokenResponse{}, fmt.Errorf("%w: %w", ErrGrantRejected, err)
 		}
 		return remotemcp.OAuthTokenResponse{}, err
 	}

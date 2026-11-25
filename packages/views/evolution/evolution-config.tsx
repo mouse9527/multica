@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: Evolution P2, the scheduled analysis
 // settings (M-136), and the project Evolution's issues go into (M-248).
+// Modified for the mouse9527/multica fork: run links by issue route ref (M-277).
 //
 // Shown under the enabled Evolution agent. Owners and admins edit the
 // configuration; every member can read it, so members can see what Evolution
@@ -16,6 +17,8 @@ import {
   type EvolutionConfig,
   type EvolutionConfigState,
 } from "@multica/core/evolution";
+import { useWorkspaceId } from "@multica/core/hooks";
+import { useIssueRouteRef } from "@multica/core/issues/canonical-id";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { projectListOptions } from "@multica/core/projects";
 import { agentListOptions } from "@multica/core/workspace/queries";
@@ -421,9 +424,19 @@ function CheckList({
   );
 }
 
+function RunIssueLink({ issueId, children }: { issueId: string; children: React.ReactNode }) {
+  const wsId = useWorkspaceId();
+  const paths = useWorkspacePaths();
+  const ref = useIssueRouteRef(wsId, issueId);
+  return (
+    <AppLink href={paths.issueDetail(ref)} className="truncate text-primary hover:underline">
+      {children}
+    </AppLink>
+  );
+}
+
 function RecentRuns({ runs }: { runs: EvolutionConfigState["runs"] }) {
   const { t } = useT("evolution");
-  const paths = useWorkspacePaths();
   if (runs.length === 0) return null;
   const statusLabel = (status: string) =>
     status === "open"
@@ -444,9 +457,7 @@ function RecentRuns({ runs }: { runs: EvolutionConfigState["runs"] }) {
           return (
             <li key={run.id} className="flex min-w-0 items-center justify-between gap-2">
               {run.issue_id ? (
-                <AppLink href={paths.issueDetail(run.issue_id)} className="truncate text-primary hover:underline">
-                  {label}
-                </AppLink>
+                <RunIssueLink issueId={run.issue_id}>{label}</RunIssueLink>
               ) : (
                 <span className="truncate">{label}</span>
               )}
