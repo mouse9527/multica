@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: name the run an agent acted from on
 // issue events (M-193) and on quick-action comments (M-233).
+// Modified for the mouse9527/multica fork: private blocker redaction (M-277).
 //
 // A Super Agent leaves its own actions out of its batches. Its agent can also
 // work issue tasks, and those actions must reach the batch, so the capture
@@ -25,8 +26,15 @@ func actorTaskID(r *http.Request, actorType string) string {
 	return r.Header.Get("X-Task-ID")
 }
 
-// publishWithActorTask is publish plus the run the actor acted from.
+// publishWithActorTask is publish plus the run the actor acted from. It
+// strips private blocker references from an issue payload exactly as publish
+// does (TestPublishWithActorTaskRedactsLikePublish keeps the two in step).
 func (h *Handler) publishWithActorTask(r *http.Request, eventType, workspaceID, actorType, actorID string, payload any) {
+	if fields, ok := payload.(map[string]any); ok {
+		if issue, ok := fields["issue"].(IssueResponse); ok {
+			fields["issue"] = publicBlockerResponse(issue)
+		}
+	}
 	h.Bus.Publish(events.Event{
 		Type:        eventType,
 		WorkspaceID: workspaceID,
