@@ -275,7 +275,6 @@
     "custom_args": "自定義引數",
     "mcp_config": "MCP",
     "composio_mcp": "應用",
-    "mcp_oauth": "OAuth MCP",
     "integrations": "整合",
     "runtime_config": "路由",
     "qoder_agent": "Qoder Cloud Agents",

@@ -1,14 +1,17 @@
 // @vitest-environment node
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
+// Modified for the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClient, setApiInstance } from "../api";
 import {
   completeMcpOAuth,
-  connectMcpOAuthServer,
-  createMcpOAuthServer,
-  deleteMcpOAuthServer,
-  disconnectMcpOAuthServer,
-  listMcpOAuthServers,
+  connectAgentMcpOAuth,
+  connectWorkspaceMcpOAuth,
+  disconnectAgentMcpOAuth,
+  disconnectWorkspaceMcpOAuth,
+  listAgentMcpOAuth,
+  listWorkspaceMcpOAuth,
+  mcpOAuthConnectionState,
 } from ".";
 
 let calls: { method: string; url: string; body: unknown; headers: unknown }[] = [];
@@ -32,123 +35,149 @@ function serve(route: (url: string, init: RequestInit) => Response) {
 beforeEach(() => setApiInstance(new ApiClient("https://api.example.test")));
 afterEach(() => vi.unstubAllGlobals());
 
-const BASE = "https://api.example.test/api/agents/agent-1/mcp-oauth";
+const AGENT = "https://api.example.test/api/agents/agent-1/mcp-oauth";
+const WORKSPACE = "https://api.example.test/api/workspaces/ws-1/mcp-oauth";
 
-describe("listMcpOAuthServers", () => {
+describe("listAgentMcpOAuth", () => {
   it("reads 404 as unavailable (mcp_oauth_v1 off)", async () => {
     serve(() => Response.json({ error: "not found" }, { status: 404 }));
-    await expect(listMcpOAuthServers("ws-1", "agent-1")).resolves.toEqual({
+    await expect(listAgentMcpOAuth("ws-1", "agent-1")).resolves.toEqual({
       servers: [],
       can_connect: false,
       available: false,
     });
   });
 
-  it("scopes the request to the workspace and parses servers with defaults", async () => {
+  it("scopes the request to the workspace and parses entries with defaults", async () => {
     serve(() =>
       Response.json({
         servers: [
           {
-            id: "s1",
             name: "gateway",
-            url: "https://mcp.example.com/mcp",
-            has_extra_headers: true,
+            source: "agent",
+            scope: "mcp",
+            shared: false,
             connection: { status: "connected", connected_at: "2026-11-24T00:00:00Z", expires_at: "2026-11-24T01:00:00Z" },
           },
-          { id: "s2", name: "pending" },
+          { name: "shared-gw", source: "workspace", workspace_server_id: "srv-1", shared: true },
+          { name: "broken", problem: "invalid MCP OAuth server: url must be HTTPS" },
         ],
         can_connect: true,
       }),
     );
-    const list = await listMcpOAuthServers("ws-1", "agent-1");
-    expect(calls[0]).toMatchObject({ method: "GET", url: BASE, headers: { "X-Workspace-ID": "ws-1" } });
+    const list = await listAgentMcpOAuth("ws-1", "agent-1");
+    expect(calls[0]).toMatchObject({ method: "GET", url: AGENT, headers: { "X-Workspace-ID": "ws-1" } });
     expect(list.available).toBe(true);
     expect(list.can_connect).toBe(true);
     expect(list.servers[0]).toMatchObject({
       name: "gateway",
-      has_extra_headers: true,
+      source: "agent",
+      workspace_server_id: "",
+      problem: "",
       connection: { status: "connected", expires_at: "2026-11-24T01:00:00Z", last_error: "", refreshed_at: null },
     });
-    expect(list.servers[1]).toMatchObject({ name: "pending", url: "", connection: null, has_extra_headers: false });
+    expect(list.servers[1]).toMatchObject({ name: "shared-gw", source: "workspace", workspace_server_id: "srv-1", shared: true, connection: null });
+    expect(list.servers[2]).toMatchObject({ name: "broken", source: "agent", shared: false, problem: expect.stringContaining("HTTPS") });
   });
 
   it("falls back safely on a malformed body", async () => {
     serve(() => Response.json({ nope: true }));
-    await expect(listMcpOAuthServers("ws-1", "agent-1")).resolves.toEqual({
+    await expect(listAgentMcpOAuth("ws-1", "agent-1")).resolves.toEqual({
       servers: [],
       can_connect: false,
       available: true,
     });
   });
 
-  it("never surfaces fields the schema does not know, such as a token", async () => {
+  it("never surfaces fields the schema does not know, such as a token or a URL", async () => {
     serve(() =>
       Response.json({
-        servers: [{ id: "s1", name: "gateway", access_token: "leaked", connection: { status: "connected", access_token: "leaked" } }],
+        servers: [{ name: "gateway", url: "https://leaked.example", access_token: "leaked", connection: { status: "connected", access_token: "leaked" } }],
         can_connect: false,
       }),
     );
-    const list = await listMcpOAuthServers("ws-1", "agent-1");
+    const list = await listAgentMcpOAuth("ws-1", "agent-1");
     expect(JSON.stringify(list)).not.toContain("leaked");
   });
 
   it("treats an unknown connection status as needing a reconnect", async () => {
-    serve(() => Response.json({ servers: [{ id: "s1", connection: { status: 42 } }], can_connect: true }));
-    const list = await listMcpOAuthServers("ws-1", "agent-1");
+    serve(() => Response.json({ servers: [{ name: "gateway", connection: { status: 42 } }], can_connect: true }));
+    const list = await listAgentMcpOAuth("ws-1", "agent-1");
     expect(list.servers[0]?.connection?.status).toBe("needs_reconnect");
+    expect(mcpOAuthConnectionState(list.servers[0]?.connection ?? null)).toBe("needs_reconnect");
   });
 });
 
-describe("writes", () => {
-  it("creates a server with its headers", async () => {
-    serve(() => Response.json({ id: "s1", name: "gateway", url: "https://mcp.example.com/mcp" }, { status: 201 }));
-    const server = await createMcpOAuthServer("ws-1", "agent-1", {
-      name: "gateway",
-      url: "https://mcp.example.com/mcp",
-      extraHeaders: { "x-mcp-servers": "browser" },
-    });
-    expect(server.id).toBe("s1");
-    expect(calls[0]).toMatchObject({
-      method: "POST",
-      url: BASE,
-      body: { name: "gateway", url: "https://mcp.example.com/mcp", scope: "", extra_headers: { "x-mcp-servers": "browser" } },
-    });
+describe("listWorkspaceMcpOAuth", () => {
+  it("reads 404 as unavailable", async () => {
+    serve(() => Response.json({ error: "not found" }, { status: 404 }));
+    await expect(listWorkspaceMcpOAuth("ws-1")).resolves.toEqual({ servers: [], available: false });
   });
 
-  it("starts a connect and returns the authorization URL", async () => {
+  it("parses the caller's own connections", async () => {
+    serve(() =>
+      Response.json({
+        servers: [
+          { server_id: "srv-1", name: "gateway", scope: "", connection: { status: "needs_reconnect", last_error: "url_changed" } },
+          { server_id: "srv-2", name: "fresh" },
+        ],
+      }),
+    );
+    const list = await listWorkspaceMcpOAuth("ws-1");
+    expect(calls[0]).toMatchObject({ method: "GET", url: WORKSPACE, headers: { "X-Workspace-ID": "ws-1" } });
+    expect(list.servers.map((s) => [s.server_id, mcpOAuthConnectionState(s.connection)])).toEqual([
+      ["srv-1", "needs_reconnect"],
+      ["srv-2", "not_connected"],
+    ]);
+  });
+});
+
+describe("connects and disconnects", () => {
+  it("connects an agent entry by name and returns the authorization URL", async () => {
     serve(() => Response.json({ authorization_url: "https://auth.example.com/authorize?x=1" }));
-    await expect(connectMcpOAuthServer("ws-1", "agent-1", "s1", "/acme/agents/agent-1?view=mcp_oauth")).resolves.toBe(
+    await expect(connectAgentMcpOAuth("ws-1", "agent-1", "gate way", "/acme/agents/agent-1?view=mcp_config")).resolves.toBe(
       "https://auth.example.com/authorize?x=1",
     );
     expect(calls[0]).toMatchObject({
       method: "POST",
-      url: `${BASE}/s1/connect`,
-      body: { return_to: "/acme/agents/agent-1?view=mcp_oauth" },
+      url: `${AGENT}/gate%20way/connect`,
+      body: { return_to: "/acme/agents/agent-1?view=mcp_config" },
     });
+  });
+
+  it("connects a workspace entry by id", async () => {
+    serve(() => Response.json({ authorization_url: "https://auth.example.com/authorize?y=1" }));
+    await expect(connectWorkspaceMcpOAuth("ws-1", "srv-1", "/acme/settings?tab=mcp")).resolves.toBe(
+      "https://auth.example.com/authorize?y=1",
+    );
+    expect(calls[0]).toMatchObject({ method: "POST", url: `${WORKSPACE}/srv-1/connect`, body: { return_to: "/acme/settings?tab=mcp" } });
   });
 
   it("refuses a connect answer without a URL", async () => {
     serve(() => Response.json({}));
-    await expect(connectMcpOAuthServer("ws-1", "agent-1", "s1", "/")).rejects.toThrow(/unexpected response/);
+    await expect(connectAgentMcpOAuth("ws-1", "agent-1", "gateway", "/")).rejects.toThrow(/unexpected response/);
   });
 
-  it("deletes and disconnects at their paths", async () => {
+  it("disconnects at their paths", async () => {
     serve(() => new Response(null, { status: 204 }));
-    await deleteMcpOAuthServer("ws-1", "agent-1", "s1");
-    await disconnectMcpOAuthServer("ws-1", "agent-1", "s1");
+    await disconnectAgentMcpOAuth("ws-1", "agent-1", "gateway");
+    await disconnectWorkspaceMcpOAuth("ws-1", "srv-1");
     expect(calls.map((c) => [c.method, c.url])).toEqual([
-      ["DELETE", `${BASE}/s1`],
-      ["DELETE", `${BASE}/s1/connection`],
+      ["DELETE", `${AGENT}/gateway/connection`],
+      ["DELETE", `${WORKSPACE}/srv-1/connection`],
     ]);
   });
 
   it("completes a connect with the state and code", async () => {
-    serve(() => Response.json({ workspace_id: "ws-1", agent_id: "agent-1", server_id: "s1", return_to: "/acme/agents/agent-1" }));
+    serve(() =>
+      Response.json({ workspace_id: "ws-1", agent_id: "", server_id: "srv-1", server_ref: "ws:srv-1", return_to: "/acme/settings?tab=mcp" }),
+    );
     await expect(completeMcpOAuth({ state: "st", code: "cd" })).resolves.toEqual({
       workspace_id: "ws-1",
-      agent_id: "agent-1",
-      server_id: "s1",
-      return_to: "/acme/agents/agent-1",
+      agent_id: "",
+      server_id: "srv-1",
+      server_ref: "ws:srv-1",
+      return_to: "/acme/settings?tab=mcp",
     });
     expect(calls[0]).toMatchObject({
       method: "POST",

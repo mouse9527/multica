@@ -308,7 +308,6 @@
     "custom_args": "Аргументы",
     "mcp_config": "MCP",
     "composio_mcp": "Приложения",
-    "mcp_oauth": "MCP с OAuth",
     "integrations": "Интеграции",
     "runtime_config": "Маршрутизация",
     "qoder_agent": "Qoder Cloud Agents",

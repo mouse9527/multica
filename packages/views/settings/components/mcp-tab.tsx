@@ -41,6 +41,11 @@ import {
 import { AppLink, useOptionalNavigation } from "../../navigation";
 import { useComposioAvailable } from "./connected-apps-tab";
 import { settingsHref } from "./settings-navigation";
+// mouse9527/multica fork: each member's own OAuth connections (M-269).
+import {
+  WorkspaceMcpOAuthConnection,
+  useMcpOAuthAvailable,
+} from "../../mcp-oauth/mcp-oauth-rows";
 
 /**
  * The workspace MCP server library (GH #6062).
@@ -69,6 +74,7 @@ export function McpTab() {
   const createServer = useCreateWorkspaceMcpServer(wsId);
   const updateServer = useUpdateWorkspaceMcpServer(wsId);
   const deleteServer = useDeleteWorkspaceMcpServer(wsId);
+  const oauthAvailable = useMcpOAuthAvailable();
 
   const servers = useMemo(() => serversQuery.data ?? [], [serversQuery.data]);
   const existingNames = useMemo(
@@ -251,6 +257,11 @@ export function McpTab() {
                   key={server.name}
                   name={server.name}
                   transport={server.transport}
+                  connection={
+                    oauthAvailable ? (
+                      <WorkspaceMcpOAuthConnection wsId={wsId} serverId={server.id} />
+                    ) : undefined
+                  }
                   meta={
                     server.agent_count === undefined
                       ? undefined
@@ -314,6 +325,7 @@ export function McpTab() {
         server={dialogServer}
         existingNames={existingNames}
         replacementMode={editingServer !== null}
+        oauthAvailable={oauthAvailable}
         onOpenChange={setEditorOpen}
         onSave={handleSaveServer}
       />

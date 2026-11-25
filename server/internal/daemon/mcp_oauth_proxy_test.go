@@ -421,17 +421,6 @@ func TestApplyMCPOAuthServersWithholdsNames(t *testing.T) {
 		}
 	})
 
-	t.Run("names unreadable on the server: nothing is mounted", func(t *testing.T) {
-		config, set, _ := applyMCPOAuthServers(mcpOAuthMountInput{
-			Agent: &AgentData{MCPOAuthWithholdAll: true}, Provider: "claude",
-			Effective: json.RawMessage(`{"mcpServers":{"own":{"url":"https://own.example"}}}`),
-			Fetch:     fetcher.fetch, Logger: quietTaskLog(),
-		})
-		if set != nil || string(config) != `{"mcpServers":{}}` {
-			t.Fatalf("config = %s", config)
-		}
-	})
-
 	t.Run("nothing from the server leaves the config alone", func(t *testing.T) {
 		in := json.RawMessage(`{"mcpServers":{"own":{"url":"https://own.example"}}}`)
 		config, set, notices := applyMCPOAuthServers(mcpOAuthMountInput{Agent: &AgentData{}, Provider: "claude", Effective: in, Logger: quietTaskLog()})

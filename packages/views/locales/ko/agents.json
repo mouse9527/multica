@@ -275,7 +275,6 @@
     "custom_args": "사용자 지정 인자",
     "mcp_config": "MCP",
     "composio_mcp": "앱",
-    "mcp_oauth": "OAuth MCP",
     "integrations": "연동",
     "runtime_config": "라우팅",
     "qoder_agent": "Qoder Cloud Agents",

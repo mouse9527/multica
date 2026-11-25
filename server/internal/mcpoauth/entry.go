@@ -158,6 +158,11 @@ func ParseEntry(raw json.RawMessage) (Entry, error) {
 	if err := json.Unmarshal(fields["auth"], &auth); err != nil || auth == nil {
 		return Entry{}, fmt.Errorf("%w: auth must be an object", ErrInvalidInput)
 	}
+	// An entry that declares "auth" asks for a specific mode; without a
+	// type it is not something to save and later mount as a plain server.
+	if _, ok := auth["type"]; !ok {
+		return Entry{}, fmt.Errorf("%w: auth.type must be %q", ErrInvalidInput, AuthTypeOAuth)
+	}
 	var out Entry
 	for key, value := range auth {
 		switch key {

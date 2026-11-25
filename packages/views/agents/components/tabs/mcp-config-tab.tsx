@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Loader2,
   Lock,
@@ -59,6 +59,12 @@ import {
   type ManagedMcpServer,
 } from "./mcp-config-model";
 import { McpServerDialog } from "./mcp-server-dialog";
+// mouse9527/multica fork: OAuth connection state of the entries (M-269).
+import {
+  AgentMcpOAuthConnection,
+  AgentMcpOAuthOwnerNote,
+  useMcpOAuthAvailable,
+} from "../../../mcp-oauth/mcp-oauth-rows";
 
 export function McpConfigTab({
   agent,
@@ -102,6 +108,7 @@ export function McpConfigTab({
   const setServerEnabled = useSetAgentMcpServerEnabled(agent.id);
   const removeServer = useRemoveAgentMcpServer(agent.id);
   const redacted = agent.mcp_config_redacted === true;
+  const oauthAvailable = useMcpOAuthAvailable();
   const managedServers = useMemo(
     () => listManagedMcpServers(agent.mcp_config),
     [agent.mcp_config],
@@ -353,6 +360,11 @@ export function McpConfigTab({
                 key={server.name}
                 name={server.name}
                 transport={server.transport}
+                connection={
+                  oauthAvailable ? (
+                    <AgentMcpOAuthConnection agent={agent} canEdit={canEdit} name={server.name} />
+                  ) : undefined
+                }
                 status={
                   !server.enabled ? (
                     <Badge variant="secondary">
@@ -399,6 +411,7 @@ export function McpConfigTab({
         ) : (
           <McpNotice text={t(($) => $.tab_body.mcp_config.managed_empty)} />
         )}
+        {oauthAvailable ? <AgentMcpOAuthOwnerNote agent={agent} canEdit={canEdit} /> : null}
       </section>
 
       <section className="space-y-3">
@@ -426,6 +439,11 @@ export function McpConfigTab({
                 key={server.id}
                 server={server}
                 overridden={managedNames.has(server.name)}
+                connection={
+                  oauthAvailable ? (
+                    <AgentMcpOAuthConnection agent={agent} canEdit={canEdit} serverId={server.id} />
+                  ) : undefined
+                }
                 canEdit={canEdit}
                 busy={setServerEnabled.isPending || removeServer.isPending}
                 onToggle={(enabled) => void handleToggleWorkspaceServer(server.id, enabled)}
@@ -521,6 +539,7 @@ export function McpConfigTab({
           server={editingServer}
           existingNames={managedNames}
           hideNameWhenEditing
+          oauthAvailable={oauthAvailable}
           onOpenChange={setEditorOpen}
           onSave={handleSaveServer}
         />
@@ -581,6 +600,7 @@ type McpServerView = {
 function McpWorkspaceServerRow({
   server,
   overridden,
+  connection,
   canEdit,
   busy,
   onToggle,
@@ -588,6 +608,8 @@ function McpWorkspaceServerRow({
 }: {
   server: WorkspaceMcpServer;
   overridden: boolean;
+  /** mouse9527/multica fork (M-269): the owner's OAuth connection, for an OAuth entry. */
+  connection?: ReactNode;
   canEdit: boolean;
   busy: boolean;
   onToggle: (enabled: boolean) => void;
@@ -611,6 +633,7 @@ function McpWorkspaceServerRow({
           {mcpTransportLabel(server.transport)}
         </p>
       </div>
+      {connection}
       {canEdit && (
         <div className="flex shrink-0 items-center gap-0.5 text-muted-foreground">
           <Switch
