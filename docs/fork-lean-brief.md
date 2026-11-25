@@ -36,11 +36,11 @@ launchctl bootout gui/$(id -u)/ai.multica.daemon
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.multica.daemon.plist
 ```
 
-带 `--profile` 的 daemon，plist 名和 label 是 `ai.multica.daemon.<profile>`。只改 plist 不重新加载，要到下次登录才生效；升级二进制后的自动重启沿用 launchd 已加载的那份环境。
+带 `--profile` 的 daemon，label 是 `ai.multica.daemon.<profile>`，plist 名是 `<label>.plist`。profile 里 `[A-Za-z0-9._-]` 以外的字符会换成 `-`，有替换时末尾再加一段短哈希（例如 `team/dev` 不会原样出现在 label 里），实际路径以 `multica daemon autostart status --profile <profile>` 显示的为准。只改 plist 不重新加载，要到下次登录才生效；升级二进制后的自动重启沿用 launchd 已加载的那份环境。
 
 回滚：在**没有**这个变量的终端里再跑一次 `multica daemon autostart enable`（它会按当前环境重写 plist，变量就没了），然后同样 bootout + bootstrap。也可以手工删掉 plist 里那一项再 bootout + bootstrap；新起的 daemon 没有这个变量，之后的重写也不会再写回去。
 
-注意：在没有这个变量的终端里跑 `autostart enable`，会把它从 plist 里去掉，想保留就带上它再跑。
+注意：`multica daemon autostart enable`、`multica daemon start`（daemon 已经在运行、什么都没启动时也算）和 `multica daemon restart` 都会按**当前终端**的环境重写 plist。在没有这个变量的终端里跑其中任何一个，都会把它从 plist 里去掉。正在跑的 daemon 不受影响，lean 看起来还在生效，要到下次登录或 bootout + bootstrap 之后才静默关掉。想保留，就带上这个变量再跑这些命令。
 
 Linux（systemd 用户 unit、XDG 自启动项）和 Windows（Run 键）这次没改。systemd unit 也是每次 `daemon start` 按代码重写，只写 `PATH`，手工加进 unit 的 `Environment=` 同样会被抹掉；要在 Linux 上长期打开，用 drop-in（`systemctl --user edit <unit>` 写进 `<unit>.d/override.conf`），它不会被重写。Windows 的 Run 键只存命令行，daemon 继承用户的环境变量，用户级环境变量不受重写影响。
 
