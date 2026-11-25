@@ -15,10 +15,10 @@ import (
 // request to `router subscribe ... --anchor-chat current` with a confirmation
 // step first.
 func TestHelpLeadsToTheSuperAgentGuide(t *testing.T) {
-	if root := renderHelp(t); !strings.Contains(root, "Super Agent") {
+	if root := renderRouterHelp(t); !strings.Contains(root, "Super Agent") {
 		t.Fatalf("`multica --help` does not mention Super Agent:\n%s", root)
 	}
-	if got := renderHelp(t, "router"); !strings.Contains(got, "multica router guide") || !strings.Contains(got, "guide:") {
+	if got := renderRouterHelp(t, "router"); !strings.Contains(got, "multica router guide") || !strings.Contains(got, "guide:") {
 		t.Errorf("`multica router --help` must point at and list `multica router guide`:\n%s", got)
 	}
 
