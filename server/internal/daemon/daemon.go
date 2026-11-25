@@ -8635,7 +8635,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// mouse9527/multica fork: OAuth MCP servers through local proxies, and
 		// their names withheld from the runtime's own MCP config (M-230).
 		var mcpOAuthProxies *mcpOAuthProxySet
-		effectiveMcpConfig, mcpOAuthProxies, mcpOAuthDaemonNotices = d.mountMCPOAuthServers(task, provider, effectiveMcpConfig, taskLog)
+		effectiveMcpConfig, mcpOAuthProxies, mcpOAuthDaemonNotices = d.mountMCPOAuthServers(task, provider, resolvedVersion, effectiveMcpConfig, taskLog)
 		if mcpOAuthProxies != nil {
 			defer mcpOAuthProxies.Close()
 		}
