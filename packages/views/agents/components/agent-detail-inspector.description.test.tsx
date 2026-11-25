@@ -78,8 +78,9 @@ describe("AgentDetailInspector description limit", () => {
     expect(screen.getByText("128 / 255")).toBeInTheDocument();
     await waitFor(
       () =>
+        // Modified for the mouse9527/multica fork (M-277): the inspector sends
+        // only the edited fields since #11495, so the name is not resent.
         expect(onUpdate).toHaveBeenCalledWith("agent-1", {
-          name: "Lambda",
           description: value,
         }),
       { timeout: 2000 },
