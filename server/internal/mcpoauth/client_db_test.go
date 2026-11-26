@@ -13,6 +13,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// testClient is a pre-registered client for tests that store a secret
+// without connecting.
+var testClient = ClientConfig{ID: "client-1", Issuer: "https://auth.example.com"}
+
 // preregisteredHarness is newFlowHarness with an authorization server that
 // offers no dynamic registration and knows only client "pre-1".
 func preregisteredHarness(t *testing.T, secret string, methods []string, client ClientConfig) (*fakeOAuthServer, *Store, fixture, Target) {
@@ -73,7 +77,7 @@ func TestPreregisteredClientConnectsAndRefreshes(t *testing.T) {
 				Client: ClientConfig{ID: "pre-1", Issuer: fake.issuer(), TokenEndpointAuthMethod: c.explicit},
 			}
 			if c.secret != "" {
-				if err := store.SetClientSecret(ctx, f.workspaceID, target.Ref, f.ownerID, NewSecret(c.secret)); err != nil {
+				if err := store.SetClientSecret(ctx, f.workspaceID, target.Ref, f.ownerID, target.Client, NewSecret(c.secret)); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -117,7 +121,7 @@ func TestPreregisteredClientRefusals(t *testing.T) {
 
 	t.Run("metadata that states another issuer", func(t *testing.T) {
 		fake, store, f, target := preregisteredHarness(t, "s3cret", nil, ClientConfig{ID: "pre-1"})
-		if err := store.SetClientSecret(ctx, f.workspaceID, target.Ref, f.ownerID, NewSecret("s3cret")); err != nil {
+		if err := store.SetClientSecret(ctx, f.workspaceID, target.Ref, f.ownerID, target.Client, NewSecret("s3cret")); err != nil {
 			t.Fatal(err)
 		}
 		fake.mu.Lock()
@@ -125,6 +129,35 @@ func TestPreregisteredClientRefusals(t *testing.T) {
 		fake.mu.Unlock()
 		if _, err := (Flow{Store: store}).Start(ctx, target, f.ownerID, testRedirectURI, ""); !errors.Is(err, ErrIssuerMismatch) {
 			t.Fatalf("err = %v, want ErrIssuerMismatch", err)
+		}
+	})
+
+	// The review case (M-295 R1): a secret set while the entry named issuer
+	// A is never sent once the entry names issuer B, even when B's metadata
+	// checks out; the same for another client id.
+	t.Run("a secret set for another issuer or client id", func(t *testing.T) {
+		for _, setFor := range []ClientConfig{
+			{ID: "pre-1", Issuer: "https://old-auth.example.com"},
+			{ID: "old-client", Issuer: ""},
+		} {
+			fake, store, f, target := preregisteredHarness(t, "s3cret", nil, ClientConfig{ID: "pre-1"})
+			if setFor.Issuer == "" {
+				setFor.Issuer = target.Client.Issuer
+			}
+			if err := store.SetClientSecret(ctx, f.workspaceID, target.Ref, f.ownerID, setFor, NewSecret("secret-of-the-old-client")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := (Flow{Store: store}).Start(ctx, target, f.ownerID, testRedirectURI, ""); !errors.Is(err, ErrClientSecretStale) {
+				t.Fatalf("set for %+v: err = %v, want ErrClientSecretStale", setFor, err)
+			}
+			if n := fake.tokenRequestCount(); n != 0 {
+				t.Fatalf("set for %+v: %d token requests", setFor, n)
+			}
+			// Set again for the client the entry names now, it connects.
+			if err := store.SetClientSecret(ctx, f.workspaceID, target.Ref, f.ownerID, target.Client, NewSecret("s3cret")); err != nil {
+				t.Fatal(err)
+			}
+			connect(t, fake, store, f, target)
 		}
 	})
 
@@ -146,7 +179,7 @@ func TestClientSecretIsSealedAndWriteOnly(t *testing.T) {
 	f := newFixture()
 	ref := f.target("gateway").Ref
 
-	if err := store.SetClientSecret(ctx, f.workspaceID, ref, f.ownerID, NewSecret("sk-plain-secret")); err != nil {
+	if err := store.SetClientSecret(ctx, f.workspaceID, ref, f.ownerID, testClient, NewSecret("sk-plain-secret")); err != nil {
 		t.Fatal(err)
 	}
 	var sealed []byte
@@ -156,21 +189,42 @@ func TestClientSecretIsSealedAndWriteOnly(t *testing.T) {
 	if bytes.Contains(sealed, []byte("sk-plain-secret")) {
 		t.Fatal("client secret stored in plaintext")
 	}
-	if got, err := store.clientSecret(ctx, f.workspaceID, ref); err != nil || got.Reveal() != "sk-plain-secret" {
+	if got, err := store.clientSecret(ctx, f.workspaceID, ref, testClient); err != nil || got.Reveal() != "sk-plain-secret" {
 		t.Fatalf("opened %v, %v", got, err)
+	}
+	// Bound to the client it was set for: another client id or issuer
+	// never gets it.
+	for _, other := range []ClientConfig{
+		{ID: "another-client", Issuer: testClient.Issuer},
+		{ID: testClient.ID, Issuer: "https://other-auth.example.com"},
+	} {
+		if got, err := store.clientSecret(ctx, f.workspaceID, ref, other); !errors.Is(err, ErrClientSecretStale) || !got.Empty() {
+			t.Fatalf("secret for %+v: %v, %v", other, got, err)
+		}
+	}
+	if err := store.SetClientSecret(ctx, f.workspaceID, ref, f.ownerID, ClientConfig{}, NewSecret("s")); !errors.Is(err, ErrNotPreregistered) {
+		t.Fatalf("secret without a client: err = %v", err)
 	}
 	if raw, _ := json.Marshal(map[string]any{"secret": NewSecret("sk-plain-secret")}); bytes.Contains(raw, []byte("sk-plain")) {
 		t.Fatal("a Secret marshals its value")
 	}
 	// Another workspace sees nothing.
-	if got, err := store.clientSecret(ctx, uuid.NewString(), ref); err != nil || !got.Empty() {
+	if got, err := store.clientSecret(ctx, uuid.NewString(), ref, testClient); err != nil || !got.Empty() {
 		t.Fatalf("another workspace read %v, %v", got, err)
 	}
-	set, err := ClientSecretsSet(ctx, pool, f.workspaceID, []string{ref, f.target("other").Ref})
-	if err != nil || !set[ref] || set[f.target("other").Ref] {
-		t.Fatalf("set = %v, %v", set, err)
+	bindings, err := ClientSecretBindings(ctx, pool, f.workspaceID, []string{ref, f.target("other").Ref})
+	if err != nil || bindings[ref] != testClient {
+		t.Fatalf("bindings = %v, %v", bindings, err)
 	}
-	if err := store.SetClientSecret(ctx, f.workspaceID, ref, f.ownerID, NewSecret("bad\nsecret")); !errors.Is(err, ErrInvalidInput) {
+	if _, found := bindings[f.target("other").Ref]; found {
+		t.Fatalf("bindings = %v", bindings)
+	}
+	entry := Entry{URL: testServerURL, Client: testClient}
+	moved := Entry{URL: testServerURL, Client: ClientConfig{ID: testClient.ID, Issuer: "https://other-auth.example.com"}}
+	if !SecretSetFor(bindings[ref], true, entry) || SecretSetFor(bindings[ref], true, moved) || SecretSetFor(ClientConfig{}, false, entry) {
+		t.Fatal("SecretSetFor does not follow the binding")
+	}
+	if err := store.SetClientSecret(ctx, f.workspaceID, ref, f.ownerID, testClient, NewSecret("bad\nsecret")); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("invalid secret: err = %v", err)
 	}
 
@@ -193,7 +247,7 @@ func TestChangedClientNeedsReconnect(t *testing.T) {
 
 	t.Run("new secret", func(t *testing.T) {
 		fake, store, f, target := preregisteredHarness(t, "s3cret", nil, ClientConfig{ID: "pre-1"})
-		if err := store.SetClientSecret(ctx, f.workspaceID, target.Ref, f.ownerID, NewSecret("s3cret")); err != nil {
+		if err := store.SetClientSecret(ctx, f.workspaceID, target.Ref, f.ownerID, target.Client, NewSecret("s3cret")); err != nil {
 			t.Fatal(err)
 		}
 		connect(t, fake, store, f, target)
@@ -201,7 +255,7 @@ func TestChangedClientNeedsReconnect(t *testing.T) {
 		if _, err := (Flow{Store: store}).Start(ctx, target, f.ownerID, testRedirectURI, ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.SetClientSecret(ctx, f.workspaceID, target.Ref, f.ownerID, NewSecret("rotated")); err != nil {
+		if err := store.SetClientSecret(ctx, f.workspaceID, target.Ref, f.ownerID, target.Client, NewSecret("rotated")); err != nil {
 			t.Fatal(err)
 		}
 		status, err := store.GetConnectionStatus(ctx, f.workspaceID, target.Ref, f.ownerID)
@@ -219,7 +273,7 @@ func TestChangedClientNeedsReconnect(t *testing.T) {
 
 	t.Run("secret removed", func(t *testing.T) {
 		fake, store, f, target := preregisteredHarness(t, "s3cret", nil, ClientConfig{ID: "pre-1"})
-		if err := store.SetClientSecret(ctx, f.workspaceID, target.Ref, f.ownerID, NewSecret("s3cret")); err != nil {
+		if err := store.SetClientSecret(ctx, f.workspaceID, target.Ref, f.ownerID, target.Client, NewSecret("s3cret")); err != nil {
 			t.Fatal(err)
 		}
 		connect(t, fake, store, f, target)
@@ -315,7 +369,7 @@ func TestClientSecretCleanup(t *testing.T) {
 	f := newFixture()
 	set := func(ref string) {
 		t.Helper()
-		if err := store.SetClientSecret(ctx, f.workspaceID, ref, f.ownerID, NewSecret("s")); err != nil {
+		if err := store.SetClientSecret(ctx, f.workspaceID, ref, f.ownerID, testClient, NewSecret("s")); err != nil {
 			t.Fatal(err)
 		}
 	}

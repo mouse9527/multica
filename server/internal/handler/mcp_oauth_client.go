@@ -42,7 +42,8 @@ func mcpOAuthClientJSON(entry mcpoauth.Entry, secretSet bool) mcpOAuthClientResp
 	return mcpOAuthClientResponse{Preregistered: entry.Client.Preregistered(), ClientSecretSet: secretSet}
 }
 
-// mcpOAuthClientSecretsSet reports which of the entries have a client secret.
+// mcpOAuthClientSecretsSet reports which of the entries have a client secret
+// set for the client they name now.
 func (h *Handler) mcpOAuthClientSecretsSet(ctx context.Context, workspaceID string, entries []mcpOAuthEntry) (map[string]bool, error) {
 	refs := make([]string, 0, len(entries))
 	for _, entry := range entries {
@@ -50,7 +51,16 @@ func (h *Handler) mcpOAuthClientSecretsSet(ctx context.Context, workspaceID stri
 			refs = append(refs, entry.Ref)
 		}
 	}
-	return mcpoauth.ClientSecretsSet(ctx, h.DB, workspaceID, refs)
+	bindings, err := mcpoauth.ClientSecretBindings(ctx, h.DB, workspaceID, refs)
+	if err != nil {
+		return nil, err
+	}
+	set := map[string]bool{}
+	for _, entry := range entries {
+		binding, found := bindings[entry.Ref]
+		set[entry.Ref] = entry.Ref != "" && mcpoauth.SecretSetFor(binding, found, entry.Entry)
+	}
+	return set, nil
 }
 
 // writeMCPOAuthClientError answers the connect errors that come from the
@@ -60,6 +70,8 @@ func writeMCPOAuthClientError(w http.ResponseWriter, serverRef string, err error
 	switch {
 	case errors.Is(err, mcpoauth.ErrClientSecretMissing):
 		writeErrorCode(w, http.StatusBadRequest, "mcp_oauth_client_secret_missing", mcpoauth.ErrClientSecretMissing.Error())
+	case errors.Is(err, mcpoauth.ErrClientSecretStale):
+		writeErrorCode(w, http.StatusBadRequest, "mcp_oauth_client_secret_stale", mcpoauth.ErrClientSecretStale.Error())
 	case errors.Is(err, mcpoauth.ErrIssuerMismatch):
 		slog.Warn("mcp oauth: connect step failed", "server_ref", serverRef, "error", err)
 		writeErrorCode(w, http.StatusBadRequest, "mcp_oauth_issuer_mismatch", mcpoauth.ErrIssuerMismatch.Error())
@@ -169,7 +181,7 @@ func (h *Handler) setMCPOAuthClientSecret(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := store.SetClientSecret(r.Context(), workspaceID, ref, requestUserID(r), mcpoauth.NewSecret(req.ClientSecret)); err != nil {
+	if err := store.SetClientSecret(r.Context(), workspaceID, ref, requestUserID(r), entry.Client, mcpoauth.NewSecret(req.ClientSecret)); err != nil {
 		slog.Error("mcp oauth: set client secret failed", "server_ref", ref, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to save the client secret")
 		return
@@ -193,16 +205,17 @@ func (h *Handler) deleteMCPOAuthClientSecret(w http.ResponseWriter, r *http.Requ
 
 // settleChangedMCPOAuthClient runs after an OAuth entry was saved over its
 // previous config. Connections made with another client than the entry names
-// now need a reconnect; an entry that no longer names a pre-registered client,
-// or no longer uses OAuth, keeps no client secret. It never fails the write;
-// a failure is logged.
+// now need a reconnect. The client secret belongs to the client it was set
+// for: an entry that names another client id or issuer, no longer names a
+// pre-registered client, or no longer uses OAuth keeps none. It never fails
+// the write; a failure is logged.
 func (h *Handler) settleChangedMCPOAuthClient(ctx context.Context, workspaceID, ref string, before, after json.RawMessage) {
 	if mcpoauth.ClientChanged(before, after) {
 		if err := mcpoauth.MarkEntryNeedsReconnect(ctx, h.DB, workspaceID, ref, mcpoauth.ReasonClientChanged, time.Now()); err != nil {
 			slog.Warn("mcp oauth: mark changed client failed", "server_ref", ref, "error", err)
 		}
 	}
-	forget := !mcpoauth.IsOAuthEntry(after)
+	forget := !mcpoauth.IsOAuthEntry(after) || mcpoauth.ClientIdentityChanged(before, after)
 	if !forget {
 		entry, err := mcpoauth.ParseEntry(after)
 		forget = err == nil && !entry.Client.Preregistered()

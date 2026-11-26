@@ -139,13 +139,17 @@ func TestMCPOAuthClientMigrationRoundTrip(t *testing.T) {
 		}
 
 		const ref = "ws:00000000-0000-0000-0000-0000000000a1"
-		insert := `INSERT INTO mcp_oauth_client (server_ref, workspace_id, client_secret_ciphertext, updated_by)
-			VALUES ($1, gen_random_uuid(), $2, gen_random_uuid())`
+		insert := `INSERT INTO mcp_oauth_client (server_ref, workspace_id, client_id, issuer, client_secret_ciphertext, updated_by)
+			VALUES ($1, gen_random_uuid(), 'client', 'https://auth.example.com', $2, gen_random_uuid())`
 		if _, err := pool.Exec(ctx, insert, ref, []byte{}); err == nil {
 			t.Fatal("an empty ciphertext was accepted")
 		}
 		if _, err := pool.Exec(ctx, insert, "gateway", []byte{1}); err == nil {
 			t.Fatal("a malformed ref was accepted")
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO mcp_oauth_client (server_ref, workspace_id, client_id, issuer, client_secret_ciphertext, updated_by)
+			VALUES ($1, gen_random_uuid(), 'client', 'http://auth.example.com', '\x01', gen_random_uuid())`, ref); err == nil {
+			t.Fatal("a non-HTTPS issuer was accepted")
 		}
 		if _, err := pool.Exec(ctx, insert, ref, []byte{1}); err != nil {
 			t.Fatalf("valid row: %v", err)

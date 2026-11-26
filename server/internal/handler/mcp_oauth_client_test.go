@@ -92,6 +92,17 @@ func TestMCPOAuthAgentClientSecret(t *testing.T) {
 		t.Fatalf("gateway = %+v", gateway)
 	}
 
+	// Edited behind the save hooks to another issuer, the secret no longer
+	// counts as set: it belongs to the old issuer.
+	setAgentMcpConfig(t, agentID, `{"mcpServers":{"gateway":`+preregisteredOAuthEntry(mcpOAuthTestURL, "pre-1", "https://other-auth.example.com")+`}}`)
+	mcpOAuthCall(t, ownerID, "GET", base, nil).Want(http.StatusOK).JSON(&listed)
+	for _, server := range listed.Servers {
+		if server.Name == "gateway" && server.ClientSecretSet {
+			t.Fatal("a secret set for another issuer is listed as set")
+		}
+	}
+	setAgentMcpConfig(t, agentID, `{"mcpServers":{"gateway":`+preregisteredOAuthEntry(mcpOAuthTestURL, "pre-1", "https://auth.example.com")+`}}`)
+
 	// A workspace admin who is not the owner may manage it as well.
 	mcpOAuthCall(t, testUserID, "DELETE", secretPath, nil).Want(http.StatusNoContent)
 	if clientSecretRows(t, ref) != 0 {
@@ -165,7 +176,8 @@ func TestMCPOAuthSavingAnotherClient(t *testing.T) {
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM mcp_oauth_connection WHERE server_ref = $1`, ref)
 	})
-	if err := store.SetClientSecret(ctx, testWorkspaceID, ref, testUserID, mcpoauth.NewSecret("s")); err != nil {
+	if err := store.SetClientSecret(ctx, testWorkspaceID, ref, testUserID,
+		mcpoauth.ClientConfig{ID: "pre-ws", Issuer: "https://auth.example.com"}, mcpoauth.NewSecret("s")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -196,13 +208,25 @@ func TestMCPOAuthSavingAnotherClient(t *testing.T) {
 		t.Fatalf("same client: %s", got)
 	}
 
-	// Another issuer: needs a reconnect.
+	// Same client, other method: the secret stays (it belongs to the client),
+	// the grant made with the old method does not.
+	update(`{"type":"http","url":"https://pre.example.com/mcp","auth":{"type":"oauth","client_id":"pre-ws","issuer":"https://auth.example.com","token_endpoint_auth_method":"client_secret_post"}}`)
+	if got := connected(); got != mcpoauth.StatusNeedsReconnect {
+		t.Fatalf("other method: %s", got)
+	}
+	if clientSecretRows(t, ref) != 1 {
+		t.Fatal("a change of method dropped the secret")
+	}
+
+	// Another issuer: needs a reconnect, and the secret, set for the old
+	// issuer, goes with it.
+	connectForTest(t, store, ref, "https://pre.example.com/mcp", testUserID, "token-1b")
 	update(preregisteredOAuthEntry("https://pre.example.com/mcp", "pre-ws", "https://other-auth.example.com"))
 	if got := connected(); got != mcpoauth.StatusNeedsReconnect {
 		t.Fatalf("another issuer: %s", got)
 	}
-	if clientSecretRows(t, ref) != 1 {
-		t.Fatal("a pre-registered entry lost its secret")
+	if clientSecretRows(t, ref) != 0 {
+		t.Fatal("the old issuer's secret survived the change")
 	}
 
 	// Back to dynamic registration: needs a reconnect, and the secret goes.

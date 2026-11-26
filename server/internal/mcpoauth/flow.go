@@ -135,9 +135,13 @@ func (f Flow) preregisteredClient(ctx context.Context, target Target) (remotemcp
 	if err != nil {
 		return remotemcp.OAuthMetadata{}, remotemcp.OAuthClientRegistration{}, fmt.Errorf("%w: %w", ErrDiscovery, err)
 	}
-	secret, err := f.Store.clientSecret(ctx, target.WorkspaceID, target.Ref)
-	if err != nil {
-		return remotemcp.OAuthMetadata{}, remotemcp.OAuthClientRegistration{}, err
+	// A public client by choice sends no secret, so none is read.
+	var secret Secret
+	if target.Client.TokenEndpointAuthMethod != AuthMethodNone {
+		secret, err = f.Store.clientSecret(ctx, target.WorkspaceID, target.Ref, target.Client)
+		if err != nil {
+			return remotemcp.OAuthMetadata{}, remotemcp.OAuthClientRegistration{}, err
+		}
 	}
 	method, err := preregisteredAuthMethod(target.Client.TokenEndpointAuthMethod, !secret.Empty(), metadata.TokenAuthMethods)
 	if err != nil {

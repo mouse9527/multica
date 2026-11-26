@@ -152,6 +152,28 @@ func TestClientMatchesAndChanges(t *testing.T) {
 	}
 }
 
+func TestClientIdentityChanged(t *testing.T) {
+	entry := func(auth string) json.RawMessage {
+		return json.RawMessage(`{"url":"https://mcp.example.com/mcp","auth":{"type":"oauth"` + auth + `}}`)
+	}
+	pre := entry(`,"client_id":"c","issuer":"https://a.example"`)
+	for _, c := range []struct {
+		name  string
+		after json.RawMessage
+		want  bool
+	}{
+		{"scope only", entry(`,"client_id":"c","issuer":"https://a.example","scope":"x"`), false},
+		{"method only", entry(`,"client_id":"c","issuer":"https://a.example","token_endpoint_auth_method":"client_secret_post"`), false},
+		{"other issuer", entry(`,"client_id":"c","issuer":"https://b.example"`), true},
+		{"other client id", entry(`,"client_id":"d","issuer":"https://a.example"`), true},
+		{"back to dynamic", entry(``), true},
+	} {
+		if got := ClientIdentityChanged(pre, c.after); got != c.want {
+			t.Errorf("%s: ClientIdentityChanged = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestConnectionStatusForEntry(t *testing.T) {
 	status := ConnectionStatus{Status: StatusConnected, ServerURL: "https://mcp.example.com/mcp", ClientID: "client-1", AuthMethod: AuthMethodClientSecretBasic}
 	same := Entry{URL: "https://mcp.example.com/mcp", Client: ClientConfig{ID: "client-1", Issuer: "https://a.example"}}

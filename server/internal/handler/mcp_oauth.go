@@ -478,7 +478,7 @@ func (h *Handler) ListWorkspaceMCPOAuthServers(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, "failed to list MCP OAuth servers")
 		return
 	}
-	secretsSet, err := mcpoauth.ClientSecretsSet(r.Context(), h.DB, workspaceID, refs)
+	secretBindings, err := mcpoauth.ClientSecretBindings(r.Context(), h.DB, workspaceID, refs)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list MCP OAuth servers")
 		return
@@ -488,8 +488,9 @@ func (h *Handler) ListWorkspaceMCPOAuthServers(w http.ResponseWriter, r *http.Re
 		target := entry.target()
 		item := workspaceMCPOAuthServerResponse{
 			ServerID: uuidToString(entry.server.ID), Name: entry.server.Name, Scope: entry.entry.Scope, Problem: mcpOAuthProblem(entry.err),
-			mcpOAuthClientResponse: mcpOAuthClientJSON(entry.entry, secretsSet[target.Ref]),
 		}
+		binding, found := secretBindings[target.Ref]
+		item.mcpOAuthClientResponse = mcpOAuthClientJSON(entry.entry, mcpoauth.SecretSetFor(binding, found, entry.entry))
 		if status, ok := statuses[target.Ref]; ok && entry.err == nil {
 			item.Connection = mcpOAuthConnectionJSON(&status, entry.entry)
 		}

@@ -56,7 +56,11 @@ const (
 // Errors of the pre-registered client path. Their text is safe to show.
 var (
 	ErrClientSecretMissing = errors.New("the pre-registered client needs its client secret: set it on the MCP entry")
-	ErrIssuerMismatch      = errors.New("the MCP server's authorization server is not the issuer the pre-registered client is registered with")
+	// ErrClientSecretStale: the stored secret was set for another client id
+	// or issuer than the entry names now. It is never sent; it has to be set
+	// again for the new client.
+	ErrClientSecretStale = errors.New("the client secret was set for another client ID or issuer: set it again on the MCP entry")
+	ErrIssuerMismatch    = errors.New("the MCP server's authorization server is not the issuer the pre-registered client is registered with")
 	// ErrNotPreregistered: a client secret was written for an entry that
 	// names no pre-registered client.
 	ErrNotPreregistered = errors.New("the MCP entry does not name a pre-registered client (auth.client_id)")
@@ -199,6 +203,21 @@ func (p PendingAuthorization) MatchesEntry(entry Entry) bool {
 	return p.ServerURL == entry.URL && entry.Client.clientMatches(p.Client.ID, p.Client.TokenEndpointAuthMethod)
 }
 
+// ClientIdentityChanged reports whether saving after over before changes the
+// client id or issuer of an entry that names a pre-registered client both
+// times: its client secret belongs to the old client and is dropped.
+func ClientIdentityChanged(before, after json.RawMessage) bool {
+	if !IsOAuthEntry(before) || !IsOAuthEntry(after) {
+		return false
+	}
+	old, oldErr := ParseEntry(before)
+	next, nextErr := ParseEntry(after)
+	if oldErr != nil || nextErr != nil {
+		return false
+	}
+	return old.Client.ID != next.Client.ID || old.Client.Issuer != next.Client.Issuer
+}
+
 // ClientChanged reports whether saving after over before changes the OAuth
 // client of an entry that uses OAuth both times. Connections made with the
 // old client then need a reconnect (MarkEntryNeedsReconnect).
@@ -223,12 +242,17 @@ func ValidateClientSecret(secret string) error {
 }
 
 // SetClientSecret stores secret, sealed, as the client secret of the entry
-// ref names, replacing any earlier one. Every connection to the entry was
-// made with the old client and needs a reconnect, and connects in flight are
-// cancelled: they carry the old secret.
-func (s *Store) SetClientSecret(ctx context.Context, workspaceID, ref, userID string, secret Secret) error {
+// ref names, replacing any earlier one, bound to the pre-registered client
+// the entry names now (client id and issuer): it is only ever used for that
+// client. Every connection to the entry was made with the old client and
+// needs a reconnect, and connects in flight are cancelled: they carry the old
+// secret.
+func (s *Store) SetClientSecret(ctx context.Context, workspaceID, ref, userID string, client ClientConfig, secret Secret) error {
 	if _, ok := ParseRef(ref); !ok {
 		return errors.New("client secret has an invalid server ref")
+	}
+	if !client.Preregistered() || client.Issuer == "" {
+		return ErrNotPreregistered
 	}
 	if err := ValidateClientSecret(secret.Reveal()); err != nil {
 		return err
@@ -244,14 +268,16 @@ func (s *Store) SetClientSecret(ctx context.Context, workspaceID, ref, userID st
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	tag, err := tx.Exec(ctx, `
-		INSERT INTO mcp_oauth_client (server_ref, workspace_id, client_secret_ciphertext, updated_by, updated_at)
-		VALUES ($1, $2::uuid, $3, $4::uuid, $5)
+		INSERT INTO mcp_oauth_client (server_ref, workspace_id, client_id, issuer, client_secret_ciphertext, updated_by, updated_at)
+		VALUES ($1, $2::uuid, $6, $7, $3, $4::uuid, $5)
 		ON CONFLICT (server_ref) DO UPDATE SET
+			client_id = EXCLUDED.client_id,
+			issuer = EXCLUDED.issuer,
 			client_secret_ciphertext = EXCLUDED.client_secret_ciphertext,
 			updated_by = EXCLUDED.updated_by,
 			updated_at = EXCLUDED.updated_at
 		WHERE mcp_oauth_client.workspace_id = EXCLUDED.workspace_id`,
-		ref, workspaceID, sealed, userID, now)
+		ref, workspaceID, sealed, userID, now, client.ID, client.Issuer)
 	if err != nil {
 		return err
 	}
@@ -287,18 +313,25 @@ func (s *Store) DeleteClientSecret(ctx context.Context, workspaceID, ref string)
 	return true, tx.Commit(ctx)
 }
 
-// clientSecret opens the client secret of the entry ref names; empty when
-// none is set.
-func (s *Store) clientSecret(ctx context.Context, workspaceID, ref string) (Secret, error) {
-	var sealed []byte
+// clientSecret opens the client secret of the entry ref names for client;
+// empty when none is set. A secret set for another client id or issuer is
+// ErrClientSecretStale and is not opened.
+func (s *Store) clientSecret(ctx context.Context, workspaceID, ref string, client ClientConfig) (Secret, error) {
+	var (
+		sealed        []byte
+		clientID, iss string
+	)
 	err := s.db.QueryRow(ctx, `
-		SELECT client_secret_ciphertext FROM mcp_oauth_client
-		WHERE workspace_id = $1::uuid AND server_ref = $2`, workspaceID, ref).Scan(&sealed)
+		SELECT client_secret_ciphertext, client_id, issuer FROM mcp_oauth_client
+		WHERE workspace_id = $1::uuid AND server_ref = $2`, workspaceID, ref).Scan(&sealed, &clientID, &iss)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Secret{}, nil
 	}
 	if err != nil {
 		return Secret{}, err
+	}
+	if clientID != client.ID || iss != client.Issuer {
+		return Secret{}, ErrClientSecretStale
 	}
 	plain, err := s.open(sealed)
 	if err != nil {
@@ -307,28 +340,39 @@ func (s *Store) clientSecret(ctx context.Context, workspaceID, ref string) (Secr
 	return NewSecret(plain), nil
 }
 
-// ClientSecretsSet reports which of refs have a client secret set. It reads
-// no secret and needs no key.
-func ClientSecretsSet(ctx context.Context, q Querier, workspaceID string, refs []string) (map[string]bool, error) {
-	out := map[string]bool{}
+// ClientSecretBindings returns, for each of refs that has a client secret,
+// the client (id and issuer) it was set for. It reads no secret and needs no
+// key. A secret only counts as set for an entry whose client is that one
+// (SecretSetFor).
+func ClientSecretBindings(ctx context.Context, q Querier, workspaceID string, refs []string) (map[string]ClientConfig, error) {
+	out := map[string]ClientConfig{}
 	if len(refs) == 0 {
 		return out, nil
 	}
 	rows, err := q.Query(ctx, `
-		SELECT server_ref FROM mcp_oauth_client
+		SELECT server_ref, client_id, issuer FROM mcp_oauth_client
 		WHERE workspace_id = $1::uuid AND server_ref = ANY($2::text[])`, workspaceID, refs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var ref string
-		if err := rows.Scan(&ref); err != nil {
+		var (
+			ref     string
+			binding ClientConfig
+		)
+		if err := rows.Scan(&ref, &binding.ID, &binding.Issuer); err != nil {
 			return nil, err
 		}
-		out[ref] = true
+		out[ref] = binding
 	}
 	return out, rows.Err()
+}
+
+// SecretSetFor reports whether a secret bound to binding (found reports
+// there is one) is usable by the entry's client.
+func SecretSetFor(binding ClientConfig, found bool, entry Entry) bool {
+	return found && entry.Client.Preregistered() && binding.ID == entry.Client.ID && binding.Issuer == entry.Client.Issuer
 }
 
 // MarkEntryNeedsReconnect drops the tokens of every connection to an entry,
