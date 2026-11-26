@@ -41,6 +41,14 @@ func isCrossWorkspaceReader(r *http.Request) bool {
 	return r.Header.Get("X-Actor-Source") == middleware.ActorSourceCrossWorkspaceReader
 }
 
+// isChatAttachment reports whether an attachment outside any issue belongs to
+// chat: a chat session or message (IM channels included), or a chat run's
+// upload, which only chat tasks may make (UploadFile's task_id gate) and
+// which is bound to the run's reply when it completes.
+func isChatAttachment(att db.Attachment) bool {
+	return att.ChatSessionID.Valid || att.ChatMessageID.Valid || att.TaskID.Valid
+}
+
 func (h *Handler) crossReadStore() *crossread.Store {
 	return crossread.NewStore(h.DB, h.FeatureFlags)
 }

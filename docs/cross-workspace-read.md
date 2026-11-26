@@ -53,7 +53,7 @@ multica issue comment list <issue> --workspace-id <目标工作区 ID> --output 
 | 运行记录和日志（`task-runs`、`/api/tasks/{id}/messages`、`context-receipt`、`usage`、`active-task`） | 可读；chat 运行的记录不可读 |
 | 项目、文档、标签、状态、workflow、自定义属性、成员名单 | 可读 |
 | 智能体、技能、squad、autopilot 及其运行记录 | 可读；`mcp_config`、webhook 令牌等 secret 仍然脱敏 |
-| 附件 | 只有挂在可见 issue 或评论上的可读；chat 附件、文档附件、草稿等不挂在 issue 上的一律 404 |
+| 附件 | 可读：可见 issue 和评论上的附件、文档等不挂在 issue 上的附件。不可读（404）：chat 附件（带 chat 会话或消息，包括 IM 渠道的，以及 chat 运行上传的）、私有项目 issue 上的附件 |
 | 私有项目和其中的 issue | 不可读（返回 404，和不存在一样） |
 | chat、inbox、通知、pins、视图偏好 | 不可读 |
 | 环境和环境日志、智能体 env、MCP 和应用配置、autopilot deliveries | 不可读 |

@@ -107,7 +107,7 @@
 - `server/internal/middleware/workspace.go`：`buildMiddleware` 解析出工作区之后、任务令牌兜底检查之前调用 `serveCrossWorkspaceReaderMember`。
 - `server/internal/handler/actor_guards.go`：`isMachineCredentialActor` 多一个 `middleware.ActorSourceCrossWorkspaceReader`。上游注释写明「未登记的来源按人类对待」，漏掉这一行，只读身份就能通过 `RequireHumanActor`。
 - `server/internal/handler/handler.go`：`getWorkspaceMember` 开头先问 `middleware.CrossWorkspaceReaderMember`。只读身份没有 member 行，按用户查成员的读接口（状态、workflow、squad 等）靠它拿到合成成员。
-- `server/internal/handler/project_access.go`：`requireAttachmentVisible` 里，附件不挂在 issue 或评论上时，只读身份直接 404（chat、文档、草稿附件不属于授权范围）。上游如果改了附件可见性的判断或加了新的附件归属，要确认这个分支仍然在最前面。
+- `server/internal/handler/project_access.go`：`requireAttachmentVisible` 里，附件不挂在 issue 或评论上、并且属于 chat（`isChatAttachment`：`chat_session_id`、`chat_message_id` 或 chat 运行的 `task_id`）时，只读身份直接 404；文档等其它附件照常可读。上游如果给附件加了新的 chat 归属列，要加进 `isChatAttachment`；改了附件可见性的判断，要确认这个分支仍然在最前面。
 - `server/internal/handler/workspace.go`：删除工作区的步骤里多一步 `crossread.DeleteWorkspaceData`。
 - `server/cmd/server/router.go`：主路由组在 `middleware.Auth` 之前 `Use(middleware.WithCrossWorkspaceRead(...))`；owner/admin 组里挂 `/cross-read-grants`。
 - 测试：`cmd/server/cross_workspace_read_integration_test.go` 的 `TestCrossWorkspaceReadAllowlistAgainstTheRouter` 遍历全部路由，白名单只能放行读接口、每条都要对应已注册的路由；上游删改路由后它会先红。

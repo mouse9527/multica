@@ -208,9 +208,10 @@ func TestCrossWorkspaceRead(t *testing.T) {
 		t.Fatalf("audit listing: %d rows (%v): %s", len(rows), err, audit)
 	}
 
-	// Attachments: only those on an issue or comment the reader can see.
-	// Chat files (including a chat scoped to the private project), drafts
-	// and other files outside an issue are not part of a read grant.
+	// Attachments: files on visible issues and files outside any issue
+	// (docs) are readable; chat files, including a chat scoped to the
+	// private project and a chat run's upload, and files on the private
+	// project's issues are not.
 	chatSession := func(projectID any) string {
 		t.Helper()
 		var id string
@@ -222,23 +223,24 @@ func TestCrossWorkspaceRead(t *testing.T) {
 		}
 		return id
 	}
-	attachment := func(issueID, chatSessionID any) string {
+	attachment := func(issueID, chatSessionID, chatTaskID any) string {
 		t.Helper()
 		var id string
 		if err := testPool.QueryRow(ctx, `
-			INSERT INTO attachment (workspace_id, issue_id, chat_session_id, uploader_type, uploader_id, filename, url, content_type, size_bytes)
-			VALUES ($1, $2, $3, 'member', $4, 'f.txt', 'https://example.com/f.txt', 'text/plain', 1)
-			RETURNING id::text`, target, issueID, chatSessionID, testUserID).Scan(&id); err != nil {
+			INSERT INTO attachment (workspace_id, issue_id, chat_session_id, task_id, uploader_type, uploader_id, filename, url, content_type, size_bytes)
+			VALUES ($1, $2, $3, $4, 'member', $5, 'f.txt', 'https://example.com/f.txt', 'text/plain', 1)
+			RETURNING id::text`, target, issueID, chatSessionID, chatTaskID, testUserID).Scan(&id); err != nil {
 			t.Fatalf("insert attachment: %v", err)
 		}
 		return id
 	}
-	on.want(http.StatusOK, "GET", "/api/attachments/"+attachment(publicIssue, nil), token, target, nil)
+	on.want(http.StatusOK, "GET", "/api/attachments/"+attachment(publicIssue, nil, nil), token, target, nil)
+	on.want(http.StatusOK, "GET", "/api/attachments/"+attachment(nil, nil, nil), token, target, nil)
 	for name, id := range map[string]string{
-		"chat":                 attachment(nil, chatSession(nil)),
-		"private project chat": attachment(nil, chatSession(project)),
-		"outside any issue":    attachment(nil, nil),
-		"private issue":        attachment(privateIssue, nil),
+		"chat":                 attachment(nil, chatSession(nil), nil),
+		"private project chat": attachment(nil, chatSession(project), nil),
+		"chat run upload":      attachment(nil, nil, taskID),
+		"private issue":        attachment(privateIssue, nil, nil),
 	} {
 		for _, path := range []string{"/api/attachments/" + id, "/api/attachments/" + id + "/content"} {
 			if got, out := on.do("GET", path, token, target, nil); got != http.StatusNotFound {
