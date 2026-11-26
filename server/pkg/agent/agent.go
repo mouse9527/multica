@@ -418,6 +418,11 @@ type Config struct {
 	// the same conversation for supported backends (Codex, Claude Code). Nil
 	// disables pooling and preserves one-process-per-turn behavior.
 	WarmPool *WarmSessionPool
+	// ClaudeAPIRetryFailAfter makes a Claude Code turn give up once the CLI
+	// reports this many model API retries before the turn produced any
+	// output; 0 leaves retrying to the CLI. mouse9527/multica fork (M-312),
+	// see claude_api_retry.go.
+	ClaudeAPIRetryFailAfter int
 }
 
 // New creates a Backend for the given agent type.

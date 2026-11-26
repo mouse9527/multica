@@ -9370,6 +9370,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		CodexVersion:   codexVersion,
 		BuiltinRuntime: !usesCustomProfileCommand,
 		WarmPool:       taskWarmPool,
+		// mouse9527/multica fork (M-312)
+		ClaudeAPIRetryFailAfter: d.cfg.ClaudeAPIRetryFailAfter,
 	}
 	if hermesOverlayActive {
 		// Retire an owner left by a crashed/interrupted daemon before it can
@@ -10666,6 +10668,14 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 				lastActivityAt.Store(int64(awakeclock.Now()))
 				switch msg.Type {
 				case agent.MessageStatus:
+					// mouse9527/multica fork (M-312): show model API retries.
+					if content, ok := apiRetryTranscriptContent(msg); ok {
+						mu.Lock()
+						sealPendingLocked()
+						batch = append(batch, TaskMessageData{Seq: int(msgSeq.Add(1)), Type: "error", Content: content, CreatedAt: observedAt})
+						mu.Unlock()
+						flushFirstVisible()
+					}
 					// Persist the session/work_dir as soon as the backend
 					// reveals them. Without this, a daemon crash mid-run
 					// loses the resume pointer and the auto-retry fires

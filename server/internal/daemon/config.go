@@ -150,6 +150,7 @@ type Config struct {
 	CodexThreadHandshakeTimeout time.Duration
 	OpenCodeIdleWatchdog        time.Duration // OpenCode-specific no-message window; 0 falls back to AgentIdleWatchdog and values above it cannot extend the global bound
 	AgentIdleWatchdog           time.Duration // force-stop a run when the backend goes silent this long with an empty queue (0 = disabled)
+	ClaudeAPIRetryFailAfter     int           // mouse9527/multica fork (M-312): give up a Claude turn after this many model API retries with no output (0 = leave it to the CLI)
 	AgentToolWatchdog           time.Duration // force-stop a run when a single tool call stays in flight (silent) this long (0 = never force-stop during a tool call, which now also covers a live Cursor background shell); defaults to AgentIdleWatchdog, so operators tune one number unless they deliberately want a wider tool budget
 	ClaudeArgs                  []string
 	CodexArgs                   []string
@@ -644,6 +645,11 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		autoReloadEnabled = false
 	}
 
+	claudeAPIRetryFailAfter, err := claudeAPIRetryFailAfterFromEnv() // mouse9527/multica fork (M-312)
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		ServerBaseURL:                   serverBaseURL,
 		DaemonID:                        daemonID,
@@ -683,6 +689,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		OpenCodeIdleWatchdog:            openCodeIdleWatchdog,
 		AgentIdleWatchdog:               agentIdleWatchdog,
 		AgentToolWatchdog:               agentToolWatchdog,
+		ClaudeAPIRetryFailAfter:         claudeAPIRetryFailAfter,
 		ClaudeArgs:                      claudeArgs,
 		CodexArgs:                       codexArgs,
 		CodebuddyArgs:                   codebuddyArgs,
