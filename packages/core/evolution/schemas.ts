@@ -1,4 +1,4 @@
-// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-137, M-138, M-139, M-140, M-231).
+// Added by the mouse9527/multica fork: the built-in Evolution agent (M-135, M-136, M-137, M-138, M-139, M-140, M-231, M-296).
 
 import { z } from "zod";
 
@@ -34,7 +34,13 @@ export const EvolutionConfigSchema = z.object({
     })
     .catch({ time: "03:00", timezone: "Asia/Shanghai", interval_days: 1 }),
   sources: z
-    .object({ comments: z.boolean().catch(true), chat: z.boolean().catch(false) })
+    .object({
+      comments: z.boolean().catch(true),
+      chat: z.boolean().catch(false),
+      // M-296: the metrics source has no control here; kept so a save
+      // round-trips what an admin set through the API.
+      metrics: z.boolean().optional().catch(undefined),
+    })
     .catch({ comments: true, chat: false }),
   exclude_projects: z.array(z.string()).nullable().catch([]).transform((v) => v ?? []),
   exclude_agents: z.array(z.string()).nullable().catch([]).transform((v) => v ?? []),

@@ -1,6 +1,7 @@
 // Added by the mouse9527/multica fork: Evolution P2, configuration (M-136);
 // P3 proposal bounds (M-137); P5 effect measurement (M-139);
-// P6 the monthly condense review (M-140); the output project (M-231).
+// P6 the monthly condense review (M-140); the output project (M-231); the
+// metrics source (M-296).
 
 package evolution
 
@@ -164,6 +165,9 @@ type Schedule struct {
 type Sources struct {
 	Comments bool `json:"comments"`
 	Chat     bool `json:"chat"`
+	// Metrics (M-296) is the aggregate source (signals_metrics.go): status
+	// flow, agent runs, and handoffs, as numbers only. Off by default.
+	Metrics bool `json:"metrics"`
 }
 
 // DefaultConfig is the configuration of a workspace that never saved one.
@@ -426,6 +430,9 @@ func (c Config) ChatWanted() bool { return c.Enabled && c.Sources.Chat }
 
 // CommentsWanted reports whether comments are read.
 func (c Config) CommentsWanted() bool { return c.Enabled && c.Sources.Comments }
+
+// MetricsWanted reports whether the metrics source is served.
+func (c Config) MetricsWanted() bool { return c.Enabled && c.Sources.Metrics }
 
 // CondenseWanted reports whether the monthly condense review runs.
 func (c Config) CondenseWanted() bool { return c.Enabled && !c.CondenseDisabled }
