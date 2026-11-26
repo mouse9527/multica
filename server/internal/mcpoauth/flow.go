@@ -1,6 +1,7 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: connect an MCP entry by ref (M-269).
 // Modified for the mouse9527/multica fork: rejected refreshes via remotemcp.OAuthError (M-277).
+// Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
 
 package mcpoauth
 
@@ -50,7 +51,7 @@ func isLoopbackHost(host string) bool {
 var (
 	ErrDiscovery           = errors.New("could not discover the server's OAuth configuration")
 	ErrRegistration        = errors.New("the authorization server did not register this client")
-	ErrNeedsPreregistered  = errors.New("the authorization server offers no dynamic client registration; pre-registered clients are not supported yet")
+	ErrNeedsPreregistered  = errors.New("the authorization server offers no dynamic client registration; set a pre-registered client (client ID and issuer) on the MCP entry")
 	ErrUnsupportedClient   = errors.New("the authorization server registered a client this server cannot use")
 	ErrExchange            = errors.New("the authorization server did not issue a token")
 	ErrAuthorizationDenied = errors.New("the authorization was denied or cancelled")
@@ -65,26 +66,40 @@ type Flow struct {
 }
 
 // Start begins connecting userID to the target entry: discovery (RFC 9728,
-// then RFC 8414 or OIDC), dynamic client registration (RFC 7591), a PKCE
-// verifier and a one-time state. It returns the URL to send the browser to.
-// The pending authorization records target.URL, and the grant it ends in is
-// bound to it.
+// then RFC 8414 or OIDC), the client — the entry's pre-registered one, or
+// else dynamic client registration (RFC 7591) —, a PKCE verifier and a
+// one-time state. It returns the URL to send the browser to. The pending
+// authorization records target.URL, and the grant it ends in is bound to it.
 func (f Flow) Start(ctx context.Context, target Target, userID, redirectURI, returnTo string) (string, error) {
 	ctx = withAllowedOrigins(ctx)
-	metadata, err := remotemcp.DiscoverOAuth(ctx, target.URL, nil)
-	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrDiscovery, err)
-	}
-	if metadata.RegistrationEndpoint == "" {
-		return "", ErrNeedsPreregistered
-	}
-	registration, err := remotemcp.RegisterOAuthClient(ctx, metadata, redirectURI)
-	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrRegistration, err)
-	}
-	method, err := normalizeAuthMethod(registration.TokenEndpointAuthMethod)
-	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrUnsupportedClient, err)
+	var (
+		metadata     remotemcp.OAuthMetadata
+		registration remotemcp.OAuthClientRegistration
+		method       string
+		err          error
+	)
+	if target.Client.Preregistered() {
+		metadata, registration, err = f.preregisteredClient(ctx, target)
+		if err != nil {
+			return "", err
+		}
+		method = registration.TokenEndpointAuthMethod
+	} else {
+		metadata, err = remotemcp.DiscoverOAuth(ctx, target.URL, nil)
+		if err != nil {
+			return "", fmt.Errorf("%w: %w", ErrDiscovery, err)
+		}
+		if metadata.RegistrationEndpoint == "" {
+			return "", ErrNeedsPreregistered
+		}
+		registration, err = remotemcp.RegisterOAuthClient(ctx, metadata, redirectURI)
+		if err != nil {
+			return "", fmt.Errorf("%w: %w", ErrRegistration, err)
+		}
+		method, err = normalizeAuthMethod(registration.TokenEndpointAuthMethod)
+		if err != nil {
+			return "", fmt.Errorf("%w: %w", ErrUnsupportedClient, err)
+		}
 	}
 	verifier, err := NewVerifier()
 	if err != nil {
@@ -106,6 +121,37 @@ func (f Flow) Start(ctx context.Context, target Target, userID, redirectURI, ret
 		return "", err
 	}
 	return remotemcp.BuildAuthorizationURL(metadata, registration, redirectURI, state, verifier.Reveal(), target.Scope)
+}
+
+// preregisteredClient discovers the target's authorization server, which
+// must be the issuer the entry's client is registered with, and returns the
+// client: its id, its secret (opened only for a method that sends it) and
+// the token endpoint auth method it uses.
+func (f Flow) preregisteredClient(ctx context.Context, target Target) (remotemcp.OAuthMetadata, remotemcp.OAuthClientRegistration, error) {
+	metadata, err := remotemcp.DiscoverOAuthForIssuer(ctx, target.URL, target.Client.Issuer)
+	if errors.Is(err, remotemcp.ErrAuthorizationServerMismatch) {
+		return remotemcp.OAuthMetadata{}, remotemcp.OAuthClientRegistration{}, fmt.Errorf("%w: %w", ErrIssuerMismatch, err)
+	}
+	if err != nil {
+		return remotemcp.OAuthMetadata{}, remotemcp.OAuthClientRegistration{}, fmt.Errorf("%w: %w", ErrDiscovery, err)
+	}
+	// A public client by choice sends no secret, so none is read.
+	var secret Secret
+	if target.Client.TokenEndpointAuthMethod != AuthMethodNone {
+		secret, err = f.Store.clientSecret(ctx, target.WorkspaceID, target.Ref, target.Client)
+		if err != nil {
+			return remotemcp.OAuthMetadata{}, remotemcp.OAuthClientRegistration{}, err
+		}
+	}
+	method, err := preregisteredAuthMethod(target.Client.TokenEndpointAuthMethod, !secret.Empty(), metadata.TokenAuthMethods)
+	if err != nil {
+		return remotemcp.OAuthMetadata{}, remotemcp.OAuthClientRegistration{}, err
+	}
+	registration := remotemcp.OAuthClientRegistration{ClientID: target.Client.ID, TokenEndpointAuthMethod: method}
+	if method != AuthMethodNone {
+		registration.ClientSecret = secret.Reveal()
+	}
+	return metadata, registration, nil
 }
 
 // Complete finishes a connect: it takes the pending authorization the state

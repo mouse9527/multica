@@ -32,6 +32,8 @@ const data = vi.hoisted(() => ({
 vi.mock("@tanstack/react-query", () => ({
   queryOptions: <T,>(options: T) => options,
   useQuery: () => ({ data: data.servers, isLoading: data.isLoading }),
+  // mouse9527/multica fork: the OAuth client secret hooks (M-295) take the client.
+  useQueryClient: () => ({ invalidateQueries: vi.fn(), fetchQuery: vi.fn() }),
 }));
 
 vi.mock("@multica/core/workspace/queries", () => ({

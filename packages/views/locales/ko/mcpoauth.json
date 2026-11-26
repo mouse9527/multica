@@ -26,6 +26,32 @@
     "oauth_hint": "저장한 뒤 서버 목록에서 연결하세요.",
     "https_required": "OAuth에는 HTTPS URL이 필요합니다."
   },
+  "client": {
+    "label": "클라이언트",
+    "dynamic": "자동 등록",
+    "preregistered": "사전 등록",
+    "client_id_label": "클라이언트 ID",
+    "client_id_required": "클라이언트 ID를 입력하세요.",
+    "issuer_label": "Issuer",
+    "issuer_hint": "클라이언트를 등록한 인가 서버입니다.",
+    "issuer_required": "Issuer를 HTTPS URL로 입력하세요.",
+    "secret_label": "클라이언트 시크릿(선택)",
+    "secret_hint": "공개 클라이언트는 비워 두세요. 저장 후에는 다시 표시되지 않습니다.",
+    "secret_set": "클라이언트 시크릿이 설정되어 있습니다.",
+    "secret_replace_placeholder": "바꾸려면 새 값을 입력하세요",
+    "secret_remove": "삭제",
+    "secret_cleared": "저장하면 클라이언트 시크릿이 삭제됩니다.",
+    "secret_save_failed": "서버는 저장되었지만 클라이언트 시크릿은 저장되지 않았습니다: {{error}}",
+    "secret_retry": "서버가 저장되었습니다. 다시 저장하면 클라이언트 시크릿 저장을 재시도합니다.",
+    "saved_entry_changed": "서버가 이미 추가되었습니다. 설정을 바꾸려면 이 대화상자를 닫고 목록에서 편집하세요.",
+    "method_label": "토큰 엔드포인트 인증 방식",
+    "method": {
+      "auto": "자동",
+      "client_secret_basic": "client_secret_basic",
+      "client_secret_post": "client_secret_post",
+      "none": "none(공개 클라이언트)"
+    }
+  },
   "callback": {
     "working": "MCP 서버에 연결하는 중…",
     "failed_title": "MCP 서버에 연결하지 못했습니다",

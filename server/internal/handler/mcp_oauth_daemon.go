@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
+// Modified for the mouse9527/multica fork: grants bound to the entry's pre-registered client (M-295).
 
 package handler
 
@@ -87,7 +88,8 @@ func (h *Handler) ResolveMCPOAuthCredential(w http.ResponseWriter, r *http.Reque
 	var target *mcpoauth.Target
 	for _, entry := range entries {
 		if entry.Ref == ref && entry.Err == nil && !entry.Entry.Disabled {
-			target = &mcpoauth.Target{WorkspaceID: workspaceID, Ref: ref, URL: entry.Entry.URL}
+			current := mcpoauth.NewTarget(workspaceID, ref, entry.Entry)
+			target = &current
 			break
 		}
 	}

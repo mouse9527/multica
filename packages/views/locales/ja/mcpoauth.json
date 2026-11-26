@@ -26,6 +26,32 @@
     "oauth_hint": "保存後、サーバー一覧から接続してください。",
     "https_required": "OAuth には HTTPS の URL が必要です。"
   },
+  "client": {
+    "label": "クライアント",
+    "dynamic": "自動登録",
+    "preregistered": "事前登録",
+    "client_id_label": "クライアント ID",
+    "client_id_required": "クライアント ID を入力してください。",
+    "issuer_label": "Issuer",
+    "issuer_hint": "クライアントを登録した認可サーバー。",
+    "issuer_required": "Issuer を HTTPS の URL で入力してください。",
+    "secret_label": "クライアントシークレット（任意）",
+    "secret_hint": "パブリッククライアントは空欄のままにします。保存後は表示されません。",
+    "secret_set": "クライアントシークレットは設定済みです。",
+    "secret_replace_placeholder": "置き換える場合は新しい値を入力",
+    "secret_remove": "削除",
+    "secret_cleared": "保存するとクライアントシークレットが削除されます。",
+    "secret_save_failed": "サーバーは保存されましたが、クライアントシークレットは保存されませんでした: {{error}}",
+    "secret_retry": "サーバーは保存済みです。もう一度保存するとクライアントシークレットの保存を再試行します。",
+    "saved_entry_changed": "サーバーはすでに追加されています。設定を変更するには、このダイアログを閉じて一覧から編集してください。",
+    "method_label": "トークンエンドポイントの認証方式",
+    "method": {
+      "auto": "自動",
+      "client_secret_basic": "client_secret_basic",
+      "client_secret_post": "client_secret_post",
+      "none": "none（パブリッククライアント）"
+    }
+  },
   "callback": {
     "working": "MCP サーバーに接続しています…",
     "failed_title": "MCP サーバーに接続できませんでした",

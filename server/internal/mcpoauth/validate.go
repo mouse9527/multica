@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: OAuth entries in MCP configs (M-269).
+// Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
 
 package mcpoauth
 
@@ -52,6 +53,16 @@ func validateScope(scope string) error {
 func EntryURLAllowed(ctx context.Context, rawURL string) error {
 	if _, err := remotemcp.ValidatePublicHTTPSEndpoint(withAllowedOrigins(ctx), rawURL, nil, literalOnlyResolver{}); err != nil {
 		return fmt.Errorf("%w: url must be a public HTTPS address, or an origin the operator allowed", ErrInvalidInput)
+	}
+	return nil
+}
+
+// issuerAllowed is EntryURLAllowed for a pre-registered client's issuer: the
+// same address rules, so a manual issuer cannot point the server at an
+// address its discovery could not reach either.
+func issuerAllowed(ctx context.Context, issuer string) error {
+	if _, err := remotemcp.ValidatePublicHTTPSEndpoint(withAllowedOrigins(ctx), issuer, nil, literalOnlyResolver{}); err != nil {
+		return fmt.Errorf("%w: auth.issuer must be a public HTTPS address, or an origin the operator allowed", ErrInvalidInput)
 	}
 	return nil
 }

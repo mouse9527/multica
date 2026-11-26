@@ -1,6 +1,7 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
 // Modified for the mouse9527/multica fork: correct what the claim margin promises (M-279).
+// Modified for the mouse9527/multica fork: grants bound to the entry's pre-registered client (M-295).
 
 package handler
 
@@ -145,7 +146,7 @@ func (h *Handler) applyMCPOAuthServers(ctx context.Context, task *db.AgentTaskQu
 		// With the proxy this still runs: it confirms the grant is usable
 		// (refreshing it if due) so a dead connection gets its notice now
 		// rather than as failing tool calls.
-		target := mcpoauth.Target{WorkspaceID: workspaceID, Ref: entry.Ref, URL: entry.Entry.URL}
+		target := mcpoauth.NewTarget(workspaceID, entry.Ref, entry.Entry)
 		credential, err := source.Credential(budget, target, ownerID)
 		if err != nil {
 			out.Notices = append(out.Notices, mcpOAuthNotice(entry.Name, err))

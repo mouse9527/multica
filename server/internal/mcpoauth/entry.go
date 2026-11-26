@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
+// Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
 
 package mcpoauth
 
@@ -20,8 +21,10 @@ import (
 //
 //	"auth": {"type": "oauth", "scope": "optional scopes"}
 //
-// next to its "url". The entry itself holds no credential: the tokens are in
-// mcp_oauth_connection, keyed by the entry's ref and the connecting user.
+// next to its "url", optionally with a pre-registered client (ClientConfig).
+// The entry itself holds no credential: the tokens are in
+// mcp_oauth_connection, keyed by the entry's ref and the connecting user, and
+// a pre-registered client's secret is in mcp_oauth_client.
 const AuthTypeOAuth = "oauth"
 
 // A ref names the entry a connection belongs to:
@@ -114,6 +117,8 @@ func isCanonicalUUID(s string) bool {
 type Entry struct {
 	URL   string
 	Scope string
+	// Client is how the connect obtains its OAuth client.
+	Client ClientConfig
 	// Disabled is an entry switched off with "enabled": false or
 	// "disabled": true; it is not mounted, so it needs no token.
 	Disabled bool
@@ -180,8 +185,17 @@ func ParseEntry(raw json.RawMessage) (Entry, error) {
 				return Entry{}, err
 			}
 		default:
-			return Entry{}, fmt.Errorf("%w: auth.%s is not supported", ErrInvalidInput, key)
+			known, err := parseClientField(key, value, &out.Client)
+			if err != nil {
+				return Entry{}, err
+			}
+			if !known {
+				return Entry{}, fmt.Errorf("%w: auth.%s is not supported", ErrInvalidInput, key)
+			}
 		}
+	}
+	if err := out.Client.validate(); err != nil {
+		return Entry{}, err
 	}
 	if _, ok := fields["command"]; ok {
 		return Entry{}, fmt.Errorf("%w: OAuth needs a remote (HTTP) MCP server, not a command", ErrInvalidInput)
@@ -227,7 +241,8 @@ func ParseEntry(raw json.RawMessage) (Entry, error) {
 // ValidateEntryForSave checks one entry as it is saved. An entry without an
 // "auth" field is not this package's and passes untouched; one with it must
 // be a well-formed OAuth entry whose URL passes the address rules that can be
-// checked without a DNS lookup (EntryURLAllowed).
+// checked without a DNS lookup (EntryURLAllowed), and so must the issuer of a
+// pre-registered client.
 func ValidateEntryForSave(ctx context.Context, raw json.RawMessage) error {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil {
@@ -240,7 +255,13 @@ func ValidateEntryForSave(ctx context.Context, raw json.RawMessage) error {
 	if err != nil {
 		return err
 	}
-	return EntryURLAllowed(ctx, entry.URL)
+	if err := EntryURLAllowed(ctx, entry.URL); err != nil {
+		return err
+	}
+	if entry.Client.Issuer != "" {
+		return issuerAllowed(ctx, entry.Client.Issuer)
+	}
+	return nil
 }
 
 // ValidateConfigForSave runs ValidateEntryForSave over every entry of an

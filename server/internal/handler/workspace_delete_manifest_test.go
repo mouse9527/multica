@@ -225,6 +225,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// mcpoauth.DeleteWorkspaceData.
 	"mcp_oauth_connection": workspaceDelete,
 	"mcp_oauth_state":      workspaceDelete,
+	// mouse9527/multica fork: pre-registered client secrets (M-295), deleted
+	// by mcpoauth.DeleteWorkspaceData.
+	"mcp_oauth_client": workspaceDelete,
 	// Modified for the mouse9527/multica fork: password login. A password
 	// belongs to the account, like "user", not to a workspace.
 	"user_credential": workspaceDeleteKeep,

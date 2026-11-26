@@ -1,6 +1,7 @@
 "use client";
 
 // Added by the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
+// Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
 //
 // The OAuth state of the rows of the two MCP pages. The pages read only the
 // flag (useMcpOAuthAvailable) and render these components into their rows
@@ -50,7 +51,7 @@ function digest(value: unknown): string {
  * The agent's OAuth entries and its owner's connections. The endpoint admits
  * the agent's owner and workspace owners/admins (`canEdit`).
  */
-function useAgentMcpOAuthList(agent: Agent, canEdit: boolean) {
+export function useAgentMcpOAuthList(agent: Agent, canEdit: boolean) {
   const assigned = useQuery({ ...agentMcpServersOptions(agent.id), enabled: canEdit && agent.id !== "" });
   const version = useMemo(
     () =>
@@ -122,6 +123,16 @@ export function AgentMcpOAuthOwnerNote({ agent, canEdit }: { agent: Agent; canEd
   return waiting ? <p className="text-caption text-muted-foreground">{t(($) => $.owner_only)}</p> : null;
 }
 
+/** The workspace library's OAuth entries and the viewer's own connections. */
+export function useWorkspaceMcpOAuthList(wsId: string, enabled = true) {
+  const library = useQuery(workspaceMcpServersOptions(wsId));
+  const version = useMemo(
+    () => digest((library.data ?? []).map((server) => [server.id, server.updated_at])),
+    [library.data],
+  );
+  return useQuery(workspaceMcpOAuthOptions(wsId, enabled, version));
+}
+
 /**
  * The viewer's own connection to one workspace library entry. Any member
  * connects for themselves; the connection is then used by all of their agents
@@ -129,12 +140,7 @@ export function AgentMcpOAuthOwnerNote({ agent, canEdit }: { agent: Agent; canEd
  */
 export function WorkspaceMcpOAuthConnection({ wsId, serverId }: { wsId: string; serverId: string }) {
   const { t } = useT("mcpoauth");
-  const library = useQuery(workspaceMcpServersOptions(wsId));
-  const version = useMemo(
-    () => digest((library.data ?? []).map((server) => [server.id, server.updated_at])),
-    [library.data],
-  );
-  const list = useQuery(workspaceMcpOAuthOptions(wsId, true, version));
+  const list = useWorkspaceMcpOAuthList(wsId);
   const connect = useConnectWorkspaceMcpOAuth(wsId);
   const disconnect = useDisconnectWorkspaceMcpOAuth(wsId);
   const actions = useMcpOAuthActions();
