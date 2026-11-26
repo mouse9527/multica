@@ -441,6 +441,7 @@ type claudeTurn struct {
 	resultIsError            bool
 	terminalReasonError      string
 	sawRefusalNoFallback     bool
+	apiRetry                 claudeAPIRetryState // mouse9527/multica fork (M-312), see claude_api_retry.go
 	sessionID                string
 	lastUsageResult          *claudeSDKMessage
 	lastRawModelUsage        map[string]TokenUsage
@@ -461,6 +462,7 @@ func (t *claudeTurn) handleMessage(msg claudeSDKMessage) {
 	case "stream_event":
 		if msg.ParentToolUseID == "" {
 			t.coalescer.handleEvent(msg.Event)
+			t.noteStreamOutputLocked() // mouse9527/multica fork (M-312)
 		}
 		t.mu.Unlock()
 	case "assistant":
@@ -493,6 +495,10 @@ func (t *claudeTurn) handleMessage(msg claudeSDKMessage) {
 		// the main thread's own result says how the turn ended.
 		if msg.Subtype == claudeSubtypeModelRefusalNoFallback && msg.ParentToolUseID == "" {
 			t.sawRefusalNoFallback = true
+		}
+		if retry, ok := parseClaudeAPIRetry(msg); ok { // mouse9527/multica fork (M-312)
+			t.handleAPIRetry(retry) // releases t.mu
+			return
 		}
 		sid := t.sessionID
 		t.mu.Unlock()
@@ -527,6 +533,9 @@ func (t *claudeTurn) handleMessage(msg claudeSDKMessage) {
 		t.terminalReasonError = claudeTerminalReasonFailure(msg.TerminalReason, msg.ResultText)
 		if t.terminalReasonError == "" {
 			t.terminalReasonError = claudeRefusalFailure(msg.StopReason, t.sawRefusalNoFallback, msg.IsError, msg.ResultText)
+		}
+		if t.apiRetry.failure != "" { // mouse9527/multica fork (M-312): the turn already gave up
+			t.terminalReasonError = t.apiRetry.failure
 		}
 		if msg.SessionID != "" {
 			t.sessionID = msg.SessionID
@@ -1052,6 +1061,9 @@ type claudeSDKMessage struct {
 	RequestID string          `json:"request_id,omitempty"`
 	Request   json.RawMessage `json:"request,omitempty"`
 	Response  json.RawMessage `json:"response,omitempty"`
+
+	// api_retry fields — mouse9527/multica fork (M-312)
+	claudeAPIRetryFields
 }
 
 type claudeLogEntry struct {
