@@ -14,6 +14,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/crossread"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/middleware"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -32,6 +33,12 @@ func (h *Handler) MountCrossWorkspaceReadGrants(r chi.Router) {
 	r.Post("/", h.CreateCrossWorkspaceReadGrant)
 	r.Get("/audit", h.ListCrossWorkspaceReadAudit)
 	r.Delete("/{grantId}", h.RevokeCrossWorkspaceReadGrant)
+}
+
+// isCrossWorkspaceReader reports whether the request is served under a
+// cross-workspace read grant. X-Actor-Source is server-set only.
+func isCrossWorkspaceReader(r *http.Request) bool {
+	return r.Header.Get("X-Actor-Source") == middleware.ActorSourceCrossWorkspaceReader
 }
 
 func (h *Handler) crossReadStore() *crossread.Store {
