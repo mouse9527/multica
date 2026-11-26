@@ -1,5 +1,5 @@
 // Added by the mouse9527/multica fork: Evolution structural analysis, the
-// read-only metrics source (M-296).
+// read-only metrics source, read by the weekly structural review (M-296).
 
 package evolution
 
@@ -143,7 +143,8 @@ type MetricsRequest struct {
 	SelfAgentID string
 }
 
-// ServeMetrics summarises the Days before the open run's window_until.
+// ServeMetrics summarises the Days before the open run's window_until. Only
+// the week's structural review run reads it (structure_review.go).
 // Issues in hidden (private) or excluded projects, and excluded agents, are
 // left out in SQL; so are runs on those issues and chats filed under those
 // projects.
@@ -154,6 +155,11 @@ func ServeMetrics(ctx context.Context, q Querier, req MetricsRequest) (MetricsSu
 	run, err := openRunForIssue(ctx, q, req.WorkspaceID, req.IssueID)
 	if err != nil {
 		return MetricsSummary{}, err
+	}
+	if structure, err := isStructureRun(ctx, q, run); err != nil {
+		return MetricsSummary{}, err
+	} else if !structure {
+		return MetricsSummary{}, ErrNotStructureRun
 	}
 	days := req.Days
 	if days == 0 {
