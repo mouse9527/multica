@@ -42,6 +42,8 @@
     "secret_remove": "Quitar",
     "secret_cleared": "El secreto de cliente se quitará al guardar.",
     "secret_save_failed": "El servidor se guardó, pero el secreto de cliente no: {{error}}",
+    "secret_retry": "El servidor está guardado. Guarda de nuevo para reintentar el secreto de cliente.",
+    "saved_entry_changed": "El servidor ya se añadió. Para cambiar su configuración, cierra este diálogo y edítalo desde la lista.",
     "method_label": "Autenticación en el endpoint de tokens",
     "method": {
       "auto": "Automática",

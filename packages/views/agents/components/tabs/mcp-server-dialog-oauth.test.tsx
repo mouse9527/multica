@@ -229,6 +229,86 @@ describe("McpServerDialog pre-registered OAuth client", () => {
     await waitFor(() => expect(onSaveOAuthClientSecret).toHaveBeenCalledWith("gateway", null));
   });
 
+  // Review case (M-295 R1): the entry is added, its secret is not. With the
+  // name now taken, saving again must retry only the secret.
+  it("retries only the secret when it failed after the entry was added", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const onSaveOAuthClientSecret = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(undefined);
+    const onOpenChange = vi.fn();
+    const existingNames = new Set<string>();
+    const view = render(
+      <McpServerDialog
+        open
+        server={null}
+        existingNames={existingNames}
+        oauthAvailable
+        onSave={onSave}
+        onSaveOAuthClientSecret={onSaveOAuthClientSecret}
+        onOpenChange={onOpenChange}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    await user.type(screen.getByLabelText("Server name"), "gateway");
+    await user.click(screen.getByRole("button", { name: /^Streamable HTTP/ }));
+    await user.type(screen.getByLabelText("Server URL"), "https://mcp.example.com/mcp");
+    await user.click(screen.getByRole("button", { name: "OAuth 2.1" }));
+    await user.click(screen.getByRole("button", { name: "Pre-registered" }));
+    await user.type(screen.getByLabelText("Client ID"), "pre-1");
+    await user.type(screen.getByLabelText("Issuer"), "https://auth.example.com");
+    await user.type(screen.getByLabelText("Client secret (optional)"), "sk-1");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(await screen.findByText("The server is saved. Save again to retry the client secret.")).toBeTruthy();
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+
+    // The list now has the entry: its name must not read as a duplicate.
+    view.rerender(
+      <McpServerDialog
+        open
+        server={null}
+        existingNames={new Set(["gateway"])}
+        oauthAvailable
+        onSave={onSave}
+        onSaveOAuthClientSecret={onSaveOAuthClientSecret}
+        onOpenChange={onOpenChange}
+      />,
+    );
+    const secret = screen.getByLabelText("Client secret (optional)");
+    await user.clear(secret);
+    await user.type(secret, "sk-2");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSaveOAuthClientSecret).toHaveBeenLastCalledWith("gateway", "sk-2");
+  });
+
+  it("does not add an entry twice when it was changed after being added", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const onSaveOAuthClientSecret = vi.fn().mockRejectedValue(new Error("offline"));
+    renderDialog({ oauthAvailable: true, onSave, onSaveOAuthClientSecret });
+
+    await user.type(screen.getByLabelText("Server name"), "gateway");
+    await user.click(screen.getByRole("button", { name: /^Streamable HTTP/ }));
+    await user.type(screen.getByLabelText("Server URL"), "https://mcp.example.com/mcp");
+    await user.click(screen.getByRole("button", { name: "OAuth 2.1" }));
+    await user.click(screen.getByRole("button", { name: "Pre-registered" }));
+    await user.type(screen.getByLabelText("Client ID"), "pre-1");
+    await user.type(screen.getByLabelText("Issuer"), "https://auth.example.com");
+    await user.type(screen.getByLabelText("Client secret (optional)"), "sk-1");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await screen.findByText("The server is saved. Save again to retry the client secret.");
+
+    await user.type(screen.getByLabelText("Client ID"), "-changed");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(
+      await screen.findByText("The server was already added. To change its settings, close this dialog and edit it from the list."),
+    ).toBeTruthy();
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
   it("asks for the client ID and an HTTPS issuer", async () => {
     const user = userEvent.setup();
     const { onSave } = renderDialog({ oauthAvailable: true, onSaveOAuthClientSecret: vi.fn() });

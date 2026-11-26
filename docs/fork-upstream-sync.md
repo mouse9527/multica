@@ -86,7 +86,7 @@
 
 - `server/internal/handler/agent.go`：`UpdateAgent` 里 `forgetRemovedAgentMCPOAuthEntries` 之后调用 `h.settleChangedAgentMCPOAuthClients(r.Context(), existing, updated)`。`existing` 必须是写入前的智能体（比较新旧 `mcp_config` 的客户端）。
 - `server/internal/handler/workspace_mcp_api.go`：`UpdateWorkspaceMcpServer` 在 `UpdateWorkspaceMcpServer` 查询之前读旧配置（`workspaceMCPOAuthConfigBefore`），成功之后调用 `settleChangedWorkspaceMCPOAuthClient`。上游如果把这个更新改成事务或换了查询名，两行钩子跟着挪。
-- `packages/views/agents/components/tabs/mcp-server-dialog.tsx`：表单状态的 `oauth` 字段、`oauthClientSecretSet` / `onSaveOAuthClientSecret` 两个 prop，以及 `handleSave` 里「先 `onSave` 存条目、再存 client secret」那一段。
+- `packages/views/agents/components/tabs/mcp-server-dialog.tsx`：表单状态的 `oauth` 字段、`oauthClientSecretSet` / `onSaveOAuthClientSecret` 两个 prop，以及 `handleSave` 里「先 `onSave` 存条目、再存 client secret」那一段；secret 失败后用 `savedEntry` 记住已存的条目，再次保存只重试 secret（重名校验也放过这个名字），页脚显示 `McpOAuthSavedEntryNote`。
 - `packages/views/agents/components/tabs/mcp-config-tab.tsx`、`packages/views/settings/components/mcp-tab.tsx`：各一个 `use…McpOAuthClientSecret` 调用和传给对话框的两个 prop。
 - `packages/views/settings/components/mcp-tab.test.tsx`：react-query 的 mock 多了 `useQueryClient`。
 - `server/internal/handler/workspace_delete_manifest_test.go`：`mcp_oauth_client` 登记为随工作区删除。

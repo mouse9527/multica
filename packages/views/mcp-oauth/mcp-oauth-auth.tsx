@@ -332,3 +332,20 @@ export function McpOAuthAuthPicker({
     </div>
   );
 }
+
+/**
+ * Shown by the entry dialog once the entry is saved but its client secret is
+ * not: saving again retries only the secret. `changed`: the entry was edited
+ * since, which this dialog cannot save again without adding it twice.
+ */
+export function McpOAuthSavedEntryNote({ changed }: { changed: boolean }) {
+  const { t } = useT("mcpoauth");
+  return (
+    <p
+      role={changed ? "alert" : "status"}
+      className={cn("mr-auto self-center text-caption", changed ? "text-destructive" : "text-muted-foreground")}
+    >
+      {changed ? t(($) => $.client.saved_entry_changed) : t(($) => $.client.secret_retry)}
+    </p>
+  );
+}

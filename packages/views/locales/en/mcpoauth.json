@@ -42,6 +42,8 @@
     "secret_remove": "Remove",
     "secret_cleared": "The client secret will be removed when you save.",
     "secret_save_failed": "The server was saved, but the client secret was not: {{error}}",
+    "secret_retry": "The server is saved. Save again to retry the client secret.",
+    "saved_entry_changed": "The server was already added. To change its settings, close this dialog and edit it from the list.",
     "method_label": "Token endpoint authentication",
     "method": {
       "auto": "Automatic",

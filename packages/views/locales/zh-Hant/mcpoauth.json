@@ -42,6 +42,8 @@
     "secret_remove": "清除",
     "secret_cleared": "儲存時會清除 Client Secret。",
     "secret_save_failed": "伺服器已儲存，但 Client Secret 沒有儲存：{{error}}",
+    "secret_retry": "伺服器已儲存。再次儲存會重試儲存 Client Secret。",
+    "saved_entry_changed": "伺服器已經新增。要修改設定，請關閉對話框，在清單中編輯它。",
     "method_label": "權杖端點驗證方式",
     "method": {
       "auto": "自動",

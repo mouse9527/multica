@@ -42,6 +42,8 @@
     "secret_remove": "清除",
     "secret_cleared": "保存时会清除 Client Secret。",
     "secret_save_failed": "服务器已保存，但 Client Secret 没有保存：{{error}}",
+    "secret_retry": "服务器已保存。再次保存会重试保存 Client Secret。",
+    "saved_entry_changed": "服务器已经添加。要修改设置，请关闭对话框，在列表里编辑它。",
     "method_label": "令牌端点认证方式",
     "method": {
       "auto": "自动",

@@ -20,8 +20,9 @@ import { useT } from "../i18n";
 import { useAgentMcpOAuthList, useWorkspaceMcpOAuthList } from "./mcp-oauth-rows";
 
 /**
- * Runs a client secret write. A failure is shown and rethrown, so the dialog
- * stays open with what was typed; the entry itself is already saved.
+ * Runs a client secret write. A failure is shown here and rethrown; the
+ * dialog then stays open with what was typed and retries only the secret,
+ * since the entry itself is already saved.
  */
 function useSecretWrite(wsId: string) {
   const { t } = useT("mcpoauth");

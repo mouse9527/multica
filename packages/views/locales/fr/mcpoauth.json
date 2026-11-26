@@ -42,6 +42,8 @@
     "secret_remove": "Supprimer",
     "secret_cleared": "Le secret client sera supprimé à l'enregistrement.",
     "secret_save_failed": "Le serveur a été enregistré, mais pas le secret client : {{error}}",
+    "secret_retry": "Le serveur est enregistré. Enregistrez à nouveau pour réessayer le secret client.",
+    "saved_entry_changed": "Le serveur a déjà été ajouté. Pour modifier ses paramètres, fermez cette boîte de dialogue et modifiez-le depuis la liste.",
     "method_label": "Authentification auprès du point de terminaison de jetons",
     "method": {
       "auto": "Automatique",
