@@ -103,7 +103,7 @@ func TestActiveGrant(t *testing.T) {
 
 	// Expiry is checked against the database clock on every lookup.
 	soon := time.Now().Add(time.Hour)
-	if _, err := store.RevokeGrant(ctx, target, specific.ID, by); err != nil {
+	if _, _, err := store.RevokeGrant(ctx, target, specific.ID, by); err != nil {
 		t.Fatal(err)
 	}
 	expiring, err := store.CreateGrant(ctx, CreateGrantParams{
