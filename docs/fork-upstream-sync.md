@@ -70,7 +70,7 @@
 
 ## 进化的指标来源（M-296）
 
-全部在 fork 文件里，上游文件一行不改：新文件 `server/internal/evolution/signals_metrics.go`、`server/internal/handler/evolution_metrics.go`（及各自的测试）、`server/cmd/server/evolution_handoff_metrics_test.go`，`evolution_data.go`、`config.go`、`cmd_evolution.go`、`packages/core/evolution/schemas.ts` 是 fork 已有文件。没有迁移。
+全部在 fork 文件里，上游文件一行不改：新文件 `server/internal/evolution/signals_metrics.go`、`server/internal/evolution/structure_review.go`（每周结构复盘，挂在 fork 文件 `job.go` 的 `startRun` 上）、`server/internal/handler/evolution_metrics.go`（及各自的测试）、`server/cmd/server/evolution_handoff_metrics_test.go`，`evolution_data.go`、`config.go`、`cmd_evolution.go`、`packages/core/evolution/schemas.ts` 是 fork 已有文件。没有迁移。
 
 同步时要看的是它手写 SQL 依赖的上游数据形状，`sqlc-check` 只能发现列不存在，发现不了取值改名：
 

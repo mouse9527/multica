@@ -161,7 +161,17 @@ chat 游标是「已告知」的唯一凭证：只有上面第 2 步会建它。
 
 代码：`server/internal/evolution/signals_metrics.go`（查询与汇总，汇总是纯函数）、`server/internal/handler/evolution_metrics.go`（接口），`evolution_data.go` 的 `GetEvolutionSignals` 里一行转过去。测试：`signals_metrics_test.go` 用 M-291 的样例 1–3（主审打回循环、「待你决定」停留、复审的退回率与运行时长）核对数字；`TestEvolutionMetricsSource` 核对开关、私有项目、私有 agent、窗口和交接；`cmd/server/evolution_handoff_metrics_test.go` 用真实的活动监听器写出手动分配和工作流交接两条记录，核对各计一次、转出方正确（Router 注解开和关两种）。
 
-这一步只提供数据：分析 issue 的说明、提示词和技能还不提它，进化不会主动读。
+### 每周结构复盘（M-296）
+
+不是单独的运行类型，不改表（2026-11-26 已定决定 A）。`metrics` 打开时，每周（按配置时区的周一到周日）**第一次没失败的定时运行**就是结构复盘：周一有定时运行就是周一那次，没有就顺延到这周下一次定时运行；前面那次失败了，下一次定时运行顶上。补读运行（catch-up）不算。
+
+- 结构复盘的分析 issue 标题后面加「· 结构复盘」（英文 `structural review`、韩文 `구조 점검`、日文 `構造レビュー`，按 agent 名称选语言，同分析标题），说明里多列一行 `metrics`（截止 `window_until` 的 14 天）和读取命令 `multica evolution signals --source metrics --days 14`。其他运行的标题和说明与以前一样，不提 `metrics`。
+- 接口也按同一条规则判断：`source=metrics` 只回答这周的结构复盘运行，其他运行返回 409（`only the week's structural review run reads metrics`）。
+- 判断只看 `evolution_run` 里已有的 `kind`、`slot`、`status`：同一周里 slot 更早、没失败的定时运行存在，就不是结构复盘。所以这周的第一次定时运行时 `metrics` 还没打开的话，这周就没有结构复盘，下周一开始。
+
+代码：`server/internal/evolution/structure_review.go`，`job.go` 的 `startRun` 建 issue 时调用。测试：`structure_review_test.go`（周起点、标题、说明）、`TestEvolutionStructuralReviewRun`（开和关时定时任务建出的 issue）、`TestEvolutionMetricsSource`（同一周已有没失败的运行时 409，那次改成失败后放行）。
+
+提示词和技能还没写结构分析的做法（第 3 个 PR）。
 
 ## 游标与调度（P2）
 
@@ -347,6 +357,6 @@ P4：提案 issue 的侧栏「属性」区（默认展开，紧跟工作流那�
 
 ## 上游触点
 
-见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。M-296（指标来源）没有上游触点：新文件 `internal/evolution/signals_metrics.go`、`internal/handler/evolution_metrics.go`，其余只改 fork 文件（`config.go`、`evolution_data.go`、`cmd_evolution.go`、`packages/core/evolution/schemas.ts`），没有迁移。M-231（产出归属项目）没有新的上游触点：只改 fork 文件 `internal/evolution/` 里三处建 issue 的参数和配置（新文件 `output_project.go`），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认一个配置项。P6 没有新的上游触点：精简检查挂在 fork 文件 `internal/evolution/job.go` 的定时任务里（新文件 `condense.go`），`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9022_evolution_review`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认四个配置项。P5 没有新的上游触点：度量挂在 fork 文件 `internal/evolution/job.go` 的定时任务里，`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9021_evolution_effect`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认三个配置项。P4 没有新增上游文件：在已是触点的 `issue-detail.tsx` 里，紧挨 M-194 的两处 fork 行（导入块后的 fork 导入、侧栏属性里的 Super Agent 行）各加一行，不新增独立冲突块；后端路由仍在 fork 文件 `evolution_agent.go`，`workspace_delete_manifest_test.go` 在 P2 那块里登记两张新表。迁移 `9020_evolution_apply`（两张新表，DO 块建表，含 down）。P3 没有新的上游触点：路由加在 fork 文件 `evolution_agent.go` 的 `MountEvolution` 里，其余都是 fork 新文件。P2 没有新的上游文件，在已有 fork 改动的 3 个上游文件上各追加一块：`main.go` 一行注册定时任务（紧挨 `agentrouter.Register`）；`workspace.go` 的删除步骤（紧挨 Router 那块）；`workspace_delete_manifest_test.go` 登记两张新表。前端没有新的上游触点（只改 fork 自己的文件）。
+见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。M-296（指标来源、每周结构复盘）没有上游触点：新文件 `internal/evolution/signals_metrics.go`、`internal/evolution/structure_review.go`、`internal/handler/evolution_metrics.go`，其余只改 fork 文件（`config.go`、`evolution_data.go`、`cmd_evolution.go`、`packages/core/evolution/schemas.ts`），没有迁移。M-231（产出归属项目）没有新的上游触点：只改 fork 文件 `internal/evolution/` 里三处建 issue 的参数和配置（新文件 `output_project.go`），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认一个配置项。P6 没有新的上游触点：精简检查挂在 fork 文件 `internal/evolution/job.go` 的定时任务里（新文件 `condense.go`），`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9022_evolution_review`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认四个配置项。P5 没有新的上游触点：度量挂在 fork 文件 `internal/evolution/job.go` 的定时任务里，`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9021_evolution_effect`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认三个配置项。P4 没有新增上游文件：在已是触点的 `issue-detail.tsx` 里，紧挨 M-194 的两处 fork 行（导入块后的 fork 导入、侧栏属性里的 Super Agent 行）各加一行，不新增独立冲突块；后端路由仍在 fork 文件 `evolution_agent.go`，`workspace_delete_manifest_test.go` 在 P2 那块里登记两张新表。迁移 `9020_evolution_apply`（两张新表，DO 块建表，含 down）。P3 没有新的上游触点：路由加在 fork 文件 `evolution_agent.go` 的 `MountEvolution` 里，其余都是 fork 新文件。P2 没有新的上游文件，在已有 fork 改动的 3 个上游文件上各追加一块：`main.go` 一行注册定时任务（紧挨 `agentrouter.Register`）；`workspace.go` 的删除步骤（紧挨 Router 那块）；`workspace_delete_manifest_test.go` 登记两张新表。前端没有新的上游触点（只改 fork 自己的文件）。
 
 P1：后端 5 个上游文件各 1 块：`daemon.go` 拼接提示词、`mika_agent.go` 的 `systemInstructionsFor` 展示提示词（两处都调用 fork 的 `service.ComposeForkSystemInstructions` / `ForkSystemInstructions`，以后新增 fork 系统 agent 不用再改这两个文件）、`builtin_skills.go` 的技能映射、`router.go` 挂载路由、`keys.go` 发布开关。前端 11 个上游文件：`package.json` 导出、设置页 3 块、i18n 类型和 8 个语言入口各 2 块，除设置页工作区分组那一处外都紧挨着 Router 已有的 fork 行。
