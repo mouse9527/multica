@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
+// Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
 //
 // Connections to OAuth MCP entries. The entries themselves are ordinary MCP
 // entries (`"auth": {"type": "oauth"}`) saved through the agent's mcp_config
@@ -8,6 +9,8 @@
 //   /api/agents/{id}/mcp-oauth          the agent owner's, per entry name
 //   /api/workspaces/{id}/mcp-oauth      the caller's own, per library entry
 //   /api/mcp-oauth/complete             the end of any connect
+// and write (never read) the client secret of an entry that names a
+// pre-registered client: .../{name or serverId}/client-secret.
 // They answer 404 while `mcp_oauth_v1` is off.
 
 import { api, ApiError, parseWithFallback } from "../api";
@@ -102,6 +105,33 @@ export function connectWorkspaceMcpOAuth(wsId: string, serverId: string, returnT
 
 export async function disconnectWorkspaceMcpOAuth(wsId: string, serverId: string): Promise<void> {
   await api.request(`${workspaceBase(wsId)}/${encodeURIComponent(serverId)}/connection`, scoped(wsId, { method: "DELETE" }));
+}
+
+/**
+ * Sets the client secret of one of the agent's own entries. The secret is
+ * write-only: no endpoint returns it.
+ */
+export async function setAgentMcpOAuthClientSecret(wsId: string, agentId: string, name: string, clientSecret: string): Promise<void> {
+  await api.request(
+    `${agentBase(agentId)}/${encodeURIComponent(name)}/client-secret`,
+    scoped(wsId, { method: "PUT", body: JSON.stringify({ client_secret: clientSecret }) }),
+  );
+}
+
+export async function deleteAgentMcpOAuthClientSecret(wsId: string, agentId: string, name: string): Promise<void> {
+  await api.request(`${agentBase(agentId)}/${encodeURIComponent(name)}/client-secret`, scoped(wsId, { method: "DELETE" }));
+}
+
+/** Sets the client secret of a workspace library entry. Write-only. */
+export async function setWorkspaceMcpOAuthClientSecret(wsId: string, serverId: string, clientSecret: string): Promise<void> {
+  await api.request(
+    `${workspaceBase(wsId)}/${encodeURIComponent(serverId)}/client-secret`,
+    scoped(wsId, { method: "PUT", body: JSON.stringify({ client_secret: clientSecret }) }),
+  );
+}
+
+export async function deleteWorkspaceMcpOAuthClientSecret(wsId: string, serverId: string): Promise<void> {
+  await api.request(`${workspaceBase(wsId)}/${encodeURIComponent(serverId)}/client-secret`, scoped(wsId, { method: "DELETE" }));
 }
 
 /**

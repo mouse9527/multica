@@ -46,6 +46,8 @@ import {
   WorkspaceMcpOAuthConnection,
   useMcpOAuthAvailable,
 } from "../../mcp-oauth/mcp-oauth-rows";
+// mouse9527/multica fork: client secrets of pre-registered OAuth clients (M-295).
+import { useWorkspaceMcpOAuthClientSecret } from "../../mcp-oauth/mcp-oauth-client-secret";
 
 /**
  * The workspace MCP server library (GH #6062).
@@ -75,6 +77,7 @@ export function McpTab() {
   const updateServer = useUpdateWorkspaceMcpServer(wsId);
   const deleteServer = useDeleteWorkspaceMcpServer(wsId);
   const oauthAvailable = useMcpOAuthAvailable();
+  const oauthClientSecret = useWorkspaceMcpOAuthClientSecret(wsId, oauthAvailable);
 
   const servers = useMemo(() => serversQuery.data ?? [], [serversQuery.data]);
   const existingNames = useMemo(
@@ -326,6 +329,8 @@ export function McpTab() {
         existingNames={existingNames}
         replacementMode={editingServer !== null}
         oauthAvailable={oauthAvailable}
+        oauthClientSecretSet={oauthClientSecret.isSet(editingServer?.name)}
+        onSaveOAuthClientSecret={oauthAvailable && canManage ? oauthClientSecret.save : undefined}
         onOpenChange={setEditorOpen}
         onSave={handleSaveServer}
       />

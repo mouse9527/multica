@@ -26,6 +26,30 @@
     "oauth_hint": "Après l’enregistrement, connectez-le depuis la liste des serveurs.",
     "https_required": "OAuth nécessite une URL HTTPS."
   },
+  "client": {
+    "label": "Client",
+    "dynamic": "Enregistrement automatique",
+    "preregistered": "Préenregistré",
+    "client_id_label": "ID client",
+    "client_id_required": "Saisissez l'ID client.",
+    "issuer_label": "Émetteur (issuer)",
+    "issuer_hint": "Le serveur d'autorisation auprès duquel le client est enregistré.",
+    "issuer_required": "Saisissez l'émetteur sous forme d'URL HTTPS.",
+    "secret_label": "Secret client (facultatif)",
+    "secret_hint": "Laissez vide pour un client public. Il n'est plus affiché après l'enregistrement.",
+    "secret_set": "Un secret client est défini.",
+    "secret_replace_placeholder": "Saisissez un nouveau secret pour le remplacer",
+    "secret_remove": "Supprimer",
+    "secret_cleared": "Le secret client sera supprimé à l'enregistrement.",
+    "secret_save_failed": "Le serveur a été enregistré, mais pas le secret client : {{error}}",
+    "method_label": "Authentification auprès du point de terminaison de jetons",
+    "method": {
+      "auto": "Automatique",
+      "client_secret_basic": "client_secret_basic",
+      "client_secret_post": "client_secret_post",
+      "none": "none (client public)"
+    }
+  },
   "callback": {
     "working": "Connexion du serveur MCP…",
     "failed_title": "Impossible de connecter le serveur MCP",

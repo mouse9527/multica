@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
+// Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
 
 import { z } from "zod";
 
@@ -18,6 +19,19 @@ export const McpOAuthConnectionSchema = z.object({
 
 const connection = McpOAuthConnectionSchema.nullable().optional().catch(null).transform((v) => v ?? null);
 
+/** Absent on an older server: read as false. */
+const flag = z.boolean().optional().catch(undefined).transform((v) => v ?? false);
+
+/**
+ * What a list says about an entry's OAuth client: whether it names a client
+ * registered in advance, and whether its client secret is set. The secret
+ * itself is never returned.
+ */
+const client = {
+  preregistered: flag,
+  client_secret_set: flag,
+};
+
 /**
  * An OAuth entry an agent runs with: one of its own MCP entries, or a
  * workspace MCP library entry bound to it. URLs are never returned.
@@ -32,6 +46,7 @@ export const McpOAuthAgentEntrySchema = z.object({
   shared: z.boolean().catch(false),
   /** Why the entry cannot be connected; empty when it can. */
   problem: z.string().optional().catch(undefined).transform((v) => v ?? ""),
+  ...client,
   connection,
 });
 
@@ -46,6 +61,7 @@ export const McpOAuthWorkspaceEntrySchema = z.object({
   name: z.string().catch(""),
   scope: z.string().catch(""),
   problem: z.string().optional().catch(undefined).transform((v) => v ?? ""),
+  ...client,
   connection,
 });
 

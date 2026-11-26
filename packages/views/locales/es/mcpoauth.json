@@ -26,6 +26,30 @@
     "oauth_hint": "Después de guardar, conéctalo desde la lista de servidores.",
     "https_required": "OAuth necesita una URL HTTPS."
   },
+  "client": {
+    "label": "Cliente",
+    "dynamic": "Registro automático",
+    "preregistered": "Registrado previamente",
+    "client_id_label": "ID de cliente",
+    "client_id_required": "Introduce el ID de cliente.",
+    "issuer_label": "Emisor (issuer)",
+    "issuer_hint": "El servidor de autorización en el que está registrado el cliente.",
+    "issuer_required": "Introduce el emisor como una URL HTTPS.",
+    "secret_label": "Secreto de cliente (opcional)",
+    "secret_hint": "Déjalo vacío para un cliente público. No se vuelve a mostrar después de guardar.",
+    "secret_set": "Hay un secreto de cliente configurado.",
+    "secret_replace_placeholder": "Introduce un secreto nuevo para reemplazarlo",
+    "secret_remove": "Quitar",
+    "secret_cleared": "El secreto de cliente se quitará al guardar.",
+    "secret_save_failed": "El servidor se guardó, pero el secreto de cliente no: {{error}}",
+    "method_label": "Autenticación en el endpoint de tokens",
+    "method": {
+      "auto": "Automática",
+      "client_secret_basic": "client_secret_basic",
+      "client_secret_post": "client_secret_post",
+      "none": "none (cliente público)"
+    }
+  },
   "callback": {
     "working": "Conectando el servidor MCP…",
     "failed_title": "No se pudo conectar el servidor MCP",

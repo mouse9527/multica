@@ -65,6 +65,8 @@ import {
   AgentMcpOAuthOwnerNote,
   useMcpOAuthAvailable,
 } from "../../../mcp-oauth/mcp-oauth-rows";
+// mouse9527/multica fork: client secrets of pre-registered OAuth clients (M-295).
+import { useAgentMcpOAuthClientSecret } from "../../../mcp-oauth/mcp-oauth-client-secret";
 
 export function McpConfigTab({
   agent,
@@ -109,6 +111,7 @@ export function McpConfigTab({
   const removeServer = useRemoveAgentMcpServer(agent.id);
   const redacted = agent.mcp_config_redacted === true;
   const oauthAvailable = useMcpOAuthAvailable();
+  const oauthClientSecret = useAgentMcpOAuthClientSecret(agent, canEdit && oauthAvailable);
   const managedServers = useMemo(
     () => listManagedMcpServers(agent.mcp_config),
     [agent.mcp_config],
@@ -540,6 +543,8 @@ export function McpConfigTab({
           existingNames={managedNames}
           hideNameWhenEditing
           oauthAvailable={oauthAvailable}
+          oauthClientSecretSet={oauthClientSecret.isSet(editingServer?.name)}
+          onSaveOAuthClientSecret={oauthAvailable && canEdit ? oauthClientSecret.save : undefined}
           onOpenChange={setEditorOpen}
           onSave={handleSaveServer}
         />

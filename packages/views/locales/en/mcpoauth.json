@@ -26,6 +26,30 @@
     "oauth_hint": "After saving, connect it from the server list.",
     "https_required": "OAuth needs an HTTPS URL."
   },
+  "client": {
+    "label": "Client",
+    "dynamic": "Register automatically",
+    "preregistered": "Pre-registered",
+    "client_id_label": "Client ID",
+    "client_id_required": "Enter the client ID.",
+    "issuer_label": "Issuer",
+    "issuer_hint": "The authorization server the client is registered with.",
+    "issuer_required": "Enter the issuer as an HTTPS URL.",
+    "secret_label": "Client secret (optional)",
+    "secret_hint": "Leave empty for a public client. It is never shown again after saving.",
+    "secret_set": "A client secret is set.",
+    "secret_replace_placeholder": "Enter a new secret to replace it",
+    "secret_remove": "Remove",
+    "secret_cleared": "The client secret will be removed when you save.",
+    "secret_save_failed": "The server was saved, but the client secret was not: {{error}}",
+    "method_label": "Token endpoint authentication",
+    "method": {
+      "auto": "Automatic",
+      "client_secret_basic": "client_secret_basic",
+      "client_secret_post": "client_secret_post",
+      "none": "none (public client)"
+    }
+  },
   "callback": {
     "working": "Connecting the MCP server...",
     "failed_title": "Could not connect the MCP server",
