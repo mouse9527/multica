@@ -3,6 +3,7 @@
 // Modified for the mouse9527/multica fork: rejected refreshes via remotemcp.OAuthError (M-277).
 // Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
 // Modified for the mouse9527/multica fork: manual endpoints, resource and audience (M-295 stage 2).
+// Modified for the mouse9527/multica fork: extra authorization parameters (M-295 stage 3).
 
 package mcpoauth
 
@@ -127,7 +128,7 @@ func (f Flow) Start(ctx context.Context, target Target, userID, redirectURI, ret
 	if err != nil {
 		return "", err
 	}
-	return withAudience(authorizationURL, target.Server.Audience)
+	return withAuthorizationParams(authorizationURL, target.Server)
 }
 
 // preregisteredClient returns the entry's pre-registered client for the

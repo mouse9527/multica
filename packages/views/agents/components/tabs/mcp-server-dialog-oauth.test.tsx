@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // Added by the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
 // Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
+// Modified for the mouse9527/multica fork: extra authorization parameters (M-295 stage 3).
 
 import type { ComponentProps, ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -348,6 +349,27 @@ describe("McpServerDialog pre-registered OAuth client", () => {
       expect(onSave).toHaveBeenCalledWith("gateway", {
         ...OAUTH_ENTRY,
         auth: { type: "oauth", scope: "mcp read", issuer: "https://auth.example.com", audience: "my-api" },
+      }),
+    );
+  });
+
+  // Stage 3 (M-295): the allowlisted extra parameters round-trip.
+  it("edits extra authorization parameters and saves only the set ones", async () => {
+    const user = userEvent.setup();
+    const entry = {
+      ...OAUTH_ENTRY,
+      auth: { type: "oauth", scope: "mcp read", authorization_params: { prompt: "consent" } },
+    };
+    const { onSave } = renderDialog({ server: httpServer(entry), hideNameWhenEditing: true, oauthAvailable: true });
+
+    expect(screen.getByLabelText("prompt")).toHaveValue("consent");
+    await user.type(screen.getByLabelText("access_type"), "offline");
+    await user.clear(screen.getByLabelText("prompt"));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(onSave).toHaveBeenCalledWith("gateway", {
+        ...OAUTH_ENTRY,
+        auth: { type: "oauth", scope: "mcp read", authorization_params: { access_type: "offline" } },
       }),
     );
   });

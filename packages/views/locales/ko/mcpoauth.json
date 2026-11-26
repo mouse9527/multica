@@ -53,6 +53,7 @@
     "secret_retry": "서버가 저장되었습니다. 다시 저장하면 클라이언트 시크릿 저장을 재시도합니다.",
     "saved_entry_changed": "서버가 이미 추가되었습니다. 설정을 바꾸려면 이 대화상자를 닫고 목록에서 편집하세요.",
     "method_label": "토큰 엔드포인트 인증 방식",
+    "method_manual_hint": "엔드포인트를 직접 설정했다면 인가 서버가 요구하는 방식을 직접 선택하세요.",
     "method": {
       "auto": "자동",
       "client_secret_basic": "client_secret_basic",
@@ -73,7 +74,9 @@
     "resource_label": "Resource(선택)",
     "resource_hint": "서버 URL 대신 리소스 표시자로 보냅니다.",
     "audience_label": "Audience(선택)",
-    "audience_hint": "인가 요청과 함께 보냅니다. 이를 요구하는 서버용입니다."
+    "audience_hint": "인가 요청과 함께 보냅니다. 이를 요구하는 서버용입니다.",
+    "params_label": "추가 인가 매개변수(선택)",
+    "params_hint": "로그인 요청에 추가합니다. 새로 고침 토큰을 받기 위한 access_type=offline처럼 이를 요구하는 서버용입니다."
   },
   "callback": {
     "working": "MCP 서버에 연결하는 중…",

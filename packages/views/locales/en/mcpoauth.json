@@ -53,6 +53,7 @@
     "secret_retry": "The server is saved. Save again to retry the client secret.",
     "saved_entry_changed": "The server was already added. To change its settings, close this dialog and edit it from the list.",
     "method_label": "Token endpoint authentication",
+    "method_manual_hint": "With endpoints set by hand, choose the method the authorization server requires.",
     "method": {
       "auto": "Automatic",
       "client_secret_basic": "client_secret_basic",
@@ -73,7 +74,9 @@
     "resource_label": "Resource (optional)",
     "resource_hint": "Sent as the resource indicator instead of the server URL.",
     "audience_label": "Audience (optional)",
-    "audience_hint": "Sent with the authorization request, for servers that ask for one."
+    "audience_hint": "Sent with the authorization request, for servers that ask for one.",
+    "params_label": "Extra authorization parameters (optional)",
+    "params_hint": "Added to the sign-in request, for servers that need them, such as access_type=offline for a refresh token."
   },
   "callback": {
     "working": "Connecting the MCP server...",

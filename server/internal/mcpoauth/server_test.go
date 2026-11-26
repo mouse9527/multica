@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: manual OAuth endpoints, resource and audience for MCP entries (M-295 stage 2).
+// Modified for the mouse9527/multica fork: extra authorization parameters (M-295 stage 3).
 
 package mcpoauth
 
@@ -95,7 +96,7 @@ func TestServerHostsAndAudience(t *testing.T) {
 		t.Fatalf("hosts without manual endpoints = %q, %q", a, b)
 	}
 
-	got, err := withAudience("https://auth.example.com/authorize?client_id=c&state=s", "https://api.example.com")
+	got, err := withAuthorizationParams("https://auth.example.com/authorize?client_id=c&state=s", ServerConfig{Audience: "https://api.example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +104,7 @@ func TestServerHostsAndAudience(t *testing.T) {
 	if q := u.Query(); q.Get("audience") != "https://api.example.com" || q.Get("client_id") != "c" || q.Get("state") != "s" {
 		t.Fatalf("with audience = %s", got)
 	}
-	if same, _ := withAudience("https://auth.example.com/authorize?x=1", ""); same != "https://auth.example.com/authorize?x=1" {
+	if same, _ := withAuthorizationParams("https://auth.example.com/authorize?x=1", ServerConfig{}); same != "https://auth.example.com/authorize?x=1" {
 		t.Fatalf("without audience = %s", same)
 	}
 }

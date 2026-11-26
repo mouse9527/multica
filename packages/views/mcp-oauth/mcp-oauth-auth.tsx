@@ -3,11 +3,14 @@
 // Added by the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
 // Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
 // Modified for the mouse9527/multica fork: manual endpoints, resource and audience (M-295 stage 2).
+// Modified for the mouse9527/multica fork: extra authorization parameters (M-295 stage 3).
 
 import { useId, useState, type ReactNode } from "react";
 import {
   MCP_OAUTH_AUTH_TYPE,
+  MCP_OAUTH_AUTHORIZATION_PARAMS,
   MCP_OAUTH_TOKEN_AUTH_METHODS,
+  type McpOAuthAuthorizationParam,
   type McpOAuthTokenAuthMethod,
 } from "@multica/core/mcp-oauth";
 import { cn } from "@multica/ui/lib/utils";
@@ -52,6 +55,8 @@ export type McpOAuthFormValue = {
   tokenEndpoint: string;
   resource: string;
   audience: string;
+  /** Extra authorization request parameters, by allowlisted key; "" is unset. */
+  authorizationParams: Partial<Record<McpOAuthAuthorizationParam, string>>;
 };
 
 export const emptyOAuthForm = (): McpOAuthFormValue => ({
@@ -66,6 +71,7 @@ export const emptyOAuthForm = (): McpOAuthFormValue => ({
   tokenEndpoint: "",
   resource: "",
   audience: "",
+  authorizationParams: {},
 });
 
 /** Whether any advanced setting is filled in, so the section opens on them. */
@@ -75,6 +81,7 @@ export function hasAdvancedOAuthSettings(value: McpOAuthFormValue): boolean {
     value.tokenEndpoint !== "" ||
     value.resource !== "" ||
     value.audience !== "" ||
+    Object.values(value.authorizationParams).some((param) => (param ?? "") !== "") ||
     (value.clientMode === "dynamic" && value.issuer !== "")
   );
 }
@@ -111,6 +118,7 @@ export function oauthFormAuthFromConfig(config: Record<string, unknown>): McpOAu
     tokenEndpoint: stringField(auth, "token_endpoint"),
     resource: stringField(auth, "resource"),
     audience: stringField(auth, "audience"),
+    authorizationParams: authorizationParamsFrom(auth.authorization_params),
   };
 }
 
@@ -140,7 +148,24 @@ export function oauthAuthFromForm(value: McpOAuthFormValue): Record<string, unkn
     const text = raw.trim();
     if (text) auth[key] = text;
   }
+  const params: Record<string, string> = {};
+  for (const key of MCP_OAUTH_AUTHORIZATION_PARAMS) {
+    const text = (value.authorizationParams[key] ?? "").trim();
+    if (text) params[key] = text;
+  }
+  if (Object.keys(params).length > 0) auth.authorization_params = params;
   return auth;
+}
+
+/** The allowlisted string values of a saved `authorization_params`. */
+function authorizationParamsFrom(raw: unknown): Partial<Record<McpOAuthAuthorizationParam, string>> {
+  if (!isRecord(raw)) return {};
+  const out: Partial<Record<McpOAuthAuthorizationParam, string>> = {};
+  for (const key of MCP_OAUTH_AUTHORIZATION_PARAMS) {
+    const value = raw[key];
+    if (typeof value === "string") out[key] = value;
+  }
+  return out;
 }
 
 /** What blocks saving the OAuth settings, if anything. */
@@ -404,6 +429,10 @@ export function McpOAuthAuthPicker({
                 columns="grid-cols-2"
                 onChange={(tokenAuthMethod) => onOAuthChange({ tokenAuthMethod })}
               />
+              {oauth.authorizationEndpoint.trim() !== "" ? (
+                // Without discovery the server's accepted methods are unknown.
+                <p className="text-caption text-muted-foreground">{t(($) => $.client.method_manual_hint)}</p>
+              ) : null}
             </>
           ) : null}
           <McpOAuthAdvanced
@@ -548,9 +577,53 @@ function McpOAuthAdvanced({
             (audience) => onOAuthChange({ audience }),
             { hint: t(($) => $.advanced.audience_hint) },
           )}
+          <fieldset className="space-y-3">
+            <legend className="text-body font-medium">{t(($) => $.advanced.params_label)}</legend>
+            <p className="text-caption text-muted-foreground">{t(($) => $.advanced.params_hint)}</p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {MCP_OAUTH_AUTHORIZATION_PARAMS.map((key) => (
+                <McpOAuthParamField
+                  key={key}
+                  name={key}
+                  value={oauth.authorizationParams[key] ?? ""}
+                  onChange={(value) =>
+                    onOAuthChange({ authorizationParams: { ...oauth.authorizationParams, [key]: value } })
+                  }
+                />
+              ))}
+            </div>
+          </fieldset>
         </div>
       </CollapsibleContent>
     </Collapsible>
+  );
+}
+
+/** One extra authorization parameter; its label is the parameter's own name. */
+function McpOAuthParamField({
+  name,
+  value,
+  onChange,
+}: {
+  name: McpOAuthAuthorizationParam;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const id = useId();
+  return (
+    <Field>
+      <FieldLabel htmlFor={id} className="font-mono">
+        {name}
+      </FieldLabel>
+      <Input
+        id={id}
+        name={`mcp-server-oauth-param-${name}`}
+        autoComplete="off"
+        spellCheck={false}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </Field>
   );
 }
 

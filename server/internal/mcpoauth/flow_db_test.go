@@ -3,6 +3,7 @@
 // Modified for the mouse9527/multica fork: token endpoint errors with an OAuth error body (M-277).
 // Modified for the mouse9527/multica fork: a fake server that also takes pre-registered clients (M-295).
 // Modified for the mouse9527/multica fork: resource indicator and protected resource metadata configurable (M-295 stage 2).
+// Modified for the mouse9527/multica fork: the resource its metadata states is configurable (M-295 stage 3).
 
 package mcpoauth
 
@@ -64,6 +65,9 @@ type fakeOAuthServer struct {
 	noResourceMetadata bool
 	// issSupported: its metadata advertises RFC 9207's iss parameter.
 	issSupported bool
+	// statedResource, when set, is the resource its RFC 9728 document
+	// claims.
+	statedResource string
 }
 
 // expectedResource is the resource indicator requests must carry.
@@ -92,8 +96,14 @@ func newFakeOAuthServer(t *testing.T) *fakeOAuthServer {
 			http.NotFound(w, r)
 			return
 		}
+		f.mu.Lock()
+		stated := f.statedResource
+		f.mu.Unlock()
+		if stated == "" {
+			stated = baseURL(r) + "/mcp"
+		}
 		writeTestJSON(w, map[string]any{
-			"resource":              baseURL(r) + "/mcp",
+			"resource":              stated,
 			"authorization_servers": []string{baseURL(r) + "/mcp"},
 			"scopes_supported":      []string{},
 		})
