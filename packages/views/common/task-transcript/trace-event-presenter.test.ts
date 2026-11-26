@@ -9,6 +9,7 @@ import {
   base64ByteLength,
   traceEventDetail,
   traceEventHasDetail,
+  isAPIRetryEvent,
   traceEventKind,
   traceEventLabel,
   traceEventSummary,
@@ -34,6 +35,20 @@ describe("traceEventKind / traceEventLabel", () => {
     expect(traceEventKind({ type: "tool_result" })).toBe("tool_result");
     expect(traceEventKind({ type: "error" })).toBe("error");
     expect(traceEventKind({ type: "provider_custom" })).toBe("generic");
+  });
+
+  it("reads a model API retry as progress, not as an error", () => {
+    // The daemon stores retries as error rows tagged tool "api_retry".
+    const retry = { type: "error", tool: "api_retry", content: "Model API returned HTTP 504" };
+    expect(isAPIRetryEvent(retry)).toBe(true);
+    expect(traceEventKind(retry)).toBe("progress");
+    expect(traceEventLabel(retry)).toBe("Retrying");
+    expect(traceEventSummary(retry)).toBe("Model API returned HTTP 504");
+    // A plain error keeps the failure reading, whatever tool it names.
+    expect(isAPIRetryEvent({ type: "error", tool: "Bash" })).toBe(false);
+    expect(traceEventKind({ type: "error", tool: "Bash" })).toBe("error");
+    expect(traceEventLabel({ type: "error", tool: "Bash" })).toBe("Error");
+    expect(isAPIRetryEvent({ type: "tool_use", tool: "api_retry" })).toBe(false);
   });
 
   it("shows provider-native tool names verbatim and surfaces raw unknown types", () => {

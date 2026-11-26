@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/collapsible";
 import { Markdown } from "@/lib/markdown";
 import { useT } from "@/lib/i18n";
-import { buildRunTranscriptEntries, getRunDiagnostics, runToolContext } from "@/lib/run-transcript";
+import { buildRunTranscriptEntries, getRunDiagnostics, isAPIRetryMessage, runToolContext } from "@/lib/run-transcript";
 import type { RunTranscriptEntry } from "@/lib/run-transcript";
 import { THEME } from "@/lib/theme";
 
@@ -95,6 +95,17 @@ function TranscriptEntry({ item: entry }: { item: RunTranscriptEntry }) {
         </EntryCard>
       );
     case "error":
+      // A model API retry reports the turn is still running: progress, not the
+      // failure the run ended with.
+      if (isAPIRetryMessage(item)) {
+        return (
+          <EntryCard icon="refresh-outline" labelKey="retrying">
+            <Text selectable className="text-sm text-muted-foreground">
+              {item.content || "—"}
+            </Text>
+          </EntryCard>
+        );
+      }
       return (
         <EntryCard icon="alert-circle-outline" labelKey="error" destructive>
           <Text selectable className="text-sm text-destructive">
@@ -194,7 +205,7 @@ function EntryCard({
   children,
 }: {
   icon: React.ComponentProps<typeof Ionicons>["name"];
-  labelKey: "thinking" | "error" | "output" | "tool_call" | "tool_output";
+  labelKey: "thinking" | "error" | "retrying" | "output" | "tool_call" | "tool_output";
   detail?: string;
   destructive?: boolean;
   collapsible?: boolean;

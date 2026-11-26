@@ -3113,6 +3113,94 @@ func TestExecuteAndDrain_ReportsFirstVisibleMessageWithoutTickerDelay(t *testing
 	}
 }
 
+// apiRetryThenTextBackend reports one model API retry progress row and then
+// the turn's first output.
+type apiRetryThenTextBackend struct {
+	textEmitted chan time.Time
+	release     chan struct{}
+}
+
+func (b apiRetryThenTextBackend) Execute(ctx context.Context, _ string, _ agent.ExecOptions) (*agent.Session, error) {
+	msgCh := make(chan agent.Message)
+	resCh := make(chan agent.Result, 1)
+	go func() {
+		defer close(msgCh)
+		msgCh <- agent.Message{
+			Type:    agent.MessageStatus,
+			Status:  agent.MessageStatusAPIRetry,
+			Content: "Model API returned HTTP 504 (server_error); Claude Code is retrying (attempt 1/10)",
+		}
+		time.Sleep(20 * time.Millisecond)
+		msgCh <- agent.Message{Type: agent.MessageText, Content: "first visible text"}
+		b.textEmitted <- time.Now()
+		select {
+		case <-b.release:
+			resCh <- agent.Result{Status: "completed", Output: "done"}
+		case <-ctx.Done():
+			resCh <- agent.Result{Status: "cancelled", Error: ctx.Err().Error()}
+		}
+		close(resCh)
+	}()
+	return &agent.Session{Messages: msgCh, Result: resCh}, nil
+}
+
+// TestExecuteAndDrain_APIRetryRowKeepsFirstVisibleFlush pins that a model API
+// retry row is progress, not the turn's first visible content: it flushes
+// promptly itself but leaves the one-shot leading-edge flush to the output that
+// follows, which would otherwise wait for the 500 ms ticker (M-316).
+func TestExecuteAndDrain_APIRetryRowKeepsFirstVisibleFlush(t *testing.T) {
+	textReported := make(chan time.Time, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/messages") {
+			var body struct {
+				Messages []TaskMessageData `json:"messages"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode messages: %v", err)
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			for _, m := range body.Messages {
+				if m.Type == "text" {
+					select {
+					case textReported <- time.Now():
+					default:
+					}
+				}
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	d := &Daemon{client: NewClient(srv.URL), logger: slog.Default()}
+	done := make(chan error, 1)
+	backend := apiRetryThenTextBackend{
+		textEmitted: make(chan time.Time, 1),
+		release:     make(chan struct{}),
+	}
+	go func() {
+		_, _, err := d.executeAndDrain(context.Background(), backend, "p", agent.ExecOptions{}, slog.Default(), "task-retry-first-visible", "", new(atomic.Int32))
+		done <- err
+	}()
+
+	emittedAt := <-backend.textEmitted
+	select {
+	case reportedAt := <-textReported:
+		delay := reportedAt.Sub(emittedAt)
+		t.Logf("output after a retry row reached the server in %s", delay.Round(time.Millisecond))
+		if delay >= 300*time.Millisecond {
+			t.Fatalf("output after a retry row report delay = %s, want <300ms", delay.Round(time.Millisecond))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the output after the retry row")
+	}
+	close(backend.release)
+	if err := <-done; err != nil {
+		t.Fatalf("executeAndDrain: %v", err)
+	}
+}
+
 // timedTranscriptBackend keeps a tool open long enough to prove the daemon
 // records event occurrence time rather than giving a whole flush batch one
 // server insertion time.

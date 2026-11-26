@@ -1,4 +1,5 @@
 import type { TimelineItem } from "./build-timeline";
+import { isAPIRetryEvent } from "./trace-event-presenter";
 
 /**
  * A run's steps, derived from the flat event stream.
@@ -337,7 +338,9 @@ function kindForGap(steps: TraceStep[], from: number, to: number): LaneSegmentKi
     if (step.kind === "call") continue;
     const at = timeMs(step.startedAt);
     if (at === undefined || at < from || at > to) continue;
-    if (step.kind === "error") return "error";
+    // A model API retry is the model still working, not a failed turn: a gap
+    // it fills stays the model's ordinary colour.
+    if (step.kind === "error" && !isAPIRetryEvent(step.item)) return "error";
     if (step.kind === "text") kind = "report";
   }
   return kind;

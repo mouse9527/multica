@@ -5,6 +5,16 @@ import { failureReasonKey } from "./failure-reason-label";
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * A model API retry row: the daemon stores it as an `error` row tagged with
+ * tool `api_retry` (protocol.TaskMessageToolAPIRetry). It reports that the turn
+ * is still running, so the UI shows it as progress, never as a failure — the
+ * web transcript classifies the same row the same way.
+ */
+export function isAPIRetryMessage(item: Pick<TaskMessagePayload, "type" | "tool">): boolean {
+  return item.type === "error" && item.tool === "api_retry";
+}
+
 export const RUN_TRANSCRIPT_PATHNAME =
   "/[workspace]/issue/[id]/run/[taskId]" as const;
 

@@ -10634,15 +10634,25 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 				}
 			}
 		}()
+		// Signal the reporter now instead of waiting for the next tick, without
+		// blocking the drain loop while the reporter is busy. A full buffer
+		// already means a flush is pending, and that flush takes the batch when
+		// it runs, so a dropped signal never delays anything.
+		flushNow := func() {
+			select {
+			case firstVisible <- struct{}{}:
+			default:
+			}
+		}
 		// The periodic flush bounds request rate for the rest of the transcript,
 		// but making the first visible event wait for its next 500 ms edge adds
-		// pure presentation latency. Signal at most once per execution; a buffered
-		// channel keeps the drain loop non-blocking while the reporter is busy.
+		// pure presentation latency. "First visible" is the turn's output, so
+		// this fires at most once per execution (M-316): progress rows such as
+		// model API retries use flushNow instead and must not consume it, or the
+		// output that follows them would sit behind the ticker.
 		var firstVisibleOnce sync.Once
 		flushFirstVisible := func() {
-			firstVisibleOnce.Do(func() {
-				firstVisible <- struct{}{}
-			})
+			firstVisibleOnce.Do(flushNow)
 		}
 
 		var sessionPinned atomic.Bool
@@ -10674,7 +10684,10 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 						sealPendingLocked()
 						batch = append(batch, TaskMessageData{Seq: int(msgSeq.Add(1)), Type: "error", Tool: protocol.TaskMessageToolAPIRetry, Content: content, CreatedAt: observedAt})
 						mu.Unlock()
-						flushFirstVisible()
+						// Progress, not output: show it promptly but leave the
+						// one-shot first-visible flush to the real output that
+						// may follow this retry (M-316).
+						flushNow()
 					}
 					// Persist the session/work_dir as soon as the backend
 					// reveals them. Without this, a daemon crash mid-run

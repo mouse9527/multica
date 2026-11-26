@@ -273,6 +273,7 @@
       "tool_output": "Tool output",
       "output": "Output",
       "error": "Error",
+      "retrying": "Retrying",
       "unknown_tool": "Unknown tool",
       "truncated": "This output was truncated when saved.",
       "diagnostics": "Technical details",

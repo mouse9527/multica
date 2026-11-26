@@ -940,6 +940,7 @@
     "kind_tool": "工具",
     "kind_thinking": "思考",
     "kind_error": "錯誤",
+    "kind_retry": "重試中",
     "group_calls_other": "{{count}} 次呼叫",
     "step_running": "進行中",
     "step_duration_unknown": "無法確定準確耗時。",

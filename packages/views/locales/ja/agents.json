@@ -799,6 +799,7 @@
     "kind_tool": "ツール",
     "kind_thinking": "思考",
     "kind_error": "エラー",
+    "kind_retry": "再試行中",
     "group_calls_other": "{{count}} 回の呼び出し",
     "step_running": "実行中",
     "step_duration_unknown": "正確な所要時間は記録されていません。",

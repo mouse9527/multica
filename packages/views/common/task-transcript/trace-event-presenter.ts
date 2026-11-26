@@ -24,6 +24,16 @@ export interface TraceEvent {
   created_at?: string;
 }
 
+/**
+ * A model API retry: the daemon stores it as an `error` row tagged with the
+ * tool `api_retry` (protocol.TaskMessageToolAPIRetry). It reports that the
+ * turn is still running and trying again, so it must read as progress — not as
+ * a failure the run ended with.
+ */
+export function isAPIRetryEvent(event: Pick<TraceEvent, "type" | "tool">): boolean {
+  return event.type === "error" && event.tool === "api_retry";
+}
+
 /** Visual kind driving color/emphasis. `generic` covers any unknown `type`. */
 export type TraceEventKind =
   | "agent"
@@ -31,6 +41,7 @@ export type TraceEventKind =
   | "tool_use"
   | "tool_result"
   | "error"
+  | "progress"
   | "generic";
 
 export function traceEventKind(event: TraceEvent): TraceEventKind {
@@ -44,7 +55,7 @@ export function traceEventKind(event: TraceEvent): TraceEventKind {
     case "tool_result":
       return "tool_result";
     case "error":
-      return "error";
+      return isAPIRetryEvent(event) ? "progress" : "error";
     default:
       return "generic";
   }
@@ -66,7 +77,7 @@ export function traceEventLabel(event: TraceEvent): string {
     case "tool_result":
       return event.tool && event.tool.length > 0 ? event.tool : "Result";
     case "error":
-      return "Error";
+      return isAPIRetryEvent(event) ? "Retrying" : "Error";
     default:
       return event.type && event.type.length > 0 ? event.type : "Event";
   }

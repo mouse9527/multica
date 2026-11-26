@@ -5661,10 +5661,9 @@ func (s *TaskService) FailTaskWithTransition(ctx context.Context, taskID pgtype.
 				return fmt.Errorf("release onboarding kickoff: %w", err)
 			}
 			// mouse9527/multica fork (M-312): a turn the daemon gave up on
-			// before any output returns the prompt to the composer.
-			if restoredDraft, err = restoreChatDraftAfterAPIRetryGaveUp(ctx, qtx, t, errMsg); err != nil {
-				return err
-			}
+			// before any output returns the prompt to the composer. That
+			// restore is best-effort and runs after this transaction commits
+			// (M-316) — see restoreGaveUpChatDraft below.
 			if _, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
 				ID:            dbid.NewV7(),
 				ChatSessionID: t.ChatSessionID,
@@ -5703,6 +5702,25 @@ func (s *TaskService) FailTaskWithTransition(ctx context.Context, taskID pgtype.
 			)
 		}
 		return nil, false, fmt.Errorf("fail task: %w", err)
+	}
+
+	// mouse9527/multica fork (M-316): the draft restore is best-effort and runs
+	// in its own transaction, after the failure above is committed. Sharing the
+	// terminal write's transaction made a restore failure roll the failure back,
+	// leaving the task running for a reason unrelated to what the turn did; now
+	// the worst case is the member keeping the sent message, which is the
+	// behaviour before M-312.
+	if task.ChatSessionID.Valid && retried == nil {
+		payload, rerr := s.restoreGaveUpChatDraft(ctx, task, errMsg)
+		if rerr != nil {
+			slog.Warn("fail task: restore chat draft after model API give-up failed",
+				"task_id", util.UUIDToString(taskID),
+				"chat_session_id", util.UUIDToString(task.ChatSessionID),
+				"error", rerr,
+			)
+		} else {
+			restoredDraft = payload
+		}
 	}
 
 	slog.Warn("task failed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID), "error", errMsg, "failure_reason", failureReason)

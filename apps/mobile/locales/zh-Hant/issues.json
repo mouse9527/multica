@@ -269,6 +269,7 @@
       "tool_output": "工具輸出",
       "output": "輸出",
       "error": "錯誤",
+      "retrying": "重試中",
       "unknown_tool": "未知工具",
       "truncated": "此輸出在儲存時已截斷。",
       "diagnostics": "技術詳情",

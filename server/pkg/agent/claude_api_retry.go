@@ -148,6 +148,11 @@ func (ev claudeAPIRetryEvent) progressText() string {
 // It starts with taskfailure.ClaudeAPIRetryGaveUpPrefix, which is how the
 // server recognises the turn and gives a chat member their prompt back.
 //
+// It reads as the outcome of the turn, because it is shown as-is: the chat
+// writes it as the assistant's message and the task page shows it in Run
+// details. Operator knobs (the threshold is MULTICA_CLAUDE_API_RETRY_FAIL_AFTER,
+// documented in the environment-variable docs) never belong in it.
+//
 // The wording is read by taskfailure.Classify: an HTTP status keeps the
 // provider's own bucket (5xx → provider_server_error, 429/529 → capacity),
 // which the platform does not auto-retry — re-running a turn the gateway just
@@ -156,16 +161,9 @@ func (ev claudeAPIRetryEvent) progressText() string {
 // provider_network bucket.
 func (ev claudeAPIRetryEvent) failureText(failAfter int) string {
 	return fmt.Sprintf(
-		"%s with %s and the turn produced no output; gave up after %d retries (Claude Code allows %s). Set MULTICA_CLAUDE_API_RETRY_FAIL_AFTER on the daemon to change this (0 disables).",
-		taskfailure.ClaudeAPIRetryGaveUpPrefix, ev.describeError(), failAfter, claudeAPIRetryMaxLabel(ev.maxRetries),
+		"%s with %s and the turn produced no output; gave up after %d retries.",
+		taskfailure.ClaudeAPIRetryGaveUpPrefix, ev.describeError(), failAfter,
 	)
-}
-
-func claudeAPIRetryMaxLabel(maxRetries int) string {
-	if maxRetries > 0 {
-		return fmt.Sprintf("%d", maxRetries)
-	}
-	return "more"
 }
 
 // noteAPIRetryLocked records an api_retry event on the turn and decides

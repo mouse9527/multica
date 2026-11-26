@@ -30,6 +30,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { useT } from "@/lib/i18n";
+import { isAPIRetryMessage } from "@/lib/run-transcript";
 
 interface Props {
   items: TaskMessagePayload[];
@@ -87,7 +88,9 @@ function StepRow({ item }: { item: TaskMessagePayload }) {
     case "tool_result":
       return <ToolResultRow item={item} />;
     case "error":
-      return <ErrorRow item={item} />;
+      // A model API retry is progress: the turn is still running and trying
+      // again, so it reads muted rather than as the red failure row.
+      return isAPIRetryMessage(item) ? <RetryRow item={item} /> : <ErrorRow item={item} />;
     default:
       return null;
   }
@@ -214,6 +217,22 @@ function ToolResultRow({ item }: { item: TaskMessagePayload }) {
         </View>
       </CollapsibleContent>
     </Collapsible>
+  );
+}
+
+function RetryRow({ item }: { item: TaskMessagePayload }) {
+  return (
+    <View className="py-0.5 flex-row items-start gap-1.5">
+      <Ionicons
+        name="refresh-outline"
+        size={12}
+        color="#a1a1aa"
+        style={{ marginTop: 2 }}
+      />
+      <Text className="flex-1 text-xs text-muted-foreground" numberOfLines={3}>
+        {item.content}
+      </Text>
+    </View>
   );
 }
 
