@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: connections keyed by entry ref (M-269).
+// Modified for the mouse9527/multica fork: the pre-registered client table, 9027 (M-295).
 
 package migrations
 
@@ -119,6 +120,50 @@ func TestMCPOAuthRefMigrationRefusesExistingGrants(t *testing.T) {
 	applyMigrationFile(t, ctx, pool, mcpOAuthUp[3])
 }
 
+// TestMCPOAuthClientMigrationRoundTrip: 9027 only adds mcp_oauth_client, is
+// re-runnable, and its down drops exactly that table.
+func TestMCPOAuthClientMigrationRoundTrip(t *testing.T) {
+	const schema = "mcp_oauth_client_round_trip_test"
+	ctx := context.Background()
+	pool := newGithubIssueSandbox(t, schema)
+	applyGithubIssueMigrations(t, ctx, pool, mcpOAuthUp)
+	client := []string{"mcp_oauth_client"}
+	for round := 1; round <= 2; round++ {
+		applyMigrationFile(t, ctx, pool, "9027_mcp_oauth_client.up.sql")
+		applyMigrationFile(t, ctx, pool, "9027_mcp_oauth_client.up.sql")
+		if got := sandboxRelationCount(t, ctx, pool, schema, client); got != 1 {
+			t.Fatalf("round %d up: mcp_oauth_client missing", round)
+		}
+		if got := sandboxRelationCount(t, ctx, pool, schema, mcpOAuthTables); got != len(mcpOAuthTables) {
+			t.Fatalf("round %d up: %d of %d earlier tables", round, got, len(mcpOAuthTables))
+		}
+
+		const ref = "ws:00000000-0000-0000-0000-0000000000a1"
+		insert := `INSERT INTO mcp_oauth_client (server_ref, workspace_id, client_secret_ciphertext, updated_by)
+			VALUES ($1, gen_random_uuid(), $2, gen_random_uuid())`
+		if _, err := pool.Exec(ctx, insert, ref, []byte{}); err == nil {
+			t.Fatal("an empty ciphertext was accepted")
+		}
+		if _, err := pool.Exec(ctx, insert, "gateway", []byte{1}); err == nil {
+			t.Fatal("a malformed ref was accepted")
+		}
+		if _, err := pool.Exec(ctx, insert, ref, []byte{1}); err != nil {
+			t.Fatalf("valid row: %v", err)
+		}
+		if _, err := pool.Exec(ctx, insert, ref, []byte{2}); err == nil {
+			t.Fatal("a second secret for the same entry was accepted")
+		}
+
+		applyMigrationFile(t, ctx, pool, "9027_mcp_oauth_client.down.sql")
+		if got := sandboxRelationCount(t, ctx, pool, schema, client); got != 0 {
+			t.Fatalf("round %d down: mcp_oauth_client left behind", round)
+		}
+		if got := sandboxRelationCount(t, ctx, pool, schema, mcpOAuthTables); got != len(mcpOAuthTables) {
+			t.Fatalf("round %d down: 9027 down dropped an earlier table", round)
+		}
+	}
+}
+
 // TestMCPOAuthTableConstraints pins the table-level guarantees the store
 // relies on: a connected row has an access token, one connection per (entry,
 // user), refs and URLs have their shape, and a state hash is exactly 32 bytes.
@@ -188,8 +233,9 @@ func TestMCPOAuthTablesStayInvisibleToSqlc(t *testing.T) {
 			}
 		}
 	}
-	// 9023 creates three tables; 9026 recreates two of them keyed by ref.
-	if created != 5 {
-		t.Fatalf("DO blocks create %d MCP OAuth tables, want 5", created)
+	// 9023 creates three tables; 9026 recreates two of them keyed by ref;
+	// 9027 adds mcp_oauth_client.
+	if created != 6 {
+		t.Fatalf("DO blocks create %d MCP OAuth tables, want 6", created)
 	}
 }

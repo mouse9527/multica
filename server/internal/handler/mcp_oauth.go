@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
+// Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
 
 package handler
 
@@ -40,6 +41,8 @@ func (h *Handler) MountAgentMCPOAuth(r chi.Router) {
 	r.Get("/", h.ListAgentMCPOAuthServers)
 	r.With(requireInteractiveSession).Post("/{name}/connect", h.ConnectAgentMCPOAuthServer)
 	r.With(requireInteractiveSession).Delete("/{name}/connection", h.DisconnectAgentMCPOAuthServer)
+	r.With(requireInteractiveSession).Put("/{name}/client-secret", h.SetAgentMCPOAuthClientSecret)
+	r.With(requireInteractiveSession).Delete("/{name}/client-secret", h.DeleteAgentMCPOAuthClientSecret)
 }
 
 // MountWorkspaceMCPOAuth serves /api/workspaces/{id}/mcp-oauth: the
@@ -51,6 +54,8 @@ func (h *Handler) MountWorkspaceMCPOAuth(r chi.Router) {
 	r.Get("/", h.ListWorkspaceMCPOAuthServers)
 	r.With(requireInteractiveSession).Post("/{serverId}/connect", h.ConnectWorkspaceMCPOAuthServer)
 	r.With(requireInteractiveSession).Delete("/{serverId}/connection", h.DisconnectWorkspaceMCPOAuthServer)
+	r.With(requireInteractiveSession).Put("/{serverId}/client-secret", h.SetWorkspaceMCPOAuthClientSecret)
+	r.With(requireInteractiveSession).Delete("/{serverId}/client-secret", h.DeleteWorkspaceMCPOAuthClientSecret)
 }
 
 // MountMCPOAuth serves /api/mcp-oauth, the user-scoped end of a connect: the
@@ -193,11 +198,11 @@ type mcpOAuthConnectionResponse struct {
 	RefreshedAt *time.Time `json:"refreshed_at,omitempty"`
 }
 
-func mcpOAuthConnectionJSON(status *mcpoauth.ConnectionStatus, entryURL string) *mcpOAuthConnectionResponse {
+func mcpOAuthConnectionJSON(status *mcpoauth.ConnectionStatus, entry mcpoauth.Entry) *mcpOAuthConnectionResponse {
 	if status == nil {
 		return nil
 	}
-	current := status.ForURL(entryURL)
+	current := status.ForEntry(entry)
 	return &mcpOAuthConnectionResponse{
 		Status: current.Status, ExpiresAt: current.ExpiresAt, LastError: current.LastError,
 		ConnectedAt: current.ConnectedAt, RefreshedAt: current.RefreshedAt,
@@ -227,6 +232,7 @@ type mcpOAuthServerResponse struct {
 	Shared bool `json:"shared"`
 	// Problem is why the entry cannot be connected; empty when it can.
 	Problem string `json:"problem,omitempty"`
+	mcpOAuthClientResponse
 	// Connection is the agent owner's connection, the one tasks use. Null
 	// until the owner connects.
 	Connection *mcpOAuthConnectionResponse `json:"connection"`
@@ -270,16 +276,22 @@ func (h *Handler) ListAgentMCPOAuthServers(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
+	secretsSet, err := h.mcpOAuthClientSecretsSet(r.Context(), uuidToString(agent.WorkspaceID), entries)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list MCP OAuth servers")
+		return
+	}
 	resp := mcpOAuthListResponse{Servers: make([]mcpOAuthServerResponse, 0, len(entries)), CanConnect: agent.OwnerID.Valid && ownerID == requestUserID(r)}
 	for _, entry := range entries {
 		item := mcpOAuthServerResponse{
 			Name: entry.Name, Source: entry.Source, WorkspaceServerID: entry.WorkspaceServerID,
 			Scope: entry.Entry.Scope, Shared: entry.Source == mcpOAuthSourceWorkspace, Problem: mcpOAuthProblem(entry.Err),
+			mcpOAuthClientResponse: mcpOAuthClientJSON(entry.Entry, entry.Ref != "" && secretsSet[entry.Ref]),
 		}
 		// An invalid entry has no URL to judge a connection against; its
 		// problem is what the settings page shows.
 		if status, ok := statuses[entry.Ref]; ok && entry.Ref != "" && entry.Err == nil {
-			item.Connection = mcpOAuthConnectionJSON(&status, entry.Entry.URL)
+			item.Connection = mcpOAuthConnectionJSON(&status, entry.Entry)
 		}
 		resp.Servers = append(resp.Servers, item)
 	}
@@ -335,9 +347,7 @@ func (h *Handler) ConnectAgentMCPOAuthServer(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	h.startMCPOAuthConnect(w, r, store, entry.Err, mcpoauth.Target{
-		WorkspaceID: uuidToString(agent.WorkspaceID), Ref: entry.Ref, URL: entry.Entry.URL, Scope: entry.Entry.Scope,
-	}, userID)
+	h.startMCPOAuthConnect(w, r, store, entry.Err, mcpoauth.NewTarget(uuidToString(agent.WorkspaceID), entry.Ref, entry.Entry), userID)
 }
 
 // startMCPOAuthConnect runs Flow.Start for userID and answers with the URL to
@@ -405,6 +415,7 @@ type workspaceMCPOAuthServerResponse struct {
 	Scope    string `json:"scope"`
 	// Problem is why the entry cannot be connected; empty when it can.
 	Problem string `json:"problem,omitempty"`
+	mcpOAuthClientResponse
 	// Connection is the caller's own connection, shared by every agent of
 	// theirs the entry is bound to. Null until they connect.
 	Connection *mcpOAuthConnectionResponse `json:"connection"`
@@ -422,10 +433,7 @@ type workspaceMCPOAuthEntry struct {
 }
 
 func (e workspaceMCPOAuthEntry) target() mcpoauth.Target {
-	return mcpoauth.Target{
-		WorkspaceID: uuidToString(e.server.WorkspaceID), Ref: mcpoauth.WorkspaceRef(uuidToString(e.server.ID)),
-		URL: e.entry.URL, Scope: e.entry.Scope,
-	}
+	return mcpoauth.NewTarget(uuidToString(e.server.WorkspaceID), mcpoauth.WorkspaceRef(uuidToString(e.server.ID)), e.entry)
 }
 
 func parseWorkspaceMCPOAuthEntry(server db.WorkspaceMcpServer) (workspaceMCPOAuthEntry, bool) {
@@ -470,14 +478,20 @@ func (h *Handler) ListWorkspaceMCPOAuthServers(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, "failed to list MCP OAuth servers")
 		return
 	}
+	secretsSet, err := mcpoauth.ClientSecretsSet(r.Context(), h.DB, workspaceID, refs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list MCP OAuth servers")
+		return
+	}
 	resp := workspaceMCPOAuthListResponse{Servers: make([]workspaceMCPOAuthServerResponse, 0, len(entries))}
 	for _, entry := range entries {
 		target := entry.target()
 		item := workspaceMCPOAuthServerResponse{
 			ServerID: uuidToString(entry.server.ID), Name: entry.server.Name, Scope: entry.entry.Scope, Problem: mcpOAuthProblem(entry.err),
+			mcpOAuthClientResponse: mcpOAuthClientJSON(entry.entry, secretsSet[target.Ref]),
 		}
 		if status, ok := statuses[target.Ref]; ok && entry.err == nil {
-			item.Connection = mcpOAuthConnectionJSON(&status, target.URL)
+			item.Connection = mcpOAuthConnectionJSON(&status, entry.entry)
 		}
 		resp.Servers = append(resp.Servers, item)
 	}
@@ -568,8 +582,8 @@ var errMCPOAuthNoLongerAllowed = errors.New("you can no longer connect this MCP 
 // CompleteMCPOAuth finishes a connect started by the same user. Before the
 // code is exchanged it checks that the user is still a member of the
 // workspace, that the entry still exists, still uses OAuth and still has the
-// URL the connect started with, and, for an agent's own entry, that the user
-// still owns the agent.
+// URL and the pre-registered client the connect started with, and, for an
+// agent's own entry, that the user still owns the agent.
 func (h *Handler) CompleteMCPOAuth(w http.ResponseWriter, r *http.Request) {
 	userID, ok := requireUserID(w, r)
 	if !ok {
@@ -642,7 +656,7 @@ func (h *Handler) mcpOAuthCompletionAllowed(r *http.Request, p mcpoauth.PendingA
 			return mcpoauth.Ref{}, errMCPOAuthNoLongerAllowed
 		}
 		entry, ok := parseWorkspaceMCPOAuthEntry(server)
-		if !ok || entry.err != nil || entry.entry.URL != p.ServerURL {
+		if !ok || entry.err != nil || !p.MatchesEntry(entry.entry) {
 			return mcpoauth.Ref{}, errMCPOAuthNoLongerAllowed
 		}
 		return ref, nil
@@ -660,7 +674,7 @@ func (h *Handler) mcpOAuthCompletionAllowed(r *http.Request, p mcpoauth.PendingA
 		return mcpoauth.Ref{}, errMCPOAuthNoLongerAllowed
 	}
 	for _, entry := range entries {
-		if entry.Ref == p.ServerRef && entry.Err == nil && entry.Entry.URL == p.ServerURL {
+		if entry.Ref == p.ServerRef && entry.Err == nil && p.MatchesEntry(entry.Entry) {
 			return ref, nil
 		}
 	}
@@ -686,6 +700,9 @@ func safeReturnPath(path string) string {
 // for the user, and logs the cause. Causes carry hosts and HTTP statuses,
 // never a token: the token endpoint's body is not read on failure.
 func (h *Handler) writeMCPOAuthFlowError(w http.ResponseWriter, serverRef string, err error) {
+	if writeMCPOAuthClientError(w, serverRef, err) {
+		return
+	}
 	for _, known := range []error{mcpoauth.ErrDiscovery, mcpoauth.ErrRegistration, mcpoauth.ErrNeedsPreregistered,
 		mcpoauth.ErrUnsupportedClient, mcpoauth.ErrExchange} {
 		if errors.Is(err, known) {

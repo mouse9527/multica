@@ -21,7 +21,7 @@
 // Every connection remembers the URL it was made for, and a token is only
 // ever handed out for that URL (TokenSource).
 //
-// This package owns the storage (migrations 9023 and 9026), the one-time
+// This package owns the storage (migrations 9023, 9026 and 9027), the one-time
 // authorization state, and on-demand refresh (TokenSource). Refresh is
 // serialized per connection with a row lock, because authorization servers
 // that rotate refresh tokens invalidate the old one on use: two concurrent

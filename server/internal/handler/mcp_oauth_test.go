@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
+// Modified for the mouse9527/multica fork: cleanup covers pre-registered client secrets (M-295).
 
 package handler
 
@@ -65,6 +66,7 @@ func cleanupMCPOAuth(t *testing.T, agentID string) {
 		prefix := mcpoauth.AgentRefPrefix(agentID)
 		testPool.Exec(ctx, `DELETE FROM mcp_oauth_state WHERE left(server_ref, length($1::text)) = $1::text`, prefix)
 		testPool.Exec(ctx, `DELETE FROM mcp_oauth_connection WHERE left(server_ref, length($1::text)) = $1::text`, prefix)
+		testPool.Exec(ctx, `DELETE FROM mcp_oauth_client WHERE left(server_ref, length($1::text)) = $1::text`, prefix)
 	})
 }
 

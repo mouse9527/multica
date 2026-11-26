@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: connections keyed by entry ref, bound to its URL (M-269).
+// Modified for the mouse9527/multica fork: grants bound to the entry's pre-registered client (M-295).
 
 package mcpoauth
 
@@ -182,7 +183,8 @@ func (row connectionRow) recentlyFailed(now time.Time, window time.Duration) boo
 // The grant is bound to the URL it was made for: when target.URL is another
 // one (the entry was edited since), no token is handed out and the connection
 // is marked as needing a reconnect, so a token is never sent to an address
-// its owner did not authorize.
+// its owner did not authorize. Likewise when the entry now names another
+// pre-registered client than the grant was made with.
 //
 // Errors: ErrNotConnected (no connection), ErrNeedsReconnect (the grant is
 // gone or was made for another URL; the row is marked so the settings page
@@ -236,6 +238,9 @@ func (s *TokenSource) credentialReplacing(ctx context.Context, target Target, us
 	}
 	if row.serverURL != target.URL {
 		return Credential{}, s.markInOwnTx(ctx, target, userID, ReasonURLChanged)
+	}
+	if !target.Client.clientMatches(row.clientID, row.authMethod) {
+		return Credential{}, s.markInOwnTx(ctx, target, userID, ReasonClientChanged)
 	}
 	s.expireIfRejected(&row, rejectedHash, now)
 	if row.usable(now, s.Margin) {
@@ -295,6 +300,9 @@ func (s *TokenSource) refreshLocked(ctx context.Context, target Target, userID, 
 	if row.serverURL != target.URL {
 		// Reconnected to another URL while this caller waited for the lock.
 		return Credential{}, s.markNeedsReconnect(work, tx, target, userID, ReasonURLChanged)
+	}
+	if !target.Client.clientMatches(row.clientID, row.authMethod) {
+		return Credential{}, s.markNeedsReconnect(work, tx, target, userID, ReasonClientChanged)
 	}
 	s.expireIfRejected(&row, rejectedHash, now)
 	if row.usable(now, s.Margin) {
