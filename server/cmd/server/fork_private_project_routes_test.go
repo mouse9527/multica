@@ -1,6 +1,7 @@
 // Added by the mouse9527/multica fork: how the fork's routes register with
 // upstream's TestEveryRouteByProjectObjectIDHidesPrivateProjects (M-166).
 // Modified for the mouse9527/multica fork: issue-naming parameters (M-277).
+// Modified for the mouse9527/multica fork: cross-workspace read grants (M-307).
 //
 // Upstream's test (private_project_routes_test.go) refuses any route
 // parameter it has no entry for, even on a route it does not probe. The
@@ -25,7 +26,7 @@ import (
 )
 
 // forkRoutePrefixes are the route trees only the fork registers.
-var forkRoutePrefixes = []string{"/api/router/", "/api/evolution/", "/api/agents/{id}/mcp-oauth/", "/api/workspaces/{id}/mcp-oauth/", "/api/mcp-oauth/"}
+var forkRoutePrefixes = []string{"/api/router/", "/api/evolution/", "/api/agents/{id}/mcp-oauth/", "/api/workspaces/{id}/mcp-oauth/", "/api/mcp-oauth/", "/api/workspaces/{id}/cross-read-grants/"}
 
 // forkRouteParamsOutsideProjects are fork route parameters that cannot name
 // an object inside a project, keyed as upstream keys them ("subscriptions/{id}"),
@@ -38,6 +39,8 @@ var forkRouteParamsOutsideProjects = map[string]string{
 	"workspaces/{id}":      "the workspace itself, which contains the projects",
 	"mcp-oauth/{name}":     "the name of an MCP entry in an agent's own mcp_config; it belongs to the agent, not to a project",
 	"mcp-oauth/{serverId}": "a workspace MCP library entry; it belongs to the workspace, not to a project",
+	// M-307: cross-workspace read grants a workspace gives.
+	"cross-read-grants/{grantId}": "a cross-workspace read grant, a workspace object: it covers the whole workspace, not a project",
 }
 
 // forkIssueRouteParams are fork route parameters that name an issue under a

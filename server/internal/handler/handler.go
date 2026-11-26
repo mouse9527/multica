@@ -1036,6 +1036,11 @@ func countOwners(members []db.Member) int {
 }
 
 func (h *Handler) getWorkspaceMember(ctx context.Context, userID, workspaceID string) (db.Member, error) {
+	// Modified for the mouse9527/multica fork (M-307): the reader of a
+	// cross-workspace read grant has no member row; it is its own member.
+	if m, ok := middleware.CrossWorkspaceReaderMember(ctx, userID, workspaceID); ok {
+		return m, nil
+	}
 	userUUID, err := util.ParseUUID(userID)
 	if err != nil {
 		return db.Member{}, err

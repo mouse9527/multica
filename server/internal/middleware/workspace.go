@@ -207,6 +207,13 @@ func buildMiddleware(queries *db.Queries, resolve workspaceResolver, roles []str
 				return
 			}
 
+			// Modified for the mouse9527/multica fork (M-307): a request
+			// served under a cross-workspace read grant has no member row;
+			// it runs as the grant's synthetic reader (cross_ws_read_fork.go).
+			if serveCrossWorkspaceReaderMember(w, r, next, workspaceID, roles) {
+				return
+			}
+
 			// Final task-token binding check: even when the workspace
 			// was resolved from a chi URL parameter
 			// (RequireWorkspaceMemberFromURL), the agent must not be

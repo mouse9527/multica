@@ -292,6 +292,12 @@ func (h *Handler) attachmentInHiddenProject(ctx context.Context, hidden projecta
 // issue) in a project the caller cannot see.
 func (h *Handler) requireAttachmentVisible(w http.ResponseWriter, r *http.Request, workspaceID string, att db.Attachment) bool {
 	if !att.IssueID.Valid && !att.CommentID.Valid {
+		// Modified for the mouse9527/multica fork (M-307): chat is not part
+		// of a cross-workspace read grant, so its files are not either.
+		if isCrossWorkspaceReader(r) && isChatAttachment(att) {
+			writeError(w, http.StatusNotFound, "attachment not found")
+			return false
+		}
 		// Outside any issue (docs, chat): a guest (MUL-9420) sees nothing
 		// outside its projects, except what it uploaded itself, such as an
 		// image in a comment it has not posted yet.

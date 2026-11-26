@@ -2,6 +2,8 @@ package handler
 
 import (
 	"net/http"
+
+	"github.com/multica-ai/multica/server/internal/middleware"
 )
 
 // RequireHumanActor rejects machine credentials on human-only route groups.
@@ -32,6 +34,10 @@ func isMachineCredentialActor(r *http.Request) bool {
 	// is authoritative.
 	switch r.Header.Get("X-Actor-Source") {
 	case "task_token", "cloud_pat":
+		return true
+	// Modified for the mouse9527/multica fork (M-307): an agent reading
+	// another workspace under a cross-workspace read grant.
+	case middleware.ActorSourceCrossWorkspaceReader:
 		return true
 	default:
 		return false
