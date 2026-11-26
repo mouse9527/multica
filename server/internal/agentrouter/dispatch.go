@@ -864,7 +864,7 @@ const routerWakeupSplit = "Batches already report every issue in your scope: do 
 const routerOwnerDecisions = "Every decision you ask of the owner must stand on its own: " +
 	"say in plain words what it is and why the owner has to decide, give each option with its consequence (never bare letters), " +
 	"your recommendation in one sentence, and what the approval does not cover; " +
-	"list every open decision, and only those, each time you reply. " +
+	"list every open decision the owner can make now, and only those, each time you reply. " +
 	"See \"请 Owner 决定的事\" in `multica router guide`.\n"
 
 // chatBatchReplyRule says when a chat batch's reply alerts the owner. With
@@ -887,10 +887,16 @@ func chatBatchReplyRule(quiet bool) string {
 
 // routerReplyFormat: the reporting format came only from per-workspace notes
 // and the agent's memory, so a Super Agent in another workspace lost it
-// (M-206). The rule and its examples are in `multica router guide`.
+// (M-206). The section lists only what the owner can act on now: steps that
+// wait on another agent and plain notices hid the real asks (M-288). The rule
+// and its examples are in `multica router guide`.
 const routerReplyFormat = "Write every reply to the owner in the owner's language, and end it with a separate, numbered section " +
-	"of what needs the owner, titled in that language (「需要你处理」 in Chinese): " +
-	"repeat every open item each time, and write \"none for now\" (目前没有) when there is none. " +
+	"of what needs the owner, titled in that language (「需要你处理」 in Chinese). " +
+	"List there only what the owner can do or must decide now: a decision awaiting them, an approval or action they can take now, a question they must answer now; " +
+	"these are the open items: repeat every open item each time, and write \"none for now\" (目前没有) when there is none. " +
+	"Leave out steps that are not the owner's turn yet, such as approving a release once another agent has tagged it: " +
+	"list them when they are; if the owner should know ahead, say in one sentence of the body that you will ask them later. " +
+	"Notices never go in that section: what you will do, what is arranged, who is running, when you will check again belong in the body. " +
 	"Write times in the owner's time zone: convert the UTC (`...Z`) times the CLI and API return, and name the zone when you do not know theirs. " +
 	"Merged is not fixed: when the fix for a problem the owner reported is merged but not deployed, " +
 	"say it is merged, not live, and still happens in production, and list whether to deploy as an item for the owner. " +

@@ -141,6 +141,11 @@ var replyFormatRules = []string{
 	"end it with a separate, numbered section of what needs the owner",
 	"(「需要你处理」 in Chinese)",
 	"repeat every open item each time",
+	// M-288: only what the owner can act on now; later steps and notices stay out.
+	"List there only what the owner can do or must decide now",
+	"Leave out steps that are not the owner's turn yet, such as approving a release once another agent has tagged it",
+	"say in one sentence of the body that you will ask them later",
+	"Notices never go in that section: what you will do, what is arranged, who is running, when you will check again belong in the body",
 	"\"none for now\" (目前没有)",
 	"in the owner's time zone",
 	"convert the UTC (`...Z`) times",
