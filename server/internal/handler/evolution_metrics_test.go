@@ -102,10 +102,19 @@ func TestEvolutionMetricsSource(t *testing.T) {
 	run(worker, hidden, 1, "1 minute")
 	run(worker, loop, 20, "1 minute")
 	run(privateAgent, loop, 1, "1 minute")
+	// Assigned to the worker by hand, then handed to the reviewer by entering
+	// a workflow step: that handoff rides on the status row and names no
+	// "from" while the Router's annotation is off.
 	dbfx.Insert(t, "activity_log", testutil.Cols{
 		"workspace_id": testWorkspaceID, "issue_id": loop, "actor_type": "member", "actor_id": testUserID,
 		"action":     "assignee_changed",
-		"details":    fmt.Sprintf(`{"from_type":"agent","from_id":%q,"to_type":"agent","to_id":%q}`, worker, reviewer),
+		"details":    fmt.Sprintf(`{"to_type":"agent","to_id":%q}`, worker),
+		"created_at": testutil.Raw("now() - interval '2 hours'"),
+	})
+	dbfx.Insert(t, "activity_log", testutil.Cols{
+		"workspace_id": testWorkspaceID, "issue_id": loop, "actor_type": "member", "actor_id": testUserID,
+		"action":     "status_changed",
+		"details":    fmt.Sprintf(`{"from":"todo","to":"in_review","handoff_workflow":"delivery","handoff_to_type":"agent","handoff_to_id":%q}`, reviewer),
 		"created_at": testutil.Raw("now() - interval '1 hour'"),
 	})
 
@@ -168,7 +177,7 @@ func TestEvolutionMetricsSource(t *testing.T) {
 	}
 	// In the window and outside private projects: the run on loop and the
 	// run without an issue.
-	if w.Runs != 2 || w.Completed != 2 || w.ShortRuns != 1 || w.HandoffsOut != 1 {
+	if w.Runs != 2 || w.Completed != 2 || w.ShortRuns != 1 || w.HandoffsIn != 1 || w.HandoffsOut != 1 {
 		t.Fatalf("worker = %+v", w)
 	}
 	if r := agents[reviewer]; r.Runs != 0 || r.HandoffsIn != 1 {

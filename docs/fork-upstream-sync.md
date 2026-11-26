@@ -70,11 +70,11 @@
 
 ## 进化的指标来源（M-296）
 
-全部在 fork 文件里，上游文件一行不改：新文件 `server/internal/evolution/signals_metrics.go`、`server/internal/handler/evolution_metrics.go`（及各自的测试），`evolution_data.go`、`config.go`、`cmd_evolution.go`、`packages/core/evolution/schemas.ts` 是 fork 已有文件。没有迁移。
+全部在 fork 文件里，上游文件一行不改：新文件 `server/internal/evolution/signals_metrics.go`、`server/internal/handler/evolution_metrics.go`（及各自的测试）、`server/cmd/server/evolution_handoff_metrics_test.go`，`evolution_data.go`、`config.go`、`cmd_evolution.go`、`packages/core/evolution/schemas.ts` 是 fork 已有文件。没有迁移。
 
 同步时要看的是它手写 SQL 依赖的上游数据形状，`sqlc-check` 只能发现列不存在，发现不了取值改名：
 
-- `activity_log.action` 的 `status_changed`（`details` 的 `from`、`to`）和 `assignee_changed`（`details` 的 `from_type`、`from_id`、`to_type`、`to_id`），写入方在 `server/cmd/server/activity_listeners.go`；
+- `activity_log.action` 的 `status_changed`（`details` 的 `from`、`to`，工作流交接时的 `handoff_to_type`、`handoff_to_id`、`handoff_from_*`）和 `assignee_changed`（`details` 的 `from_type`、`from_id`、`to_type`、`to_id`，以及 fork 的 `router_from_*`），写入方在 `server/cmd/server/activity_listeners.go`。上游在那里「有工作流交接就不写 assignee 行」，指标按这条规则不去重；上游如果改成两行都写，交接会被计两次，`TestEvolutionMetricsCountsWorkflowHandoffs` 会先红；
 - `agent_task_queue` 的 `status` 取值（`completed`、`failed`、`cancelled`）、`started_at`、`completed_at`、`chat_session_id`、`autopilot_run_id`、`trigger_comment_id`、`trigger_evidence_kind`；
 - `issue_workflow.steps` 的 `back_status_key`（经 `issueworkflow.DecodeSteps`）、`issue_status` 的 `key`、`name`、`category`。
 

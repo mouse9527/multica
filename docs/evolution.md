@@ -151,7 +151,7 @@ chat 游标是「已告知」的唯一凭证：只有上面第 2 步会建它。
 | 部分 | 内容 |
 |---|---|
 | `workflows[]` | 按工作流分组（项目用的工作流；没有或悬空时归到存下的 Default，从没存过 Default 时 `id` 为空、名称 `Default`），每个状态：进入次数、退出次数和去向（`exits_to`）、停留的中位数和 p90（小时；backlog、done、cancelled 类不算）、`back_status_key`、退回次数和退回率（退回 = 退到这一步的 `back_status_key`，与效果度量同一定义；没有退回路径的步骤不算） |
-| `agents[]` | 每个 agent：窗口内排队的运行数；完成、失败、取消数和失败率、取消率（分母是已结束的运行）；完成运行耗时的中位数；短运行（不到 45 秒）数和占比；按触发来源计数（`chat`、`autopilot`、`comment`，其余取 `trigger_evidence_kind`，没有就是 `other`）；交接进出次数（`assignee_changed` 里从它转出、转给它，转给自己不算） |
+| `agents[]` | 每个 agent：窗口内排队的运行数；完成、失败、取消数和失败率、取消率（分母是已结束的运行）；完成运行耗时的中位数；短运行（不到 45 秒）数和占比；按触发来源计数（`chat`、`autopilot`、`comment`，其余取 `trigger_evidence_kind`，没有就是 `other`）；交接进出次数（转给自己不算）。交接有两种记录：手动改负责人的 `assignee_changed`，和进入工作流步骤自动交给处理人时记在 `status_changed` 上的 `handoff_to_*`（这时不另写 `assignee_changed`，所以不会重复计）。转出方取这条记录自己写的（`router_from_*`、`from_*`、`handoff_from_*`），没写就取同一 issue 上一条交接的接收方 |
 | `return_loops[]` | 窗口内被退回 3 次及以上的 issue（编号、次数、按步骤分），最多 50 条 |
 
 范围与数据通道一致：
@@ -159,7 +159,7 @@ chat 游标是「已告知」的唯一凭证：只有上面第 2 步会建它。
 - 只算项目里的 issue（与效果度量相同）；**私有项目**（`projectaccess.ForPrincipals` 不带任何人的隐藏集）和排除的项目里的 issue、它们上面的运行和交接都不算；挂在这些项目下的 chat 的运行也不算。
 - agent 只列全体成员都可见的（`public_to` 加工作区目标，与读 chat、精简检查的边界相同），不含内部系统 agent、排除的 agent 和进化自己；已归档的照列（标 `archived`），因为它们在窗口里的运行确实发生过。
 
-代码：`server/internal/evolution/signals_metrics.go`（查询与汇总，汇总是纯函数）、`server/internal/handler/evolution_metrics.go`（接口），`evolution_data.go` 的 `GetEvolutionSignals` 里一行转过去。测试：`signals_metrics_test.go` 用 M-291 的样例 1–3（主审打回循环、「待你决定」停留、复审的退回率与运行时长）核对数字；`TestEvolutionMetricsSource` 核对开关、私有项目、私有 agent、窗口和交接。
+代码：`server/internal/evolution/signals_metrics.go`（查询与汇总，汇总是纯函数）、`server/internal/handler/evolution_metrics.go`（接口），`evolution_data.go` 的 `GetEvolutionSignals` 里一行转过去。测试：`signals_metrics_test.go` 用 M-291 的样例 1–3（主审打回循环、「待你决定」停留、复审的退回率与运行时长）核对数字；`TestEvolutionMetricsSource` 核对开关、私有项目、私有 agent、窗口和交接；`cmd/server/evolution_handoff_metrics_test.go` 用真实的活动监听器写出手动分配和工作流交接两条记录，核对各计一次、转出方正确（Router 注解开和关两种）。
 
 这一步只提供数据：分析 issue 的说明、提示词和技能还不提它，进化不会主动读。
 

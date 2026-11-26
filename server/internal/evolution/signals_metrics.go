@@ -194,7 +194,7 @@ func ServeMetrics(ctx context.Context, q Querier, req MetricsRequest) (MetricsSu
 	if err != nil {
 		return out, err
 	}
-	handoffs, err := metricsHandoffs(ctx, q, req.WorkspaceID, from, until, req.HiddenProjects, req.Config.ExcludeProjects)
+	handoffs, err := ReadHandoffs(ctx, q, req.WorkspaceID, from, until, req.HiddenProjects, req.Config.ExcludeProjects)
 	if err != nil {
 		return out, err
 	}
@@ -239,8 +239,9 @@ type MetricsTask struct {
 	DurationSecs *float64
 }
 
-// MetricsHandoff is one assignee change in the window.
+// MetricsHandoff is one handoff of an issue in the window (see ReadHandoffs).
 type MetricsHandoff struct {
+	IssueID          string
 	FromType, FromID string
 	ToType, ToID     string
 }
@@ -675,19 +676,53 @@ func metricsTasks(ctx context.Context, q Querier, agentIDs []string, from, until
 	return out, rows.Err()
 }
 
-// metricsHandoffs reads the assignee changes in [from, until), except on
-// issues in hidden or excluded projects.
-func metricsHandoffs(ctx context.Context, q Querier, workspaceID string, from, until time.Time,
+// ReadHandoffs reads the issue handoffs in [from, until), except on issues in
+// hidden or excluded projects. A handoff is either row the activity listener
+// writes for it: an assignee_changed row (to_*), or, when entering a
+// workflow step moved the issue to the step's handler, the status_changed
+// row carrying handoff_to_* (the listener then writes no assignee row, so
+// nothing is counted twice).
+//
+// Who the issue came from is the row's own record when it has one
+// (router_from_*, then from_* on an assignee row, then handoff_from_*);
+// otherwise, as for a workflow handoff written while the Router's
+// annotation is off, it is whom the issue's previous handoff row gave it to.
+func ReadHandoffs(ctx context.Context, q Querier, workspaceID string, from, until time.Time,
 	hidden []pgtype.UUID, excludeProjects []string) ([]MetricsHandoff, error) {
 	rows, err := q.Query(ctx, `
-		SELECT COALESCE(a.details->>'from_type', ''), COALESCE(a.details->>'from_id', ''),
-		       COALESCE(a.details->>'to_type', ''), COALESCE(a.details->>'to_id', '')
-		FROM activity_log a
-		JOIN issue i ON i.id = a.issue_id AND i.workspace_id = a.workspace_id
-		WHERE a.workspace_id = $1::uuid AND a.action = 'assignee_changed'
-		  AND a.created_at >= $2 AND a.created_at < $3
-		  AND (i.project_id IS NULL OR (($4::uuid[] IS NULL OR NOT (i.project_id = ANY($4::uuid[])))
-		       AND NOT (i.project_id = ANY(COALESCE($5::uuid[], '{}')))))`,
+		WITH handoffs AS (
+			SELECT a.id, a.issue_id, a.created_at,
+			       CASE WHEN a.action = 'assignee_changed' THEN a.details->>'to_type' ELSE a.details->>'handoff_to_type' END AS to_type,
+			       CASE WHEN a.action = 'assignee_changed' THEN a.details->>'to_id' ELSE a.details->>'handoff_to_id' END AS to_id,
+			       CASE WHEN a.details ? 'router_from_type' THEN 'router'
+			            WHEN a.action = 'assignee_changed' AND a.details ? 'from_type' THEN 'from'
+			            WHEN a.details ? 'handoff_from_type' THEN 'handoff' END AS own_from,
+			       a.details
+			FROM activity_log a
+			JOIN issue i ON i.id = a.issue_id AND i.workspace_id = a.workspace_id
+			WHERE a.workspace_id = $1::uuid AND a.created_at < $3
+			  AND (a.action = 'assignee_changed' OR (a.action = 'status_changed' AND a.details ? 'handoff_to_type'))
+			  AND (i.project_id IS NULL OR (($4::uuid[] IS NULL OR NOT (i.project_id = ANY($4::uuid[])))
+			       AND NOT (i.project_id = ANY(COALESCE($5::uuid[], '{}')))))
+		), ordered AS (
+			SELECT h.*,
+			       lag(h.to_type) OVER (PARTITION BY h.issue_id ORDER BY h.created_at, h.id) AS prev_type,
+			       lag(h.to_id) OVER (PARTITION BY h.issue_id ORDER BY h.created_at, h.id) AS prev_id
+			FROM handoffs h
+		)
+		SELECT o.issue_id::text,
+		       COALESCE(CASE o.own_from WHEN 'router' THEN o.details->>'router_from_type'
+		                                WHEN 'from' THEN o.details->>'from_type'
+		                                WHEN 'handoff' THEN o.details->>'handoff_from_type'
+		                                ELSE o.prev_type END, ''),
+		       COALESCE(CASE o.own_from WHEN 'router' THEN o.details->>'router_from_id'
+		                                WHEN 'from' THEN o.details->>'from_id'
+		                                WHEN 'handoff' THEN o.details->>'handoff_from_id'
+		                                ELSE o.prev_id END, ''),
+		       COALESCE(o.to_type, ''), COALESCE(o.to_id, '')
+		FROM ordered o
+		WHERE o.created_at >= $2
+		ORDER BY o.created_at, o.id`,
 		workspaceID, from, until, hidden, excludeProjects)
 	if err != nil {
 		return nil, err
@@ -696,7 +731,7 @@ func metricsHandoffs(ctx context.Context, q Querier, workspaceID string, from, u
 	out := []MetricsHandoff{}
 	for rows.Next() {
 		var h MetricsHandoff
-		if err := rows.Scan(&h.FromType, &h.FromID, &h.ToType, &h.ToID); err != nil {
+		if err := rows.Scan(&h.IssueID, &h.FromType, &h.FromID, &h.ToType, &h.ToID); err != nil {
 			return nil, err
 		}
 		out = append(out, h)
