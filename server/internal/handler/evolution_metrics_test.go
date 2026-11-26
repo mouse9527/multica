@@ -1,5 +1,5 @@
 // Added by the mouse9527/multica fork: Evolution structural analysis, the
-// metrics source (M-296).
+// metrics source and the weekly structural review (M-296).
 
 package handler
 
@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/evolution"
@@ -27,7 +28,8 @@ func metricsRead(t *testing.T, agentID, taskID, days string) *testutil.Response 
 }
 
 // TestEvolutionMetricsSource: the metrics source is off until the workspace
-// turns it on; then the open run's task reads one summary of its window.
+// turns it on; then the week's structural review run reads one summary of
+// its window, and any other run is refused.
 // The summary counts a workflow's returns and lists the return loop, counts
 // the visible agents' runs and handoffs, and leaves out private projects,
 // private agents, runs before the window, and the Evolution agent itself.
@@ -42,7 +44,7 @@ func TestEvolutionMetricsSource(t *testing.T) {
 	putEvolutionConfig(t, cfg, false).Want(http.StatusOK)
 	backdateEvolutionCursors(t)
 	tickEvolution(t, nil)
-	_, taskID := openEvolutionRunTask(t, evo)
+	runID, taskID := openEvolutionRunTask(t, evo)
 
 	metricsRead(t, evo, taskID, "").Want(http.StatusConflict)
 	cfg.Sources.Metrics = true
@@ -118,6 +120,17 @@ func TestEvolutionMetricsSource(t *testing.T) {
 		"created_at": testutil.Raw("now() - interval '1 hour'"),
 	})
 
+	// Only the week's structural review reads metrics: with a scheduled run
+	// earlier in the same week that did not fail, this run is a daily one.
+	dbfx.Exec(t, `UPDATE evolution_run SET slot = date_trunc('week', current_date)::date + 1 WHERE id = $1`, runID)
+	monday := dbfx.Insert(t, "evolution_run", testutil.Cols{
+		"workspace_id": testWorkspaceID, "agent_id": evo, "kind": "scheduled", "status": "succeeded",
+		"slot": testutil.Raw("date_trunc('week', current_date)::date"), "window_until": testutil.Raw("now() - interval '1 day'"),
+	})
+	metricsRead(t, evo, taskID, "").Want(http.StatusConflict)
+	// A failed run does not count: the next scheduled run takes its place.
+	dbfx.Exec(t, `UPDATE evolution_run SET status = 'failed', failure_reason = 'test' WHERE id = $1`, monday)
+
 	var got evolution.MetricsSummary
 	metricsRead(t, evo, taskID, "").Want(http.StatusOK).JSON(&got)
 	if got.Source != evolution.SourceMetrics || got.WindowDays != evolution.DefaultMetricsWindowDays {
@@ -182,5 +195,46 @@ func TestEvolutionMetricsSource(t *testing.T) {
 	}
 	if r := agents[reviewer]; r.Runs != 0 || r.HandoffsIn != 1 {
 		t.Fatalf("reviewer = %+v", r)
+	}
+}
+
+// openStructureRunIssue is the title and description of the open run's
+// analysis issue.
+func openStructureRunIssue(t *testing.T) (title, description string) {
+	t.Helper()
+	dbfx.QueryRow(t, `SELECT i.title, COALESCE(i.description, '') FROM evolution_run r JOIN issue i ON i.id = r.issue_id
+		WHERE r.workspace_id = $1 AND r.status = 'open'`, testWorkspaceID).Scan(&title, &description)
+	return title, description
+}
+
+// TestEvolutionStructuralReviewRun: with the metrics source on, the week's
+// first scheduled run is the structural review; its issue says so in the
+// title and lists the metrics source. With it off, the same run is a plain
+// daily analysis that never mentions metrics.
+func TestEvolutionStructuralReviewRun(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	for _, metrics := range []bool{true, false} {
+		t.Run(fmt.Sprintf("metrics=%v", metrics), func(t *testing.T) {
+			enableEvolutionAgent(t)
+			cfg := evolutionTestConfig()
+			cfg.Sources.Metrics = metrics
+			putEvolutionConfig(t, cfg, false).Want(http.StatusOK)
+			backdateEvolutionCursors(t)
+			tickEvolution(t, nil)
+
+			title, description := openStructureRunIssue(t)
+			if metrics {
+				if !strings.HasSuffix(title, " · structural review") ||
+					!strings.Contains(description, "--source metrics --days 14") {
+					t.Fatalf("structural review issue = %q\n%s", title, description)
+				}
+				return
+			}
+			if strings.Contains(title, "structural") || strings.Contains(description, "metrics") {
+				t.Fatalf("daily issue mentions the structural review = %q\n%s", title, description)
+			}
+		})
 	}
 }

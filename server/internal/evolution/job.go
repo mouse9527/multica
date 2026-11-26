@@ -1,6 +1,6 @@
 // Added by the mouse9527/multica fork: Evolution P2, the daily schedule (M-136);
 // P3 proposals in the run description (M-137); P5 effect measurement (M-139);
-// P6 the monthly condense review (M-140).
+// P6 the monthly condense review (M-140); the weekly structural review (M-296).
 
 package evolution
 
@@ -423,10 +423,19 @@ func (s *Scheduler) startRun(ctx context.Context, wa workspaceAgent, plan runPla
 
 	wsID, agentID := util.MustParseUUID(wa.WorkspaceID), util.MustParseUUID(wa.AgentID)
 	cfg := ConfigFromSettings(wa.Settings)
+	structure := false
+	if cfg.MetricsWanted() {
+		if structure, err = isStructureRun(ctx, s.DB, run); err != nil {
+			if ferr := finishRun(ctx, s.DB, run.ID, RunFailed, "could not tell whether this is the week's structural review"); ferr != nil {
+				err = errors.Join(err, ferr)
+			}
+			return true, fmt.Errorf("structural review check: %w", err)
+		}
+	}
 	created, err := s.Issues.Create(ctx, service.IssueCreateParams{
 		WorkspaceID:    wsID,
-		Title:          runTitle(wa.AgentName, plan, now, cfg),
-		Description:    pgtype.Text{String: runDescription(run, cursors), Valid: true},
+		Title:          runTitle(wa.AgentName, plan, now, cfg, structure),
+		Description:    pgtype.Text{String: runDescription(run, cursors, structure), Valid: true},
 		ProjectID:      outputProject(ctx, s.DB, wa.WorkspaceID, cfg),
 		Status:         "todo",
 		Priority:       "none",
@@ -446,7 +455,7 @@ func (s *Scheduler) startRun(ctx context.Context, wa workspaceAgent, plan runPla
 		return true, err
 	}
 	slog.Info("evolution: run started", "workspace_id", wa.WorkspaceID, "run_id", run.ID,
-		"kind", plan.Kind, "issue_id", util.UUIDToString(created.Issue.ID))
+		"kind", plan.Kind, "structural_review", structure, "issue_id", util.UUIDToString(created.Issue.ID))
 	return true, nil
 }
 
@@ -459,7 +468,7 @@ var runTitlePrefix = map[string]string{
 	"進化":        "進化分析",
 }
 
-func runTitle(agentName string, plan runPlan, now time.Time, cfg Config) string {
+func runTitle(agentName string, plan runPlan, now time.Time, cfg Config, structure bool) string {
 	prefix, ok := runTitlePrefix[agentName]
 	if !ok {
 		prefix = runTitlePrefix["Evolution"]
@@ -471,14 +480,22 @@ func runTitle(agentName string, plan runPlan, now time.Time, cfg Config) string 
 	if plan.Kind == RunCatchUp {
 		return prefix + " · " + day + " · catch-up"
 	}
+	if structure {
+		return prefix + " · " + day + " · " + structureTitle(agentName)
+	}
 	return prefix + " · " + day
 }
 
 // runDescription is the analysis issue's body: what the run covers and how
-// to read it. The Evolution system prompt carries the rest.
-func runDescription(run Run, cursors map[string]Position) string {
+// to read it. The Evolution system prompt carries the rest. Only the week's
+// structural review lists the metrics source; every other run reads as
+// before.
+func runDescription(run Run, cursors map[string]Position, structure bool) string {
 	var b strings.Builder
 	b.WriteString("Scheduled Evolution analysis. File each proposal with `multica evolution propose`, then post one report comment on this issue. Nothing is applied.\n\n")
+	if structure {
+		b.WriteString("This run is also the week's structural review: besides the comments and chats, read the `metrics` source and look at the workflow, the team, and the agents as a whole.\n\n")
+	}
 	b.WriteString("## Window\n\n")
 	for _, source := range []string{SourceComment, SourceChat} {
 		p, ok := cursors[source]
@@ -489,9 +506,20 @@ func runDescription(run Run, cursors map[string]Position) string {
 		fmt.Fprintf(&b, "- `%s`: after %s, up to %s at most\n", source,
 			p.TS.Format(time.RFC3339), run.WindowUntil.Format(time.RFC3339))
 	}
+	if structure {
+		fmt.Fprintf(&b, "- `%s`: the %d days up to %s\n", SourceMetrics, StructureReviewDays, run.WindowUntil.Format(time.RFC3339))
+	}
 	b.WriteString("\n## Read\n\n")
-	b.WriteString("```\nmultica evolution signals --source comment --output json\nmultica evolution signals --source chat --output json\n```\n\n")
-	b.WriteString("Repeat each with `--after <next_after>` until `has_more` is false. `limit_reached` means this run's item budget is used up; the rest goes to a catch-up run.\n\n")
+	b.WriteString("```\nmultica evolution signals --source comment --output json\nmultica evolution signals --source chat --output json\n")
+	if structure {
+		fmt.Fprintf(&b, "multica evolution signals --source metrics --days %d --output json\n", StructureReviewDays)
+	}
+	b.WriteString("```\n\n")
+	b.WriteString("Repeat comment and chat with `--after <next_after>` until `has_more` is false. `limit_reached` means this run's item budget is used up; the rest goes to a catch-up run.")
+	if structure {
+		b.WriteString(" `metrics` is one summary, read once.")
+	}
+	b.WriteString("\n\n")
 	b.WriteString("## Propose\n\n")
 	b.WriteString("```\nmultica evolution propose --file proposal.json\n```\n\n")
 	b.WriteString("The proposal format and rules are in the `multica-evolution` skill. A refusal says why; fix it or drop the proposal.\n")
