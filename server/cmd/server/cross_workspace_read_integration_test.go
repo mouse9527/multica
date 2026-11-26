@@ -91,7 +91,8 @@ func TestCrossWorkspaceRead(t *testing.T) {
 	router, _ := NewRouterWithOptions(testPool, realtime.NewHub(), events.New(), analytics.NoopClient{}, nil,
 		RouterOptions{FeatureFlags: featureflag.NewService(provider)})
 	srv := httptest.NewServer(router)
-	defer srv.Close()
+	// Registered first so it runs last: the cleanups below still talk to it.
+	t.Cleanup(srv.Close)
 	on := crossReadCall{t: t, server: srv.URL}
 	// The shared test server runs without feature flags: upstream behavior.
 	off := crossReadCall{t: t, server: testServer.URL}
@@ -102,7 +103,14 @@ func TestCrossWorkspaceRead(t *testing.T) {
 	target := crossReadID(t, on.want(http.StatusCreated, "POST", "/api/workspaces", testToken, "",
 		map[string]any{"name": "Cross Read Target", "slug": slug}))
 	t.Cleanup(func() {
-		on.do("DELETE", "/api/workspaces/"+target, testToken, "", nil)
+		// Best effort through the API, which also tears down the
+		// workspace's other rows; a failure here must not fail the test.
+		if req, err := http.NewRequest("DELETE", srv.URL+"/api/workspaces/"+target, nil); err == nil {
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			if resp, err := http.DefaultClient.Do(req); err == nil {
+				resp.Body.Close()
+			}
+		}
 		testPool.Exec(ctx, `DELETE FROM workspace WHERE id = $1`, target)
 		testPool.Exec(ctx, `DELETE FROM cross_workspace_read_audit WHERE target_workspace_id = $1`, target)
 		testPool.Exec(ctx, `DELETE FROM cross_workspace_read_grant WHERE target_workspace_id = $1`, target)
