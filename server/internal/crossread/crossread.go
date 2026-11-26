@@ -14,7 +14,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -134,16 +136,30 @@ func (s *Store) ActiveGrant(ctx context.Context, targetWorkspaceID, sourceWorksp
 // RecordAudit writes one audit row. The middleware serves the request only
 // after this returns nil.
 func (s *Store) RecordAudit(ctx context.Context, e AuditEntry) error {
-	route := e.Route
-	if len(route) > maxRouteLen {
-		route = route[:maxRouteLen]
-	}
+	route := auditRoute(e.Route)
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO cross_workspace_read_audit
 			(grant_id, target_workspace_id, source_workspace_id, agent_id, task_id, method, route, allowed)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8)`,
 		e.GrantID, e.TargetWorkspaceID, e.SourceWorkspaceID, e.AgentID, e.TaskID, e.Method, route, e.Allowed)
 	return err
+}
+
+// auditRoute makes a route storable: a refused request's path is decoded
+// from the URL and may hold invalid UTF-8, a NUL, or be longer than the column
+// allows. A route Postgres rejects would fail the audit write, turning the
+// refusal into a 503 with no audit row, so it is repaired and cut on a rune
+// boundary instead.
+func auditRoute(route string) string {
+	route = strings.ReplaceAll(strings.ToValidUTF8(route, "\uFFFD"), "\x00", "\uFFFD")
+	if len(route) <= maxRouteLen {
+		return route
+	}
+	route = route[:maxRouteLen]
+	for !utf8.ValidString(route) {
+		route = route[:len(route)-1]
+	}
+	return route
 }
 
 // CreateGrant inserts a grant. The caller has checked who may grant and that
