@@ -1017,6 +1017,7 @@
     "kind_tool": "Инструмент",
     "kind_thinking": "Рассуждение",
     "kind_error": "Ошибка",
+    "kind_retry": "Повтор",
     "group_calls_one": "{{count}} вызов",
     "group_calls_other": "Вызовов: {{count}}",
     "step_running": "Всё ещё выполняется",

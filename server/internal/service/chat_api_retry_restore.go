@@ -17,6 +17,23 @@ import (
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
+// restoreGaveUpChatDraft runs restoreChatDraftAfterAPIRetryGaveUp in its own
+// transaction, after the task failure has already been committed. The failure
+// therefore stands whatever happens here, and an error is the caller's to log
+// rather than propagate: a member who does not get the composer filled keeps
+// the prompt as a sent message.
+func (s *TaskService) restoreGaveUpChatDraft(ctx context.Context, task db.AgentTaskQueue, errMsg string) (*protocol.ChatCancelFinalizedPayload, error) {
+	var payload *protocol.ChatCancelFinalizedPayload
+	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		var err error
+		payload, err = restoreChatDraftAfterAPIRetryGaveUp(ctx, qtx, task, errMsg)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 // restoreChatDraftAfterAPIRetryGaveUp gives a chat member their prompt back
 // when the daemon failed the turn because the model API kept failing before
 // the turn produced any output (taskfailure.IsClaudeAPIRetryGaveUp).
@@ -27,14 +44,16 @@ import (
 // durable chat_draft_restore row is written in the caller's transaction, and
 // the returned payload is broadcast as chat:cancel_finalized "restored" once
 // it commits, which makes the initiator's composer fetch and apply it. The
-// failure itself is still written as an assistant message by the caller, so
-// the reason stays visible.
+// failure itself is still written as an assistant message by the failure path,
+// so the reason stays visible.
 //
 // It applies under the same conditions as the cancel restore: the transcript
 // is empty (model API retry rows do not count, see HasTaskMessages), and the
 // input is the member's own — not a channel-ingested batch or a wakeup turn.
-// The caller holds the chat session lock and calls this only for a terminal,
-// non-retried chat failure.
+// The caller calls this only for a terminal, non-retried chat failure.
+//
+// Run it through restoreGaveUpChatDraft, never inside the terminal write's
+// transaction: a restore that fails must not take the failure state with it.
 func restoreChatDraftAfterAPIRetryGaveUp(ctx context.Context, qtx *db.Queries, task db.AgentTaskQueue, errMsg string) (*protocol.ChatCancelFinalizedPayload, error) {
 	if !task.ChatSessionID.Valid || !taskfailure.IsClaudeAPIRetryGaveUp(errMsg) {
 		return nil, nil

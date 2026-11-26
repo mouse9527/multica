@@ -281,6 +281,18 @@ describe("buildLanes", () => {
     expect(lanes.model.at(-1)!.kind).toBe("error");
   });
 
+  it("does not paint the gap a model API retry landed in as a failure", () => {
+    const steps = buildSteps([
+      call("Bash", 0),
+      result("Bash", 5),
+      { seq: 99, type: "error", tool: "api_retry", content: "Model API returned HTTP 504", created_at: at(12) },
+    ]);
+
+    const lanes = buildLanes(steps, at(0), at(20))!;
+
+    expect(lanes.model.at(-1)!.kind).toBe("think");
+  });
+
   it("merges overlapping tool spans so parallel calls are not double-counted", () => {
     const steps = buildSteps([
       call("Bash", 0),

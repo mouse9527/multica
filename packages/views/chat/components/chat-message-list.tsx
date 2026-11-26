@@ -47,7 +47,7 @@ import type {
 } from "@multica/core/types";
 import type { ChatTimelineItem } from "@multica/core/chat";
 import { buildTimeline } from "../../common/task-transcript";
-import { readCommandInput, traceToolArgSummary } from "../../common/task-transcript/trace-event-presenter";
+import { isAPIRetryEvent, readCommandInput, traceToolArgSummary } from "../../common/task-transcript/trace-event-presenter";
 import { OnboardingStarterCards } from "./onboarding-starter-cards";
 import { TaskStatusPill } from "./task-status-pill";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
@@ -1422,7 +1422,7 @@ function ItemRow({ item }: { item: ChatTimelineItem }) {
     case "thinking":
       return <ThinkingRow item={item} />;
     case "error":
-      return <ErrorRow item={item} />;
+      return isAPIRetryEvent(item) ? <RetryRow item={item} /> : <ErrorRow item={item} />;
     default:
       return null;
   }
@@ -1537,6 +1537,20 @@ function ErrorRow({ item }: { item: ChatTimelineItem }) {
     <div className="flex items-start gap-1.5 px-1 -mx-1 py-0.5 text-caption">
       <AlertCircle className="h-3 w-3 shrink-0 text-destructive mt-0.5" />
       <span className="text-destructive">{item.content}</span>
+    </div>
+  );
+}
+
+/**
+ * A model API retry: the turn is still running, so the row reads as progress
+ * in the muted voice — the same weight as thinking — rather than as the red
+ * failure the run ended with (M-316).
+ */
+function RetryRow({ item }: { item: ChatTimelineItem }) {
+  return (
+    <div className="flex items-start gap-1.5 px-1 -mx-1 py-0.5 text-caption">
+      <RotateCw className="h-3 w-3 shrink-0 text-muted-foreground mt-0.5" />
+      <span className="text-muted-foreground">{item.content}</span>
     </div>
   );
 }

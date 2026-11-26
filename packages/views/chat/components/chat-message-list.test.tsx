@@ -1245,3 +1245,35 @@ describe("ChatMessageList onboarding starter cards", () => {
     expect(screen.getByRole("button", { name: "Later chip" })).toBeEnabled();
   });
 });
+
+describe("ChatMessageList model API retry rows (M-316)", () => {
+  it("shows a retry as muted progress while a real error keeps the failure voice", async () => {
+    const qc = new QueryClient();
+    qc.setQueryData(chatKeys.taskMessages(TASK_ID), [
+      taskMsg(0, "error", {
+        tool: "api_retry",
+        content: "Model API returned HTTP 504 (server_error); Claude Code is retrying (attempt 1/10)",
+      }),
+      taskMsg(1, "error", { content: "the turn failed" }),
+    ]);
+
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={qc}>
+          <ChatMessageList
+            messages={[]}
+            pendingTask={{ task_id: TASK_ID, status: "running" }}
+            availability={undefined}
+          />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    const retry = await screen.findByText(/Model API returned HTTP 504/);
+    expect(retry.className).toContain("text-muted-foreground");
+    expect(retry.className).not.toContain("text-destructive");
+
+    const failure = await screen.findByText("the turn failed");
+    expect(failure.className).toContain("text-destructive");
+  });
+});

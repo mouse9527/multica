@@ -941,6 +941,7 @@
     "kind_tool": "Herramienta",
     "kind_thinking": "Razonamiento",
     "kind_error": "Error",
+    "kind_retry": "Reintentando",
     "group_calls_one": "{{count}} llamada",
     "group_calls_other": "{{count}} llamadas",
     "step_running": "Todavía en ejecución",

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
-import { AlertCircle, Brain, Check, ChevronRight, CirclePause, Clock3, CornerDownRight, Loader2, MessageSquare, RotateCcw, ScrollText, Square, Terminal } from "@multica/ui/icons";
+import { AlertCircle, Brain, Check, ChevronRight, CirclePause, Clock3, CornerDownRight, Loader2, MessageSquare, RotateCcw, RotateCw, ScrollText, Square, Terminal } from "@multica/ui/icons";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -21,8 +21,8 @@ import { cn } from "@multica/ui/lib/utils";
 import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
 import { AgentTranscriptDialog, StepBody } from "../../common/task-transcript/agent-transcript-dialog";
 import { buildTimeline } from "../../common/task-transcript/build-timeline";
-import { buildSteps, groupSteps, isCallStep, isGroupRow, type TraceCallStep, type TraceRow, type TraceStep } from "../../common/task-transcript/build-steps";
-import { traceEventSummary, traceToolArgSummary } from "../../common/task-transcript/trace-event-presenter";
+import { buildSteps, groupSteps, isCallStep, isGroupRow, type TraceCallStep, type TraceMessageStep, type TraceRow, type TraceStep } from "../../common/task-transcript/build-steps";
+import { isAPIRetryEvent, traceEventSummary, traceToolArgSummary } from "../../common/task-transcript/trace-event-presenter";
 import { redactSecrets } from "../../common/task-transcript/redact";
 import { runOutputKey } from "../utils/timeline-row-content";
 import { ReadonlyContent } from "../../editor";
@@ -200,6 +200,7 @@ export function InlineCommentRun({ run, className, viewState, showIdentity = fal
     ? redactSecrets(traceToolArgSummary(current.call?.input, { formatText }) || current.tool)
     : current?.kind === "text" ? redactSecrets(formatText(current.item.content ?? ""))
     : current?.kind === "thinking" ? thinkingPreview(current.item.content, formatText) || t(($) => $.inline_run.thinking)
+    : current?.kind === "error" && isAPIRetryEvent(current.item) ? redactSecrets(traceEventSummary(current.item)) || t(($) => $.inline_run.waiting_response)
     : current?.kind === "error" ? t(($) => $.inline_run.error)
     : t(($) => $.inline_run.waiting_response);
   const summary = task.status === "queued" ? t(($) => $.inline_run.queued)
@@ -393,8 +394,10 @@ function InlineStep({ row, live, formatText }: { row: TraceRow; live: boolean; f
   const grouped = isGroupRow(row);
   const call = isCallStep(row);
   const pending = call && live && !row.result;
-  const error = !grouped && !call && row.kind === "error";
-  const Icon = grouped || call ? Terminal : row.kind === "text" ? MessageSquare : row.kind === "thinking" ? Brain : AlertCircle;
+  // A model API retry is progress, not the failure the run ended with.
+  const retry = !grouped && !call && isAPIRetryEvent((row as TraceMessageStep).item);
+  const error = !grouped && !call && row.kind === "error" && !retry;
+  const Icon = grouped || call ? Terminal : retry ? RotateCw : row.kind === "text" ? MessageSquare : row.kind === "thinking" ? Brain : AlertCircle;
   const previewCall = grouped ? row.steps[0] : call ? row : undefined;
   const toolSummary = previewCall
     ? redactSecrets(traceToolArgSummary(previewCall.call?.input, { formatText }) || (previewCall.result ? traceEventSummary(previewCall.result, { formatText }) : ""))
@@ -404,6 +407,7 @@ function InlineStep({ row, live, formatText }: { row: TraceRow; live: boolean; f
     : grouped ? toolSummary ? `${row.tool} · ${toolSummary}` : row.tool
     : row.kind === "text" ? traceEventSummary({ ...row.item, content: redactSecrets(formatText(row.item.content ?? "")) }) || t(($) => $.inline_run.message)
     : row.kind === "thinking" ? thinkingPreview(row.item.content, formatText) || t(($) => $.inline_run.thinking)
+    : retry ? redactSecrets(traceEventSummary({ ...row.item, content: formatText(row.item.content ?? "") })) || t(($) => $.inline_run.waiting_response)
     : t(($) => $.inline_run.error);
   const tooltip = call && toolSummary ? `${row.tool} · ${toolSummary}` : summary;
   return <details className="min-w-0 text-caption" onToggle={onToggle}>

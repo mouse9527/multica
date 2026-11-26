@@ -6,7 +6,12 @@ package service
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -18,7 +23,7 @@ import (
 // apiRetryGaveUpError is the shape of the daemon's fail-fast error
 // (pkg/agent/claude_api_retry.go), including the stderr tail it may append.
 const apiRetryGaveUpError = taskfailure.ClaudeAPIRetryGaveUpPrefix +
-	" with HTTP 504 (server_error) and the turn produced no output; gave up after 4 retries (Claude Code allows 10). Set MULTICA_CLAUDE_API_RETRY_FAIL_AFTER on the daemon to change this (0 disables).; claude stderr: (none)"
+	" with HTTP 504 (server_error) and the turn produced no output; gave up after 4 retries.; claude stderr: (none)"
 
 // insertAPIRetryRows writes the transcript rows the daemon persists for model
 // API retries: type "error", tool "api_retry".
@@ -220,5 +225,64 @@ func TestCancelTask_OnlyAPIRetryRows_StillRestoresDraft(t *testing.T) {
 	}
 	if payload, _ := evts[0].Payload.(protocol.ChatCancelFinalizedPayload); payload.Outcome != protocol.ChatCancelOutcomeRestored {
 		t.Errorf("outcome = %q, want restored", payload.Outcome)
+	}
+}
+
+// failRestoreTxStarter lets the failure's own transaction through and refuses
+// every later one, which is what the draft restore opens.
+type failRestoreTxStarter struct {
+	pool     *pgxpool.Pool
+	mu       sync.Mutex
+	begins   int
+	failFrom int
+}
+
+func (s *failRestoreTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	s.mu.Lock()
+	s.begins++
+	n := s.begins
+	s.mu.Unlock()
+	if n >= s.failFrom {
+		return nil, errors.New("tx starter unavailable")
+	}
+	return s.pool.Begin(ctx)
+}
+
+// The restore is best-effort: when its transaction cannot start, the failure
+// still lands with its assistant message. Sharing the terminal write's
+// transaction used to roll the failure back instead (M-316).
+func TestFailTask_APIRetryGaveUp_RestoreFailureKeepsTheFailure(t *testing.T) {
+	ctx := context.Background()
+	pool := newCancelFinalizePool(t)
+	f := createCancelFinalizeFixture(t, ctx, pool, "running", true)
+	bus := events.New()
+	rec := recordCancelFinalizedEvents(bus)
+	starter := &failRestoreTxStarter{pool: pool, failFrom: 2}
+	svc := NewTaskService(db.New(pool), starter, nil, bus)
+
+	if _, _, err := svc.FailTaskWithTransition(ctx, util.MustParseUUID(f.taskID), protocol.TaskFailRequest{
+		Error: apiRetryGaveUpError,
+	}); err != nil {
+		t.Fatalf("fail task must not depend on the draft restore: %v", err)
+	}
+	// One transaction for the terminal write, one refused for the restore.
+	if got := starter.begins; got != 2 {
+		t.Fatalf("expected 2 transaction starts, got %d", got)
+	}
+
+	if got := f.failureReason(t, ctx); got != taskfailure.ReasonAgentProviderServerError.String() {
+		t.Errorf("failure_reason = %q, want %q", got, taskfailure.ReasonAgentProviderServerError)
+	}
+	if got := f.assistantMessages(t, ctx); len(got) != 1 || got[0] != apiRetryGaveUpError {
+		t.Errorf("assistant messages = %v, want the failure text", got)
+	}
+	if !f.userMessageExists(t, ctx) {
+		t.Error("without a restore the prompt stays a sent message")
+	}
+	if got := f.draftRestores(t, ctx); len(got) != 0 {
+		t.Errorf("expected no draft restore, got %d", len(got))
+	}
+	if got := len(rec.snapshot()); got != 0 {
+		t.Errorf("expected no chat:cancel_finalized event, got %d", got)
 	}
 }

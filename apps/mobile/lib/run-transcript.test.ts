@@ -6,6 +6,7 @@ import {
   buildRunTranscript,
   buildRunTranscriptEntries,
   getRunDiagnostics,
+  isAPIRetryMessage,
   isCancellableRunStatus,
   isRunTranscriptTaskId,
   RUN_TRANSCRIPT_PATHNAME,
@@ -156,5 +157,15 @@ describe("run cancellation after schema parsing", () => {
   );
   it.each(["completed", "failed", "cancelled"])("does not cancel %s runs", (status) => {
     expect(isCancellableRunStatus(AgentTaskSchema.parse({ id: "task-1", status }).status)).toBe(false);
+  });
+});
+
+describe("model API retry rows", () => {
+  it("recognises the daemon's retry tag and nothing else", () => {
+    const retry = { type: "error", tool: "api_retry" } as const;
+    expect(isAPIRetryMessage(retry)).toBe(true);
+    expect(isAPIRetryMessage({ type: "error", tool: "Bash" })).toBe(false);
+    expect(isAPIRetryMessage({ type: "error" })).toBe(false);
+    expect(isAPIRetryMessage({ type: "tool_use", tool: "api_retry" })).toBe(false);
   });
 });

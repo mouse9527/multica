@@ -25,6 +25,7 @@ import {
   MoreHorizontal,
   ArrowDownNarrowWide,
   ArrowUpNarrowWide,
+  RotateCw,
   Info,
   Coins,
   GitBranch,
@@ -86,6 +87,7 @@ import { RunTimeline } from "./run-timeline";
 import { ContextReceiptButton } from "./context-receipt";
 import {
   base64ByteLength,
+  isAPIRetryEvent,
   readImageResult,
   traceEventCopyText,
   traceEventDetail,
@@ -197,7 +199,10 @@ function timeMs(iso: string | undefined): number | undefined {
 }
 
 function stepFilterKey(step: TraceStep): TranscriptFilterKey {
-  return step.kind === "call" ? `tool:${step.tool}` : step.kind;
+  if (step.kind === "call") return `tool:${step.tool}`;
+  // Retries get their own facet: filtering for the errors a run ended with
+  // must not surface the progress rows that came before them (M-316).
+  return isAPIRetryEvent(step.item) ? "retry" : step.kind;
 }
 
 /** Lowercased haystack for the in-run search. Outputs are clipped: a match
@@ -211,6 +216,8 @@ function stepHaystack(step: TraceStep): string {
 function StepIcon({ step, className }: { step: TraceStep; className?: string }) {
   if (!isCallStep(step)) {
     if (step.kind === "thinking") return <Brain className={className} />;
+    // A retry is the model trying again, not an error the run hit.
+    if (isAPIRetryEvent(step.item)) return <RotateCw className={className} />;
     if (step.kind === "error") return <CircleAlert className={className} />;
     return <Bot className={className} />;
   }
@@ -1634,14 +1641,21 @@ function StepRow({
   );
 
   const call = isCallStep(row) ? row : null;
+  const message = call ? null : (row as TraceMessageStep);
+  // A retry row reports that the turn is still running, so it reads as
+  // progress: muted, like thinking, instead of the red a failure gets (M-316).
+  const retry = message !== null && isAPIRetryEvent(message.item);
+  const failed = row.kind === "error" && !retry;
   const label = call
     ? call.tool || t(($) => $.transcript.kind_tool)
-    : row.kind === "thinking"
-      ? t(($) => $.transcript.kind_thinking)
-      : t(($) => $.transcript.kind_error);
+    : retry
+      ? t(($) => $.transcript.kind_retry)
+      : row.kind === "thinking"
+        ? t(($) => $.transcript.kind_thinking)
+        : t(($) => $.transcript.kind_error);
   const summary = call
     ? callSummary(call, summaryLabels)
-    : firstLineOf((row as TraceMessageStep).item.content);
+    : firstLineOf(message?.item.content);
   const pending = call !== null && isLive && !call.result;
   const selected = selectedSeq === row.seq;
 
@@ -1653,7 +1667,7 @@ function StepRow({
       className={cn(
         "group flex w-full items-start gap-2 px-4 py-1.5 text-left transition-colors",
         selected ? "bg-brand/8" : "hover:bg-accent/40",
-        row.kind === "error" && "bg-destructive/5",
+        failed && "bg-destructive/5",
       )}
     >
       <OffsetCell startedAt={row.startedAt} runStartMs={runStartMs} />
@@ -1661,21 +1675,21 @@ function StepRow({
         aria-hidden
         className={cn(
           "mt-0.5 w-0.5 self-stretch rounded-full",
-          selected ? "bg-brand" : row.kind === "error" ? "bg-destructive" : "bg-border",
+          selected ? "bg-brand" : failed ? "bg-destructive" : "bg-border",
         )}
       />
       <StepIcon
         step={row}
         className={cn(
           "mt-1 h-3 w-3 shrink-0",
-          row.kind === "error" ? "text-destructive" : "text-muted-foreground",
+          failed ? "text-destructive" : "text-muted-foreground",
         )}
       />
       <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
         <span
           className={cn(
             "max-w-[60%] shrink-0 truncate text-caption font-medium",
-            row.kind === "error" ? "text-destructive" : "text-foreground",
+            failed ? "text-destructive" : retry ? "text-muted-foreground" : "text-foreground",
           )}
         >
           {label}
@@ -1841,11 +1855,13 @@ function StepInspector({
   const title =
     call
       ? call.tool || t(($) => $.transcript.kind_tool)
-      : step.kind === "thinking"
-        ? t(($) => $.transcript.kind_thinking)
-        : step.kind === "text"
-          ? t(($) => $.transcript.kind_text)
-          : t(($) => $.transcript.kind_error);
+      : message !== null && isAPIRetryEvent(message.item)
+        ? t(($) => $.transcript.kind_retry)
+        : step.kind === "thinking"
+          ? t(($) => $.transcript.kind_thinking)
+          : step.kind === "text"
+            ? t(($) => $.transcript.kind_text)
+            : t(($) => $.transcript.kind_error);
 
   return (
     // Full width below md: on a phone the dialog is narrower than this pane, and
