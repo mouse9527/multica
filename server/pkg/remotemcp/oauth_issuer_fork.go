@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: pre-registered OAuth clients bound to their authorization server (M-295).
+// Modified for the mouse9527/multica fork: an issuer works without protected resource metadata (M-295 stage 2).
 
 package remotemcp
 
@@ -13,14 +14,17 @@ import (
 // belongs to, or that server's metadata states another issuer.
 var ErrAuthorizationServerMismatch = errors.New("the MCP server's authorization server is not the one the client is registered with")
 
-// DiscoverOAuthForIssuer is DiscoverOAuth for a client registered in advance
-// with one authorization server, issuer. The MCP authorization spec requires
-// such credentials to be used only with the server that issued them, keyed by
-// its issuer identifier: the protected resource metadata (RFC 9728) must
-// still list issuer among its authorization servers, and the authorization
-// server metadata, fetched from issuer's own well-known URLs, must state
-// exactly that issuer (RFC 8414 §3.3, OpenID Connect Discovery §4.3).
-// Identifiers are compared as strings, without normalization.
+// DiscoverOAuthForIssuer is DiscoverOAuth for an entry that names its
+// authorization server, issuer: the metadata is fetched from issuer's own
+// well-known URLs and must state exactly that issuer (RFC 8414 §3.3, OpenID
+// Connect Discovery §4.3), so credentials registered with issuer only ever
+// go to issuer's endpoints, as the MCP authorization spec requires
+// ("Authorization Server Binding"). The MCP server's protected resource
+// metadata (RFC 9728) is optional here — servers without it are what a named
+// issuer is for — but when it is published and lists authorization servers,
+// issuer must be one of them: the resource moved to another server, and
+// credentials of the old one must not be used. Identifiers are compared as
+// strings, without normalization.
 //
 // Every fetched URL passes the same public-HTTPS check as DiscoverOAuth, and
 // the result is checked by ValidateOAuthMetadata.
@@ -33,19 +37,16 @@ func DiscoverOAuthForIssuer(ctx context.Context, rawEndpoint, issuer string) (OA
 	if metadataURL == "" {
 		metadataURL = protectedResourceMetadataURL(endpoint)
 	}
-	resourceURL, err := validateOAuthURL(ctx, metadataURL)
-	if err != nil {
-		return OAuthMetadata{}, fmt.Errorf("protected resource metadata URL: %w", err)
-	}
 	var resource protectedResourceMetadata
-	if err := getOAuthJSON(ctx, resourceURL, &resource); err != nil {
-		return OAuthMetadata{}, fmt.Errorf("load protected resource metadata: %w", err)
-	}
-	if resource.Resource != "" && resource.Resource != endpoint.String() {
-		return OAuthMetadata{}, errors.New("protected resource metadata does not match the MCP endpoint")
-	}
-	if !containsString(resource.AuthorizationServers, issuer) {
-		return OAuthMetadata{}, ErrAuthorizationServerMismatch
+	if resourceURL, err := validateOAuthURL(ctx, metadataURL); err == nil && getOAuthJSON(ctx, resourceURL, &resource) == nil {
+		if resource.Resource != "" && resource.Resource != endpoint.String() {
+			return OAuthMetadata{}, errors.New("protected resource metadata does not match the MCP endpoint")
+		}
+		if len(resource.AuthorizationServers) > 0 && !containsString(resource.AuthorizationServers, issuer) {
+			return OAuthMetadata{}, ErrAuthorizationServerMismatch
+		}
+	} else {
+		resource = protectedResourceMetadata{}
 	}
 
 	issuerURL, err := validateOAuthURL(ctx, issuer)

@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: pre-registered OAuth clients for MCP entries (M-295).
+// Modified for the mouse9527/multica fork: manual endpoints, resource and audience (M-295 stage 2).
 
 package mcpoauth
 
@@ -131,11 +132,12 @@ func parseClientField(key string, value json.RawMessage, c *ClientConfig) (bool,
 	return true, nil
 }
 
-// validate checks the client keys against each other.
+// validate checks the client keys against each other. An issuer alone
+// (dynamic registration at a named authorization server) is allowed.
 func (c ClientConfig) validate() error {
 	if c.ID == "" {
-		if c.Issuer != "" || c.TokenEndpointAuthMethod != "" {
-			return fmt.Errorf("%w: auth.issuer and auth.token_endpoint_auth_method need auth.client_id", ErrInvalidInput)
+		if c.TokenEndpointAuthMethod != "" {
+			return fmt.Errorf("%w: auth.token_endpoint_auth_method needs auth.client_id", ErrInvalidInput)
 		}
 		return nil
 	}
@@ -159,8 +161,10 @@ func validateIssuer(raw string) error {
 
 // preregisteredAuthMethod is the token endpoint auth method a pre-registered
 // client uses. An entry that names one gets it, provided a method that sends
-// a secret has one. Otherwise: no secret means a public client ("none"); with
-// a secret, client_secret_basic when the authorization server lists it or
+// a secret has one. Otherwise: no secret means a public client ("none"),
+// unless the authorization server lists methods and "none" is not among
+// them (the secret is missing; better said now than after the browser round
+// trip); with a secret, client_secret_basic when the server lists it or
 // lists nothing (RFC 8414 §2 defaults to it), else client_secret_post.
 func preregisteredAuthMethod(explicit string, hasSecret bool, supported []string) (string, error) {
 	if explicit != "" {
@@ -170,6 +174,8 @@ func preregisteredAuthMethod(explicit string, hasSecret bool, supported []string
 		return explicit, nil
 	}
 	switch {
+	case !hasSecret && len(supported) > 0 && !slices.Contains(supported, AuthMethodNone):
+		return "", ErrClientSecretMissing
 	case !hasSecret:
 		return AuthMethodNone, nil
 	case len(supported) == 0 || slices.Contains(supported, AuthMethodClientSecretBasic):
@@ -186,7 +192,7 @@ func preregisteredAuthMethod(explicit string, hasSecret bool, supported []string
 // may serve the client the entry names now. A dynamically registered entry
 // takes any: its client is whatever the last connect registered. A change
 // from a pre-registered client back to dynamic registration, or of the
-// issuer, is caught when the entry is saved (ClientChanged).
+// issuer, is caught when the entry is saved (AuthorizationChange).
 func (c ClientConfig) clientMatches(clientID, authMethod string) bool {
 	if !c.Preregistered() {
 		return true
@@ -198,9 +204,11 @@ func (c ClientConfig) clientMatches(clientID, authMethod string) bool {
 }
 
 // MatchesEntry reports whether a pending authorization may still complete
-// for the entry as it is now: same URL, and the client the entry names.
+// for the entry as it is now: same URL, the client the entry names, and its
+// manual token endpoint and resource, if any.
 func (p PendingAuthorization) MatchesEntry(entry Entry) bool {
-	return p.ServerURL == entry.URL && entry.Client.clientMatches(p.Client.ID, p.Client.TokenEndpointAuthMethod)
+	return p.ServerURL == entry.URL &&
+		grantMismatch(entry.Client, entry.Server, p.Client.ID, p.Client.TokenEndpointAuthMethod, p.TokenEndpoint, p.Resource) == ""
 }
 
 // ClientIdentityChanged reports whether saving after over before changes the
@@ -216,21 +224,6 @@ func ClientIdentityChanged(before, after json.RawMessage) bool {
 		return false
 	}
 	return old.Client.ID != next.Client.ID || old.Client.Issuer != next.Client.Issuer
-}
-
-// ClientChanged reports whether saving after over before changes the OAuth
-// client of an entry that uses OAuth both times. Connections made with the
-// old client then need a reconnect (MarkEntryNeedsReconnect).
-func ClientChanged(before, after json.RawMessage) bool {
-	if !IsOAuthEntry(before) || !IsOAuthEntry(after) {
-		return false
-	}
-	old, oldErr := ParseEntry(before)
-	next, nextErr := ParseEntry(after)
-	if oldErr != nil || nextErr != nil {
-		return false
-	}
-	return old.Client != next.Client
 }
 
 // ValidateClientSecret checks a client secret as it is written.
@@ -376,7 +369,8 @@ func SecretSetFor(binding ClientConfig, found bool, entry Entry) bool {
 }
 
 // MarkEntryNeedsReconnect drops the tokens of every connection to an entry,
-// recording reason, and cancels the connects to it in flight. It needs no
+// and the copy of the client secret the connection was made with, recording
+// reason, and cancels the connects to it in flight. It needs no
 // key, so it can run inside another write's transaction.
 func MarkEntryNeedsReconnect(ctx context.Context, q Querier, workspaceID, ref, reason string, now time.Time) error {
 	if _, err := q.Exec(ctx, `
@@ -388,6 +382,7 @@ func MarkEntryNeedsReconnect(ctx context.Context, q Querier, workspaceID, ref, r
 			status = 'needs_reconnect',
 			access_token_ciphertext = NULL,
 			refresh_token_ciphertext = NULL,
+			client_secret_ciphertext = NULL,
 			expires_at = NULL,
 			last_error = $3,
 			updated_at = $4
