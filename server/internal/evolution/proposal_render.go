@@ -1,5 +1,5 @@
 // Added by the mouse9527/multica fork: Evolution P3, the proposal issue body
-// (M-137); P6 condense and team proposals (M-140).
+// (M-137); P6 condense and team proposals (M-140); metric evidence (M-296).
 
 package evolution
 
@@ -32,6 +32,8 @@ type proposalCopy struct {
 	moreEvidence, moreEvidenceIntro                                            string
 	// P6 (M-140).
 	condenseFooter, byHand, measured string
+	// M-296: a metric evidence line, with its sample and window.
+	metric, metricLine string
 }
 
 var proposalCopies = map[string]proposalCopy{
@@ -47,6 +49,8 @@ var proposalCopies = map[string]proposalCopy{
 		condenseFooter:    "Proposed by Evolution in condense review %s. This is a proposal only: nothing changes until an owner or admin approves it.",
 		byHand:            "Carried out by hand: nothing applies this proposal. If approved, a person makes the change described above.",
 		measured:          "Measured when the review opened: %d characters; of %d lines, %d (%d%%) repeat an earlier line. Listed at %d characters or %d%% repeated lines. After this change: %d characters.",
+		metric:            "Metric",
+		metricLine:        "%s (sample %d, %s to %s, recomputed by the server)",
 	},
 	"zh": {
 		target: "对象", field: "字段", baseHash: "基线哈希",
@@ -60,6 +64,8 @@ var proposalCopies = map[string]proposalCopy{
 		condenseFooter:    "由进化在精简检查 %s 中提出。这只是提案：所有者或管理员批准前，不会改动任何配置。",
 		byHand:            "需手动执行：没有任何功能会应用这条提案。批准后由人按上面的描述去改。",
 		measured:          "检查开始时测得：%d 字；%d 行中有 %d 行（%d%%）与前面的行重复。达到 %d 字或 %d%% 重复行即列入检查。改动后：%d 字。",
+		metric:            "指标",
+		metricLine:        "%s（样本 %d，%s 至 %s，服务端重算）",
 	},
 }
 
@@ -118,6 +124,12 @@ func renderEvidence(c proposalCopy, items []ResolvedEvidence, loc *time.Location
 			parts = append(parts, c.chat, fmt.Sprintf("%s `%s`", c.session, e.ChatSessionID), fmt.Sprintf("%s `%s`", c.message, e.ID), day)
 		case EvidenceIssue:
 			parts = append(parts, c.issue, issueLink(e.IssueIdentifier, e.IssueID), day)
+		case EvidenceMetric:
+			parts = append(parts, c.metric, fmt.Sprintf("`%s`", e.ID))
+			if m := e.Metric; m != nil {
+				parts = append(parts, fmt.Sprintf(c.metricLine, formatMetricValue(m.Value), m.Sample,
+					m.WindowFrom.In(loc).Format(time.DateOnly), m.WindowUntil.In(loc).Format(time.DateOnly)))
+			}
 		}
 		if e.Note != "" {
 			parts = append(parts, e.Note)

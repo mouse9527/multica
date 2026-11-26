@@ -1,6 +1,6 @@
 // Added by the mouse9527/multica fork: Evolution P2, the signal channel (M-136);
 // P3 proposals (M-137); P6 condense and team proposals (M-140); the metrics
-// source (M-296).
+// source, retire_agent, and metric evidence (M-296).
 
 package main
 
@@ -65,7 +65,8 @@ multica-evolution skill):
     "title": "one line",
     "problem": "problem and cause; facts cite evidence, inferences are marked",
     "change": {"before": "current text, copied exactly", "after": "proposed text"},
-    "evidence": [{"type": "comment|chat|issue", "id": "<uuid>", "note": "summary", "quote": "comments only, <= 120 characters"}],
+    "evidence": [{"type": "comment|chat|issue", "id": "<uuid>", "note": "summary", "quote": "comments only, <= 120 characters"},
+                 {"type": "metric", "id": "agent:<uuid>/failure_rate", "value": 0.25, "note": "structural review only"}],
     "expected_effect": "which signal moves, which way, over how long",
     "risk": "low|medium|high",
     "risk_reason": "why",
@@ -78,8 +79,10 @@ instead of a new issue ("outcome": "merged" or "duplicate"). Nothing is applied.
 
 A condense review files shorter agent instructions with an empty evidence list;
 the server attaches its measurement. A team proposal (target id: the
-workspace's id; field new_agent, merge_agents, or routing) leaves change.before
-empty and is carried out by hand.`,
+workspace's id; field new_agent, merge_agents, retire_agent, or routing) leaves
+change.before empty and is carried out by hand. Metric evidence is cited only
+from the week's structural review; the server recomputes each value and checks
+its sample (see the multica-evolution skill).`,
 	Example: `  $ multica evolution propose --file proposal.json
   $ multica evolution propose --file - < proposal.json`,
 	Args: exactArgs(0),

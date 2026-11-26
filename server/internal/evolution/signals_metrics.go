@@ -161,12 +161,18 @@ func ServeMetrics(ctx context.Context, q Querier, req MetricsRequest) (MetricsSu
 	} else if !structure {
 		return MetricsSummary{}, ErrNotStructureRun
 	}
+	return BuildMetrics(ctx, q, req, run.WindowUntil)
+}
+
+// BuildMetrics summarises the req.Days before until, with no gate: callers
+// check that the metrics source may be read. Proposals recompute cited
+// metrics with it.
+func BuildMetrics(ctx context.Context, q Querier, req MetricsRequest, until time.Time) (MetricsSummary, error) {
 	days := req.Days
 	if days == 0 {
 		days = DefaultMetricsWindowDays
 	}
 	days = clampInt(days, MinMetricsWindowDays, MaxMetricsWindowDays)
-	until := run.WindowUntil
 	from := until.Add(-time.Duration(days) * 24 * time.Hour)
 	out := MetricsSummary{Source: SourceMetrics, WindowFrom: from, WindowUntil: until, WindowDays: days}
 

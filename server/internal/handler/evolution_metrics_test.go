@@ -238,3 +238,69 @@ func TestEvolutionStructuralReviewRun(t *testing.T) {
 		})
 	}
 }
+
+// TestEvolutionProposalMetricEvidence: in the week's structural review a
+// team proposal to retire an agent cites the agent's failure rate as metric
+// evidence. The server recomputes it and shows its own number; a wrong value,
+// a number on too small a sample, and any metric once the metrics source is
+// off are refused.
+func TestEvolutionProposalMetricEvidence(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	cfg := evolution.DefaultConfig()
+	cfg.Sources.Metrics = true
+	f := newProposalFixture(t, cfg)
+
+	runtimeID := handlerTestRuntimeID(t)
+	visible := func(name string) string {
+		id := dbfx.Agent(t, name, runtimeID, testutil.Cols{"visibility": "workspace", "permission_mode": "public_to"})
+		dbfx.Insert(t, "agent_invocation_target", testutil.Cols{
+			"agent_id": id, "target_type": "workspace", "target_id": testWorkspaceID,
+		})
+		return id
+	}
+	reviewer := visible("evolution metric reviewer")
+	quiet := visible("evolution metric quiet agent")
+	targetRuns(t, reviewer, "1 day", "1 minute", 6, 2)
+	targetRuns(t, quiet, "1 day", "1 minute", 2, 0)
+
+	body := func(ref string, value float64) map[string]any {
+		return map[string]any{
+			"target":  map[string]any{"type": "team", "id": testWorkspaceID},
+			"field":   "retire_agent",
+			"topic":   "second reviewer failures",
+			"title":   "Retire the second reviewer",
+			"problem": "Fact: a third of its runs failed in the last two weeks (metric). Inference: its checks repeat the first review's.",
+			"change":  map[string]any{"before": "", "after": "Retire the second reviewer and leave review to the first reviewer."},
+			"evidence": []map[string]any{
+				{"type": "metric", "id": ref, "value": value, "note": "share of finished runs that failed"},
+				{"type": "comment", "id": f.commentA, "note": "work slipped through review"},
+			},
+			"expected_effect": "failure_rate 0.33 over 6 runs goes away with the agent; review time per issue drops within two weeks.",
+			"risk":            "medium",
+			"risk_reason":     "Removes a check.",
+			"rollback":        "Re-enable the agent.",
+		}
+	}
+	failureRate := "agent:" + reviewer + "/failure_rate"
+
+	wantRejected(t, propose(t, f.evo, f.taskID, body(failureRate, 0.9)), http.StatusUnprocessableEntity, evolution.RejectEvidence)
+	wantRejected(t, propose(t, f.evo, f.taskID, body("agent:"+quiet+"/failure_rate", 0)), http.StatusUnprocessableEntity, evolution.RejectEvidence)
+
+	var res evolution.FileResult
+	propose(t, f.evo, f.taskID, body(failureRate, 0.33)).Want(http.StatusCreated).JSON(&res)
+	var description string
+	dbfx.QueryRow(t, `SELECT description FROM issue WHERE id = $1`, res.IssueID).Scan(&description)
+	for _, want := range []string{"`" + failureRate + "`", "0.3333 (sample 6", "recomputed by the server", f.commentA} {
+		if !strings.Contains(description, want) {
+			t.Errorf("proposal lacks %q:\n%s", want, description)
+		}
+	}
+
+	cfg.Enabled, cfg.Sources.Chat, cfg.Sources.Metrics = true, true, false
+	putEvolutionConfig(t, cfg, true).Want(http.StatusOK)
+	other := body(failureRate, 0.33)
+	other["topic"] = "second reviewer failures again"
+	wantRejected(t, propose(t, f.evo, f.taskID, other), http.StatusUnprocessableEntity, evolution.RejectEvidence)
+}
