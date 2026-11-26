@@ -25,6 +25,7 @@ multica workspace read-grant audit [--limit 50] [目标工作区]
 - 授权没有项目范围（Owner 2026-11-26：目前没有权限控制需求），覆盖目标工作区里全部非私有项目。
 - 每次请求都查库，不缓存：撤销或过期后，下一次请求就被拒绝。过期按数据库时钟判断。
 - 撤销只设置 `revoked_at`，不删除行，审计记录始终能找到对应的授权。
+- 同一个来源（以及同一个智能体）可以建多条授权，表上没有唯一约束。撤销是按授权 ID 逐条撤销的：要让一个来源从此不能读，先用 `read-grant list` 找出它所有有效的授权，再逐条撤销。
 
 ## 智能体怎么读
 
@@ -51,6 +52,7 @@ multica issue comment list <issue> --workspace-id <目标工作区 ID> --output 
 | issue（列表、查询、搜索、详情、子任务、标签、metadata、PR、附件、订阅者、wakeup） | 可读 |
 | 评论、时间线 | 可读 |
 | 运行记录和日志（`task-runs`、`/api/tasks/{id}/messages`、`context-receipt`、`usage`、`active-task`） | 可读；chat 运行的记录不可读 |
+| 工作区记录（`GET /api/workspaces/{id}`），包括 `settings`、`repos` 和 `context`（写给智能体的工作区说明） | 可读；不含 secret |
 | 项目、文档、标签、状态、workflow、自定义属性、成员名单 | 可读 |
 | 智能体、技能、squad、autopilot 及其运行记录 | 可读；`mcp_config`、webhook 令牌等 secret 仍然脱敏 |
 | 附件 | 可读：可见 issue 和评论上的附件、文档等不挂在 issue 上的附件。不可读（404）：chat 附件（带 chat 会话或消息，包括 IM 渠道的，以及 chat 运行上传的）、私有项目 issue 上的附件 |
@@ -67,7 +69,7 @@ multica issue comment list <issue> --workspace-id <目标工作区 ID> --output 
 
 ## 审计
 
-表 `cross_workspace_read_audit`，每个被授权匹配到的请求一行：授权 ID、目标和来源工作区、智能体、运行（task）、方法、路由（白名单模式，比如 `GET /api/issues/*`；被拒绝的写路径原样记录，最长 512 字符）、是否放行、时间。不记录查询串和请求体。目前没有自动清理，保留期需要时另做。
+表 `cross_workspace_read_audit`，每个被授权匹配到的请求一行：授权 ID、目标和来源工作区、智能体、运行（task）、方法、路由（白名单模式，比如 `GET /api/issues/*`；被拒绝的请求记录方法和路径，无效 UTF-8 和 NUL 替换成 `\uFFFD`，最长 512 字节，按字符边界截断）、是否放行、时间。不记录查询串和请求体。目前没有自动清理，保留期需要时另做。
 
 ## 令牌泄露的影响
 
