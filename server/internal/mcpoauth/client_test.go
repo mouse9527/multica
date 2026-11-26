@@ -137,26 +137,26 @@ func TestClientMatchesAndChanges(t *testing.T) {
 	entry := func(auth string) json.RawMessage {
 		return json.RawMessage(`{"url":"https://mcp.example.com/mcp","auth":{"type":"oauth"` + auth + `}}`)
 	}
-	pre := `,"client_id":"c","issuer":"https://a.example"`
-	manual := pre + `,"authorization_endpoint":"https://a.example/authorize","token_endpoint":"https://a.example/token"`
+	preAuth := `,"client_id":"c","issuer":"https://a.example"`
+	manual := preAuth + `,"authorization_endpoint":"https://a.example/authorize","token_endpoint":"https://a.example/token"`
 	for _, c := range []struct {
 		name          string
 		before, after json.RawMessage
 		want          string
 	}{
 		{"unchanged dynamic", entry(``), entry(`,"scope":"other"`), ""},
-		{"unchanged pre-registered", entry(pre), entry(pre + `,"scope":"x"`), ""},
-		{"to pre-registered", entry(``), entry(pre), ReasonClientChanged},
-		{"back to dynamic", entry(pre), entry(``), ReasonClientChanged},
-		{"other method", entry(pre), entry(pre + `,"token_endpoint_auth_method":"none"`), ReasonClientChanged},
-		{"other issuer", entry(pre), entry(`,"client_id":"c","issuer":"https://b.example"`), ReasonServerChanged},
+		{"unchanged pre-registered", entry(preAuth), entry(preAuth + `,"scope":"x"`), ""},
+		{"to pre-registered", entry(``), entry(preAuth), ReasonClientChanged},
+		{"back to dynamic", entry(preAuth), entry(``), ReasonClientChanged},
+		{"other method", entry(preAuth), entry(preAuth + `,"token_endpoint_auth_method":"none"`), ReasonClientChanged},
+		{"other issuer", entry(preAuth), entry(`,"client_id":"c","issuer":"https://b.example"`), ReasonServerChanged},
 		{"issuer named", entry(``), entry(`,"issuer":"https://a.example"`), ReasonServerChanged},
-		{"manual endpoints", entry(pre), entry(manual), ReasonServerChanged},
-		{"other token endpoint", entry(manual), entry(pre + `,"authorization_endpoint":"https://a.example/authorize","token_endpoint":"https://b.example/token"`), ReasonServerChanged},
+		{"manual endpoints", entry(preAuth), entry(manual), ReasonServerChanged},
+		{"other token endpoint", entry(manual), entry(preAuth + `,"authorization_endpoint":"https://a.example/authorize","token_endpoint":"https://b.example/token"`), ReasonServerChanged},
 		{"resource", entry(``), entry(`,"resource":"https://api.example.com"`), ReasonServerChanged},
 		{"audience", entry(``), entry(`,"audience":"https://api.example.com"`), ReasonServerChanged},
-		{"new entry", nil, entry(pre), ""},
-		{"no longer OAuth", entry(pre), json.RawMessage(`{"url":"https://mcp.example.com/mcp"}`), ""},
+		{"new entry", nil, entry(preAuth), ""},
+		{"no longer OAuth", entry(preAuth), json.RawMessage(`{"url":"https://mcp.example.com/mcp"}`), ""},
 	} {
 		if got := AuthorizationChange(c.before, c.after); got != c.want {
 			t.Errorf("%s: AuthorizationChange = %q, want %q", c.name, got, c.want)
