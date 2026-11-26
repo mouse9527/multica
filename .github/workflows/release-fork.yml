@@ -8,8 +8,11 @@
 #
 # The darwin binaries are signed with the CI code-signing certificate so every
 # release keeps one macOS identity (privacy grants survive upgrades). The key
-# lives only in the `release` environment, whose required reviewer approves
-# each run before the release job starts.
+# lives only in the `release` environment, which only `-mouse.N` tags may
+# deploy to. The verify job is the release gate (scripts/fork-release-verify.sh):
+# the release job, and with it the key, is reached only when the tag is an
+# annotated, correctly numbered tag on a main commit whose CI, CI (fork) and
+# Build Image runs passed.
 #
 # Upstream's release.yml is limited to multica-ai: its Homebrew, Helm and
 # Desktop steps need secrets and services this fork does not have, and its
@@ -33,32 +36,31 @@ jobs:
   verify:
     if: github.repository_owner != 'multica-ai'
     runs-on: ubuntu-latest
+    # Read-only: the gate reads the repository and its Actions runs.
     permissions:
       contents: read
+      actions: read
     outputs:
       make_latest: ${{ steps.latest.outputs.make_latest }}
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          # The gate checks ancestry and refuses a shallow clone.
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Validate tag
+      # The release gate. Fails, and so stops the release job, unless TAG is
+      # an annotated vX.Y.Z-mouse.N tag on GITHUB_SHA, the commit is on main,
+      # X.Y.Z is the newest upstream tag merged into it, N is above every
+      # existing N, and CI, CI (fork) and Build Image passed on main for it.
+      - name: Verify release gate
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-mouse\.[0-9]+$ ]]; then
-            echo "::error::Fork release tags must look like vX.Y.Z-mouse.N; got '$TAG'."
-            exit 1
-          fi
-          # Only reviewed code is released: "identical" or "behind" means the
-          # tagged commit is main or an ancestor of it.
-          status="$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)"
-          if [ "$status" != "identical" ] && [ "$status" != "behind" ]; then
-            echo "::error::$TAG points at $GITHUB_SHA, which is not on main ($status)."
-            exit 1
-          fi
+          bash scripts/fork-release-verify.test.sh
+          bash scripts/fork-release-verify.sh "$TAG" "$GITHUB_SHA"
 
       # Only the newest release becomes the "latest" Release, matching the
       # `latest` image rule in build-image.yml.
@@ -108,8 +110,8 @@ jobs:
   release:
     needs: verify
     runs-on: ubuntu-latest
-    # Holds the macOS signing key. Its required reviewer approves the run, and
-    # only `-mouse.N` tags may deploy to it. See docs/fork-release.md.
+    # Holds the macOS signing key; only `-mouse.N` tags may deploy to it, and
+    # only after the verify gate passed. See docs/fork-release.md.
     environment: release
     permissions:
       contents: write
