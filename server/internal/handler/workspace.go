@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/agentrouter"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/crossread"
 	"github.com/multica-ai/multica/server/internal/evolution"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -1635,6 +1636,12 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			// mouse9527/multica fork: MCP OAuth tables (M-230).
 			name: "delete mcp oauth data",
 			run:  func() error { return mcpoauth.DeleteWorkspaceData(ctx, tx, requester.WorkspaceID) },
+		},
+		{
+			// mouse9527/multica fork: cross-workspace read grants (M-307),
+			// given or received, and their audit rows.
+			name: "delete cross-workspace read grants",
+			run:  func() error { return crossread.DeleteWorkspaceData(ctx, tx, requester.WorkspaceID) },
 		},
 		{
 			name: "delete squads and skills",

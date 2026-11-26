@@ -228,6 +228,11 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// mouse9527/multica fork: pre-registered client secrets (M-295), deleted
 	// by mcpoauth.DeleteWorkspaceData.
 	"mcp_oauth_client": workspaceDelete,
+	// mouse9527/multica fork: cross-workspace read grants and their audit
+	// (M-307), deleted by crossread.DeleteWorkspaceData for the target and
+	// the source workspace alike.
+	"cross_workspace_read_grant": workspaceDelete,
+	"cross_workspace_read_audit": workspaceDelete,
 	// Modified for the mouse9527/multica fork: password login. A password
 	// belongs to the account, like "user", not to a workspace.
 	"user_credential": workspaceDeleteKeep,
