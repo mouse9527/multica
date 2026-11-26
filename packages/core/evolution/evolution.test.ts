@@ -93,7 +93,7 @@ describe("getEvolutionConfig", () => {
         config: {
           enabled: true,
           schedule: { time: "04:30", timezone: "UTC", interval_days: 2 },
-          sources: { comments: true, chat: true },
+          sources: { comments: true, chat: true, metrics: true },
           exclude_projects: ["p1"],
           exclude_agents: null,
           max_items_per_window: 500,
@@ -110,6 +110,8 @@ describe("getEvolutionConfig", () => {
     expect(calls[0]).toMatchObject({ url: "https://api.example.test/api/evolution/config", headers: { "X-Workspace-ID": "ws-1" } });
     expect(state.config.schedule).toEqual({ time: "04:30", timezone: "UTC", interval_days: 2 });
     expect(state.config.exclude_agents).toEqual([]);
+    // The metrics source (M-296) has no control but survives a save.
+    expect(state.config.sources).toEqual({ comments: true, chat: true, metrics: true });
     // An older server sends no P3, P5, or P6 fields: the defaults fill in.
     expect(state.config).toMatchObject({ max_proposals_per_run: 5, min_evidence_count: 2, rejected_cooldown_days: 30 });
     expect(state.config).toMatchObject({ effect_window_days: 7, regression_threshold_percent: 20, min_effect_sample: 5 });

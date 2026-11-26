@@ -41,7 +41,7 @@
 | `POST` | `/api/evolution/enable` | 所有者、管理员（人类账号；以 agent 身份或用 task token、cloud PAT 调用一律 403） | 请求 `{"runtime_id", "language": "en"/"zh"/"ko"/"ja", "model"?}`，拒绝未知字段。新建返回 201，已存在返回 200 和同一个 agent。只建 agent，不改配置，所以不会打开任何读取 |
 | `GET` | `/api/evolution/config` | 任何成员 | 配置、实际在读什么（`comments_active`、`chat_active`）、服务端上限、最近 10 次运行 |
 | `PUT` | `/api/evolution/config` | 所有者、管理员（人类账号） | 请求 `{"config": {...}, "acknowledge_member_notice": bool}`，整块替换配置，拒绝未知字段；超出上限返回 400；要开始读 chat 却没带确认返回 409 |
-| `GET` | `/api/evolution/signals` | 只限进化 agent 的分析运行（见下） | `?source=comment\|chat&after=<next_after>&limit=1..200`，返回一页数据 |
+| `GET` | `/api/evolution/signals` | 只限进化 agent 的分析运行（见下） | `?source=comment\|chat&after=<next_after>&limit=1..200`，返回一页数据；`?source=metrics&days=1..30` 返回一份指标摘要（见「指标来源（M-296）」） |
 | `POST` | `/api/evolution/proposals` | 只限进化 agent 的分析运行或精简检查（同数据通道的授权，任务所在 issue 是打开的运行或检查的 issue） | 提交一条结构化提案，见下文「提案（P3）」「精简检查（P6）」 |
 | `GET` | `/api/evolution/proposals/{issueId}` | 能看到这个 issue 的成员（提案在调用者看不到的私有项目里时 404，三个提案接口都一样） | 提案的状态：改动、`state`（pending / applied / rolled_back）、`stale`、`changed_since_apply`、版本列表；`can_apply` / `can_rollback` 只对所有者、管理员为 true。不是可应用的提案时 404 |
 | `POST` | `/api/evolution/proposals/{issueId}/apply` | 所有者、管理员（人类账号；agent 身份、task token、cloud PAT 一律 403） | 应用提案，见下文「应用与回滚（P4）」 |
@@ -58,6 +58,7 @@
 | `enabled`（定时分析开关；和 agent 是否启用无关） | false | — |
 | `schedule.time` / `schedule.timezone` / `schedule.interval_days` | `03:00` / `Asia/Shanghai` / 1 | HH:MM；已知时区；1–7 |
 | `sources.comments` / `sources.chat` | true / false | — |
+| `sources.metrics`（指标来源，M-296；设置页没有开关，只能用 `PUT` 打开） | false | — |
 | `exclude_projects` / `exclude_agents` | 空 | 各最多 200 个 UUID |
 | `max_items_per_window`（一次运行最多读多少条，两个数据源合计） | 2000 | 50–5000 |
 | `max_window_days`（一次运行从游标往后最多读几天） | 7 | 1–30 |
@@ -140,6 +141,27 @@ chat 游标是「已告知」的唯一凭证：只有上面第 2 步会建它。
 - 不读运行日志、`task_message`、工具调用。
 - 每条内容出库前脱敏（`internal/evolution/redact.go`）：私钥、JWT、常见令牌前缀、Authorization 头、`password=`/`token:` 这类键值、URL 里的账号密码和查询串、邮箱、手机号、内网 IP 和内网域名，替换成 `[redacted:…]`，并给出替换次数；单条超过 4000 字截断。
 - 返回成员和 agent 的 id，不返回姓名。
+
+## 指标来源（M-296）
+
+`GET /api/evolution/signals?source=metrics[&days=N]` 返回一份服务端算好的聚合摘要，只有数字，不含任何评论、chat 正文，也不含成员信息。授权与上面的数据通道相同（进化 agent 在当前打开的运行 issue 上的任务）；另外要求 `enabled` 和 `sources.metrics` 都为 true，否则 409。默认关闭，没有游标，不占 `max_items_per_window`，读多少次都不移动任何东西。
+
+窗口是运行的 `window_until` 往前 `days` 天（默认 14，1–30，超出返回 400）。内容：
+
+| 部分 | 内容 |
+|---|---|
+| `workflows[]` | 按工作流分组（项目用的工作流；没有或悬空时归到存下的 Default，从没存过 Default 时 `id` 为空、名称 `Default`），每个状态：进入次数、退出次数和去向（`exits_to`）、停留的中位数和 p90（小时；backlog、done、cancelled 类不算）、`back_status_key`、退回次数和退回率（退回 = 退到这一步的 `back_status_key`，与效果度量同一定义；没有退回路径的步骤不算） |
+| `agents[]` | 每个 agent：窗口内排队的运行数；完成、失败、取消数和失败率、取消率（分母是已结束的运行）；完成运行耗时的中位数；短运行（不到 45 秒）数和占比；按触发来源计数（`chat`、`autopilot`、`comment`，其余取 `trigger_evidence_kind`，没有就是 `other`）；交接进出次数（转给自己不算）。交接有两种记录：手动改负责人的 `assignee_changed`，和进入工作流步骤自动交给处理人时记在 `status_changed` 上的 `handoff_to_*`（这时不另写 `assignee_changed`，所以不会重复计）。转出方取这条记录自己写的（`router_from_*`、`from_*`、`handoff_from_*`），没写就取同一 issue 上一条交接的接收方 |
+| `return_loops[]` | 窗口内被退回 3 次及以上的 issue（编号、次数、按步骤分），最多 50 条 |
+
+范围与数据通道一致：
+
+- 只算项目里的 issue（与效果度量相同）；**私有项目**（`projectaccess.ForPrincipals` 不带任何人的隐藏集）和排除的项目里的 issue、它们上面的运行和交接都不算；挂在这些项目下的 chat 的运行也不算。
+- agent 只列全体成员都可见的（`public_to` 加工作区目标，与读 chat、精简检查的边界相同），不含内部系统 agent、排除的 agent 和进化自己；已归档的照列（标 `archived`），因为它们在窗口里的运行确实发生过。
+
+代码：`server/internal/evolution/signals_metrics.go`（查询与汇总，汇总是纯函数）、`server/internal/handler/evolution_metrics.go`（接口），`evolution_data.go` 的 `GetEvolutionSignals` 里一行转过去。测试：`signals_metrics_test.go` 用 M-291 的样例 1–3（主审打回循环、「待你决定」停留、复审的退回率与运行时长）核对数字；`TestEvolutionMetricsSource` 核对开关、私有项目、私有 agent、窗口和交接；`cmd/server/evolution_handoff_metrics_test.go` 用真实的活动监听器写出手动分配和工作流交接两条记录，核对各计一次、转出方正确（Router 注解开和关两种）。
+
+这一步只提供数据：分析 issue 的说明、提示词和技能还不提它，进化不会主动读。
 
 ## 游标与调度（P2）
 
@@ -321,10 +343,10 @@ P4：提案 issue 的侧栏「属性」区（默认展开，紧跟工作流那�
 
 ## CLI
 
-`multica evolution signals --source comment|chat [--after <next_after>] [--limit N]`：分析运行读数据用；`multica evolution propose --file <path|->`：分析运行和精简检查提交提案用。都在 fork 新文件 `server/cmd/multica/cmd_evolution.go`。
+`multica evolution signals --source comment|chat [--after <next_after>] [--limit N]`、`multica evolution signals --source metrics [--days N]`：分析运行读数据用；`multica evolution propose --file <path|->`：分析运行和精简检查提交提案用。都在 fork 新文件 `server/cmd/multica/cmd_evolution.go`。
 
 ## 上游触点
 
-见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。M-231（产出归属项目）没有新的上游触点：只改 fork 文件 `internal/evolution/` 里三处建 issue 的参数和配置（新文件 `output_project.go`），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认一个配置项。P6 没有新的上游触点：精简检查挂在 fork 文件 `internal/evolution/job.go` 的定时任务里（新文件 `condense.go`），`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9022_evolution_review`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认四个配置项。P5 没有新的上游触点：度量挂在 fork 文件 `internal/evolution/job.go` 的定时任务里，`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9021_evolution_effect`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认三个配置项。P4 没有新增上游文件：在已是触点的 `issue-detail.tsx` 里，紧挨 M-194 的两处 fork 行（导入块后的 fork 导入、侧栏属性里的 Super Agent 行）各加一行，不新增独立冲突块；后端路由仍在 fork 文件 `evolution_agent.go`，`workspace_delete_manifest_test.go` 在 P2 那块里登记两张新表。迁移 `9020_evolution_apply`（两张新表，DO 块建表，含 down）。P3 没有新的上游触点：路由加在 fork 文件 `evolution_agent.go` 的 `MountEvolution` 里，其余都是 fork 新文件。P2 没有新的上游文件，在已有 fork 改动的 3 个上游文件上各追加一块：`main.go` 一行注册定时任务（紧挨 `agentrouter.Register`）；`workspace.go` 的删除步骤（紧挨 Router 那块）；`workspace_delete_manifest_test.go` 登记两张新表。前端没有新的上游触点（只改 fork 自己的文件）。
+见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。M-296（指标来源）没有上游触点：新文件 `internal/evolution/signals_metrics.go`、`internal/handler/evolution_metrics.go`，其余只改 fork 文件（`config.go`、`evolution_data.go`、`cmd_evolution.go`、`packages/core/evolution/schemas.ts`），没有迁移。M-231（产出归属项目）没有新的上游触点：只改 fork 文件 `internal/evolution/` 里三处建 issue 的参数和配置（新文件 `output_project.go`），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认一个配置项。P6 没有新的上游触点：精简检查挂在 fork 文件 `internal/evolution/job.go` 的定时任务里（新文件 `condense.go`），`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9022_evolution_review`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认四个配置项。P5 没有新的上游触点：度量挂在 fork 文件 `internal/evolution/job.go` 的定时任务里，`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9021_evolution_effect`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认三个配置项。P4 没有新增上游文件：在已是触点的 `issue-detail.tsx` 里，紧挨 M-194 的两处 fork 行（导入块后的 fork 导入、侧栏属性里的 Super Agent 行）各加一行，不新增独立冲突块；后端路由仍在 fork 文件 `evolution_agent.go`，`workspace_delete_manifest_test.go` 在 P2 那块里登记两张新表。迁移 `9020_evolution_apply`（两张新表，DO 块建表，含 down）。P3 没有新的上游触点：路由加在 fork 文件 `evolution_agent.go` 的 `MountEvolution` 里，其余都是 fork 新文件。P2 没有新的上游文件，在已有 fork 改动的 3 个上游文件上各追加一块：`main.go` 一行注册定时任务（紧挨 `agentrouter.Register`）；`workspace.go` 的删除步骤（紧挨 Router 那块）；`workspace_delete_manifest_test.go` 登记两张新表。前端没有新的上游触点（只改 fork 自己的文件）。
 
 P1：后端 5 个上游文件各 1 块：`daemon.go` 拼接提示词、`mika_agent.go` 的 `systemInstructionsFor` 展示提示词（两处都调用 fork 的 `service.ComposeForkSystemInstructions` / `ForkSystemInstructions`，以后新增 fork 系统 agent 不用再改这两个文件）、`builtin_skills.go` 的技能映射、`router.go` 挂载路由、`keys.go` 发布开关。前端 11 个上游文件：`package.json` 导出、设置页 3 块、i18n 类型和 8 个语言入口各 2 块，除设置页工作区分组那一处外都紧挨着 Router 已有的 fork 行。
