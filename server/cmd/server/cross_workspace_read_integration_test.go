@@ -10,13 +10,17 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
@@ -204,6 +208,86 @@ func TestCrossWorkspaceRead(t *testing.T) {
 		t.Fatalf("audit listing: %d rows (%v): %s", len(rows), err, audit)
 	}
 
+	// Attachments: only those on an issue or comment the reader can see.
+	// Chat files (including a chat scoped to the private project), drafts
+	// and other files outside an issue are not part of a read grant.
+	chatSession := func(projectID any) string {
+		t.Helper()
+		var id string
+		if err := testPool.QueryRow(ctx, `
+			INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, project_id)
+			VALUES ($1, $2, $3, 'cross read chat', $4) RETURNING id::text`,
+			target, agentID, testUserID, projectID).Scan(&id); err != nil {
+			t.Fatalf("insert chat session: %v", err)
+		}
+		return id
+	}
+	attachment := func(issueID, chatSessionID any) string {
+		t.Helper()
+		var id string
+		if err := testPool.QueryRow(ctx, `
+			INSERT INTO attachment (workspace_id, issue_id, chat_session_id, uploader_type, uploader_id, filename, url, content_type, size_bytes)
+			VALUES ($1, $2, $3, 'member', $4, 'f.txt', 'https://example.com/f.txt', 'text/plain', 1)
+			RETURNING id::text`, target, issueID, chatSessionID, testUserID).Scan(&id); err != nil {
+			t.Fatalf("insert attachment: %v", err)
+		}
+		return id
+	}
+	on.want(http.StatusOK, "GET", "/api/attachments/"+attachment(publicIssue, nil), token, target, nil)
+	for name, id := range map[string]string{
+		"chat":                 attachment(nil, chatSession(nil)),
+		"private project chat": attachment(nil, chatSession(project)),
+		"outside any issue":    attachment(nil, nil),
+		"private issue":        attachment(privateIssue, nil),
+	} {
+		for _, path := range []string{"/api/attachments/" + id, "/api/attachments/" + id + "/content"} {
+			if got, out := on.do("GET", path, token, target, nil); got != http.StatusNotFound {
+				t.Fatalf("%s attachment: GET %s = %d, want 404: %s", name, path, got, out)
+			}
+		}
+	}
+
+	// Every allowlisted route that names an issue hides the private one, and
+	// no allowlisted route writes: the target's issues, comments and
+	// activity are unchanged after calling all of them.
+	counts := func() [3]int {
+		t.Helper()
+		var c [3]int
+		if err := testPool.QueryRow(ctx, `
+			SELECT (SELECT count(*) FROM issue WHERE workspace_id = $1),
+			       (SELECT count(*) FROM comment WHERE workspace_id = $1),
+			       (SELECT count(*) FROM activity_log WHERE workspace_id = $1)`, target).Scan(&c[0], &c[1], &c[2]); err != nil {
+			t.Fatalf("count target rows: %v", err)
+		}
+		return c
+	}
+	before := counts()
+	for _, pattern := range middleware.CrossWorkspaceReadPatterns() {
+		method, path, _ := strings.Cut(pattern, " ")
+		issueScoped := strings.HasPrefix(path, "/api/issues/*")
+		switch {
+		case issueScoped:
+			path = strings.Replace(path, "*", privateIssue, 1)
+		case strings.HasPrefix(path, "/api/workspaces/*"):
+			path = strings.Replace(path, "*", target, 1)
+		}
+		path = strings.ReplaceAll(path, "*", "00000000-0000-0000-0000-000000000001")
+		var body any
+		if method == http.MethodPost {
+			body = map[string]any{}
+		}
+		got, out := on.do(method, path+"?workspace_id="+target, token, "", body)
+		if got >= 500 || (got == http.StatusForbidden && strings.Contains(out, "read-only routes only")) {
+			t.Errorf("%s %s: status %d: %s", method, path, got, out)
+		}
+		if issueScoped && got != http.StatusNotFound {
+			t.Errorf("%s %s on the private issue: status %d, want 404: %s", method, path, got, out)
+		}
+	}
+	if after := counts(); after != before {
+		t.Fatalf("allowlisted routes wrote to the target: before %v, after %v", before, after)
+	}
+
 	// Revoking takes effect on the next request.
 	on.want(http.StatusOK, "DELETE", "/api/workspaces/"+target+"/cross-read-grants/"+grant, testToken, "", nil)
 	on.want(http.StatusForbidden, "GET", "/api/issues/"+publicIssue, token, target, nil)
@@ -219,4 +303,53 @@ func TestCrossWorkspaceRead(t *testing.T) {
 		t.Fatalf("expire grant: %v", err)
 	}
 	on.want(http.StatusForbidden, "GET", "/api/issues/"+publicIssue, token, target, nil)
+}
+
+var crossReadRouteParam = regexp.MustCompile(`\{[^}]+\}`)
+
+// TestCrossWorkspaceReadAllowlistAgainstTheRouter walks every route the
+// router registers. The allowlist gate runs in Auth, before routing, so what
+// it admits is decided by matching each registered route here: every route it
+// admits must be a read (GET, or one of the POST reads), every allowlist entry
+// must still name a registered route, and everything else is refused.
+func TestCrossWorkspaceReadAllowlistAgainstTheRouter(t *testing.T) {
+	router, _ := NewRouterWithOptions(testPool, realtime.NewHub(), events.New(), analytics.NoopClient{}, nil, RouterOptions{})
+	postReads := map[string]bool{
+		"POST /api/issues/query":        true,
+		"POST /api/issues/table/groups": true,
+		"POST /api/issues/table/rows":   true,
+		"POST /api/issues/table/facets": true,
+	}
+	hit := map[string]bool{}
+	admitted, refused := 0, 0
+	err := chi.Walk(router, func(method, pattern string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		path := crossReadRouteParam.ReplaceAllString(pattern, "x")
+		if strings.Contains(path, "*") {
+			refused++ // a catch-all; the gate sees the concrete path and its allowlist has none
+			return nil
+		}
+		entry, ok := middleware.CrossWorkspaceReadRoute(method, path)
+		if !ok {
+			refused++
+			return nil
+		}
+		admitted++
+		hit[entry] = true
+		if method != http.MethodGet && !postReads[entry] {
+			t.Errorf("%s %s is admitted by %q but is not a read", method, pattern, entry)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk router: %v", err)
+	}
+	for _, entry := range middleware.CrossWorkspaceReadPatterns() {
+		if !hit[entry] {
+			t.Errorf("allowlist entry %q names no registered route", entry)
+		}
+	}
+	if admitted == 0 || refused == 0 {
+		t.Fatalf("walked %d admitted and %d refused routes", admitted, refused)
+	}
+	t.Logf("cross-workspace reader: %d routes admitted, %d refused", admitted, refused)
 }

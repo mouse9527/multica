@@ -173,13 +173,28 @@ func matchCrossWorkspaceReadRoute(r *http.Request) (string, bool) {
 	if r.URL.RawPath != "" {
 		path = r.URL.RawPath
 	}
+	return CrossWorkspaceReadRoute(r.Method, path)
+}
+
+// CrossWorkspaceReadRoute returns the allowlist pattern that admits method on
+// path (as chi routes it), if any. Exported for the router-wide test.
+func CrossWorkspaceReadRoute(method, path string) (string, bool) {
 	segments := splitPath(path)
 	for _, route := range crossWorkspaceReadRoutes {
-		if route.matches(r.Method, segments) {
+		if route.matches(method, segments) {
 			return route.pattern(), true
 		}
 	}
 	return "", false
+}
+
+// CrossWorkspaceReadPatterns returns the allowlist as written.
+func CrossWorkspaceReadPatterns() []string {
+	out := make([]string, 0, len(crossWorkspaceReadRoutes))
+	for _, route := range crossWorkspaceReadRoutes {
+		out = append(out, route.pattern())
+	}
+	return out
 }
 
 func (route guestRoute) pattern() string {
