@@ -98,3 +98,22 @@
 阶段二另外补了规范要求的两项校验，也都在 fork 文件里：`remotemcp.DiscoverOAuthServer`（`oauth_issuer_fork.go`）代替上游 `DiscoverOAuth` 做 OAuth 条目的发现，多了 RFC 8414 §3.3 的 `issuer` 校验，并读出 `authorization_response_iss_parameter_supported`；上游 `DiscoverOAuth` 不动，Plugin 等其他调用方行为不变。上游以后如果自己给 `DiscoverOAuth` 加了 issuer 校验，可以考虑合回去。回调的 RFC 9207 `iss` 校验在 `server/internal/mcpoauth/issuer_response.go`，预期的 issuer 编码在 state 里（存的是整个 state 的哈希），没有给 `mcp_oauth_state` 加列。
 
 阶段三（额外授权参数白名单，M-295）同样只改 fork 文件，新增 `server/internal/mcpoauth/authorization_params.go`，上游文件没有新钩子。白名单键在服务端 `authorizationParamKeys` 和前端 `MCP_OAUTH_AUTHORIZATION_PARAMS` 各一份，要一起改。
+
+## 跨工作区只读授权（M-307）
+
+逻辑在 fork 文件里：`server/internal/crossread/`、`server/internal/middleware/cross_ws_read_fork.go`、`server/internal/handler/cross_ws_read_fork.go`、`server/internal/featureflags/cross_workspace_read_fork.go`、`server/cmd/multica/cmd_workspace_read_grant_fork.go`、`server/cmd/migrate/crossread_migrations.go`，迁移 `9028`–`9030`，说明见 `docs/cross-workspace-read.md`。上游文件里的钩子，都标着 `Modified for the mouse9527/multica fork (M-307)`：
+
+- `server/internal/middleware/auth.go`：`mat_` 分支里，`rejectTemporarilyDisabledUser` 之后、`checkTaskTokenWorkspaceTarget` 之前调用 `serveCrossWorkspaceRead`。它必须在 `checkTaskTokenWorkspaceTarget` 之前（那里会拒绝别的工作区），也必须在把 `X-Workspace-ID` 改写成绑定工作区之前（否则看不到请求指向哪里）。返回 false 时一切照旧。
+- `server/internal/middleware/workspace.go`：`buildMiddleware` 解析出工作区之后、任务令牌兜底检查之前调用 `serveCrossWorkspaceReaderMember`。
+- `server/internal/handler/actor_guards.go`：`isMachineCredentialActor` 多一个 `middleware.ActorSourceCrossWorkspaceReader`。上游注释写明「未登记的来源按人类对待」，漏掉这一行，只读身份就能通过 `RequireHumanActor`。
+- `server/internal/handler/handler.go`：`getWorkspaceMember` 开头先问 `middleware.CrossWorkspaceReaderMember`。只读身份没有 member 行，按用户查成员的读接口（状态、workflow、squad 等）靠它拿到合成成员。
+- `server/internal/handler/workspace.go`：删除工作区的步骤里多一步 `crossread.DeleteWorkspaceData`。
+- `server/cmd/server/router.go`：主路由组在 `middleware.Auth` 之前 `Use(middleware.WithCrossWorkspaceRead(...))`；owner/admin 组里挂 `/cross-read-grants`。
+- 测试登记：`workspace_delete_manifest_test.go` 两张表；`fork_private_project_routes_test.go` 的 `cross-read-grants/{grantId}`。
+
+同步时要看的语义点（文本合并不会提示）：
+
+- 上游新增读路由不会自动进白名单（默认拒绝，安全）；需要时手工加进 `crossWorkspaceReadRoutes`。上游如果把某个白名单里的 GET 改成有写入副作用，要从白名单里拿掉。
+- 上游如果新增按 `X-User-ID` 查成员、但不经过 `getWorkspaceMember` 的读路径，只读身份在那里会得到 404/403（失败即拒绝，不会越权），按需补钩子。
+- 上游如果改了 secret 脱敏的判断（目前按 owner/admin 角色或资源 owner 判断），要确认合成角色 `cross_ws_reader` 仍然拿不到 secret。
+- 上游如果新增机器凭据类型或改了 `isMachineCredentialActor`，保留这一行。
