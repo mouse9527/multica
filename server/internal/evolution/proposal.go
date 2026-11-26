@@ -1,6 +1,6 @@
 // Added by the mouse9527/multica fork: Evolution P3, proposals (M-137); P4
 // (M-138) keeps the patched field; P6 (M-140) adds team proposals and
-// condense proposals.
+// condense proposals; M-296 adds retire_agent and metric evidence.
 
 package evolution
 
@@ -24,9 +24,9 @@ const (
 	TargetAgent    = "agent"
 	TargetWorkflow = "workflow"
 	TargetSquad    = "squad"
-	// TargetTeam is the workspace's team as a whole: creating or merging
-	// agents and routing work between agents and squads. Its id is the
-	// workspace's.
+	// TargetTeam is the workspace's team as a whole: creating, merging, or
+	// retiring agents and routing work between agents and squads. Its id is
+	// the workspace's.
 	TargetTeam = "team"
 
 	EvidenceComment = "comment"
@@ -44,7 +44,7 @@ var ProposalFields = map[string][]string{
 	TargetAgent:    {"instructions", "description", "skills"},
 	TargetWorkflow: {"steps", "name", "description"},
 	TargetSquad:    {"instructions", "description", "members", "leader"},
-	TargetTeam:     {"new_agent", "merge_agents", "routing"},
+	TargetTeam:     {"new_agent", "merge_agents", "retire_agent", "routing"},
 }
 
 // CondenseTopic is the topic of every condense proposal, set by the server:
@@ -112,13 +112,16 @@ type ProposalChange struct {
 	After  string `json:"after"`
 }
 
-// ProposalEvidence points at one comment, chat message, or issue. Quote is
-// allowed on comments only.
+// ProposalEvidence points at one comment, chat message, or issue, or cites
+// one metric (M-296): ID is then a metric reference (see ParseMetricRef) and
+// Value the number cited. Quote is allowed on comments only, Value on
+// metrics only.
 type ProposalEvidence struct {
-	Type  string `json:"type"`
-	ID    string `json:"id"`
-	Note  string `json:"note"`
-	Quote string `json:"quote"`
+	Type  string   `json:"type"`
+	ID    string   `json:"id"`
+	Note  string   `json:"note"`
+	Quote string   `json:"quote"`
+	Value *float64 `json:"value,omitempty"`
 }
 
 // Rejection codes.
@@ -251,11 +254,24 @@ func (p *ProposalRequest) validate() error {
 	for i, e := range p.Evidence {
 		switch e.Type {
 		case EvidenceComment, EvidenceChat, EvidenceIssue:
+			if _, err := util.ParseUUID(e.ID); err != nil {
+				return reject(RejectInvalid, "evidence[%d].id must be a uuid", i)
+			}
+			if e.Value != nil {
+				return reject(RejectInvalid, "evidence[%d].value is only for metric evidence", i)
+			}
+		case EvidenceMetric:
+			ref, err := ParseMetricRef(e.ID)
+			if err != nil {
+				return reject(RejectInvalid, "evidence[%d].id: %s", i, err.Error())
+			}
+			p.Evidence[i].ID = ref.String()
+			e.ID = p.Evidence[i].ID
+			if e.Value == nil {
+				return reject(RejectInvalid, "evidence[%d].value is required: the number the metrics source gives for %s", i, e.ID)
+			}
 		default:
-			return reject(RejectInvalid, "evidence[%d].type must be comment, chat, or issue", i)
-		}
-		if _, err := util.ParseUUID(e.ID); err != nil {
-			return reject(RejectInvalid, "evidence[%d].id must be a uuid", i)
+			return reject(RejectInvalid, "evidence[%d].type must be comment, chat, issue, or metric", i)
 		}
 		key := e.Type + ":" + e.ID
 		if seen[key] {
@@ -272,7 +288,7 @@ func (p *ProposalRequest) validate() error {
 			continue
 		}
 		if e.Type != EvidenceComment {
-			return reject(RejectQuote, "evidence[%d]: only comments may be quoted; summarize chats and issues in the note instead", i)
+			return reject(RejectQuote, "evidence[%d]: only comments may be quoted; summarize chats, issues, and metrics in the note instead", i)
 		}
 		if utf8.RuneCountInString(e.Quote) > MaxQuoteRunes {
 			return reject(RejectQuote, "evidence[%d].quote is longer than %d characters", i, MaxQuoteRunes)
@@ -300,7 +316,11 @@ func (p *ProposalRequest) trim() {
 	for i := range p.Evidence {
 		e := &p.Evidence[i]
 		e.Type = strings.TrimSpace(e.Type)
-		e.ID = strings.ToLower(strings.TrimSpace(e.ID))
+		e.ID = strings.TrimSpace(e.ID)
+		if e.Type != EvidenceMetric {
+			// A metric reference keeps the case of its status key.
+			e.ID = strings.ToLower(e.ID)
+		}
 		e.Note = strings.TrimSpace(e.Note)
 		e.Quote = strings.TrimSpace(e.Quote)
 	}
@@ -564,6 +584,8 @@ type ResolvedEvidence struct {
 	IssueID         string
 	IssueIdentifier string
 	ChatSessionID   string
+	// Metric is the recomputed number a metric item cites.
+	Metric *MetricReading
 }
 
 // CheckEvidence applies the rules that need the resolved evidence: enough

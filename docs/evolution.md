@@ -171,7 +171,22 @@ chat 游标是「已告知」的唯一凭证：只有上面第 2 步会建它。
 
 代码：`server/internal/evolution/structure_review.go`，`job.go` 的 `startRun` 建 issue 时调用。测试：`structure_review_test.go`（周起点、标题、说明）、`TestEvolutionStructuralReviewRun`（开和关时定时任务建出的 issue）、`TestEvolutionMetricsSource`（同一周已有没失败的运行时 409，那次改成失败后放行）。
 
-提示词和技能还没写结构分析的做法（第 3 个 PR）。
+### 结构分析的提示词、`retire_agent` 与 `metric` 证据（M-296）
+
+- **提示词和技能**：`INSTRUCTIONS.md` 多一段、`SKILL.md` 多一节「Structural analysis」和报告里的「Structure」段，都写明**只在分析 issue 列出 `metrics` 来源时**生效；没列时不读、不引用指标。没开 `metrics` 的工作区，分析 issue 不会列它，进化的做法和以前一样。
+- **`retire_agent`**：team 提案的第四个字段（撤掉一个智能体：撤哪个、工作交给谁、会少什么），和其他 team 提案一样只出文本、需手动执行，没有应用和回滚。
+- **`metric` 证据**：`{"type": "metric", "id": "<引用>", "value": <数>, "note": "…"}`。引用格式：
+  - `workflow:<工作流 id|default>/step:<状态 key>/<指标>`（`entries`、`exits`、`returns`、`return_rate`、`dwell_p50_hours`、`dwell_p90_hours`）、`workflow:<id|default>/issues`；
+  - `agent:<agent id>/<指标>`（`runs`、`finished`、`completed`、`failed`、`cancelled`、`failure_rate`、`cancel_rate`、`duration_p50_seconds`、`short_runs`、`short_run_rate`、`handoffs_in`、`handoffs_out`）；
+  - `issue:<issue id>/returns`（只限退回循环列表里的 issue）。
+- **服务端核对**：只有这周的结构复盘（`metrics` 开着）能引用指标。服务端用同一个函数按结构复盘的 14 天窗口重算，三种情况拒绝（`insufficient_evidence`）：
+  - 指标不存在或量不出；
+  - 样本量低于 `min_effect_sample`（默认 5；比率的样本是已结束的运行数或退出次数，耗时和停留的样本是计时的条数）；
+  - `value` 和重算值相差超过 0.01 与 1% 中较大的一个（比率要写小数，不写百分数）。
+- **独立来源**：同一个步骤、同一个 agent、同一个 issue 的多个数字算一个来源。
+- **提案正文**：证据行显示服务端重算的值、样本和窗口，不只是进化写的数。每条结构提案要在 `problem`、`expected_effect` 里写清引用的指标、当前值（基线）和预期变化，这一条由提示词和技能要求，服务端不检查。
+
+代码：新文件 `server/internal/evolution/metric_evidence.go`（引用解析、查值、核对）；`proposal.go`（白名单、证据类型）、`proposal_store.go`（`resolveEvidence` 重算）、`proposal_render.go`（证据行）。测试：`metric_evidence_test.go`（解析、核对样例 1、3 的数字、校验、渲染、独立来源），`TestEvolutionProposalMetricEvidence`（结构复盘里提 `retire_agent`，值不对、样本太小、关掉 `metrics` 后都被拒）。
 
 ## 游标与调度（P2）
 
@@ -196,17 +211,17 @@ chat 游标是「已告知」的唯一凭证：只有上面第 2 步会建它。
 
 分析运行用 `multica evolution propose --file <proposal.json>` 调 `POST /api/evolution/proposals`。agent 不直接建 issue，由服务端校验后建，所以下面的规则都由服务端强制，不靠提示词自觉。
 
-**请求**（拒绝未知字段）：`target{type,id}`、`field`、`topic`、`title`、`problem`、`change{before,after}`、`evidence[{type,id,note,quote}]`、`expected_effect`、`risk`（low/medium/high）、`risk_reason`、`rollback`。
+**请求**（拒绝未知字段）：`target{type,id}`、`field`、`topic`、`title`、`problem`、`change{before,after}`、`evidence[{type,id,note,quote,value}]`（`type` 为 comment、chat、issue 或 metric，`value` 只给 metric）、`expected_effect`、`risk`（low/medium/high）、`risk_reason`、`rollback`。
 
 **拒绝**（返回 `{"code","error"}`，`error` 是给 agent 看的原因；内容类 422，配额与冷却 409，请求体不合法 400）：
 
 | code | 什么时候 |
 |---|---|
 | `target_not_allowed` | 目标类型不是 agent / workflow / squad / team；目标不存在、已归档、是内部系统 agent（`kind=system`）、被排除；**目标是进化自己**；team 的 id 不是本工作区；精简检查里目标不在这次检查的名单上 |
-| `field_not_allowed` | 字段不在白名单：agent 只限 `instructions`、`description`、`skills`；workflow 只限 `steps`、`name`、`description`；squad 只限 `instructions`、`description`、`members`、`leader`（squad 提案只出文本）；team 只限 `new_agent`、`merge_agents`、`routing`（只出文本，P6）。`custom_env`、`custom_args`、`mcp_config`、runtime、权限、可见性、密钥类字段单独给出原因 |
+| `field_not_allowed` | 字段不在白名单：agent 只限 `instructions`、`description`、`skills`；workflow 只限 `steps`、`name`、`description`；squad 只限 `instructions`、`description`、`members`、`leader`（squad 提案只出文本）；team 只限 `new_agent`、`merge_agents`、`retire_agent`、`routing`（只出文本，P6；`retire_agent` 为 M-296）。`custom_env`、`custom_args`、`mcp_config`、runtime、权限、可见性、密钥类字段单独给出原因 |
 | `change_does_not_match_target` | `change.before` 不在目标当前的文本里（比较时忽略空白排版）；`before` 为空时，`after` 已经在目标里 |
 | `change_is_ambiguous` | `change.before` 在目标当前的文本里出现不止一处（P4 起：apply 要写的位置必须唯一） |
-| `insufficient_evidence` | 没有证据；独立来源数低于 `min_evidence_count`（同一 issue 下的多条评论算一个来源）；证据指向进化读不到的内容（私有项目、私有 agent 的会话、被排除的项目和 agent、进化自己的评论和会话、进化自己的分析和提案 issue） |
+| `insufficient_evidence` | 没有证据；独立来源数低于 `min_evidence_count`（同一 issue 下的多条评论算一个来源）；证据指向进化读不到的内容（私有项目、私有 agent 的会话、被排除的项目和 agent、进化自己的评论和会话、进化自己的分析和提案 issue）；`metric` 证据不在结构复盘里、量不出、样本不足或数值不符（M-296） |
 | `quote_not_allowed` | 在 chat 或 issue 证据上带 `quote`；`quote` 超过 120 字；`quote` 不是那条评论的原文摘录；任何一个发布出去的字段（标题、问题、改动后的文本、预期效果、风险、回滚、证据说明和摘录）里出现某条 chat 消息中连续 20 个字符（或整条 8 字以上的短消息），或某条评论中连续 121 个字符以上。比对范围是所引的证据**加上本次运行通过数据通道读到的全部评论和 chat**（按游标到已读位置重读，过滤规则与数据通道相同） |
 | `invalid_proposal` | 请求不合法；P4 起也包括：改动后工作流的 `steps` 不再是合法 JSON；P6 起也包括：team 提案带了 `change.before`、精简提案带了证据或 `change.before` 为空 |
 | `change_not_shorter` | 精简提案改完后的指令不比现在短（P6） |
@@ -289,7 +304,7 @@ P4 起，新建提案时服务端同时在 `evolution_proposal` 表里存下这�
 
 精简提案和其他 agent 指令提案一样存进 `evolution_proposal`，由所有者或管理员**应用**、**回滚**，写版本行，应用满观察窗口后照常度量效果。
 
-**团队类提案**：目标类型 `team`，`target.id` 是本工作区的 id，字段 `new_agent`（新建 agent）、`merge_agents`（合并 agent）、`routing`（工作在 agent 和 squad 之间怎么分派）。`change.before` 必须为空，`change.after` 写要做的改动；证据要求与其他提案相同。服务端只建提案 issue，正文注明「需手动执行」，**不存可应用的改动**（`evolution_proposal` 没有这一行），所以没有应用和回滚：接口返回 404，issue 页不显示提案行，不写任何 agent、squad。squad 提案同样只出文本（P4 起 apply 返回 `target_not_allowed`），正文也注明需手动执行。
+**团队类提案**：目标类型 `team`，`target.id` 是本工作区的 id，字段 `new_agent`（新建 agent）、`merge_agents`（合并 agent）、`retire_agent`（撤掉 agent，M-296）、`routing`（工作在 agent 和 squad 之间怎么分派）。`change.before` 必须为空，`change.after` 写要做的改动；证据要求与其他提案相同。服务端只建提案 issue，正文注明「需手动执行」，**不存可应用的改动**（`evolution_proposal` 没有这一行），所以没有应用和回滚：接口返回 404，issue 页不显示提案行，不写任何 agent、squad。squad 提案同样只出文本（P4 起 apply 返回 `target_not_allowed`），正文也注明需手动执行。
 
 ## 效果度量（P5）
 
@@ -357,6 +372,6 @@ P4：提案 issue 的侧栏「属性」区（默认展开，紧跟工作流那�
 
 ## 上游触点
 
-见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。M-296（指标来源、每周结构复盘）没有上游触点：新文件 `internal/evolution/signals_metrics.go`、`internal/evolution/structure_review.go`、`internal/handler/evolution_metrics.go`，其余只改 fork 文件（`config.go`、`evolution_data.go`、`cmd_evolution.go`、`packages/core/evolution/schemas.ts`），没有迁移。M-231（产出归属项目）没有新的上游触点：只改 fork 文件 `internal/evolution/` 里三处建 issue 的参数和配置（新文件 `output_project.go`），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认一个配置项。P6 没有新的上游触点：精简检查挂在 fork 文件 `internal/evolution/job.go` 的定时任务里（新文件 `condense.go`），`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9022_evolution_review`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认四个配置项。P5 没有新的上游触点：度量挂在 fork 文件 `internal/evolution/job.go` 的定时任务里，`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9021_evolution_effect`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认三个配置项。P4 没有新增上游文件：在已是触点的 `issue-detail.tsx` 里，紧挨 M-194 的两处 fork 行（导入块后的 fork 导入、侧栏属性里的 Super Agent 行）各加一行，不新增独立冲突块；后端路由仍在 fork 文件 `evolution_agent.go`，`workspace_delete_manifest_test.go` 在 P2 那块里登记两张新表。迁移 `9020_evolution_apply`（两张新表，DO 块建表，含 down）。P3 没有新的上游触点：路由加在 fork 文件 `evolution_agent.go` 的 `MountEvolution` 里，其余都是 fork 新文件。P2 没有新的上游文件，在已有 fork 改动的 3 个上游文件上各追加一块：`main.go` 一行注册定时任务（紧挨 `agentrouter.Register`）；`workspace.go` 的删除步骤（紧挨 Router 那块）；`workspace_delete_manifest_test.go` 登记两张新表。前端没有新的上游触点（只改 fork 自己的文件）。
+见 [github-issues-upstream-changes.md](github-issues-upstream-changes.md)。M-296（指标来源、每周结构复盘、`metric` 证据）没有上游触点：新文件 `internal/evolution/signals_metrics.go`、`internal/evolution/structure_review.go`、`internal/evolution/metric_evidence.go`、`internal/handler/evolution_metrics.go`，其余只改 fork 文件（`config.go`、`evolution_data.go`、`cmd_evolution.go`、`packages/core/evolution/schemas.ts`），没有迁移。M-231（产出归属项目）没有新的上游触点：只改 fork 文件 `internal/evolution/` 里三处建 issue 的参数和配置（新文件 `output_project.go`），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认一个配置项。P6 没有新的上游触点：精简检查挂在 fork 文件 `internal/evolution/job.go` 的定时任务里（新文件 `condense.go`），`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9022_evolution_review`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认四个配置项。P5 没有新的上游触点：度量挂在 fork 文件 `internal/evolution/job.go` 的定时任务里，`workspace_delete_manifest_test.go` 在已有的 Evolution 那块里登记新表，迁移 `9021_evolution_effect`（一张新表，DO 块建表，含 down），前端只在 fork 文件 `packages/core/evolution/schemas.ts` 里多认三个配置项。P4 没有新增上游文件：在已是触点的 `issue-detail.tsx` 里，紧挨 M-194 的两处 fork 行（导入块后的 fork 导入、侧栏属性里的 Super Agent 行）各加一行，不新增独立冲突块；后端路由仍在 fork 文件 `evolution_agent.go`，`workspace_delete_manifest_test.go` 在 P2 那块里登记两张新表。迁移 `9020_evolution_apply`（两张新表，DO 块建表，含 down）。P3 没有新的上游触点：路由加在 fork 文件 `evolution_agent.go` 的 `MountEvolution` 里，其余都是 fork 新文件。P2 没有新的上游文件，在已有 fork 改动的 3 个上游文件上各追加一块：`main.go` 一行注册定时任务（紧挨 `agentrouter.Register`）；`workspace.go` 的删除步骤（紧挨 Router 那块）；`workspace_delete_manifest_test.go` 登记两张新表。前端没有新的上游触点（只改 fork 自己的文件）。
 
 P1：后端 5 个上游文件各 1 块：`daemon.go` 拼接提示词、`mika_agent.go` 的 `systemInstructionsFor` 展示提示词（两处都调用 fork 的 `service.ComposeForkSystemInstructions` / `ForkSystemInstructions`，以后新增 fork 系统 agent 不用再改这两个文件）、`builtin_skills.go` 的技能映射、`router.go` 挂载路由、`keys.go` 发布开关。前端 11 个上游文件：`package.json` 导出、设置页 3 块、i18n 类型和 8 个语言入口各 2 块，除设置页工作区分组那一处外都紧挨着 Router 已有的 fork 行。
