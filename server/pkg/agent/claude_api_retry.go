@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
 // claudeSubtypeAPIRetry is the system event Claude Code emits each time a
@@ -143,6 +145,8 @@ func (ev claudeAPIRetryEvent) progressText() string {
 }
 
 // failureText is the task error when the daemon gives up before the CLI does.
+// It starts with taskfailure.ClaudeAPIRetryGaveUpPrefix, which is how the
+// server recognises the turn and gives a chat member their prompt back.
 //
 // The wording is read by taskfailure.Classify: an HTTP status keeps the
 // provider's own bucket (5xx → provider_server_error, 429/529 → capacity),
@@ -152,8 +156,8 @@ func (ev claudeAPIRetryEvent) progressText() string {
 // provider_network bucket.
 func (ev claudeAPIRetryEvent) failureText(failAfter int) string {
 	return fmt.Sprintf(
-		"claude: model API kept failing with %s and the turn produced no output; gave up after %d retries (Claude Code allows %s). Set MULTICA_CLAUDE_API_RETRY_FAIL_AFTER on the daemon to change this (0 disables).",
-		ev.describeError(), failAfter, claudeAPIRetryMaxLabel(ev.maxRetries),
+		"%s with %s and the turn produced no output; gave up after %d retries (Claude Code allows %s). Set MULTICA_CLAUDE_API_RETRY_FAIL_AFTER on the daemon to change this (0 disables).",
+		taskfailure.ClaudeAPIRetryGaveUpPrefix, ev.describeError(), failAfter, claudeAPIRetryMaxLabel(ev.maxRetries),
 	)
 }
 

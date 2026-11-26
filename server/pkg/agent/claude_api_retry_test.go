@@ -86,6 +86,9 @@ func TestClaudeAPIRetryFailureTextClassifiesAsProviderError(t *testing.T) {
 	for _, tc := range cases {
 		ev := claudeAPIRetryEvent{attempt: 4, maxRetries: 10, errorStatus: tc.status, errorKind: tc.kind}
 		text := ev.failureText(4)
+		if !taskfailure.IsClaudeAPIRetryGaveUp(text) {
+			t.Errorf("failure text %q is not recognised by the server's draft restore", text)
+		}
 		if got := taskfailure.Classify(text); got != tc.want {
 			t.Errorf("failure text %q classifies as %q, want %q", text, got, tc.want)
 		}
@@ -237,6 +240,9 @@ func TestClaudeExecuteFailsFastOnRepeatedAPIRetriesWithoutOutput(t *testing.T) {
 	}
 	if run.result.Output != "" {
 		t.Fatalf("a failed run must not carry output, got %q", run.result.Output)
+	}
+	if !taskfailure.IsClaudeAPIRetryGaveUp(run.result.Error) {
+		t.Fatalf("error %q must start with the give-up prefix the server matches", run.result.Error)
 	}
 }
 

@@ -40,11 +40,14 @@ func claudeAPIRetryFailAfterFromEnv() (int, error) {
 // apiRetryTranscriptContent returns the transcript line for a backend's model
 // API retry status, and whether msg is one.
 //
-// The line is stored as an "error" row: chat and the task page already render
-// those inline, so a retrying run shows "Model API returned HTTP 504 …;
-// retrying (attempt 3/10 …)" instead of looking stuck. The message itself is a
-// MessageStatus, so it does not count as the run's output — a resumed session
-// that only ever retried still counts as silent when it is cancelled.
+// The line is stored as an "error" row tagged with tool
+// protocol.TaskMessageToolAPIRetry: chat and the task page already render
+// error rows inline, so a retrying run shows "Model API returned HTTP 504 …;
+// retrying (attempt 3/10 …)" instead of looking stuck. It is progress, not
+// output, on both sides: the message is a MessageStatus, so a resumed session
+// that only ever retried still counts as silent when it is cancelled; and the
+// tag keeps the server's empty-transcript check (HasTaskMessages) false, so
+// cancelling such a turn, or the turn giving up, still restores the draft.
 func apiRetryTranscriptContent(msg agent.Message) (string, bool) {
 	if msg.Type != agent.MessageStatus || msg.Status != agent.MessageStatusAPIRetry || msg.Content == "" {
 		return "", false

@@ -5438,6 +5438,7 @@ func (s *TaskService) FailTaskWithTransition(ctx context.Context, taskID pgtype.
 	var task db.AgentTaskQueue
 	var retried *db.AgentTaskQueue
 	var queuedChat []db.AgentTaskQueue
+	var restoredDraft *protocol.ChatCancelFinalizedPayload // mouse9527/multica fork (M-312)
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
@@ -5659,6 +5660,11 @@ func (s *TaskService) FailTaskWithTransition(ctx context.Context, taskID pgtype.
 			if err := qtx.ReleaseOnboardingKickoffFromTask(ctx, chatInputOwnerID(t)); err != nil {
 				return fmt.Errorf("release onboarding kickoff: %w", err)
 			}
+			// mouse9527/multica fork (M-312): a turn the daemon gave up on
+			// before any output returns the prompt to the composer.
+			if restoredDraft, err = restoreChatDraftAfterAPIRetryGaveUp(ctx, qtx, t, errMsg); err != nil {
+				return err
+			}
 			if _, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
 				ID:            dbid.NewV7(),
 				ChatSessionID: t.ChatSessionID,
@@ -5702,6 +5708,9 @@ func (s *TaskService) FailTaskWithTransition(ctx context.Context, taskID pgtype.
 	slog.Warn("task failed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID), "error", errMsg, "failure_reason", failureReason)
 	s.captureTaskFailed(ctx, task)
 	s.publishRequeuedChatTasks(ctx, queuedChat)
+	if restoredDraft != nil { // mouse9527/multica fork (M-312)
+		s.broadcastChatCancelFinalized(ctx, task, *restoredDraft)
+	}
 
 	// The auto-retry child (if any) was created inside the transaction above so
 	// no newer chat task could jump ahead of it. Surface it now: broadcast

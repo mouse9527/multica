@@ -10672,7 +10672,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					if content, ok := apiRetryTranscriptContent(msg); ok {
 						mu.Lock()
 						sealPendingLocked()
-						batch = append(batch, TaskMessageData{Seq: int(msgSeq.Add(1)), Type: "error", Content: content, CreatedAt: observedAt})
+						batch = append(batch, TaskMessageData{Seq: int(msgSeq.Add(1)), Type: "error", Tool: protocol.TaskMessageToolAPIRetry, Content: content, CreatedAt: observedAt})
 						mu.Unlock()
 						flushFirstVisible()
 					}
