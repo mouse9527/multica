@@ -17,6 +17,14 @@
   "action_failed": "Une erreur s’est produite. Réessayez.",
   "connect_continue": "Terminez la connexion dans votre navigateur.",
   "disconnected_toast": "{{name}} déconnecté",
+  "endpoints_confirm": {
+    "title": "Connecter {{name}} ?",
+    "description": "Les points de terminaison OAuth de ce serveur ont été saisis à la main. Continuez seulement si vous faites confiance à ces hôtes.",
+    "authorization": "Vous vous connectez sur",
+    "token": "Les jetons viennent de",
+    "cancel": "Annuler",
+    "continue": "Continuer"
+  },
   "auth": {
     "label": "Authentification",
     "none": "Aucune",
@@ -51,6 +59,21 @@
       "client_secret_post": "client_secret_post",
       "none": "none (client public)"
     }
+  },
+  "advanced": {
+    "label": "Avancé",
+    "issuer_label": "Émetteur (facultatif)",
+    "issuer_hint": "Utiliser ce serveur d'autorisation plutôt que celui indiqué par le serveur MCP.",
+    "authorization_endpoint_label": "Point de terminaison d'autorisation",
+    "token_endpoint_label": "Point de terminaison de jetons",
+    "endpoints_hint": "Renseignez les deux pour ignorer la découverte. Nécessite un client préenregistré.",
+    "endpoints_pair": "Renseignez les deux points de terminaison, ou aucun.",
+    "endpoints_need_client": "Des points de terminaison saisis à la main nécessitent un client préenregistré.",
+    "https_required": "Saisissez une URL HTTPS.",
+    "resource_label": "Ressource (facultatif)",
+    "resource_hint": "Envoyée comme indicateur de ressource à la place de l'URL du serveur.",
+    "audience_label": "Audience (facultatif)",
+    "audience_hint": "Envoyée avec la demande d'autorisation, pour les serveurs qui l'exigent."
   },
   "callback": {
     "working": "Connexion du serveur MCP…",

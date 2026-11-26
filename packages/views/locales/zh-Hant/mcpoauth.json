@@ -17,6 +17,14 @@
   "action_failed": "操作失敗，請再試一次。",
   "connect_continue": "請在瀏覽器中完成連線。",
   "disconnected_toast": "已中斷 {{name}}",
+  "endpoints_confirm": {
+    "title": "連接 {{name}}？",
+    "description": "這個伺服器的 OAuth 端點是手動填寫的。只在你信任下列主機時繼續。",
+    "authorization": "登入頁面所在主機",
+    "token": "權杖來源主機",
+    "cancel": "取消",
+    "continue": "繼續"
+  },
   "auth": {
     "label": "驗證方式",
     "none": "無",
@@ -51,6 +59,21 @@
       "client_secret_post": "client_secret_post",
       "none": "none（公開用戶端）"
     }
+  },
+  "advanced": {
+    "label": "進階",
+    "issuer_label": "Issuer（選填）",
+    "issuer_hint": "使用這個授權伺服器，而不是 MCP 伺服器指定的那個。",
+    "authorization_endpoint_label": "授權端點",
+    "token_endpoint_label": "權杖端點",
+    "endpoints_hint": "兩個都填就略過自動探索。需要預先註冊的用戶端。",
+    "endpoints_pair": "兩個端點要嘛都填，要嘛都不填。",
+    "endpoints_need_client": "手動填寫端點需要預先註冊的用戶端。",
+    "https_required": "請填寫 HTTPS 網址。",
+    "resource_label": "Resource（選填）",
+    "resource_hint": "作為資源指示符傳送，取代伺服器網址。",
+    "audience_label": "Audience（選填）",
+    "audience_hint": "隨授權請求傳送，適用於要求它的伺服器。"
   },
   "callback": {
     "working": "正在連線 MCP 伺服器…",

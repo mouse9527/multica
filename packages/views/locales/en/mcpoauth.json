@@ -17,6 +17,14 @@
   "action_failed": "Something went wrong. Try again.",
   "connect_continue": "Finish connecting in your browser.",
   "disconnected_toast": "Disconnected {{name}}",
+  "endpoints_confirm": {
+    "title": "Connect {{name}}?",
+    "description": "This server's OAuth endpoints were set by hand. Continue only if you trust these hosts.",
+    "authorization": "You sign in at",
+    "token": "Tokens come from",
+    "cancel": "Cancel",
+    "continue": "Continue"
+  },
   "auth": {
     "label": "Authentication",
     "none": "None",
@@ -51,6 +59,21 @@
       "client_secret_post": "client_secret_post",
       "none": "none (public client)"
     }
+  },
+  "advanced": {
+    "label": "Advanced",
+    "issuer_label": "Issuer (optional)",
+    "issuer_hint": "Use this authorization server instead of the one the MCP server names.",
+    "authorization_endpoint_label": "Authorization endpoint",
+    "token_endpoint_label": "Token endpoint",
+    "endpoints_hint": "Set both to skip discovery. Needs a pre-registered client.",
+    "endpoints_pair": "Set both endpoints, or neither.",
+    "endpoints_need_client": "Endpoints set by hand need a pre-registered client.",
+    "https_required": "Enter an HTTPS URL.",
+    "resource_label": "Resource (optional)",
+    "resource_hint": "Sent as the resource indicator instead of the server URL.",
+    "audience_label": "Audience (optional)",
+    "audience_hint": "Sent with the authorization request, for servers that ask for one."
   },
   "callback": {
     "working": "Connecting the MCP server...",

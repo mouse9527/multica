@@ -1,6 +1,7 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
 // Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
+// Modified for the mouse9527/multica fork: manual endpoint hosts (M-295 stage 2).
 
 import { z } from "zod";
 
@@ -22,14 +23,20 @@ const connection = McpOAuthConnectionSchema.nullable().optional().catch(null).tr
 /** Absent on an older server: read as false. */
 const flag = z.boolean().optional().catch(undefined).transform((v) => v ?? false);
 
+/** Absent on an older server, or for an entry without manual endpoints: read as "". */
+const optionalText = z.string().optional().catch(undefined).transform((v) => v ?? "");
+
 /**
  * What a list says about an entry's OAuth client: whether it names a client
- * registered in advance, and whether its client secret is set. The secret
- * itself is never returned.
+ * registered in advance, whether its client secret is set (the secret itself
+ * is never returned), and the hosts of its manual endpoints, shown before
+ * connecting.
  */
 const client = {
   preregistered: flag,
   client_secret_set: flag,
+  authorization_host: optionalText,
+  token_host: optionalText,
 };
 
 /**

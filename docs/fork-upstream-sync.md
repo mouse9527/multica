@@ -92,3 +92,5 @@
 - `server/internal/handler/workspace_delete_manifest_test.go`：`mcp_oauth_client` 登记为随工作区删除。
 
 `oauth_issuer_fork.go` 和上游 `oauth.go` 同包，直接用它的未导出函数和类型（`probeResourceMetadataURL`、`protectedResourceMetadataURL`、`validateOAuthURL`、`getOAuthJSON`、`authorizationMetadataURLs`、`containsString`、`protectedResourceMetadata`、`authorizationServerMetadata`）。上游改名会直接编译失败；上游如果改了 `DiscoverOAuth` 的检查（比如新增对元数据的校验），要对照着同步到 `DiscoverOAuthForIssuer`，文本合并不会提示。
+
+阶段二（手工端点、`resource`、`audience`，M-295）只改 fork 文件，新增 `server/internal/mcpoauth/server.go`，上游文件没有新钩子。手工端点在连接时走上游 `remotemcp.ValidateOAuthMetadata`（与发现到的端点同一套 SSRF 检查和运维白名单）；上游如果改了它的检查范围，手工端点跟着变，要确认它仍然校验授权端点和 token 端点。
