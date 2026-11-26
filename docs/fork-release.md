@@ -13,17 +13,37 @@
 
 ## 发布一个版本
 
-1. 确认要发布的提交已经在 `main` 上，`main` 的 CI 是绿的。
-2. 打 tag 并推送（第一次发布要 Owner 对具体 HEAD 批准）：
+发版的人工决定只有一个：**Owner 在 Multica 里批准发版**（具体提交和版本号）。GitHub 上不再有人工审批，`release-fork.yml` 的 `verify` job 用自动检查代替（见下文「发布闸门」）。
+
+1. 确认要发布的提交已经在 `main` 上，它在 `main` 上的 CI、CI (fork)、Build Image 三个运行都已经成功结束（还在跑时推 tag，闸门会失败）。
+2. 版本号：前半段取这个提交已合入的最新上游 tag，`N` 比同一上游版本已有的最大 `N` 大（通常加 1）。
+3. Owner 在 Multica 里批准后，打 annotated tag 并推送：
 
    ```bash
    git tag -a v0.8.1-mouse.1 <commit> -m "v0.8.1-mouse.1"
    git push origin v0.8.1-mouse.1
    ```
 
-3. 推送后两个工作流同时运行，都会先检查 tag 格式和 tag 指向的提交在 `main` 上，不满足就什么都不发布：
-   - `.github/workflows/release-fork.yml`：跑更新相关测试、签名脚本测试和 `govulncheck`；然后发布 job 等 `release` Environment 的 reviewer（Owner）在 Actions 页面批准，批准后用 `.goreleaser.fork.yml` 构建、给 darwin 二进制签名（见下文「macOS 签名」）并发布 Release。产物是 `multica-cli-<版本>-{darwin,linux,windows}-{amd64,arm64}.{tar.gz,zip}` 和 `checksums.txt`；每个压缩包带 `LICENSE`、`NOTICE`、`README*` 和修改清单 `docs/github-issues-upstream-changes.md`。最后核对两个 darwin 包里的签名、6 个平台的包和 `checksums.txt` 都在、Release 不是 pre-release、并且（最新版本时）是 latest。
-   - `.github/workflows/build-image.yml`：构建并推送 `ghcr.io/mouse9527/multica-backend:<tag>` 和 `multica-web:<tag>`。
+4. 推送后两个工作流同时运行，都会先检查 tag，不满足就什么都不发布：
+   - `.github/workflows/release-fork.yml`：`verify` job 先过发布闸门，再跑更新相关测试、签名脚本测试和 `govulncheck`；全部通过后发布 job 直接开始，用 `.goreleaser.fork.yml` 构建、给 darwin 二进制签名（见下文「macOS 签名」）并发布 Release。产物是 `multica-cli-<版本>-{darwin,linux,windows}-{amd64,arm64}.{tar.gz,zip}` 和 `checksums.txt`；每个压缩包带 `LICENSE`、`NOTICE`、`README*` 和修改清单 `docs/github-issues-upstream-changes.md`。最后核对两个 darwin 包里的签名、6 个平台的包和 `checksums.txt` 都在、Release 不是 pre-release、并且（最新版本时）是 latest。
+   - `.github/workflows/build-image.yml`：检查 tag 格式和 tag 指向的提交在 `main` 上，然后构建并推送 `ghcr.io/mouse9527/multica-backend:<tag>` 和 `multica-web:<tag>`。
+
+### 发布闸门
+
+`scripts/fork-release-verify.sh` 在 `verify` job 第一步运行（测试：`scripts/fork-release-verify.test.sh`，`verify` 先跑一遍，CI (fork) 的 `fork-ci-config` 在每个 PR 上也跑）。任一条不满足，脚本失败，`verify` 失败，发布 job 不运行：
+
+| 检查 | 怎么查 | 不满足的典型原因 |
+|---|---|---|
+| tag 格式 `vX.Y.Z-mouse.N`，`N` ≥ 1、不带前导零 | 正则 | 打错名字 |
+| tag 是 annotated tag，直接指向这次运行的提交 | 从 fork 重新拉取 tag 到 `refs/fork-release-verify/`，看对象类型和目标 | 用了 `git tag` 没加 `-a`；tag 推送后又被移动 |
+| 提交在 `main` 上 | `git merge-base --is-ancestor <提交> main`（完整 clone，浅 clone 直接失败） | 在分支或 PR 的提交上打了 tag |
+| `X.Y.Z` 是这个提交已合入的最新上游 tag | `git ls-remote --tags` 读上游的 `vX.Y.Z` tag，从新到旧找第一个是这个提交祖先的 | 同步上游后还用旧前缀，或用了还没合入的上游版本 |
+| `N` 大于同一上游版本已有的最大 `N`（不算这个 tag 自己） | fork 的 tag 列表 | 序号重复或倒退 |
+| 这个提交在 `main` 上的 CI、CI (fork)、Build Image 都是 success | Actions API 按工作流文件（`ci.yml`、`ci-fork.yml`、`build-image.yml`）、提交、`push` 事件、`main` 分支查，取最新一次运行 | 还在跑、失败、被取消（CI (fork) 在 `main` 上会被下一次推送取消），或者查不到；API 出错也算失败 |
+
+`verify` job 的 token 只有 `contents: read`、`actions: read`。
+
+闸门失败后：等检查跑完再在 Actions 里重跑这次 Release (fork) 运行；提交不对就删掉 tag，在正确的提交上按规则重新打。Build Image 的 tag 运行不经过这个闸门，闸门失败时镜像可能已经推了 `<tag>`（是最新的还会移动 `latest`），要么修好后重跑 Release (fork)，要么把 `latest` 镜像移回。
 
 ### `latest` 的规则
 
@@ -31,7 +51,7 @@
 |---|---|---|
 | 合并到 `main` | 只推 `sha-<完整提交>`，不动 `latest` | 不产生 |
 | 推 `-mouse.N` tag，且它是最新的 `-mouse.N` | 推 `<tag>`，并把 `latest` 移到这次构建 | 发布，标为 latest |
-| 推 `-mouse.N` tag，但已有更新的 `-mouse.N`（比如重跑旧 tag） | 只推 `<tag>`，不动 `latest` | 发布，不标为 latest |
+| 推 `-mouse.N` tag，但已有更新的 `-mouse.N`（比如重跑旧 tag） | 只推 `<tag>`，不动 `latest` | 闸门拒绝（`N` 不大于已有最大值），不发布 |
 
 「最新」由 `scripts/fork-release-is-newest.sh` 按上面的版本比较规则判断（测试：`scripts/fork-release-is-newest.test.sh`，两个工作流用它之前都会先跑）。它通过 GitHub API 读仓库的 tag 列表；读取失败时脚本报错退出，所在步骤失败，`latest` 不会移动，Release 也不会发布。这样 server 取 `latest` 镜像、runner 取最新 Release，两者指向同一个版本。
 
@@ -84,12 +104,12 @@ identifier "ai.multica.cli" and certificate leaf = H"<证书 SHA-1>"
 
 ### 谁拿得到私钥
 
-- `release` Environment：Secret 只放在这里；只允许 `v*.*.*-mouse.*` 形式的 tag 部署；**required reviewer 是 Owner**，每次发布 job 开始前都要 Owner 在 Actions 页面点批准，job 才拿得到 Secret。
+- `release` Environment：Secret 只放在这里；只允许 `v*.*.*-mouse.*` 形式的 tag 部署；没有 required reviewer，发布 job 能否开始由 `verify` 的发布闸门决定（Owner 2026-11-26 决定，M-297）。
 - 只有 `release-fork.yml` 的发布 job 引用这个 Environment，它只由 `-mouse.N` tag 触发。PR、普通 push 和 `fork-macos-sign.yml` 都拿不到；`fork-macos-sign.yml` 在 PR 上用一次性证书跑同样的签名流程，只为验证配置。
-- fork 是公开仓库，外部贡献者的 PR 来自他们自己的 fork：`pull_request` 事件下 GitHub 不给任何 Secret，也进不了需要审批的 Environment。
+- fork 是公开仓库，外部贡献者的 PR 来自他们自己的 fork：`pull_request` 事件下 GitHub 不给任何 Secret，也推不了 tag。
 - 还剩下的途径（主要是我们自己的智能体）：
-  - 智能体用的是本机登录的 `gh`，它带 Owner 的仓库权限。理论上能改 Environment 的规则、用 API 以 Owner 身份批准部署、推一个指向改过的工作流的 `-mouse.N` tag。Environment 防的是外部和误触发，防不住拿着 Owner 凭据的进程。约束靠规则：智能体不创建、不修改 Environment 和 Secret，不批准部署，不打 tag（首次发布要 Owner 单独批准）；Owner 批准前看一眼 `verify` job 的结果，确认 tag 指向 `main` 上审过的提交。
-  - 批准之后，发布 job 里运行的代码都能读到密钥：仓库里 `main` 的代码（GoReleaser 钩子、脚本、`go build` 时的依赖）、固定到 SHA 的 Actions、rcodesign。改这些的 PR 都要审查；工作流改动属于高档。
+  - 智能体用的是本机登录的 `gh`，它带 Owner 的仓库权限，推 tag 也是 Owner 的身份，GitHub 分不出是谁推的。闸门挡的是推错：不在 `main` 上的提交、CI 没绿、版本号不对、轻量 tag。它挡不住故意绕过：工作流文件取自 tag 指向的提交，在一个改过 `release-fork.yml`（删掉闸门）的提交上打 tag，跑的就是改过的工作流；拿着 Owner 凭据的进程也能改 Environment 的规则。约束靠规则：智能体不创建、不修改 Environment 和 Secret；只有 Owner 在 Multica 里批准了具体提交和版本号才打 tag；发布后看一眼 `verify` job 的输出，确认闸门的每一项都是 `ok`。
+  - 闸门通过之后，发布 job 里运行的代码都能读到密钥：仓库里 `main` 的代码（GoReleaser 钩子、脚本、`go build` 时的依赖）、固定到 SHA 的 Actions、rcodesign。改这些的 PR 都要审查；工作流改动属于高档。
   - Secret 写进去之后从 GitHub 读不回来；runner 用完即毁，密钥文件在 GoReleaser 之后立即删除。
 
 ### 本机过渡
