@@ -2652,9 +2652,11 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// mouse9527/multica fork: OAuth connections of entries this update removed go with them (M-269).
+	// mouse9527/multica fork: OAuth connections of entries this update removed go with them (M-269),
+	// and those made with a replaced pre-registered client need a reconnect (M-295).
 	if hasMcpConfig {
 		h.forgetRemovedAgentMCPOAuthEntries(r.Context(), updated)
+		h.settleChangedAgentMCPOAuthClients(r.Context(), existing, updated)
 	}
 	if shouldClearThinkingLevel {
 		updated, err = h.Queries.ClearAgentThinkingLevel(r.Context(), updated.ID)

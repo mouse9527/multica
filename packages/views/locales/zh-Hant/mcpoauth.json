@@ -26,6 +26,32 @@
     "oauth_hint": "儲存後，在伺服器清單中連線。",
     "https_required": "OAuth 需要 HTTPS 網址。"
   },
+  "client": {
+    "label": "用戶端",
+    "dynamic": "自動註冊",
+    "preregistered": "預先註冊",
+    "client_id_label": "Client ID",
+    "client_id_required": "請填寫 Client ID。",
+    "issuer_label": "Issuer",
+    "issuer_hint": "註冊這個用戶端的授權伺服器。",
+    "issuer_required": "請填寫 HTTPS 形式的 Issuer。",
+    "secret_label": "Client Secret（選填）",
+    "secret_hint": "公開用戶端請留空。儲存後不再顯示。",
+    "secret_set": "已設定 Client Secret。",
+    "secret_replace_placeholder": "輸入新的值以取代",
+    "secret_remove": "清除",
+    "secret_cleared": "儲存時會清除 Client Secret。",
+    "secret_save_failed": "伺服器已儲存，但 Client Secret 沒有儲存：{{error}}",
+    "secret_retry": "伺服器已儲存。再次儲存會重試儲存 Client Secret。",
+    "saved_entry_changed": "伺服器已經新增。要修改設定，請關閉對話框，在清單中編輯它。",
+    "method_label": "權杖端點驗證方式",
+    "method": {
+      "auto": "自動",
+      "client_secret_basic": "client_secret_basic",
+      "client_secret_post": "client_secret_post",
+      "none": "none（公開用戶端）"
+    }
+  },
   "callback": {
     "working": "正在連線 MCP 伺服器…",
     "failed_title": "無法連線 MCP 伺服器",

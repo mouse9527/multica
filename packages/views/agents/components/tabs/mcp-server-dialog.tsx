@@ -38,8 +38,14 @@ import type { ManagedMcpServer } from "./mcp-config-model";
 import { isRecord, mcpTransport } from "./mcp-config-model";
 import {
   McpOAuthAuthPicker,
+  McpOAuthSavedEntryNote,
+  emptyOAuthForm,
+  oauthAuthFromForm,
+  oauthClientSecretChange,
   oauthFormAuthFromConfig,
+  oauthFormError,
   type McpFormAuth,
+  type McpOAuthFormValue,
 } from "../../../mcp-oauth/mcp-oauth-auth";
 
 type EditorMode = "form" | "json";
@@ -52,11 +58,11 @@ type McpFormState = {
   env: KeyValue[];
   url: string;
   headers: KeyValue[];
-  // mouse9527/multica fork (M-269): how an HTTP entry authenticates. Only
-  // read and written when OAuth is available; otherwise `auth` stays in
+  // mouse9527/multica fork (M-269, M-295): how an HTTP entry authenticates.
+  // Only read and written when OAuth is available; otherwise `auth` stays in
   // `extras` untouched, as upstream.
   auth: McpFormAuth;
-  scope: string;
+  oauth: McpOAuthFormValue;
   extras: Record<string, unknown>;
 };
 
@@ -68,7 +74,7 @@ const emptyForm = (): McpFormState => ({
   url: "",
   headers: [],
   auth: "none",
-  scope: "",
+  oauth: emptyOAuthForm(),
   extras: {},
 });
 
@@ -121,7 +127,7 @@ function formFromConfig(config: Record<string, unknown>, oauthAvailable = false)
     url: typeof config.url === "string" ? config.url : "",
     headers,
     auth: oauth ? "oauth" : headers.length > 0 ? "headers" : "none",
-    scope: oauth?.scope ?? "",
+    oauth: oauth ?? emptyOAuthForm(),
     extras,
   };
 }
@@ -188,9 +194,9 @@ function configFromForm(form: McpFormState, oauthAvailable = false): Record<stri
     config.url = form.url.trim();
     if (oauthAvailable && form.auth === "oauth") {
       // An OAuth entry carries no credential of its own: the token is the
-      // connection's, added when a run starts.
-      const scope = form.scope.trim();
-      config.auth = scope ? { type: "oauth", scope } : { type: "oauth" };
+      // connection's, added when a run starts, and a client secret is saved
+      // on its own (onSaveOAuthClientSecret).
+      config.auth = oauthAuthFromForm(form.oauth);
     } else {
       const headers =
         !oauthAvailable || form.auth === "headers"
@@ -241,6 +247,8 @@ export function McpServerDialog({
   replacementMode = false,
   hideNameWhenEditing = false,
   oauthAvailable = false,
+  oauthClientSecretSet = false,
+  onSaveOAuthClientSecret,
   onOpenChange,
   onSave,
 }: {
@@ -269,6 +277,14 @@ export function McpServerDialog({
    * authentication (mcp_oauth_v1 on). Off, the form is upstream's.
    */
   oauthAvailable?: boolean;
+  /** mouse9527/multica fork (M-295): the saved entry has a client secret. */
+  oauthClientSecretSet?: boolean;
+  /**
+   * mouse9527/multica fork (M-295): saves a pre-registered client's secret
+   * (null removes it) after the entry itself is saved. Without it the form
+   * offers no secret field.
+   */
+  onSaveOAuthClientSecret?: (name: string, clientSecret: string | null) => Promise<void>;
   onOpenChange: (open: boolean) => void;
   onSave: (name: string, config: Record<string, unknown>) => Promise<void>;
 }) {
@@ -279,6 +295,11 @@ export function McpServerDialog({
   const [form, setForm] = useState<McpFormState>(emptyForm);
   const [jsonText, setJsonText] = useState("{}");
   const [saving, setSaving] = useState(false);
+  // mouse9527/multica fork (M-295): the entry this dialog already saved when
+  // its client secret then failed to save. Saving again retries only the
+  // secret; the name now belongs to that entry.
+  const [savedEntry, setSavedEntry] = useState<{ name: string; config: string } | null>(null);
+  const [savedEntryChanged, setSavedEntryChanged] = useState(false);
   const [saveAttempted, setSaveAttempted] = useState(false);
   const fieldId = useId();
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -305,6 +326,8 @@ export function McpServerDialog({
     setJsonText(JSON.stringify(config, null, 2));
     setMode(server && !formSupportsServer(server) ? "json" : "form");
     setSaveAttempted(false);
+    setSavedEntry(null);
+    setSavedEntryChanged(false);
   }, [oauthAvailable, open, replacementMode, server]);
 
   // The form is unavailable — not merely unselected — for entries it cannot
@@ -324,7 +347,7 @@ export function McpServerDialog({
         ? "required"
         : !/^[A-Za-z0-9_-]+$/.test(submittedName)
           ? "format"
-          : existingNames.has(submittedName) && submittedName !== server?.name
+          : existingNames.has(submittedName) && submittedName !== server?.name && submittedName !== savedEntry?.name
             ? "duplicate"
             : null;
   const formError =
@@ -336,9 +359,13 @@ export function McpServerDialog({
         ? "url"
         : oauthAvailable && form.auth === "oauth" && !/^https:\/\//i.test(form.url.trim())
           ? "url_https"
-          : null;
+          : oauthAvailable && form.auth === "oauth" && oauthFormError(form.oauth)
+            ? "oauth"
+            : null;
   const visibleNameError = saveAttempted ? nameError : null;
   const visibleFormError = saveAttempted ? formError : null;
+  const visibleOAuthError =
+    mode === "form" && visibleFormError === "oauth" ? oauthFormError(form.oauth) : null;
   const visibleJsonError = saveAttempted && !jsonResult.ok ? jsonResult : null;
 
   const nameErrorMessage =
@@ -402,9 +429,36 @@ export function McpServerDialog({
     if (mode === "form") config = configFromForm(form, oauthAvailable);
     else if (jsonResult.ok) config = jsonResult.value;
     else return;
+    // mouse9527/multica fork (M-295): the client secret is not part of the
+    // entry; it is saved through its own endpoint once the entry exists.
+    const clientSecret =
+      mode === "form" && oauthAvailable && form.transport === "http" && form.auth === "oauth"
+        ? oauthClientSecretChange(form.oauth)
+        : undefined;
+    // mouse9527/multica fork (M-295): after the entry was saved and its
+    // secret was not, an unchanged entry is not saved again. A changed one is
+    // an update when editing; a newly added one has to be edited from the
+    // list, since saving it again here would add it a second time.
+    const configKey = JSON.stringify(config);
+    const entryAlreadySaved =
+      savedEntry !== null && savedEntry.name === submittedName && savedEntry.config === configKey;
+    if (savedEntry !== null && !entryAlreadySaved && server === null) {
+      setSavedEntryChanged(true);
+      return;
+    }
+    setSavedEntryChanged(false);
     setSaving(true);
     try {
-      await onSave(submittedName, config);
+      if (!entryAlreadySaved) await onSave(submittedName, config);
+      if (clientSecret !== undefined && onSaveOAuthClientSecret) {
+        try {
+          await onSaveOAuthClientSecret(submittedName, clientSecret);
+        } catch {
+          // The page has shown why; the dialog stays open to retry.
+          setSavedEntry({ name: submittedName, config: configKey });
+          return;
+        }
+      }
       onOpenChange(false);
     } finally {
       setSaving(false);
@@ -641,13 +695,16 @@ export function McpServerDialog({
                           {oauthAvailable ? (
                             <McpOAuthAuthPicker
                               value={form.auth}
-                              scope={form.scope}
+                              oauth={form.oauth}
+                              error={visibleOAuthError}
+                              clientSecretSet={oauthClientSecretSet}
+                              clientSecretEditable={onSaveOAuthClientSecret !== undefined}
                               onChange={(auth) => {
                                 setSaveAttempted(false);
                                 setForm((current) => ({ ...current, auth }));
                               }}
-                              onScopeChange={(scope) =>
-                                setForm((current) => ({ ...current, scope }))
+                              onOAuthChange={(patch) =>
+                                setForm((current) => ({ ...current, oauth: { ...current.oauth, ...patch } }))
                               }
                             />
                           ) : null}
@@ -711,6 +768,7 @@ export function McpServerDialog({
                 data-slot="mcp-dialog-footer"
                 className="flex shrink-0 justify-end gap-2 border-t bg-muted/30 px-6 py-3 sm:px-8"
               >
+                {savedEntry ? <McpOAuthSavedEntryNote changed={savedEntryChanged} /> : null}
                 <Button
                   type="button"
                   variant="outline"

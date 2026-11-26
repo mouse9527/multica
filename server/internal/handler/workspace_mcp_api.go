@@ -264,6 +264,8 @@ func (h *Handler) UpdateWorkspaceMcpServer(w http.ResponseWriter, r *http.Reques
 		params.Config = append([]byte(nil), req.Config...)
 	}
 
+	// mouse9527/multica fork: the config this update replaces, to spot a changed OAuth client (M-295).
+	previousMCPOAuthConfig := h.workspaceMCPOAuthConfigBefore(r.Context(), params)
 	server, err := h.Queries.UpdateWorkspaceMcpServer(r.Context(), params)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -273,6 +275,7 @@ func (h *Handler) UpdateWorkspaceMcpServer(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotFound, "MCP server not found")
 		return
 	}
+	h.settleChangedWorkspaceMCPOAuthClient(r.Context(), previousMCPOAuthConfig, server)
 	slog.Info("workspace mcp server updated", append(logger.RequestAttrs(r),
 		"workspace_id", workspaceID, "server_id", uuidToString(server.ID), "name", server.Name)...)
 	writeJSON(w, http.StatusOK, workspaceMcpServerToResponse(server))

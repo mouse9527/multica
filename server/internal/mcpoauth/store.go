@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: connections keyed by entry ref (M-269).
+// Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
 
 package mcpoauth
 
@@ -53,8 +54,8 @@ var (
 )
 
 // Querier is the slice of a pgx pool or transaction the store uses. All SQL
-// here is hand-written against tables sqlc does not see (migrations 9023 and
-// 9026).
+// here is hand-written against tables sqlc does not see (migrations 9023,
+// 9026 and 9027).
 type Querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
@@ -89,6 +90,14 @@ type Target struct {
 	Ref         string
 	URL         string
 	Scope       string
+	// Client is the entry's client now: a grant made with another
+	// pre-registered client is not used.
+	Client ClientConfig
+}
+
+// NewTarget is the target for the entry ref names, as it is now.
+func NewTarget(workspaceID, ref string, entry Entry) Target {
+	return Target{WorkspaceID: workspaceID, Ref: ref, URL: entry.URL, Scope: entry.Scope, Client: entry.Client}
 }
 
 // ConnectionStatus is what may be shown about a connection: no token, no
@@ -98,6 +107,8 @@ type ConnectionStatus struct {
 	UserID       string     `json:"user_id"`
 	Status       string     `json:"status"`
 	ServerURL    string     `json:"-"`
+	ClientID     string     `json:"-"`
+	AuthMethod   string     `json:"-"`
 	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 	GrantedScope string     `json:"granted_scope"`
 	LastError    string     `json:"last_error,omitempty"`
@@ -112,6 +123,19 @@ func (c ConnectionStatus) ForURL(entryURL string) ConnectionStatus {
 	if c.Status == StatusConnected && c.ServerURL != entryURL {
 		c.Status = StatusNeedsReconnect
 		c.LastError = ReasonURLChanged
+		c.ExpiresAt = nil
+	}
+	return c
+}
+
+// ForEntry is ForURL for the entry's URL, and likewise reads a grant made
+// with another pre-registered client than the entry names now as needing a
+// reconnect.
+func (c ConnectionStatus) ForEntry(entry Entry) ConnectionStatus {
+	c = c.ForURL(entry.URL)
+	if c.Status == StatusConnected && !entry.Client.clientMatches(c.ClientID, c.AuthMethod) {
+		c.Status = StatusNeedsReconnect
+		c.LastError = ReasonClientChanged
 		c.ExpiresAt = nil
 	}
 	return c
@@ -366,12 +390,12 @@ func expiryArg(now time.Time, expiresIn int64) any {
 }
 
 const connectionStatusColumns = `server_ref, user_id::text, status, server_url, expires_at, granted_scope,
-	last_error, connected_at, refreshed_at`
+	last_error, connected_at, refreshed_at, client_id, token_endpoint_auth_method`
 
 func scanConnectionStatus(row pgx.Row) (ConnectionStatus, error) {
 	var out ConnectionStatus
 	err := row.Scan(&out.ServerRef, &out.UserID, &out.Status, &out.ServerURL, &out.ExpiresAt, &out.GrantedScope,
-		&out.LastError, &out.ConnectedAt, &out.RefreshedAt)
+		&out.LastError, &out.ConnectedAt, &out.RefreshedAt, &out.ClientID, &out.AuthMethod)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ConnectionStatus{}, ErrNotConnected
 	}
@@ -457,11 +481,14 @@ func DeleteUserConnection(ctx context.Context, q Querier, workspaceID, ref, user
 	return tag.RowsAffected() > 0, nil
 }
 
-// DeleteEntryData removes every user's connection to an entry and every
-// connect to it in flight: the entry was deleted. Like DeleteUserConnection
-// it needs no key.
+// entryTables are the tables that hold rows of one entry, keyed by its ref.
+var entryTables = []string{"mcp_oauth_state", "mcp_oauth_connection", "mcp_oauth_client"}
+
+// DeleteEntryData removes every user's connection to an entry, every connect
+// to it in flight and its client secret: the entry was deleted. Like
+// DeleteUserConnection it needs no key.
 func DeleteEntryData(ctx context.Context, q Querier, workspaceID, ref string) error {
-	for _, table := range []string{"mcp_oauth_state", "mcp_oauth_connection"} {
+	for _, table := range entryTables {
 		if _, err := q.Exec(ctx, `DELETE FROM `+table+` WHERE workspace_id = $1::uuid AND server_ref = $2`, workspaceID, ref); err != nil {
 			return fmt.Errorf("delete %s: %w", table, err)
 		}
@@ -469,15 +496,16 @@ func DeleteEntryData(ctx context.Context, q Querier, workspaceID, ref string) er
 	return nil
 }
 
-// DeleteAgentEntryDataExcept removes the connections to the agent's own
-// entries (refs AgentRefPrefix(agentID)...) except those in keep: the entries
-// were removed from the agent's mcp_config, renamed, or no longer use OAuth.
+// DeleteAgentEntryDataExcept removes the connections and client secrets of
+// the agent's own entries (refs AgentRefPrefix(agentID)...) except those in
+// keep: the entries were removed from the agent's mcp_config, renamed, or no
+// longer use OAuth.
 func DeleteAgentEntryDataExcept(ctx context.Context, q Querier, workspaceID, agentID string, keep []string) error {
 	if keep == nil {
 		keep = []string{}
 	}
 	prefix := AgentRefPrefix(agentID)
-	for _, table := range []string{"mcp_oauth_state", "mcp_oauth_connection"} {
+	for _, table := range entryTables {
 		if _, err := q.Exec(ctx, `
 			DELETE FROM `+table+`
 			WHERE workspace_id = $1::uuid AND left(server_ref, length($2::text)) = $2::text AND NOT (server_ref = ANY($3::text[]))`,
@@ -491,7 +519,7 @@ func DeleteAgentEntryDataExcept(ctx context.Context, q Querier, workspaceID, age
 // DeleteWorkspaceData removes every MCP OAuth row of a workspace. It runs
 // inside the workspace delete transaction; the tables have no foreign keys.
 func DeleteWorkspaceData(ctx context.Context, q Querier, workspaceID any) error {
-	for _, table := range []string{"mcp_oauth_state", "mcp_oauth_connection"} {
+	for _, table := range entryTables {
 		if _, err := q.Exec(ctx, `DELETE FROM `+table+` WHERE workspace_id = $1`, workspaceID); err != nil {
 			return fmt.Errorf("delete %s: %w", table, err)
 		}

@@ -1,6 +1,7 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: connect an MCP entry by ref (M-269).
 // Modified for the mouse9527/multica fork: token endpoint errors with an OAuth error body (M-277).
+// Modified for the mouse9527/multica fork: a fake server that also takes pre-registered clients (M-295).
 
 package mcpoauth
 
@@ -42,13 +43,26 @@ type fakeOAuthServer struct {
 	// with refreshError as the RFC 6749 error code in the body when set.
 	refreshStatus int
 	refreshError  string
+
+	// The client the token endpoint accepts (see preregister); by default
+	// the public client its registration endpoint hands out.
+	clientID     string
+	clientSecret string
+	// tokenAuth records how each token request authenticated its client:
+	// "basic", "post" or "none".
+	tokenAuth []string
+	// metadata overrides what the server publishes about itself.
+	noRegistration bool
+	authMethods    []string
+	// statedIssuer, when set, is the issuer its metadata claims.
+	statedIssuer string
 }
 
 const fakeAccessLifetime = 3600
 
 func newFakeOAuthServer(t *testing.T) *fakeOAuthServer {
 	t.Helper()
-	f := &fakeOAuthServer{codes: map[string]url.Values{}}
+	f := &fakeOAuthServer{codes: map[string]url.Values{}, clientID: "client-xyz", authMethods: []string{"none"}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /mcp", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+baseURL(r)+`/.well-known/oauth-protected-resource/mcp"`)
@@ -62,14 +76,25 @@ func newFakeOAuthServer(t *testing.T) *fakeOAuthServer {
 		})
 	})
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server/mcp", func(w http.ResponseWriter, r *http.Request) {
-		writeTestJSON(w, map[string]any{
-			"issuer":                                baseURL(r) + "/mcp",
-			"authorization_endpoint":                baseURL(r) + "/authorize",
-			"token_endpoint":                        baseURL(r) + "/token",
-			"registration_endpoint":                 baseURL(r) + "/register",
-			"code_challenge_methods_supported":      []string{"S256"},
-			"token_endpoint_auth_methods_supported": []string{"none"},
-		})
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		issuer := baseURL(r) + "/mcp"
+		if f.statedIssuer != "" {
+			issuer = f.statedIssuer
+		}
+		metadata := map[string]any{
+			"issuer":                           issuer,
+			"authorization_endpoint":           baseURL(r) + "/authorize",
+			"token_endpoint":                   baseURL(r) + "/token",
+			"code_challenge_methods_supported": []string{"S256"},
+		}
+		if !f.noRegistration {
+			metadata["registration_endpoint"] = baseURL(r) + "/register"
+		}
+		if f.authMethods != nil {
+			metadata["token_endpoint_auth_methods_supported"] = f.authMethods
+		}
+		writeTestJSON(w, metadata)
 	})
 	mux.HandleFunc("POST /register", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -116,8 +141,11 @@ func (f *fakeOAuthServer) authorize(t *testing.T, authorizationURL string) (code
 		t.Fatalf("authorization URL %q", authorizationURL)
 	}
 	q := u.Query()
+	f.mu.Lock()
+	clientID := f.clientID
+	f.mu.Unlock()
 	for key, want := range map[string]string{
-		"response_type": "code", "client_id": "client-xyz", "code_challenge_method": "S256", "resource": f.srv.URL + "/mcp",
+		"response_type": "code", "client_id": clientID, "code_challenge_method": "S256", "resource": f.srv.URL + "/mcp",
 	} {
 		if got := q.Get(key); got != want {
 			t.Fatalf("authorization URL %s = %q, want %q", key, got, want)
@@ -141,9 +169,28 @@ func (f *fakeOAuthServer) token(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.tokenRequests = append(f.tokenRequests, r.PostForm)
-	if r.PostForm.Get("resource") != baseURL(r)+"/mcp" || r.PostForm.Get("client_id") != "client-xyz" {
+	if r.PostForm.Get("resource") != baseURL(r)+"/mcp" || r.PostForm.Get("client_id") != f.clientID {
 		w.WriteHeader(http.StatusBadRequest)
 		return
+	}
+	user, password, basic := r.BasicAuth()
+	auth := "none"
+	switch {
+	case basic:
+		auth = "basic"
+	case r.PostForm.Has("client_secret"):
+		auth = "post"
+	}
+	f.tokenAuth = append(f.tokenAuth, auth)
+	if f.clientSecret != "" {
+		authenticated := (basic && user == f.clientID && password == f.clientSecret) ||
+			(!basic && r.PostForm.Get("client_secret") == f.clientSecret)
+		if !authenticated {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_client"})
+			return
+		}
 	}
 	switch r.PostForm.Get("grant_type") {
 	case "authorization_code":
@@ -171,6 +218,27 @@ func (f *fakeOAuthServer) token(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusBadRequest)
 	}
+}
+
+// preregister makes the server one without dynamic registration that knows
+// only clientID (with clientSecret, if not empty) and publishes methods as
+// its token endpoint auth methods (nil: publishes none).
+func (f *fakeOAuthServer) preregister(clientID, clientSecret string, methods []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.noRegistration = true
+	f.clientID = clientID
+	f.clientSecret = clientSecret
+	f.authMethods = methods
+}
+
+// issuer is the issuer identifier the server's metadata states by default.
+func (f *fakeOAuthServer) issuer() string { return f.srv.URL + "/mcp" }
+
+func (f *fakeOAuthServer) tokenAuthMethods() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.tokenAuth...)
 }
 
 func (f *fakeOAuthServer) setRefreshStatus(status int) {

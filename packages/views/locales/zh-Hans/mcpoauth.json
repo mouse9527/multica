@@ -26,6 +26,32 @@
     "oauth_hint": "保存后，在服务器列表里连接。",
     "https_required": "OAuth 需要 HTTPS 地址。"
   },
+  "client": {
+    "label": "客户端",
+    "dynamic": "自动注册",
+    "preregistered": "预注册",
+    "client_id_label": "Client ID",
+    "client_id_required": "请填写 Client ID。",
+    "issuer_label": "Issuer",
+    "issuer_hint": "注册这个客户端的授权服务器。",
+    "issuer_required": "请填写 HTTPS 形式的 Issuer。",
+    "secret_label": "Client Secret（可选）",
+    "secret_hint": "公共客户端留空。保存后不再显示。",
+    "secret_set": "已设置 Client Secret。",
+    "secret_replace_placeholder": "输入新的值以替换",
+    "secret_remove": "清除",
+    "secret_cleared": "保存时会清除 Client Secret。",
+    "secret_save_failed": "服务器已保存，但 Client Secret 没有保存：{{error}}",
+    "secret_retry": "服务器已保存。再次保存会重试保存 Client Secret。",
+    "saved_entry_changed": "服务器已经添加。要修改设置，请关闭对话框，在列表里编辑它。",
+    "method_label": "令牌端点认证方式",
+    "method": {
+      "auto": "自动",
+      "client_secret_basic": "client_secret_basic",
+      "client_secret_post": "client_secret_post",
+      "none": "none（公共客户端）"
+    }
+  },
   "callback": {
     "working": "正在连接 MCP 服务器...",
     "failed_title": "无法连接 MCP 服务器",

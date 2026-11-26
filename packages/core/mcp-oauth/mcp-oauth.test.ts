@@ -1,17 +1,22 @@
 // @vitest-environment node
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
+// Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClient, setApiInstance } from "../api";
 import {
   completeMcpOAuth,
   connectAgentMcpOAuth,
   connectWorkspaceMcpOAuth,
+  deleteAgentMcpOAuthClientSecret,
+  deleteWorkspaceMcpOAuthClientSecret,
   disconnectAgentMcpOAuth,
   disconnectWorkspaceMcpOAuth,
   listAgentMcpOAuth,
   listWorkspaceMcpOAuth,
   mcpOAuthConnectionState,
+  setAgentMcpOAuthClientSecret,
+  setWorkspaceMcpOAuthClientSecret,
 } from ".";
 
 let calls: { method: string; url: string; body: unknown; headers: unknown }[] = [];
@@ -184,5 +189,46 @@ describe("connects and disconnects", () => {
       url: "https://api.example.test/api/mcp-oauth/complete",
       body: { state: "st", code: "cd", error: "" },
     });
+  });
+});
+
+describe("pre-registered clients", () => {
+  it("reads whether an entry names a pre-registered client and has a secret, false when absent", async () => {
+    serve(() =>
+      Response.json({
+        servers: [
+          { name: "pre", preregistered: true, client_secret_set: true, client_secret: "leaked" },
+          { name: "old-server" },
+          { name: "odd", preregistered: "yes", client_secret_set: 1 },
+        ],
+        can_connect: true,
+      }),
+    );
+    const list = await listAgentMcpOAuth("ws-1", "agent-1");
+    expect(list.servers.map((s) => [s.name, s.preregistered, s.client_secret_set])).toEqual([
+      ["pre", true, true],
+      ["old-server", false, false],
+      ["odd", false, false],
+    ]);
+    expect(JSON.stringify(list)).not.toContain("leaked");
+
+    serve(() => Response.json({ servers: [{ server_id: "srv-1", name: "pre", preregistered: true, client_secret_set: false }] }));
+    const ws = await listWorkspaceMcpOAuth("ws-1");
+    expect(ws.servers[0]).toMatchObject({ preregistered: true, client_secret_set: false });
+  });
+
+  it("writes and deletes the client secret at its own paths", async () => {
+    serve(() => new Response(null, { status: 204 }));
+    await setAgentMcpOAuthClientSecret("ws-1", "agent-1", "gate way", "sk-1");
+    await deleteAgentMcpOAuthClientSecret("ws-1", "agent-1", "gate way");
+    await setWorkspaceMcpOAuthClientSecret("ws-1", "srv-1", "sk-2");
+    await deleteWorkspaceMcpOAuthClientSecret("ws-1", "srv-1");
+    expect(calls.map((c) => [c.method, c.url, c.body])).toEqual([
+      ["PUT", `${AGENT}/gate%20way/client-secret`, { client_secret: "sk-1" }],
+      ["DELETE", `${AGENT}/gate%20way/client-secret`, undefined],
+      ["PUT", `${WORKSPACE}/srv-1/client-secret`, { client_secret: "sk-2" }],
+      ["DELETE", `${WORKSPACE}/srv-1/client-secret`, undefined],
+    ]);
+    expect(calls[0]?.headers).toMatchObject({ "X-Workspace-ID": "ws-1" });
   });
 });
