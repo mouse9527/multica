@@ -198,8 +198,9 @@ func TestEvolutionMetricsSource(t *testing.T) {
 	}
 }
 
-// openRunIssue is the title and description of the open run's analysis issue.
-func openRunIssue(t *testing.T) (title, description string) {
+// openStructureRunIssue is the title and description of the open run's
+// analysis issue.
+func openStructureRunIssue(t *testing.T) (title, description string) {
 	t.Helper()
 	dbfx.QueryRow(t, `SELECT i.title, COALESCE(i.description, '') FROM evolution_run r JOIN issue i ON i.id = r.issue_id
 		WHERE r.workspace_id = $1 AND r.status = 'open'`, testWorkspaceID).Scan(&title, &description)
@@ -223,7 +224,7 @@ func TestEvolutionStructuralReviewRun(t *testing.T) {
 			backdateEvolutionCursors(t)
 			tickEvolution(t, nil)
 
-			title, description := openRunIssue(t)
+			title, description := openStructureRunIssue(t)
 			if metrics {
 				if !strings.HasSuffix(title, " · structural review") ||
 					!strings.Contains(description, "--source metrics --days 14") {
