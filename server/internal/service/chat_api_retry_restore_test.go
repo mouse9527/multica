@@ -228,21 +228,32 @@ func TestCancelTask_OnlyAPIRetryRows_StillRestoresDraft(t *testing.T) {
 	}
 }
 
-// failRestoreTxStarter lets the failure's own transaction through and refuses
-// every later one, which is what the draft restore opens.
-type failRestoreTxStarter struct {
-	pool     *pgxpool.Pool
-	mu       sync.Mutex
-	begins   int
-	failFrom int
+// refuseNthTxStarter refuses exactly one transaction start, the refuse-th,
+// and lets every other one through.
+//
+// FailTaskWithTransition opens its own transactions in a fixed order: the
+// terminal write, then the draft restore, then the delegated-failure recovery
+// (which opens one for every failed task and decides inside it whether the
+// task was delegated). Refusing only the second start therefore refuses the
+// restore and nothing else, so the steps after it run as they do in
+// production.
+type refuseNthTxStarter struct {
+	pool    *pgxpool.Pool
+	refuse  int
+	mu      sync.Mutex
+	begins  int
+	refused bool
 }
 
-func (s *failRestoreTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+func (s *refuseNthTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
 	s.mu.Lock()
 	s.begins++
-	n := s.begins
+	refuse := s.begins == s.refuse
+	if refuse {
+		s.refused = true
+	}
 	s.mu.Unlock()
-	if n >= s.failFrom {
+	if refuse {
 		return nil, errors.New("tx starter unavailable")
 	}
 	return s.pool.Begin(ctx)
@@ -257,7 +268,7 @@ func TestFailTask_APIRetryGaveUp_RestoreFailureKeepsTheFailure(t *testing.T) {
 	f := createCancelFinalizeFixture(t, ctx, pool, "running", true)
 	bus := events.New()
 	rec := recordCancelFinalizedEvents(bus)
-	starter := &failRestoreTxStarter{pool: pool, failFrom: 2}
+	starter := &refuseNthTxStarter{pool: pool, refuse: 2}
 	svc := NewTaskService(db.New(pool), starter, nil, bus)
 
 	if _, _, err := svc.FailTaskWithTransition(ctx, util.MustParseUUID(f.taskID), protocol.TaskFailRequest{
@@ -265,17 +276,19 @@ func TestFailTask_APIRetryGaveUp_RestoreFailureKeepsTheFailure(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("fail task must not depend on the draft restore: %v", err)
 	}
-	// One transaction for the terminal write, one refused for the restore.
-	if got := starter.begins; got != 2 {
-		t.Fatalf("expected 2 transaction starts, got %d", got)
+	if !starter.refused {
+		t.Fatalf("the restore transaction was never attempted (%d starts)", starter.begins)
 	}
 
+	// The terminal write committed in the first transaction.
 	if got := f.failureReason(t, ctx); got != taskfailure.ReasonAgentProviderServerError.String() {
 		t.Errorf("failure_reason = %q, want %q", got, taskfailure.ReasonAgentProviderServerError)
 	}
 	if got := f.assistantMessages(t, ctx); len(got) != 1 || got[0] != apiRetryGaveUpError {
 		t.Errorf("assistant messages = %v, want the failure text", got)
 	}
+	// The refused transaction was the restore: none of its writes or its
+	// broadcast happened, so the prompt stays a sent message.
 	if !f.userMessageExists(t, ctx) {
 		t.Error("without a restore the prompt stays a sent message")
 	}
