@@ -53,6 +53,7 @@
     "secret_retry": "El servidor está guardado. Guarda de nuevo para reintentar el secreto de cliente.",
     "saved_entry_changed": "El servidor ya se añadió. Para cambiar su configuración, cierra este diálogo y edítalo desde la lista.",
     "method_label": "Autenticación en el endpoint de tokens",
+    "method_manual_hint": "Con endpoints configurados a mano, elige el método que exige el servidor de autorización.",
     "method": {
       "auto": "Automática",
       "client_secret_basic": "client_secret_basic",
@@ -73,7 +74,9 @@
     "resource_label": "Recurso (opcional)",
     "resource_hint": "Se envía como indicador de recurso en lugar de la URL del servidor.",
     "audience_label": "Audiencia (opcional)",
-    "audience_hint": "Se envía con la solicitud de autorización, para servidores que la piden."
+    "audience_hint": "Se envía con la solicitud de autorización, para servidores que la piden.",
+    "params_label": "Parámetros de autorización adicionales (opcional)",
+    "params_hint": "Se añaden a la solicitud de inicio de sesión, para servidores que los necesitan, como access_type=offline para obtener un token de actualización."
   },
   "callback": {
     "working": "Conectando el servidor MCP…",

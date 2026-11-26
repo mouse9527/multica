@@ -53,6 +53,7 @@
     "secret_retry": "サーバーは保存済みです。もう一度保存するとクライアントシークレットの保存を再試行します。",
     "saved_entry_changed": "サーバーはすでに追加されています。設定を変更するには、このダイアログを閉じて一覧から編集してください。",
     "method_label": "トークンエンドポイントの認証方式",
+    "method_manual_hint": "エンドポイントを手動で設定した場合は、認可サーバーが求める方式を明示的に選んでください。",
     "method": {
       "auto": "自動",
       "client_secret_basic": "client_secret_basic",
@@ -73,7 +74,9 @@
     "resource_label": "Resource（任意）",
     "resource_hint": "サーバー URL の代わりにリソースインジケーターとして送信します。",
     "audience_label": "Audience（任意）",
-    "audience_hint": "認可リクエストに付けて送信します。必要とするサーバー向けです。"
+    "audience_hint": "認可リクエストに付けて送信します。必要とするサーバー向けです。",
+    "params_label": "追加の認可パラメーター（任意）",
+    "params_hint": "サインインのリクエストに追加します。リフレッシュトークンを得るための access_type=offline など、必要とするサーバー向けです。"
   },
   "callback": {
     "working": "MCP サーバーに接続しています…",

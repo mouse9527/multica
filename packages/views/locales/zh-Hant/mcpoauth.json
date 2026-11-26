@@ -53,6 +53,7 @@
     "secret_retry": "伺服器已儲存。再次儲存會重試儲存 Client Secret。",
     "saved_entry_changed": "伺服器已經新增。要修改設定，請關閉對話框，在清單中編輯它。",
     "method_label": "權杖端點驗證方式",
+    "method_manual_hint": "手動填寫端點時，請依授權伺服器的要求明確選擇驗證方式。",
     "method": {
       "auto": "自動",
       "client_secret_basic": "client_secret_basic",
@@ -73,7 +74,9 @@
     "resource_label": "Resource（選填）",
     "resource_hint": "作為資源指示符傳送，取代伺服器網址。",
     "audience_label": "Audience（選填）",
-    "audience_hint": "隨授權請求傳送，適用於要求它的伺服器。"
+    "audience_hint": "隨授權請求傳送，適用於要求它的伺服器。",
+    "params_label": "額外授權參數（選填）",
+    "params_hint": "加到登入請求上，供需要它們的伺服器使用，例如用 access_type=offline 取得重新整理權杖。"
   },
   "callback": {
     "working": "正在連線 MCP 伺服器…",

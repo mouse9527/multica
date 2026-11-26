@@ -53,6 +53,7 @@
     "secret_retry": "服务器已保存。再次保存会重试保存 Client Secret。",
     "saved_entry_changed": "服务器已经添加。要修改设置，请关闭对话框，在列表里编辑它。",
     "method_label": "令牌端点认证方式",
+    "method_manual_hint": "手工填写端点时，请按授权服务器的要求明确选择认证方式。",
     "method": {
       "auto": "自动",
       "client_secret_basic": "client_secret_basic",
@@ -73,7 +74,9 @@
     "resource_label": "Resource（可选）",
     "resource_hint": "作为资源指示符发送，代替服务器地址。",
     "audience_label": "Audience（可选）",
-    "audience_hint": "随授权请求发送，适用于要求它的服务器。"
+    "audience_hint": "随授权请求发送，适用于要求它的服务器。",
+    "params_label": "额外授权参数（可选）",
+    "params_hint": "加到登录请求上，供需要它们的服务器使用，例如用 access_type=offline 换取刷新令牌。"
   },
   "callback": {
     "working": "正在连接 MCP 服务器...",

@@ -53,6 +53,7 @@
     "secret_retry": "Le serveur est enregistré. Enregistrez à nouveau pour réessayer le secret client.",
     "saved_entry_changed": "Le serveur a déjà été ajouté. Pour modifier ses paramètres, fermez cette boîte de dialogue et modifiez-le depuis la liste.",
     "method_label": "Authentification auprès du point de terminaison de jetons",
+    "method_manual_hint": "Avec des points de terminaison saisis à la main, choisissez la méthode exigée par le serveur d'autorisation.",
     "method": {
       "auto": "Automatique",
       "client_secret_basic": "client_secret_basic",
@@ -73,7 +74,9 @@
     "resource_label": "Ressource (facultatif)",
     "resource_hint": "Envoyée comme indicateur de ressource à la place de l'URL du serveur.",
     "audience_label": "Audience (facultatif)",
-    "audience_hint": "Envoyée avec la demande d'autorisation, pour les serveurs qui l'exigent."
+    "audience_hint": "Envoyée avec la demande d'autorisation, pour les serveurs qui l'exigent.",
+    "params_label": "Paramètres d'autorisation supplémentaires (facultatif)",
+    "params_hint": "Ajoutés à la demande de connexion, pour les serveurs qui en ont besoin, comme access_type=offline pour obtenir un jeton d'actualisation."
   },
   "callback": {
     "working": "Connexion du serveur MCP…",
