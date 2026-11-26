@@ -125,6 +125,12 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					return
 				}
 				boundWorkspaceID := uuidToString(tt.WorkspaceID)
+				// Modified for the mouse9527/multica fork (M-307): a request
+				// for a workspace that granted this one read access is served
+				// read-only instead of refused (cross_ws_read_fork.go).
+				if serveCrossWorkspaceRead(w, r, next, queries, boundWorkspaceID, uuidToString(tt.AgentID), uuidToString(tt.TaskID)) {
+					return
+				}
 				// An explicit workspace selector that disagrees with the
 				// token's binding is rejected here, BEFORE the overwrite
 				// below erases what the client asked for. Silently
