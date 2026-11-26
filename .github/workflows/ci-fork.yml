@@ -49,6 +49,10 @@ jobs:
       - name: Test fork CI scripts and required-check invariants
         run: node --test scripts/fork-*.test.mjs
 
+      # The release gate runs only on tag pushes; test it on every PR too.
+      - name: Test the fork release gate
+        run: bash scripts/fork-release-verify.test.sh
+
   migrations-roundtrip:
     runs-on: ubuntu-latest
     timeout-minutes: 30
