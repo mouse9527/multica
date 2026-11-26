@@ -260,6 +260,7 @@ export function McpOAuthAuthPicker({
   const secretHintId = `${secretId}-hint`;
   const secretKept = clientSecretSet && !oauth.clearClientSecret && oauth.clientSecret === "";
   const preregistered = oauth.clientMode === "preregistered";
+  const [advancedOpen, setAdvancedOpen] = useState(() => hasAdvancedOAuthSettings(oauth));
   // Stage 2 (M-295): the issuer is required for a pre-registered client and
   // shown with it; for automatic registration it is optional and advanced.
   const issuerField = (
@@ -328,7 +329,13 @@ export function McpOAuthAuthPicker({
             value={oauth.clientMode}
             label={(option) => t(($) => $.client[option])}
             columns="grid-cols-2"
-            onChange={(clientMode) => onOAuthChange({ clientMode })}
+            onChange={(clientMode) => {
+              // Back to automatic registration, a pre-registered client's
+              // issuer stays as an advanced setting; show it there rather
+              // than keep it folded away.
+              if (clientMode === "dynamic" && oauth.issuer.trim() !== "") setAdvancedOpen(true);
+              onOAuthChange({ clientMode });
+            }}
           />
           {oauth.clientMode === "preregistered" ? (
             <>
@@ -402,7 +409,8 @@ export function McpOAuthAuthPicker({
           <McpOAuthAdvanced
             oauth={oauth}
             error={error}
-            forceOpen={advancedError}
+            open={advancedOpen || advancedError}
+            onOpenChange={setAdvancedOpen}
             issuerField={preregistered ? null : issuerField}
             onOAuthChange={onOAuthChange}
           />
@@ -416,24 +424,25 @@ export function McpOAuthAuthPicker({
  * The advanced OAuth settings, folded away: where the authorization server
  * is (the issuer for automatic registration; manual endpoints, which skip
  * discovery and need a pre-registered client) and what the token is for
- * (resource indicator, audience). Opens on its own when any is set or has an
- * error.
+ * (resource indicator, audience). The picker opens it when any is set or has
+ * an error.
  */
 function McpOAuthAdvanced({
   oauth,
   error,
-  forceOpen,
+  open,
+  onOpenChange,
   issuerField,
   onOAuthChange,
 }: {
   oauth: McpOAuthFormValue;
   error: McpOAuthFormError | null;
-  forceOpen: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   issuerField: ReactNode;
   onOAuthChange: (patch: Partial<McpOAuthFormValue>) => void;
 }) {
   const { t } = useT("mcpoauth");
-  const [open, setOpen] = useState(() => hasAdvancedOAuthSettings(oauth));
   const authorizationId = useId();
   const tokenId = useId();
   const resourceId = useId();
@@ -480,7 +489,7 @@ function McpOAuthAdvanced({
     </Field>
   );
   return (
-    <Collapsible open={open || forceOpen} onOpenChange={setOpen}>
+    <Collapsible open={open} onOpenChange={(next) => onOpenChange(next)}>
       <CollapsibleTrigger
         render={
           <button
