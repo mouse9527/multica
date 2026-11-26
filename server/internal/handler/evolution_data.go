@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: Evolution P2, configuration and the
-// signal channel (M-136); P3 shares the run gate with proposals (M-137).
+// signal channel (M-136); P3 shares the run gate with proposals (M-137); the
+// metrics source (M-296).
 
 package handler
 
@@ -158,8 +159,12 @@ func (h *Handler) GetEvolutionSignals(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 	source := q.Get("source")
+	if source == evolution.SourceMetrics {
+		h.serveEvolutionMetrics(w, r, workspaceID, agent, task)
+		return
+	}
 	if source != evolution.SourceComment && source != evolution.SourceChat {
-		writeError(w, http.StatusBadRequest, "source must be comment or chat")
+		writeError(w, http.StatusBadRequest, "source must be comment, chat, or metrics")
 		return
 	}
 	req := evolution.PageRequest{

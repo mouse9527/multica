@@ -67,3 +67,15 @@
 - `server/internal/handler/daemon.go`：`CompleteTask` 里 `reconcileCommentsOnCompletion` 之后、`NotifyTaskFinished` 之前调用 `h.forkFoldCoveredRuns`。必须在补发之后（补发出来的运行也按同样条件判断），在唤醒 daemon 之前（否则排队运行可能先被领取）。
 
 `ForkFoldCoveredQueuedRuns`、`ForkListRunsSupersededByComment` 直接读 `agent_task_queue`、`comment`、`activity_log` 的列（`trigger_evidence_kind`、`workflow_step`、`comment_thread_id`、`coalesced_comment_ids`、`activity_log.action` 的取值、`comment_thread_root_id()` 等）。上游改了这些列或 `activity_log` 的动作名，CI 的 `sqlc-check` 只能发现列不存在，取值改名要对着 `TestForkRunDedup_*` 的失败去看。上游如果自己修了 multica-ai/multica#7237（完成补发重复），对照着看 fork 的取代和并入是否还需要。
+
+## 进化的指标来源（M-296）
+
+全部在 fork 文件里，上游文件一行不改：新文件 `server/internal/evolution/signals_metrics.go`、`server/internal/handler/evolution_metrics.go`（及各自的测试），`evolution_data.go`、`config.go`、`cmd_evolution.go`、`packages/core/evolution/schemas.ts` 是 fork 已有文件。没有迁移。
+
+同步时要看的是它手写 SQL 依赖的上游数据形状，`sqlc-check` 只能发现列不存在，发现不了取值改名：
+
+- `activity_log.action` 的 `status_changed`（`details` 的 `from`、`to`）和 `assignee_changed`（`details` 的 `from_type`、`from_id`、`to_type`、`to_id`），写入方在 `server/cmd/server/activity_listeners.go`；
+- `agent_task_queue` 的 `status` 取值（`completed`、`failed`、`cancelled`）、`started_at`、`completed_at`、`chat_session_id`、`autopilot_run_id`、`trigger_comment_id`、`trigger_evidence_kind`；
+- `issue_workflow.steps` 的 `back_status_key`（经 `issueworkflow.DecodeSteps`）、`issue_status` 的 `key`、`name`、`category`。
+
+上游改了这些，`TestEvolutionMetricsSource` 会先红；对照 `git diff <合并基> upstream/main -- server/cmd/server/activity_listeners.go` 看。

@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: Evolution P2, the signal channel (M-136);
-// P3 proposals (M-137); P6 condense and team proposals (M-140).
+// P3 proposals (M-137); P6 condense and team proposals (M-140); the metrics
+// source (M-296).
 
 package main
 
@@ -27,16 +28,23 @@ var evolutionCmd = &cobra.Command{
 
 var evolutionSignalsCmd = &cobra.Command{
 	Use:   "signals",
-	Short: "Read the next page of comments or chat messages for the current Evolution analysis run",
-	Long: `Read the next page of comments or chat messages for the current Evolution analysis run.
+	Short: "Read comments, chat messages, or metrics for the current Evolution analysis run",
+	Long: `Read comments, chat messages, or metrics for the current Evolution analysis run.
 
 Only the Evolution agent can call this, from the task of a scheduled analysis
-issue. Each call continues where the previous one stopped; pass --after with
-the previous page's next_after to re-read from there. Content is redacted;
-private projects, private agents, and excluded projects and agents are never
-returned.`,
+issue. For comment and chat, each call returns the next page and continues
+where the previous one stopped; pass --after with the previous page's
+next_after to re-read from there. Content is redacted; private projects,
+private agents, and excluded projects and agents are never returned.
+
+metrics returns one summary, numbers only, of the --days (default 14) before
+the run's window end: per workflow step the entries, exits, dwell, and
+returns; per agent the runs, failure and cancel rates, run time, short runs,
+triggers, and handoffs; and the issues returned 3 or more times. It is served
+only while the workspace turns the metrics source on.`,
 	Example: `  $ multica evolution signals --source comment
-  $ multica evolution signals --source chat --after <next_after>`,
+  $ multica evolution signals --source chat --after <next_after>
+  $ multica evolution signals --source metrics --days 14`,
 	Args: exactArgs(0),
 	RunE: runEvolutionSignals,
 }
@@ -85,16 +93,17 @@ func init() {
 	evolutionCmd.AddCommand(evolutionProposeCmd)
 	evolutionProposeCmd.Flags().String("file", "", "Path to the proposal JSON, or - for stdin (required)")
 	evolutionProposeCmd.Flags().String("output", "json", "Output format: json")
-	evolutionSignalsCmd.Flags().String("source", "", "Source to read: comment or chat (required)")
+	evolutionSignalsCmd.Flags().String("source", "", "Source to read: comment, chat, or metrics (required)")
 	evolutionSignalsCmd.Flags().String("after", "", "Continue after this page token (next_after of a previous page)")
 	evolutionSignalsCmd.Flags().Int("limit", 0, "Items per page, 1-200 (default 100)")
+	evolutionSignalsCmd.Flags().Int("days", 0, "metrics only: days before the run's window end, 1-30 (default 14)")
 	evolutionSignalsCmd.Flags().String("output", "json", "Output format: json")
 }
 
 func runEvolutionSignals(cmd *cobra.Command, _ []string) error {
 	source, _ := cmd.Flags().GetString("source")
-	if source != "comment" && source != "chat" {
-		return fmt.Errorf("--source must be comment or chat")
+	if source != "comment" && source != "chat" && source != "metrics" {
+		return fmt.Errorf("--source must be comment, chat, or metrics")
 	}
 	client, err := newAPIClient(cmd)
 	if err != nil {
@@ -109,6 +118,9 @@ func runEvolutionSignals(cmd *cobra.Command, _ []string) error {
 	}
 	if limit, _ := cmd.Flags().GetInt("limit"); limit > 0 {
 		params.Set("limit", strconv.Itoa(limit))
+	}
+	if days, _ := cmd.Flags().GetInt("days"); days > 0 {
+		params.Set("days", strconv.Itoa(days))
 	}
 	var page map[string]any
 	if err := client.GetJSON(ctx, "/api/evolution/signals?"+params.Encode(), &page); err != nil {
