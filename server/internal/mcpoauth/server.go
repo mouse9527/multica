@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: manual OAuth endpoints, resource and audience for MCP entries (M-295 stage 2).
+// Modified for the mouse9527/multica fork: extra authorization parameters (M-295 stage 3).
 
 package mcpoauth
 
@@ -34,6 +35,9 @@ type ServerConfig struct {
 	// Audience is sent as the "audience" parameter of the authorization
 	// request, which authorization servers in the Auth0 style require.
 	Audience string
+	// Params are extra authorization request parameters from an allowlist
+	// (AuthorizationParams).
+	Params AuthorizationParams
 }
 
 // ManualEndpoints reports whether the entry names its endpoints itself.
@@ -75,6 +79,14 @@ const ReasonServerChanged = "server_changed"
 // parseServerField reads one of the server keys of an entry's auth object
 // into s. It reports false for a key that is not a server key.
 func parseServerField(key string, value json.RawMessage, s *ServerConfig) (bool, error) {
+	if key == "authorization_params" {
+		params, err := parseAuthorizationParams(value)
+		if err != nil {
+			return true, err
+		}
+		s.Params = params
+		return true, nil
+	}
 	var target *string
 	switch key {
 	case "authorization_endpoint":
@@ -191,8 +203,9 @@ func grantMismatch(client ClientConfig, server ServerConfig, clientID, authMetho
 // AuthorizationChange is why saving after over before takes the grants of
 // an entry that uses OAuth both times out of use: ReasonClientChanged (its
 // client), ReasonServerChanged (its endpoints, issuer, resource or
-// audience), or "" when neither changed. The scope does not count: a grant
-// keeps the scope it was given.
+// audience), or "" when neither changed. The scope and the extra
+// authorization parameters do not count: they shape the next authorization,
+// and a grant keeps what it was given.
 func AuthorizationChange(before, after json.RawMessage) string {
 	if !IsOAuthEntry(before) || !IsOAuthEntry(after) {
 		return ""
@@ -205,7 +218,7 @@ func AuthorizationChange(before, after json.RawMessage) string {
 	switch {
 	case old.Client.ID != next.Client.ID || old.Client.TokenEndpointAuthMethod != next.Client.TokenEndpointAuthMethod:
 		return ReasonClientChanged
-	case old.Client != next.Client || old.Server != next.Server:
+	case old.Client != next.Client || old.Server.withoutParams() != next.Server.withoutParams():
 		return ReasonServerChanged
 	}
 	return ""
@@ -259,17 +272,8 @@ func discover(ctx context.Context, target Target) (remotemcp.AuthorizationServer
 	return server, nil
 }
 
-// withAudience adds the audience parameter to an authorization URL.
-func withAudience(authorizationURL, audience string) (string, error) {
-	if audience == "" {
-		return authorizationURL, nil
-	}
-	u, err := url.Parse(authorizationURL)
-	if err != nil {
-		return "", err
-	}
-	query := u.Query()
-	query.Set("audience", audience)
-	u.RawQuery = query.Encode()
-	return u.String(), nil
+// withoutParams is s without its extra authorization parameters.
+func (s ServerConfig) withoutParams() ServerConfig {
+	s.Params = AuthorizationParams{}
+	return s
 }

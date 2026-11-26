@@ -258,3 +258,35 @@ func TestAuthorizationResponseIssuer(t *testing.T) {
 		}
 	})
 }
+
+// Stage 3 (M-295): the extra parameters go on the authorization request
+// only, never on the code exchange or refresh.
+func TestAuthorizationParamsOnlyOnTheAuthorizationRequest(t *testing.T) {
+	fake, store, f, target := newFlowHarness(t)
+	target.Server.Params = AuthorizationParams{Prompt: "consent", AccessType: "offline"}
+	u := connectWith(t, fake, store, f, target)
+	if q := u.Query(); q.Get("prompt") != "consent" || q.Get("access_type") != "offline" || q.Get("client_id") != "client-xyz" {
+		t.Fatalf("authorization URL = %s", u)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	for _, form := range fake.tokenRequests {
+		if form.Has("prompt") || form.Has("access_type") {
+			t.Fatalf("token request carries authorization parameters: %v", form.Encode())
+		}
+	}
+}
+
+// Stage 2 second-review Nit 1: with a named issuer the RFC 9728 document is
+// optional, but one that is published for another resource is an error, as
+// on the plain discovery path.
+func TestIssuerRefusesResourceMetadataForAnotherResource(t *testing.T) {
+	fake, store, f, target := preregisteredHarness(t, "", nil, ClientConfig{ID: "pre-1"})
+	fake.mu.Lock()
+	fake.statedResource = "https://elsewhere.example.com/mcp"
+	fake.mu.Unlock()
+	_, err := (Flow{Store: store}).Start(context.Background(), target, f.ownerID, testRedirectURI, "")
+	if !errors.Is(err, ErrDiscovery) || !strings.Contains(err.Error(), "does not match the MCP endpoint") {
+		t.Fatalf("err = %v, want ErrDiscovery for a mismatched resource", err)
+	}
+}
