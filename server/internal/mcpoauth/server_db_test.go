@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,7 +22,7 @@ func connectWith(t *testing.T, fake *fakeOAuthServer, store *Store, f fixture, t
 		t.Fatalf("start: %v", err)
 	}
 	code, state := fake.authorize(t, authorizationURL)
-	if _, err := flow.Complete(ctx, state, code, f.ownerID, nil); err != nil {
+	if _, err := flow.Complete(ctx, state, code, "", f.ownerID, nil); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 	u, err := url.Parse(authorizationURL)
@@ -160,4 +161,100 @@ func TestNoServerSettingsSendWhatTheyDid(t *testing.T) {
 	if q.Has("audience") || q.Get("resource") != target.URL {
 		t.Fatalf("authorization URL = %s", u)
 	}
+}
+
+// Discovered metadata must state the issuer it was fetched for, on the plain
+// discovery path too (RFC 8414 §3.3): otherwise no client is registered and
+// nothing is sent.
+func TestDiscoveryRefusesMetadataOfAnotherIssuer(t *testing.T) {
+	fake, store, f, target := newFlowHarness(t)
+	fake.mu.Lock()
+	fake.statedIssuer = "https://honest.example.com"
+	fake.mu.Unlock()
+	if _, err := (Flow{Store: store}).Start(context.Background(), target, f.ownerID, testRedirectURI, ""); !errors.Is(err, ErrDiscovery) {
+		t.Fatalf("err = %v, want ErrDiscovery", err)
+	}
+	if got := fake.registered(); len(got) != 0 {
+		t.Fatalf("registered %v with metadata of another issuer", got)
+	}
+}
+
+// RFC 9207: the issuer is recorded with the connect, and the authorization
+// response's iss is checked against it before the code is exchanged.
+func TestAuthorizationResponseIssuer(t *testing.T) {
+	ctx := context.Background()
+	start := func(t *testing.T, fake *fakeOAuthServer, store *Store, f fixture, target Target) (code, state string) {
+		t.Helper()
+		authorizationURL, err := (Flow{Store: store}).Start(ctx, target, f.ownerID, testRedirectURI, "")
+		if err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		return fake.authorize(t, authorizationURL)
+	}
+
+	t.Run("advertised: absent or other iss is refused, same iss completes", func(t *testing.T) {
+		fake, store, f, target := newFlowHarness(t)
+		fake.mu.Lock()
+		fake.issSupported = true
+		fake.mu.Unlock()
+		flow := Flow{Store: store}
+
+		code, state := start(t, fake, store, f, target)
+		if issuer, required := issuerFromState(state); issuer != fake.issuer() || !required {
+			t.Fatalf("state records %q, %v", issuer, required)
+		}
+		if _, err := flow.Complete(ctx, state, code, "", f.ownerID, nil); !errors.Is(err, ErrResponseIssuer) {
+			t.Fatalf("absent iss: err = %v", err)
+		}
+		code, state = start(t, fake, store, f, target)
+		if _, err := flow.Complete(ctx, state, code, "https://evil.example.com", f.ownerID, nil); !errors.Is(err, ErrResponseIssuer) {
+			t.Fatalf("other iss: err = %v", err)
+		}
+		if n := fake.tokenRequestCount(); n != 0 {
+			t.Fatalf("%d token requests after refused responses", n)
+		}
+		code, state = start(t, fake, store, f, target)
+		if _, err := flow.Complete(ctx, state, code, fake.issuer(), f.ownerID, nil); err != nil {
+			t.Fatalf("same iss: %v", err)
+		}
+	})
+
+	t.Run("not advertised: absent iss proceeds, other iss is refused, even for an error response", func(t *testing.T) {
+		fake, store, f, target := newFlowHarness(t)
+		flow := Flow{Store: store}
+		code, state := start(t, fake, store, f, target)
+		if _, err := flow.Complete(ctx, state, code, "", f.ownerID, nil); err != nil {
+			t.Fatalf("absent iss: %v", err)
+		}
+		_, state = start(t, fake, store, f, target)
+		if _, err := flow.Complete(ctx, state, "", "https://evil.example.com", f.ownerID, nil); !errors.Is(err, ErrResponseIssuer) {
+			t.Fatalf("error response from another issuer: err = %v, want ErrResponseIssuer", err)
+		}
+	})
+
+	t.Run("manual endpoints check a present iss against the entry's issuer", func(t *testing.T) {
+		fake, store, f, target := preregisteredHarness(t, "", nil, ClientConfig{ID: "pre-1"})
+		target.Server = ServerConfig{AuthorizationEndpoint: fake.srv.URL + "/authorize", TokenEndpoint: fake.srv.URL + "/token"}
+		flow := Flow{Store: store}
+		code, state := start(t, fake, store, f, target)
+		if issuer, required := issuerFromState(state); issuer != target.Client.Issuer || required {
+			t.Fatalf("state records %q, %v", issuer, required)
+		}
+		if _, err := flow.Complete(ctx, state, code, "https://evil.example.com", f.ownerID, nil); !errors.Is(err, ErrResponseIssuer) {
+			t.Fatalf("other iss: err = %v", err)
+		}
+	})
+
+	t.Run("a state whose issuer part was changed is unknown", func(t *testing.T) {
+		fake, store, f, target := newFlowHarness(t)
+		fake.mu.Lock()
+		fake.issSupported = true
+		fake.mu.Unlock()
+		code, state := start(t, fake, store, f, target)
+		random, _, _ := strings.Cut(state, ".")
+		forged := stateWithIssuer(random, "https://evil.example.com", false)
+		if _, err := (Flow{Store: store}).Complete(ctx, forged, code, "https://evil.example.com", f.ownerID, nil); !errors.Is(err, ErrStateInvalid) {
+			t.Fatalf("forged state: err = %v, want ErrStateInvalid", err)
+		}
+	})
 }

@@ -78,10 +78,11 @@ func (f Flow) Start(ctx context.Context, target Target, userID, redirectURI, ret
 		registration remotemcp.OAuthClientRegistration
 		method       string
 	)
-	metadata, err := discover(ctx, target)
+	server, err := discover(ctx, target)
 	if err != nil {
 		return "", err
 	}
+	metadata := server.OAuthMetadata
 	if target.Client.Preregistered() {
 		registration, err = f.preregisteredClient(ctx, target, metadata)
 		if err != nil {
@@ -116,6 +117,8 @@ func (f Flow) Start(ctx context.Context, target Target, userID, redirectURI, ret
 		RedirectURI:   redirectURI,
 		Verifier:      verifier,
 		ReturnTo:      returnTo,
+		Issuer:        server.Issuer,
+		ISSRequired:   server.ISSParameterSupported,
 	})
 	if err != nil {
 		return "", err
@@ -155,10 +158,13 @@ func (f Flow) preregisteredClient(ctx context.Context, target Target, metadata r
 }
 
 // Complete finishes a connect: it takes the pending authorization the state
-// belongs to (only userID's, only once), lets check refuse it, exchanges the
-// code with the PKCE verifier and stores the grant. check runs before the
-// code is exchanged, so a refused completion never obtains a token.
-func (f Flow) Complete(ctx context.Context, state, code, userID string, check func(PendingAuthorization) error) (PendingAuthorization, error) {
+// belongs to (only userID's, only once), lets check refuse it, checks the
+// authorization response's iss (RFC 9207; empty when the response had none),
+// exchanges the code with the PKCE verifier and stores the grant. check and
+// the iss check run before the code is exchanged, so a refused completion
+// never obtains a token; an iss mismatch is reported even for an error
+// response, whose error is then not acted on.
+func (f Flow) Complete(ctx context.Context, state, code, iss, userID string, check func(PendingAuthorization) error) (PendingAuthorization, error) {
 	pending, err := f.Store.ConsumePendingAuthorization(ctx, state, userID)
 	if err != nil {
 		return PendingAuthorization{}, err
@@ -167,6 +173,9 @@ func (f Flow) Complete(ctx context.Context, state, code, userID string, check fu
 		if err := check(pending); err != nil {
 			return pending, err
 		}
+	}
+	if err := checkResponseIssuer(pending, iss); err != nil {
+		return pending, err
 	}
 	if strings.TrimSpace(code) == "" {
 		return pending, ErrAuthorizationDenied

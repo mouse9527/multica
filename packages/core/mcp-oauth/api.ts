@@ -141,7 +141,7 @@ export async function deleteWorkspaceMcpOAuthClientSecret(wsId: string, serverId
 export async function completeMcpOAuth(input: CompleteMcpOAuthInput): Promise<McpOAuthCompletion> {
   const raw = await api.request("/api/mcp-oauth/complete", {
     method: "POST",
-    body: JSON.stringify({ state: input.state, code: input.code, error: input.error ?? "" }),
+    body: JSON.stringify({ state: input.state, code: input.code, error: input.error ?? "", iss: input.iss ?? "" }),
   });
   const parsed = McpOAuthCompletionSchema.safeParse(raw);
   if (!parsed.success) throw new Error("POST /api/mcp-oauth/complete: unexpected response");

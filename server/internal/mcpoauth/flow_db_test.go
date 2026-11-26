@@ -62,6 +62,8 @@ type fakeOAuthServer struct {
 	resource string
 	// noResourceMetadata: it publishes no RFC 9728 document.
 	noResourceMetadata bool
+	// issSupported: its metadata advertises RFC 9207's iss parameter.
+	issSupported bool
 }
 
 // expectedResource is the resource indicator requests must carry.
@@ -114,6 +116,9 @@ func newFakeOAuthServer(t *testing.T) *fakeOAuthServer {
 		}
 		if f.authMethods != nil {
 			metadata["token_endpoint_auth_methods_supported"] = f.authMethods
+		}
+		if f.issSupported {
+			metadata["authorization_response_iss_parameter_supported"] = true
 		}
 		writeTestJSON(w, metadata)
 	})
@@ -314,7 +319,7 @@ func TestConnectFlowEndToEnd(t *testing.T) {
 	}
 	code, state := fake.authorize(t, authorizationURL)
 
-	pending, err := flow.Complete(ctx, state, code, f.ownerID, func(p PendingAuthorization) error {
+	pending, err := flow.Complete(ctx, state, code, "", f.ownerID, func(p PendingAuthorization) error {
 		if p.ServerRef != target.Ref || p.ServerURL != target.URL || p.ReturnTo != "/ws/agents/x" {
 			t.Errorf("pending = %+v", p)
 		}
@@ -332,7 +337,7 @@ func TestConnectFlowEndToEnd(t *testing.T) {
 	}
 
 	// The state worked once.
-	if _, err := flow.Complete(ctx, state, code, f.ownerID, nil); !errors.Is(err, ErrStateInvalid) {
+	if _, err := flow.Complete(ctx, state, code, "", f.ownerID, nil); !errors.Is(err, ErrStateInvalid) {
 		t.Fatalf("replayed state: err = %v", err)
 	}
 
@@ -406,7 +411,7 @@ func TestTokenEndpointRejectionNeedsReconnect(t *testing.T) {
 				t.Fatalf("start: %v", err)
 			}
 			code, state := fake.authorize(t, authorizationURL)
-			if _, err := flow.Complete(ctx, state, code, f.ownerID, nil); err != nil {
+			if _, err := flow.Complete(ctx, state, code, "", f.ownerID, nil); err != nil {
 				t.Fatalf("complete: %v", err)
 			}
 
@@ -437,7 +442,7 @@ func TestCompleteRefusesBeforeExchanging(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, state := fake.authorize(t, authorizationURL)
-	if _, err := flow.Complete(ctx, state, code, newFixture().ownerID, nil); !errors.Is(err, ErrStateInvalid) {
+	if _, err := flow.Complete(ctx, state, code, "", newFixture().ownerID, nil); !errors.Is(err, ErrStateInvalid) {
 		t.Fatalf("another user: err = %v", err)
 	}
 
@@ -447,7 +452,7 @@ func TestCompleteRefusesBeforeExchanging(t *testing.T) {
 	}
 	code, state = fake.authorize(t, authorizationURL)
 	refused := errors.New("no longer the owner")
-	if _, err := flow.Complete(ctx, state, code, f.ownerID, func(PendingAuthorization) error { return refused }); !errors.Is(err, refused) {
+	if _, err := flow.Complete(ctx, state, code, "", f.ownerID, func(PendingAuthorization) error { return refused }); !errors.Is(err, refused) {
 		t.Fatalf("refused check: err = %v", err)
 	}
 
@@ -456,7 +461,7 @@ func TestCompleteRefusesBeforeExchanging(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, state = fake.authorize(t, authorizationURL)
-	if _, err := flow.Complete(ctx, state, "", f.ownerID, nil); !errors.Is(err, ErrAuthorizationDenied) {
+	if _, err := flow.Complete(ctx, state, "", "", f.ownerID, nil); !errors.Is(err, ErrAuthorizationDenied) {
 		t.Fatalf("no code: err = %v", err)
 	}
 

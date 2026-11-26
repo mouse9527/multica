@@ -37,4 +37,6 @@ export interface CompleteMcpOAuthInput {
   code: string;
   /** The authorization server's `error` parameter when the user declined. */
   error?: string;
+  /** The authorization response's `iss` (RFC 9207), when it had one. */
+  iss?: string;
 }

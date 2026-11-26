@@ -180,6 +180,12 @@ type PendingAuthorization struct {
 	Verifier      Secret
 	ReturnTo      string
 	ExpiresAt     time.Time
+	// Issuer is the authorization server the browser is sent to, and
+	// ISSRequired whether it advertised RFC 9207's iss parameter: the
+	// authorization response is checked against them (checkResponseIssuer).
+	// They travel in the state (stateWithIssuer), not in a column.
+	Issuer      string
+	ISSRequired bool
 }
 
 // Grant is the result of a completed authorization.
@@ -260,7 +266,7 @@ func (s *Store) CreatePendingAuthorization(ctx context.Context, p PendingAuthori
 	if _, err := rand.Read(raw); err != nil {
 		return "", err
 	}
-	state := base64.RawURLEncoding.EncodeToString(raw)
+	state := stateWithIssuer(base64.RawURLEncoding.EncodeToString(raw), p.Issuer, p.ISSRequired)
 	verifier, err := s.seal(p.Verifier.Reveal())
 	if err != nil {
 		return "", err
@@ -324,6 +330,8 @@ func (s *Store) ConsumePendingAuthorization(ctx context.Context, state, userID s
 	if p.UserID != userID || !s.now().Before(p.ExpiresAt) {
 		return PendingAuthorization{}, ErrStateInvalid
 	}
+	// The state hashed to this row, so its issuer part is the one recorded.
+	p.Issuer, p.ISSRequired = issuerFromState(state)
 	secret, err := s.open(clientSecret)
 	if err != nil {
 		return PendingAuthorization{}, fmt.Errorf("open client secret: %w", err)

@@ -40,7 +40,7 @@ func connect(t *testing.T, fake *fakeOAuthServer, store *Store, f fixture, targe
 		t.Fatalf("start: %v", err)
 	}
 	code, state := fake.authorize(t, authorizationURL)
-	if _, err := flow.Complete(ctx, state, code, f.ownerID, nil); err != nil {
+	if _, err := flow.Complete(ctx, state, code, "", f.ownerID, nil); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 }

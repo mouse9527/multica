@@ -1,6 +1,7 @@
 "use client";
 
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
+// Modified for the mouse9527/multica fork: RFC 9207 iss of the authorization response (M-295 stage 2).
 
 import { useEffect, useRef, useState } from "react";
 import { AlertCircle, Loader2 } from "@multica/ui/icons";
@@ -42,6 +43,9 @@ export function McpOAuthCallbackPage() {
   const state = navigation.searchParams.get("state") ?? "";
   const code = navigation.searchParams.get("code") ?? "";
   const error = navigation.searchParams.get("error") ?? "";
+  // RFC 9207: which authorization server answered. The server checks it
+  // before the code or the error is acted on.
+  const iss = navigation.searchParams.get("iss") ?? "";
 
   useEffect(() => {
     if (started.current || isAuthLoading) return;
@@ -54,13 +58,13 @@ export function McpOAuthCallbackPage() {
       return;
     }
     started.current = true;
-    completeMcpOAuth({ state, code, error }).then(
+    completeMcpOAuth({ state, code, error, iss }).then(
       (result) => {
         navigation.replace(isAppPath(result.return_to) ? result.return_to : paths.root());
       },
       (err: unknown) => setFailure(failureOf(err)),
     );
-  }, [code, error, isAuthLoading, navigation, state, user]);
+  }, [code, error, iss, isAuthLoading, navigation, state, user]);
 
   if (failure) {
     return (

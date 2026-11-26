@@ -1,6 +1,7 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
 // Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
+// Modified for the mouse9527/multica fork: RFC 9207 iss of the authorization response (M-295 stage 2).
 
 package handler
 
@@ -566,6 +567,9 @@ type completeMCPOAuthRequest struct {
 	// Error is the authorization server's error parameter, when the user
 	// declined. The state is still consumed.
 	Error string `json:"error"`
+	// ISS is the authorization response's iss parameter (RFC 9207), empty
+	// when it had none.
+	ISS string `json:"iss"`
 }
 
 type completeMCPOAuthResponse struct {
@@ -604,7 +608,7 @@ func (h *Handler) CompleteMCPOAuth(w http.ResponseWriter, r *http.Request) {
 		code = ""
 	}
 	var ref mcpoauth.Ref
-	pending, err := mcpoauth.Flow{Store: store}.Complete(r.Context(), req.State, code, userID, func(p mcpoauth.PendingAuthorization) error {
+	pending, err := mcpoauth.Flow{Store: store}.Complete(r.Context(), req.State, code, req.ISS, userID, func(p mcpoauth.PendingAuthorization) error {
 		var err error
 		ref, err = h.mcpOAuthCompletionAllowed(r, p, userID)
 		return err
@@ -614,6 +618,10 @@ func (h *Handler) CompleteMCPOAuth(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, "mcp_oauth_state_invalid", err.Error())
 	case errors.Is(err, errMCPOAuthNoLongerAllowed):
 		writeErrorCode(w, http.StatusForbidden, "mcp_oauth_not_allowed", err.Error())
+	case errors.Is(err, mcpoauth.ErrResponseIssuer):
+		// RFC 9207: the response is not acted on, its error included.
+		slog.Warn("mcp oauth: authorization response from another issuer", "server_ref", pending.ServerRef)
+		writeErrorCode(w, http.StatusBadRequest, "mcp_oauth_issuer_response", err.Error())
 	case errors.Is(err, mcpoauth.ErrAuthorizationDenied):
 		writeErrorCode(w, http.StatusBadRequest, "mcp_oauth_denied", err.Error())
 	case err != nil:

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
+// Modified for the mouse9527/multica fork: RFC 9207 iss of the authorization response (M-295 stage 2).
 
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -66,7 +67,7 @@ describe("McpOAuthCallbackPage", () => {
     renderCallback("state=st&code=cd");
     await waitFor(() => expect(mockReplace).toHaveBeenCalledWith("/acme/agents/agent-1?view=mcp_oauth"));
     expect(mockComplete).toHaveBeenCalledTimes(1);
-    expect(mockComplete).toHaveBeenCalledWith({ state: "st", code: "cd", error: "" });
+    expect(mockComplete).toHaveBeenCalledWith({ state: "st", code: "cd", error: "", iss: "" });
   });
 
   it("never follows a return path that leaves the app", async () => {
@@ -79,7 +80,18 @@ describe("McpOAuthCallbackPage", () => {
     mockComplete.mockRejectedValue(new ApiError("denied", 400, "Bad Request", { code: "mcp_oauth_denied" }));
     renderCallback("state=st&error=access_denied");
     expect(await screen.findByRole("alert")).toHaveTextContent("The authorization was cancelled.");
-    expect(mockComplete).toHaveBeenCalledWith({ state: "st", code: "", error: "access_denied" });
+    expect(mockComplete).toHaveBeenCalledWith({ state: "st", code: "", error: "access_denied", iss: "" });
+  });
+
+  // RFC 9207 (M-295 stage 2): iss goes to the server, which checks it; a
+  // mismatch shows the generic failure, never the response's error.
+  it("passes the response's iss on and does not show the error of a mismatched one", async () => {
+    mockComplete.mockRejectedValue(new ApiError("iss", 400, "Bad Request", { code: "mcp_oauth_issuer_response" }));
+    renderCallback("state=st&error=access_denied&iss=https%3A%2F%2Fauth.example.com");
+    const alert = await screen.findByRole("alert");
+    expect(alert).not.toHaveTextContent("The authorization was cancelled.");
+    expect(alert).toHaveTextContent("did not complete the connection");
+    expect(mockComplete).toHaveBeenCalledWith({ state: "st", code: "", error: "access_denied", iss: "https://auth.example.com" });
   });
 
   it("explains a used or expired link", async () => {

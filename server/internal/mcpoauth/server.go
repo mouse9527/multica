@@ -215,39 +215,48 @@ func AuthorizationChange(before, after json.RawMessage) string {
 // else its issuer's metadata, else RFC 9728 discovery. Every endpoint passes
 // pkg/remotemcp's public-HTTPS checks and the operator's allowlist; a
 // resource override replaces the resource indicator.
-func discover(ctx context.Context, target Target) (remotemcp.OAuthMetadata, error) {
+//
+// Discovered metadata must state exactly the issuer it was fetched for (RFC
+// 8414 §3.3), which is recorded with the connect for RFC 9207's check of the
+// authorization response, together with whether the server sends iss. With
+// manual endpoints there is no metadata: the recorded issuer is the one the
+// entry names, and iss is checked only when the server sends it.
+func discover(ctx context.Context, target Target) (remotemcp.AuthorizationServer, error) {
 	var (
-		metadata remotemcp.OAuthMetadata
-		err      error
+		server remotemcp.AuthorizationServer
+		err    error
 	)
 	switch {
 	case target.Server.ManualEndpoints():
-		metadata = remotemcp.OAuthMetadata{
-			ResourceEndpoint:      target.URL,
-			AuthorizationEndpoint: target.Server.AuthorizationEndpoint,
-			TokenEndpoint:         target.Server.TokenEndpoint,
+		server = remotemcp.AuthorizationServer{
+			OAuthMetadata: remotemcp.OAuthMetadata{
+				ResourceEndpoint:      target.URL,
+				AuthorizationEndpoint: target.Server.AuthorizationEndpoint,
+				TokenEndpoint:         target.Server.TokenEndpoint,
+			},
+			Issuer: target.Client.Issuer,
 		}
-		if err := remotemcp.ValidateOAuthMetadata(ctx, metadata); err != nil {
-			return remotemcp.OAuthMetadata{}, fmt.Errorf("%w: %w", ErrEndpointNotAllowed, err)
+		if err := remotemcp.ValidateOAuthMetadata(ctx, server.OAuthMetadata); err != nil {
+			return remotemcp.AuthorizationServer{}, fmt.Errorf("%w: %w", ErrEndpointNotAllowed, err)
 		}
 	case target.Client.Issuer != "":
-		metadata, err = remotemcp.DiscoverOAuthForIssuer(ctx, target.URL, target.Client.Issuer)
+		server, err = remotemcp.DiscoverOAuthForIssuer(ctx, target.URL, target.Client.Issuer)
 		if errors.Is(err, remotemcp.ErrAuthorizationServerMismatch) {
-			return remotemcp.OAuthMetadata{}, fmt.Errorf("%w: %w", ErrIssuerMismatch, err)
+			return remotemcp.AuthorizationServer{}, fmt.Errorf("%w: %w", ErrIssuerMismatch, err)
 		}
 		if err != nil {
-			return remotemcp.OAuthMetadata{}, fmt.Errorf("%w: %w", ErrDiscovery, err)
+			return remotemcp.AuthorizationServer{}, fmt.Errorf("%w: %w", ErrDiscovery, err)
 		}
 	default:
-		metadata, err = remotemcp.DiscoverOAuth(ctx, target.URL, nil)
+		server, err = remotemcp.DiscoverOAuthServer(ctx, target.URL)
 		if err != nil {
-			return remotemcp.OAuthMetadata{}, fmt.Errorf("%w: %w", ErrDiscovery, err)
+			return remotemcp.AuthorizationServer{}, fmt.Errorf("%w: %w", ErrDiscovery, err)
 		}
 	}
 	if target.Server.Resource != "" {
-		metadata.ResourceEndpoint = target.Server.Resource
+		server.ResourceEndpoint = target.Server.Resource
 	}
-	return metadata, nil
+	return server, nil
 }
 
 // withAudience adds the audience parameter to an authorization URL.

@@ -293,3 +293,51 @@ func TestMCPOAuthManualEndpoints(t *testing.T) {
 		t.Fatalf("connect to non-public manual endpoints: %s", resp.Body.String())
 	}
 }
+
+// RFC 9207 (M-295 stage 2): the callback's iss reaches the flow, and a
+// response from another issuer, or without iss where the server advertised
+// one, is refused with its own code before anything is exchanged; its error
+// is not acted on.
+func TestMCPOAuthCompleteChecksResponseIssuer(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	store := withMCPOAuth(t, true)
+	agentID, ownerID, _, _ := mcpOAuthAgentFixture(t)
+	verifier, err := mcpoauth.NewVerifier()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := func() string {
+		t.Helper()
+		state, err := store.CreatePendingAuthorization(context.Background(), mcpoauth.PendingAuthorization{
+			WorkspaceID: testWorkspaceID, ServerRef: mcpoauth.AgentRef(agentID, "gateway"), ServerURL: mcpOAuthTestURL, UserID: ownerID,
+			Resource: mcpOAuthTestURL, TokenEndpoint: "https://mcp.example.com/token",
+			Client: mcpoauth.Client{ID: "client"}, RedirectURI: "https://app.example.test/oauth/mcp", Verifier: verifier,
+			Issuer: "https://auth.example.com", ISSRequired: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	for name, body := range map[string]map[string]string{
+		"absent iss":                    {"code": "code"},
+		"other iss":                     {"code": "code", "iss": "https://evil.example.com"},
+		"error response, other iss":     {"error": "access_denied", "iss": "https://evil.example.com"},
+		"trailing slash is another iss": {"code": "code", "iss": "https://auth.example.com/"},
+	} {
+		body["state"] = start()
+		resp := mcpOAuthCall(t, ownerID, "POST", "/api/mcp-oauth/complete", body).Want(http.StatusBadRequest)
+		if !strings.Contains(resp.Body.String(), "mcp_oauth_issuer_response") {
+			t.Errorf("%s: %s", name, resp.Body.String())
+		}
+	}
+	// The right iss gets past the check to the exchange, which fails here:
+	// the token endpoint does not exist.
+	resp := mcpOAuthCall(t, ownerID, "POST", "/api/mcp-oauth/complete",
+		map[string]string{"state": start(), "code": "code", "iss": "https://auth.example.com"})
+	if strings.Contains(resp.Body.String(), "mcp_oauth_issuer_response") {
+		t.Fatalf("matching iss refused: %s", resp.Body.String())
+	}
+}
