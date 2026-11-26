@@ -38,7 +38,9 @@ git -C "$UP" tag v0.12.3
 # Fork: main = upstream v0.12.2 + F1..F3. Releases v0.12.2-mouse.1 (F1) and
 # v0.12.2-mouse.3 (F2) exist; the gap makes "N not above the maximum" testable.
 # SIDE is a reviewed-looking commit that never reached main.
-git init -q --bare "$FORK"
+# HEAD names main explicitly: with no init.defaultBranch the bare repository
+# would point HEAD at an unborn master, and clones of it would be empty.
+git init -q --bare -b main "$FORK"
 git init -q -b main "$WORK"
 git -C "$WORK" fetch -q --no-tags "$UP" "+refs/tags/v0.12.2:refs/upstream/v0.12.2"
 git -C "$WORK" reset -q --hard "refs/upstream/v0.12.2^{commit}"
@@ -187,7 +189,13 @@ reject "upstream unreachable" "could not list the tags of" v0.12.2-mouse.5 "$F3"
   FORK_RELEASE_UPSTREAM="$TEST_DIR/missing"
 reject "fork remote unreachable" "could not fetch main and tags" v0.12.2-mouse.5 "$F3" \
   FORK_RELEASE_REMOTE="$TEST_DIR/missing.git"
-git clone -q --depth 1 "file://$FORK" "$TEST_DIR/shallow" 2>/dev/null
+git clone -q --depth 1 --branch main "file://$FORK" "$TEST_DIR/shallow"
+# An empty or full clone would pass the shallow check for the wrong reason.
+if [ "$(git -C "$TEST_DIR/shallow" rev-parse --is-shallow-repository)" != "true" ] ||
+  [ "$(git -C "$TEST_DIR/shallow" rev-parse HEAD)" != "$F3" ]; then
+  echo "FAIL: the shallow fixture is not a shallow clone of main at F3" >&2
+  failures=$((failures + 1))
+fi
 if out="$(cd "$TEST_DIR/shallow" && FAKE_SHA="$F3" bash "$SCRIPT" v0.12.2-mouse.5 "$F3" 2>&1)" ||
   ! grep -qF "shallow" <<<"$out"; then
   printf 'FAIL: shallow checkout: want a failure mentioning "shallow", got:\n%s\n' "$out" >&2
