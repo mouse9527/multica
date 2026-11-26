@@ -49,6 +49,9 @@ func TestSuperAgentChatOwnerTurnGetsTheNote(t *testing.T) {
 		// M-206: the reply format reaches every workspace's owner turns.
 		"(「需要你处理」 in Chinese)",
 		"Merged is not fixed",
+		// M-288: later steps and notices stay out of 「需要你处理」.
+		"Leave out steps that are not the owner's turn yet",
+		"Notices never go in that section",
 		"\"每次回复的格式\" in `multica router guide`",
 		// M-208: wakeup turns are chat turns, so the wakeup rules ride here too.
 		"In a turn a wakeup starts, read the issue's current status",

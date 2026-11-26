@@ -1,4 +1,4 @@
-// Added by the mouse9527/multica fork: the Super Agent guide in the CLI (M-150), issues a Super Agent creates (M-175), quiet batch replies (M-210), the reply format (M-206), and wakeups on issues in scope (M-208).
+// Added by the mouse9527/multica fork: the Super Agent guide in the CLI (M-150), issues a Super Agent creates (M-175), quiet batch replies (M-210), the reply format (M-206), wakeups on issues in scope (M-208), and 「需要你处理」 listing only what the owner can act on now (M-288).
 
 package main
 
@@ -170,6 +170,126 @@ func TestRouterGuideStatesTheReplyFormat(t *testing.T) {
 			t.Errorf("the reply format section still says %q", banned)
 		}
 	}
+}
+
+// 「需要你处理」 listed steps that were not the owner's turn yet ("approve the
+// release once it is tagged, nothing to do now") and plain notices ("I will
+// check again tomorrow"), so the owner could not tell what needed them now
+// (M-288). The guide says to leave both out, shows them as the wrong way, and
+// no example the guide holds up lists them.
+func TestRouterGuideListsOnlyWhatTheOwnerCanDoNow(t *testing.T) {
+	guide := runRouterGuide(t)
+	start := strings.Index(guide, "## 每次回复的格式")
+	if start < 0 {
+		t.Fatal("`multica router guide` lacks the reply format section")
+	}
+	section := guide[start:]
+	if end := strings.Index(section[1:], "\n## "); end >= 0 {
+		section = section[:end+1]
+	}
+	for _, want := range []string{
+		"只列 Owner 现在就能做、或现在就要决定的事",
+		"还没轮到 Owner 的事不列",
+		"到了那一步再列",
+		"之后会请你做 X",
+		"通知不列",
+		"写在正文里，不进这一节",
+		"就写「目前没有」",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("the reply format section lacks %q", want)
+		}
+	}
+	if !strings.Contains(guide, "还没轮到 Owner 的后续步骤、只是告诉 Owner 一声的通知，不算未结事项") {
+		t.Error("the decision section does not keep later steps and notices out of the open items")
+	}
+
+	notNow := []string{"打完 tag 后请批 release（现在不用操作）", "我会在明天复查"}
+	var wrong, held int
+	for _, ex := range guideExamples(guide) {
+		needsYou := needsYouList(ex.lines)
+		if ex.kind == "反例" {
+			if containsAll(needsYou, notNow) {
+				wrong++
+			}
+			continue
+		}
+		held++
+		for _, banned := range append(notNow, "现在不用操作", "现在还不用操作", "我会在") {
+			if strings.Contains(needsYou, banned) {
+				t.Errorf("an example the guide holds up lists %q under 需要你处理:\n%s", banned, needsYou)
+			}
+		}
+	}
+	if wrong == 0 {
+		t.Errorf("no counterexample lists both %q under 需要你处理", notNow)
+	}
+	if held == 0 {
+		t.Error("found no positive examples in the guide; guideExamples is not reading it")
+	}
+}
+
+type guideExample struct {
+	kind  string // "正例", "反例", or "" for an unlabelled quoted example
+	lines []string
+}
+
+// guideExamples returns the guide's quoted blocks, each labelled by the
+// 正例 / 反例 line that introduces it.
+func guideExamples(guide string) []guideExample {
+	var out []guideExample
+	var cur *guideExample
+	lead := ""
+	for _, line := range strings.Split(guide, "\n") {
+		if strings.HasPrefix(line, ">") {
+			if cur == nil {
+				kind := ""
+				for _, k := range []string{"正例", "反例"} {
+					if strings.HasPrefix(lead, k) {
+						kind = k
+					}
+				}
+				out = append(out, guideExample{kind: kind})
+				cur = &out[len(out)-1]
+			}
+			cur.lines = append(cur.lines, line)
+			continue
+		}
+		cur = nil
+		if strings.TrimSpace(line) != "" {
+			lead = line
+		}
+	}
+	return out
+}
+
+// needsYouList is the 需要你处理 part of a quoted reply, up to the "问题："
+// line a counterexample ends with.
+func needsYouList(lines []string) string {
+	var b strings.Builder
+	in := false
+	for _, line := range lines {
+		if strings.Contains(line, "**需要你处理") {
+			in = true
+		}
+		if strings.HasPrefix(line, "> 问题：") {
+			in = false
+		}
+		if in {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+func containsAll(s string, subs []string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }
 
 // The guide prints the embedded file verbatim: editing it and releasing the
