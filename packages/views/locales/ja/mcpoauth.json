@@ -17,6 +17,14 @@
   "action_failed": "問題が発生しました。もう一度お試しください。",
   "connect_continue": "ブラウザーで接続を完了してください。",
   "disconnected_toast": "{{name}} を切断しました",
+  "endpoints_confirm": {
+    "title": "{{name}} に接続しますか？",
+    "description": "このサーバーの OAuth エンドポイントは手動で設定されています。以下のホストを信頼できる場合のみ続行してください。",
+    "authorization": "サインイン先",
+    "token": "トークンの取得元",
+    "cancel": "キャンセル",
+    "continue": "続行"
+  },
   "auth": {
     "label": "認証方式",
     "none": "なし",
@@ -51,6 +59,21 @@
       "client_secret_post": "client_secret_post",
       "none": "none（パブリッククライアント）"
     }
+  },
+  "advanced": {
+    "label": "詳細設定",
+    "issuer_label": "Issuer（任意）",
+    "issuer_hint": "MCP サーバーが示すものの代わりに、この認可サーバーを使います。",
+    "authorization_endpoint_label": "認可エンドポイント",
+    "token_endpoint_label": "トークンエンドポイント",
+    "endpoints_hint": "両方を設定すると自動検出を省略します。事前登録クライアントが必要です。",
+    "endpoints_pair": "エンドポイントは両方設定するか、どちらも設定しないでください。",
+    "endpoints_need_client": "手動のエンドポイントには事前登録クライアントが必要です。",
+    "https_required": "HTTPS の URL を入力してください。",
+    "resource_label": "Resource（任意）",
+    "resource_hint": "サーバー URL の代わりにリソースインジケーターとして送信します。",
+    "audience_label": "Audience（任意）",
+    "audience_hint": "認可リクエストに付けて送信します。必要とするサーバー向けです。"
   },
   "callback": {
     "working": "MCP サーバーに接続しています…",

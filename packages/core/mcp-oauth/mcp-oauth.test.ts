@@ -211,6 +211,17 @@ describe("pre-registered clients", () => {
       ["odd", false, false],
     ]);
     expect(JSON.stringify(list)).not.toContain("leaked");
+    expect(list.servers[1]).toMatchObject({ authorization_host: "", token_host: "" });
+
+    serve(() =>
+      Response.json({
+        servers: [{ name: "manual", authorization_host: "login.example.com", token_host: "api.example.com:8443", token_endpoint: "https://leaked.example/token" }],
+        can_connect: true,
+      }),
+    );
+    const manual = await listAgentMcpOAuth("ws-1", "agent-1");
+    expect(manual.servers[0]).toMatchObject({ authorization_host: "login.example.com", token_host: "api.example.com:8443" });
+    expect(JSON.stringify(manual)).not.toContain("leaked");
 
     serve(() => Response.json({ servers: [{ server_id: "srv-1", name: "pre", preregistered: true, client_secret_set: false }] }));
     const ws = await listWorkspaceMcpOAuth("ws-1");

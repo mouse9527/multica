@@ -1,6 +1,7 @@
 "use client";
 
 // Added by the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
+// Modified for the mouse9527/multica fork: confirm manual endpoint hosts before connecting (M-295 stage 2).
 
 import { useState } from "react";
 import { toast } from "sonner";
@@ -8,6 +9,16 @@ import { Loader2 } from "@multica/ui/icons";
 import type { McpOAuthConnectionState } from "@multica/core/mcp-oauth";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@multica/ui/components/ui/alert-dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@multica/ui/components/ui/tooltip";
 import { useT } from "../i18n";
 import { currentPath, useNavigation } from "../navigation";
@@ -62,10 +73,23 @@ export function useMcpOAuthActions() {
   return { pending, connect, disconnect };
 }
 
+/** The hosts of an entry's manual OAuth endpoints. */
+export interface McpOAuthEndpointHosts {
+  authorization: string;
+  token: string;
+}
+
+/** The hosts to confirm before connecting, or null for an entry without manual endpoints. */
+export function mcpOAuthEndpointHosts(entry: { authorization_host: string; token_host: string }): McpOAuthEndpointHosts | null {
+  return entry.authorization_host ? { authorization: entry.authorization_host, token: entry.token_host } : null;
+}
+
 /**
  * The connection state of one OAuth MCP entry and its actions, shown inline
  * in an MCP server row. `problem` is why the entry cannot be connected (an
- * invalid OAuth entry); then only that is shown.
+ * invalid OAuth entry); then only that is shown. An entry with manual
+ * endpoints (`endpointHosts`) asks first: its editor chose where the browser
+ * goes and where the code is sent, so the person connecting sees the hosts.
  */
 export function McpOAuthConnection({
   name,
@@ -75,6 +99,7 @@ export function McpOAuthConnection({
   canConnect,
   canDisconnect,
   pending,
+  endpointHosts = null,
   onConnect,
   onDisconnect,
 }: {
@@ -86,10 +111,12 @@ export function McpOAuthConnection({
   canConnect: boolean;
   canDisconnect: boolean;
   pending: boolean;
+  endpointHosts?: McpOAuthEndpointHosts | null;
   onConnect: () => void;
   onDisconnect: () => void;
 }) {
   const { t } = useT("mcpoauth");
+  const [confirming, setConfirming] = useState(false);
   if (problem) {
     return (
       <Tooltip>
@@ -125,7 +152,7 @@ export function McpOAuthConnection({
               ? t(($) => $.reconnect_aria, { name })
               : t(($) => $.connect_aria, { name })
           }
-          onClick={onConnect}
+          onClick={() => (endpointHosts ? setConfirming(true) : onConnect())}
         >
           {pending && <Loader2 className="animate-spin motion-reduce:animate-none" aria-hidden="true" />}
           {state === "needs_reconnect" ? t(($) => $.reconnect) : t(($) => $.connect)}
@@ -143,6 +170,33 @@ export function McpOAuthConnection({
           {t(($) => $.disconnect)}
         </Button>
       )}
+      {endpointHosts ? (
+        <AlertDialog open={confirming} onOpenChange={setConfirming}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t(($) => $.endpoints_confirm.title, { name })}</AlertDialogTitle>
+              <AlertDialogDescription>{t(($) => $.endpoints_confirm.description)}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-body">
+              <dt className="text-muted-foreground">{t(($) => $.endpoints_confirm.authorization)}</dt>
+              <dd className="break-all font-mono">{endpointHosts.authorization}</dd>
+              <dt className="text-muted-foreground">{t(($) => $.endpoints_confirm.token)}</dt>
+              <dd className="break-all font-mono">{endpointHosts.token}</dd>
+            </dl>
+            <AlertDialogFooter>
+              <AlertDialogCancel>{t(($) => $.endpoints_confirm.cancel)}</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  setConfirming(false);
+                  onConnect();
+                }}
+              >
+                {t(($) => $.endpoints_confirm.continue)}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      ) : null}
     </div>
   );
 }

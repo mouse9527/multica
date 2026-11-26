@@ -2,6 +2,7 @@
 
 // Added by the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
 // Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
+// Modified for the mouse9527/multica fork: confirm manual endpoint hosts (M-295 stage 2).
 //
 // The OAuth state of the rows of the two MCP pages. The pages read only the
 // flag (useMcpOAuthAvailable) and render these components into their rows
@@ -27,7 +28,7 @@ import {
 import type { Agent } from "@multica/core/types";
 import { agentMcpServersOptions, workspaceMcpServersOptions } from "@multica/core/workspace/queries";
 import { useT } from "../i18n";
-import { McpOAuthConnection, useMcpOAuthActions } from "./mcp-oauth-connection";
+import { McpOAuthConnection, mcpOAuthEndpointHosts, useMcpOAuthActions } from "./mcp-oauth-connection";
 
 /** Whether OAuth MCP is on (mcp_oauth_v1). */
 export function useMcpOAuthAvailable(): boolean {
@@ -105,6 +106,7 @@ export function AgentMcpOAuthConnection({
       canConnect={canConnect}
       canDisconnect={canConnect}
       pending={actions.pending !== null}
+      endpointHosts={mcpOAuthEndpointHosts(entry)}
       onConnect={() => actions.connect("entry", (returnTo) => connect.mutateAsync({ name: entry.name, returnTo }))}
       onDisconnect={() => actions.disconnect("entry", entry.name, () => disconnect.mutateAsync(entry.name))}
     />
@@ -156,6 +158,7 @@ export function WorkspaceMcpOAuthConnection({ wsId, serverId }: { wsId: string; 
       canConnect
       canDisconnect
       pending={actions.pending !== null}
+      endpointHosts={mcpOAuthEndpointHosts(entry)}
       onConnect={() =>
         actions.connect("entry", (returnTo) => connect.mutateAsync({ serverId: entry.server_id, returnTo }))
       }

@@ -1,6 +1,7 @@
 // Added by the mouse9527/multica fork: server-hosted OAuth 2.1 MCP (M-230).
 // Modified for the mouse9527/multica fork: connections keyed by entry ref (M-269).
 // Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
+// Modified for the mouse9527/multica fork: manual endpoints, resource and audience (M-295 stage 2).
 
 package mcpoauth
 
@@ -93,27 +94,32 @@ type Target struct {
 	// Client is the entry's client now: a grant made with another
 	// pre-registered client is not used.
 	Client ClientConfig
+	// Server is the entry's endpoint, resource and audience settings now: a
+	// grant made for another manual token endpoint or resource is not used.
+	Server ServerConfig
 }
 
 // NewTarget is the target for the entry ref names, as it is now.
 func NewTarget(workspaceID, ref string, entry Entry) Target {
-	return Target{WorkspaceID: workspaceID, Ref: ref, URL: entry.URL, Scope: entry.Scope, Client: entry.Client}
+	return Target{WorkspaceID: workspaceID, Ref: ref, URL: entry.URL, Scope: entry.Scope, Client: entry.Client, Server: entry.Server}
 }
 
 // ConnectionStatus is what may be shown about a connection: no token, no
 // client secret.
 type ConnectionStatus struct {
-	ServerRef    string     `json:"server_ref"`
-	UserID       string     `json:"user_id"`
-	Status       string     `json:"status"`
-	ServerURL    string     `json:"-"`
-	ClientID     string     `json:"-"`
-	AuthMethod   string     `json:"-"`
-	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
-	GrantedScope string     `json:"granted_scope"`
-	LastError    string     `json:"last_error,omitempty"`
-	ConnectedAt  time.Time  `json:"connected_at"`
-	RefreshedAt  *time.Time `json:"refreshed_at,omitempty"`
+	ServerRef     string     `json:"server_ref"`
+	UserID        string     `json:"user_id"`
+	Status        string     `json:"status"`
+	ServerURL     string     `json:"-"`
+	ClientID      string     `json:"-"`
+	AuthMethod    string     `json:"-"`
+	TokenEndpoint string     `json:"-"`
+	Resource      string     `json:"-"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	GrantedScope  string     `json:"granted_scope"`
+	LastError     string     `json:"last_error,omitempty"`
+	ConnectedAt   time.Time  `json:"connected_at"`
+	RefreshedAt   *time.Time `json:"refreshed_at,omitempty"`
 }
 
 // ForURL is the status as an entry whose URL is now entryURL sees it: a grant
@@ -129,13 +135,16 @@ func (c ConnectionStatus) ForURL(entryURL string) ConnectionStatus {
 }
 
 // ForEntry is ForURL for the entry's URL, and likewise reads a grant made
-// with another pre-registered client than the entry names now as needing a
-// reconnect.
+// with another pre-registered client, manual token endpoint or resource than
+// the entry names now as needing a reconnect.
 func (c ConnectionStatus) ForEntry(entry Entry) ConnectionStatus {
 	c = c.ForURL(entry.URL)
-	if c.Status == StatusConnected && !entry.Client.clientMatches(c.ClientID, c.AuthMethod) {
+	if c.Status != StatusConnected {
+		return c
+	}
+	if reason := grantMismatch(entry.Client, entry.Server, c.ClientID, c.AuthMethod, c.TokenEndpoint, c.Resource); reason != "" {
 		c.Status = StatusNeedsReconnect
-		c.LastError = ReasonClientChanged
+		c.LastError = reason
 		c.ExpiresAt = nil
 	}
 	return c
@@ -171,6 +180,12 @@ type PendingAuthorization struct {
 	Verifier      Secret
 	ReturnTo      string
 	ExpiresAt     time.Time
+	// Issuer is the authorization server the browser is sent to, and
+	// ISSRequired whether it advertised RFC 9207's iss parameter: the
+	// authorization response is checked against them (checkResponseIssuer).
+	// They travel in the state (stateWithIssuer), not in a column.
+	Issuer      string
+	ISSRequired bool
 }
 
 // Grant is the result of a completed authorization.
@@ -251,7 +266,7 @@ func (s *Store) CreatePendingAuthorization(ctx context.Context, p PendingAuthori
 	if _, err := rand.Read(raw); err != nil {
 		return "", err
 	}
-	state := base64.RawURLEncoding.EncodeToString(raw)
+	state := stateWithIssuer(base64.RawURLEncoding.EncodeToString(raw), p.Issuer, p.ISSRequired)
 	verifier, err := s.seal(p.Verifier.Reveal())
 	if err != nil {
 		return "", err
@@ -315,6 +330,8 @@ func (s *Store) ConsumePendingAuthorization(ctx context.Context, state, userID s
 	if p.UserID != userID || !s.now().Before(p.ExpiresAt) {
 		return PendingAuthorization{}, ErrStateInvalid
 	}
+	// The state hashed to this row, so its issuer part is the one recorded.
+	p.Issuer, p.ISSRequired = issuerFromState(state)
 	secret, err := s.open(clientSecret)
 	if err != nil {
 		return PendingAuthorization{}, fmt.Errorf("open client secret: %w", err)
@@ -390,12 +407,12 @@ func expiryArg(now time.Time, expiresIn int64) any {
 }
 
 const connectionStatusColumns = `server_ref, user_id::text, status, server_url, expires_at, granted_scope,
-	last_error, connected_at, refreshed_at, client_id, token_endpoint_auth_method`
+	last_error, connected_at, refreshed_at, client_id, token_endpoint_auth_method, token_endpoint, resource`
 
 func scanConnectionStatus(row pgx.Row) (ConnectionStatus, error) {
 	var out ConnectionStatus
 	err := row.Scan(&out.ServerRef, &out.UserID, &out.Status, &out.ServerURL, &out.ExpiresAt, &out.GrantedScope,
-		&out.LastError, &out.ConnectedAt, &out.RefreshedAt, &out.ClientID, &out.AuthMethod)
+		&out.LastError, &out.ConnectedAt, &out.RefreshedAt, &out.ClientID, &out.AuthMethod, &out.TokenEndpoint, &out.Resource)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ConnectionStatus{}, ErrNotConnected
 	}

@@ -17,6 +17,14 @@
   "action_failed": "操作失败，请重试。",
   "connect_continue": "请在浏览器中完成连接。",
   "disconnected_toast": "已断开 {{name}}",
+  "endpoints_confirm": {
+    "title": "连接 {{name}}？",
+    "description": "这个服务器的 OAuth 端点是手工填写的。只在你信任下面的主机时继续。",
+    "authorization": "登录页面所在主机",
+    "token": "令牌来源主机",
+    "cancel": "取消",
+    "continue": "继续"
+  },
   "auth": {
     "label": "认证方式",
     "none": "无",
@@ -51,6 +59,21 @@
       "client_secret_post": "client_secret_post",
       "none": "none（公共客户端）"
     }
+  },
+  "advanced": {
+    "label": "高级",
+    "issuer_label": "Issuer（可选）",
+    "issuer_hint": "用这个授权服务器，而不是 MCP 服务器指定的那个。",
+    "authorization_endpoint_label": "授权端点",
+    "token_endpoint_label": "令牌端点",
+    "endpoints_hint": "两个都填就跳过自动发现。需要预注册客户端。",
+    "endpoints_pair": "两个端点要么都填，要么都不填。",
+    "endpoints_need_client": "手工填写端点需要预注册客户端。",
+    "https_required": "请填写 HTTPS 地址。",
+    "resource_label": "Resource（可选）",
+    "resource_hint": "作为资源指示符发送，代替服务器地址。",
+    "audience_label": "Audience（可选）",
+    "audience_hint": "随授权请求发送，适用于要求它的服务器。"
   },
   "callback": {
     "working": "正在连接 MCP 服务器...",

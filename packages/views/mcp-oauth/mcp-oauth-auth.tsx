@@ -2,8 +2,9 @@
 
 // Added by the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
 // Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
+// Modified for the mouse9527/multica fork: manual endpoints, resource and audience (M-295 stage 2).
 
-import { useId } from "react";
+import { useId, useState, type ReactNode } from "react";
 import {
   MCP_OAUTH_AUTH_TYPE,
   MCP_OAUTH_TOKEN_AUTH_METHODS,
@@ -11,6 +12,8 @@ import {
 } from "@multica/core/mcp-oauth";
 import { cn } from "@multica/ui/lib/utils";
 import { Button } from "@multica/ui/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@multica/ui/components/ui/collapsible";
+import { ChevronRight } from "@multica/ui/icons";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@multica/ui/components/ui/field";
 import { Input } from "@multica/ui/components/ui/input";
 import { useT } from "../i18n";
@@ -44,6 +47,11 @@ export type McpOAuthFormValue = {
   clientSecret: string;
   /** Remove the stored client secret when saving. */
   clearClientSecret: boolean;
+  // Advanced: where the authorization server is, and what the token is for.
+  authorizationEndpoint: string;
+  tokenEndpoint: string;
+  resource: string;
+  audience: string;
 };
 
 export const emptyOAuthForm = (): McpOAuthFormValue => ({
@@ -54,7 +62,22 @@ export const emptyOAuthForm = (): McpOAuthFormValue => ({
   tokenAuthMethod: "",
   clientSecret: "",
   clearClientSecret: false,
+  authorizationEndpoint: "",
+  tokenEndpoint: "",
+  resource: "",
+  audience: "",
 });
+
+/** Whether any advanced setting is filled in, so the section opens on them. */
+export function hasAdvancedOAuthSettings(value: McpOAuthFormValue): boolean {
+  return (
+    value.authorizationEndpoint !== "" ||
+    value.tokenEndpoint !== "" ||
+    value.resource !== "" ||
+    value.audience !== "" ||
+    (value.clientMode === "dynamic" && value.issuer !== "")
+  );
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -84,6 +107,10 @@ export function oauthFormAuthFromConfig(config: Record<string, unknown>): McpOAu
     tokenAuthMethod: (MCP_OAUTH_TOKEN_AUTH_METHODS as readonly string[]).includes(method)
       ? (method as McpOAuthTokenAuthMethod)
       : "",
+    authorizationEndpoint: stringField(auth, "authorization_endpoint"),
+    tokenEndpoint: stringField(auth, "token_endpoint"),
+    resource: stringField(auth, "resource"),
+    audience: stringField(auth, "audience"),
   };
 }
 
@@ -95,21 +122,50 @@ export function oauthAuthFromForm(value: McpOAuthFormValue): Record<string, unkn
   const auth: Record<string, unknown> = { type: MCP_OAUTH_AUTH_TYPE };
   const scope = value.scope.trim();
   if (scope) auth.scope = scope;
+  const issuer = value.issuer.trim();
   if (value.clientMode === "preregistered") {
     auth.client_id = value.clientId.trim();
-    auth.issuer = value.issuer.trim();
+    auth.issuer = issuer;
     if (value.tokenAuthMethod) auth.token_endpoint_auth_method = value.tokenAuthMethod;
+  } else if (issuer) {
+    auth.issuer = issuer;
+  }
+  const optional: [string, string][] = [
+    ["authorization_endpoint", value.authorizationEndpoint],
+    ["token_endpoint", value.tokenEndpoint],
+    ["resource", value.resource],
+    ["audience", value.audience],
+  ];
+  for (const [key, raw] of optional) {
+    const text = raw.trim();
+    if (text) auth[key] = text;
   }
   return auth;
 }
 
 /** What blocks saving the OAuth settings, if anything. */
-export type McpOAuthFormError = "client_id" | "issuer";
+export type McpOAuthFormError =
+  | "client_id"
+  | "issuer"
+  | "endpoints_pair"
+  | "endpoints_need_client"
+  | "authorization_endpoint"
+  | "token_endpoint";
+
+const HTTPS_URL = /^https:\/\/[^\s#]+$/i;
 
 export function oauthFormError(value: McpOAuthFormValue): McpOAuthFormError | null {
-  if (value.clientMode !== "preregistered") return null;
-  if (value.clientId.trim() === "") return "client_id";
-  if (!/^https:\/\/[^\s]+$/i.test(value.issuer.trim())) return "issuer";
+  const preregistered = value.clientMode === "preregistered";
+  const issuer = value.issuer.trim();
+  if (preregistered && value.clientId.trim() === "") return "client_id";
+  if ((preregistered || issuer !== "") && !HTTPS_URL.test(issuer)) return "issuer";
+  const authorizationEndpoint = value.authorizationEndpoint.trim();
+  const tokenEndpoint = value.tokenEndpoint.trim();
+  if ((authorizationEndpoint === "") !== (tokenEndpoint === "")) return "endpoints_pair";
+  if (authorizationEndpoint === "") return null;
+  if (!preregistered) return "endpoints_need_client";
+  if (!HTTPS_URL.test(authorizationEndpoint)) return "authorization_endpoint";
+  if (!HTTPS_URL.test(tokenEndpoint)) return "token_endpoint";
   return null;
 }
 
@@ -203,6 +259,46 @@ export function McpOAuthAuthPicker({
   const issuerErrorId = `${issuerId}-error`;
   const secretHintId = `${secretId}-hint`;
   const secretKept = clientSecretSet && !oauth.clearClientSecret && oauth.clientSecret === "";
+  const preregistered = oauth.clientMode === "preregistered";
+  const [advancedOpen, setAdvancedOpen] = useState(() => hasAdvancedOAuthSettings(oauth));
+  // Stage 2 (M-295): the issuer is required for a pre-registered client and
+  // shown with it; for automatic registration it is optional and advanced.
+  const issuerField = (
+    <Field>
+      <FieldLabel htmlFor={issuerId}>
+        {preregistered ? t(($) => $.client.issuer_label) : t(($) => $.advanced.issuer_label)}
+      </FieldLabel>
+      <Input
+        id={issuerId}
+        name="mcp-server-oauth-issuer"
+        placeholder="https://auth.example.com"
+        type="url"
+        inputMode="url"
+        autoComplete="off"
+        spellCheck={false}
+        value={oauth.issuer}
+        onChange={(event) => onOAuthChange({ issuer: event.target.value })}
+        aria-invalid={error === "issuer" ? true : undefined}
+        aria-describedby={error === "issuer" ? issuerErrorId : undefined}
+        className="aria-invalid:border-input aria-invalid:ring-0"
+      />
+      {error === "issuer" ? (
+        <FieldError id={issuerErrorId} className="text-caption">
+          {t(($) => $.client.issuer_required)}
+        </FieldError>
+      ) : (
+        <FieldDescription className="text-caption">
+          {preregistered ? t(($) => $.client.issuer_hint) : t(($) => $.advanced.issuer_hint)}
+        </FieldDescription>
+      )}
+    </Field>
+  );
+  const advancedError =
+    error === "endpoints_pair" ||
+    error === "endpoints_need_client" ||
+    error === "authorization_endpoint" ||
+    error === "token_endpoint" ||
+    (error === "issuer" && !preregistered);
   return (
     <div className="space-y-4">
       <Choice
@@ -233,7 +329,13 @@ export function McpOAuthAuthPicker({
             value={oauth.clientMode}
             label={(option) => t(($) => $.client[option])}
             columns="grid-cols-2"
-            onChange={(clientMode) => onOAuthChange({ clientMode })}
+            onChange={(clientMode) => {
+              // Back to automatic registration, a pre-registered client's
+              // issuer stays as an advanced setting; show it there rather
+              // than keep it folded away.
+              if (clientMode === "dynamic" && oauth.issuer.trim() !== "") setAdvancedOpen(true);
+              onOAuthChange({ clientMode });
+            }}
           />
           {oauth.clientMode === "preregistered" ? (
             <>
@@ -256,30 +358,7 @@ export function McpOAuthAuthPicker({
                   </FieldError>
                 ) : null}
               </Field>
-              <Field>
-                <FieldLabel htmlFor={issuerId}>{t(($) => $.client.issuer_label)}</FieldLabel>
-                <Input
-                  id={issuerId}
-                  name="mcp-server-oauth-issuer"
-                  placeholder="https://auth.example.com"
-                  type="url"
-                  inputMode="url"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={oauth.issuer}
-                  onChange={(event) => onOAuthChange({ issuer: event.target.value })}
-                  aria-invalid={error === "issuer" ? true : undefined}
-                  aria-describedby={error === "issuer" ? issuerErrorId : undefined}
-                  className="aria-invalid:border-input aria-invalid:ring-0"
-                />
-                {error === "issuer" ? (
-                  <FieldError id={issuerErrorId} className="text-caption">
-                    {t(($) => $.client.issuer_required)}
-                  </FieldError>
-                ) : (
-                  <FieldDescription className="text-caption">{t(($) => $.client.issuer_hint)}</FieldDescription>
-                )}
-              </Field>
+              {issuerField}
               {clientSecretEditable ? (
                 <Field>
                   <FieldLabel htmlFor={secretId}>{t(($) => $.client.secret_label)}</FieldLabel>
@@ -327,9 +406,151 @@ export function McpOAuthAuthPicker({
               />
             </>
           ) : null}
+          <McpOAuthAdvanced
+            oauth={oauth}
+            error={error}
+            open={advancedOpen || advancedError}
+            onOpenChange={setAdvancedOpen}
+            issuerField={preregistered ? null : issuerField}
+            onOAuthChange={onOAuthChange}
+          />
         </>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The advanced OAuth settings, folded away: where the authorization server
+ * is (the issuer for automatic registration; manual endpoints, which skip
+ * discovery and need a pre-registered client) and what the token is for
+ * (resource indicator, audience). The picker opens it when any is set or has
+ * an error.
+ */
+function McpOAuthAdvanced({
+  oauth,
+  error,
+  open,
+  onOpenChange,
+  issuerField,
+  onOAuthChange,
+}: {
+  oauth: McpOAuthFormValue;
+  error: McpOAuthFormError | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  issuerField: ReactNode;
+  onOAuthChange: (patch: Partial<McpOAuthFormValue>) => void;
+}) {
+  const { t } = useT("mcpoauth");
+  const authorizationId = useId();
+  const tokenId = useId();
+  const resourceId = useId();
+  const audienceId = useId();
+  const authorizationErrorId = `${authorizationId}-error`;
+  const tokenErrorId = `${tokenId}-error`;
+  const endpointsError =
+    error === "endpoints_pair"
+      ? t(($) => $.advanced.endpoints_pair)
+      : error === "endpoints_need_client"
+        ? t(($) => $.advanced.endpoints_need_client)
+        : error === "token_endpoint"
+          ? t(($) => $.advanced.https_required)
+          : "";
+  const textField = (
+    id: string,
+    name: string,
+    label: string,
+    value: string,
+    onValue: (value: string) => void,
+    options: { placeholder?: string; hint?: string; errorId?: string; error?: string } = {},
+  ) => (
+    <Field>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <Input
+        id={id}
+        name={name}
+        placeholder={options.placeholder}
+        autoComplete="off"
+        spellCheck={false}
+        value={value}
+        onChange={(event) => onValue(event.target.value)}
+        aria-invalid={options.error ? true : undefined}
+        aria-describedby={options.error ? options.errorId : undefined}
+        className="aria-invalid:border-input aria-invalid:ring-0"
+      />
+      {options.error ? (
+        <FieldError id={options.errorId} className="text-caption">
+          {options.error}
+        </FieldError>
+      ) : options.hint ? (
+        <FieldDescription className="text-caption">{options.hint}</FieldDescription>
+      ) : null}
+    </Field>
+  );
+  return (
+    <Collapsible open={open} onOpenChange={(next) => onOpenChange(next)}>
+      <CollapsibleTrigger
+        render={
+          <button
+            type="button"
+            className="group flex items-center gap-1 rounded-md text-body font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          />
+        }
+      >
+        <ChevronRight
+          aria-hidden
+          className="size-4 transition-transform group-aria-expanded:rotate-90 motion-reduce:transition-none"
+        />
+        {t(($) => $.advanced.label)}
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="space-y-4 pt-4">
+          {issuerField}
+          {textField(
+            authorizationId,
+            "mcp-server-oauth-authorization-endpoint",
+            t(($) => $.advanced.authorization_endpoint_label),
+            oauth.authorizationEndpoint,
+            (authorizationEndpoint) => onOAuthChange({ authorizationEndpoint }),
+            {
+              placeholder: "https://auth.example.com/authorize",
+              errorId: authorizationErrorId,
+              error: error === "authorization_endpoint" ? t(($) => $.advanced.https_required) : undefined,
+            },
+          )}
+          {textField(
+            tokenId,
+            "mcp-server-oauth-token-endpoint",
+            t(($) => $.advanced.token_endpoint_label),
+            oauth.tokenEndpoint,
+            (tokenEndpoint) => onOAuthChange({ tokenEndpoint }),
+            {
+              placeholder: "https://auth.example.com/token",
+              hint: t(($) => $.advanced.endpoints_hint),
+              errorId: tokenErrorId,
+              error: endpointsError || undefined,
+            },
+          )}
+          {textField(
+            resourceId,
+            "mcp-server-oauth-resource",
+            t(($) => $.advanced.resource_label),
+            oauth.resource,
+            (resource) => onOAuthChange({ resource }),
+            { hint: t(($) => $.advanced.resource_hint) },
+          )}
+          {textField(
+            audienceId,
+            "mcp-server-oauth-audience",
+            t(($) => $.advanced.audience_label),
+            oauth.audience,
+            (audience) => onOAuthChange({ audience }),
+            { hint: t(($) => $.advanced.audience_hint) },
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 

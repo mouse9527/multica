@@ -17,6 +17,14 @@
   "action_failed": "Algo salió mal. Inténtalo de nuevo.",
   "connect_continue": "Termina la conexión en tu navegador.",
   "disconnected_toast": "{{name}} desconectado",
+  "endpoints_confirm": {
+    "title": "¿Conectar {{name}}?",
+    "description": "Los endpoints OAuth de este servidor se configuraron a mano. Continúa solo si confías en estos hosts.",
+    "authorization": "Inicias sesión en",
+    "token": "Los tokens vienen de",
+    "cancel": "Cancelar",
+    "continue": "Continuar"
+  },
   "auth": {
     "label": "Autenticación",
     "none": "Ninguna",
@@ -51,6 +59,21 @@
       "client_secret_post": "client_secret_post",
       "none": "none (cliente público)"
     }
+  },
+  "advanced": {
+    "label": "Avanzado",
+    "issuer_label": "Emisor (opcional)",
+    "issuer_hint": "Usa este servidor de autorización en lugar del que indica el servidor MCP.",
+    "authorization_endpoint_label": "Endpoint de autorización",
+    "token_endpoint_label": "Endpoint de tokens",
+    "endpoints_hint": "Configura ambos para omitir el descubrimiento. Requiere un cliente registrado previamente.",
+    "endpoints_pair": "Configura ambos endpoints o ninguno.",
+    "endpoints_need_client": "Los endpoints configurados a mano requieren un cliente registrado previamente.",
+    "https_required": "Introduce una URL HTTPS.",
+    "resource_label": "Recurso (opcional)",
+    "resource_hint": "Se envía como indicador de recurso en lugar de la URL del servidor.",
+    "audience_label": "Audiencia (opcional)",
+    "audience_hint": "Se envía con la solicitud de autorización, para servidores que la piden."
   },
   "callback": {
     "working": "Conectando el servidor MCP…",

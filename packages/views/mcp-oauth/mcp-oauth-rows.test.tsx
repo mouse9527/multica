@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 // Added by the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
+// Modified for the mouse9527/multica fork: confirm manual endpoint hosts (M-295 stage 2).
 
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -122,6 +123,30 @@ describe("AgentMcpOAuthConnection", () => {
       expect(mockOpenExternal).toHaveBeenCalledWith("https://auth.example.com/authorize?state=x", { webTarget: "same-tab" }),
     );
     expect(mockConnectAgent).toHaveBeenCalledWith({ name: "gateway", returnTo: "/acme/agents/agent-1?view=mcp_config" });
+  });
+
+  // Stage 2 (M-295): an entry with manual endpoints shows their hosts and
+  // asks before the browser is sent anywhere.
+  it("confirms the hosts of manual endpoints before connecting", async () => {
+    lists.agent.servers = [
+      agentEntry({ name: "gateway", authorization_host: "login.example.com", token_host: "api.example.com:8443" }),
+    ];
+    mockConnectAgent.mockResolvedValue("https://login.example.com/authorize?state=x");
+    render(<AgentMcpOAuthConnection agent={agent} canEdit name="gateway" />, { wrapper: Shell });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Connect gateway" }));
+    expect(await screen.findByText("login.example.com")).toBeTruthy();
+    expect(screen.getByText("api.example.com:8443")).toBeTruthy();
+    expect(mockConnectAgent).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(mockConnectAgent).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Connect gateway" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await waitFor(() =>
+      expect(mockOpenExternal).toHaveBeenCalledWith("https://login.example.com/authorize?state=x", { webTarget: "same-tab" }),
+    );
   });
 
   it("offers a reconnect and a disconnect for a connection that needs it", async () => {

@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: pre-registered OAuth clients for MCP entries (M-295).
+// Modified for the mouse9527/multica fork: stale client secrets cleared on reconnect (M-295 stage 2).
 
 package mcpoauth
 
@@ -39,7 +40,7 @@ func connect(t *testing.T, fake *fakeOAuthServer, store *Store, f fixture, targe
 		t.Fatalf("start: %v", err)
 	}
 	code, state := fake.authorize(t, authorizationURL)
-	if _, err := flow.Complete(ctx, state, code, f.ownerID, nil); err != nil {
+	if _, err := flow.Complete(ctx, state, code, "", f.ownerID, nil); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
 }
@@ -333,9 +334,10 @@ func TestChangedClientNeedsReconnect(t *testing.T) {
 		if err != nil || status.Status != StatusNeedsReconnect || status.LastError != ReasonClientChanged {
 			t.Fatalf("status = %+v, %v", status, err)
 		}
-		var access []byte
-		if err := pool.QueryRow(ctx, `SELECT access_token_ciphertext FROM mcp_oauth_connection WHERE server_ref = $1`, ref).Scan(&access); err != nil || access != nil {
-			t.Fatalf("token kept after the client changed: %v", err)
+		var access, clientSecret []byte
+		if err := pool.QueryRow(ctx, `SELECT access_token_ciphertext, client_secret_ciphertext FROM mcp_oauth_connection WHERE server_ref = $1`, ref).
+			Scan(&access, &clientSecret); err != nil || access != nil || clientSecret != nil {
+			t.Fatalf("token or client secret kept after the client changed: %v", err)
 		}
 	})
 }

@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: pre-registered OAuth clients for MCP entries (M-295).
+// Modified for the mouse9527/multica fork: issuer alone, AuthorizationChange (M-295 stage 2).
 
 package mcpoauth
 
@@ -31,6 +32,8 @@ func TestParseEntryPreregisteredClient(t *testing.T) {
 		`{"url":"https://mcp.example.com/mcp","auth":{"type":"oauth","client_id":"c","issuer":"https://a.example","token_endpoint_auth_method":"none"}}`: {
 			ID: "c", Issuer: "https://a.example", TokenEndpointAuthMethod: AuthMethodNone,
 		},
+		// An issuer alone: dynamic registration at a named server (stage 2).
+		`{"url":"https://mcp.example.com/mcp","auth":{"type":"oauth","issuer":"https://a.example"}}`: {Issuer: "https://a.example"},
 	} {
 		got, err := ParseEntry(json.RawMessage(raw))
 		if err != nil || got.Client != want {
@@ -41,7 +44,6 @@ func TestParseEntryPreregisteredClient(t *testing.T) {
 	invalid := map[string]string{
 		"client secret in the entry": `{"url":"https://mcp.example.com/mcp","auth":{"type":"oauth","client_id":"c","issuer":"https://a.example","client_secret":"s"}}`,
 		"client id without issuer":   `{"url":"https://mcp.example.com/mcp","auth":{"type":"oauth","client_id":"c"}}`,
-		"issuer without client id":   `{"url":"https://mcp.example.com/mcp","auth":{"type":"oauth","issuer":"https://a.example"}}`,
 		"method without client id":   `{"url":"https://mcp.example.com/mcp","auth":{"type":"oauth","token_endpoint_auth_method":"none"}}`,
 		"empty client id":            `{"url":"https://mcp.example.com/mcp","auth":{"type":"oauth","client_id":"  ","issuer":"https://a.example"}}`,
 		"client id not a string":     `{"url":"https://mcp.example.com/mcp","auth":{"type":"oauth","client_id":1,"issuer":"https://a.example"}}`,
@@ -98,7 +100,10 @@ func TestPreregisteredAuthMethod(t *testing.T) {
 		wantErr   error
 	}{
 		{"", false, nil, AuthMethodNone, nil},
-		{"", false, []string{AuthMethodClientSecretBasic}, AuthMethodNone, nil},
+		{"", false, []string{AuthMethodNone, AuthMethodClientSecretBasic}, AuthMethodNone, nil},
+		// The server takes no public client and there is no secret: said
+		// before the browser round trip, not at the code exchange.
+		{"", false, []string{AuthMethodClientSecretBasic}, "", ErrClientSecretMissing},
 		{"", true, nil, AuthMethodClientSecretBasic, nil},
 		{"", true, []string{AuthMethodNone, AuthMethodClientSecretBasic, AuthMethodClientSecretPost}, AuthMethodClientSecretBasic, nil},
 		{"", true, []string{AuthMethodClientSecretPost}, AuthMethodClientSecretPost, nil},
@@ -132,22 +137,29 @@ func TestClientMatchesAndChanges(t *testing.T) {
 	entry := func(auth string) json.RawMessage {
 		return json.RawMessage(`{"url":"https://mcp.example.com/mcp","auth":{"type":"oauth"` + auth + `}}`)
 	}
+	preAuth := `,"client_id":"c","issuer":"https://a.example"`
+	manual := preAuth + `,"authorization_endpoint":"https://a.example/authorize","token_endpoint":"https://a.example/token"`
 	for _, c := range []struct {
 		name          string
 		before, after json.RawMessage
-		want          bool
+		want          string
 	}{
-		{"unchanged dynamic", entry(``), entry(`,"scope":"other"`), false},
-		{"unchanged pre-registered", entry(`,"client_id":"c","issuer":"https://a.example"`), entry(`,"client_id":"c","issuer":"https://a.example","scope":"x"`), false},
-		{"to pre-registered", entry(``), entry(`,"client_id":"c","issuer":"https://a.example"`), true},
-		{"back to dynamic", entry(`,"client_id":"c","issuer":"https://a.example"`), entry(``), true},
-		{"other issuer", entry(`,"client_id":"c","issuer":"https://a.example"`), entry(`,"client_id":"c","issuer":"https://b.example"`), true},
-		{"other method", entry(`,"client_id":"c","issuer":"https://a.example"`), entry(`,"client_id":"c","issuer":"https://a.example","token_endpoint_auth_method":"none"`), true},
-		{"new entry", nil, entry(`,"client_id":"c","issuer":"https://a.example"`), false},
-		{"no longer OAuth", entry(`,"client_id":"c","issuer":"https://a.example"`), json.RawMessage(`{"url":"https://mcp.example.com/mcp"}`), false},
+		{"unchanged dynamic", entry(``), entry(`,"scope":"other"`), ""},
+		{"unchanged pre-registered", entry(preAuth), entry(preAuth + `,"scope":"x"`), ""},
+		{"to pre-registered", entry(``), entry(preAuth), ReasonClientChanged},
+		{"back to dynamic", entry(preAuth), entry(``), ReasonClientChanged},
+		{"other method", entry(preAuth), entry(preAuth + `,"token_endpoint_auth_method":"none"`), ReasonClientChanged},
+		{"other issuer", entry(preAuth), entry(`,"client_id":"c","issuer":"https://b.example"`), ReasonServerChanged},
+		{"issuer named", entry(``), entry(`,"issuer":"https://a.example"`), ReasonServerChanged},
+		{"manual endpoints", entry(preAuth), entry(manual), ReasonServerChanged},
+		{"other token endpoint", entry(manual), entry(preAuth + `,"authorization_endpoint":"https://a.example/authorize","token_endpoint":"https://b.example/token"`), ReasonServerChanged},
+		{"resource", entry(``), entry(`,"resource":"https://api.example.com"`), ReasonServerChanged},
+		{"audience", entry(``), entry(`,"audience":"https://api.example.com"`), ReasonServerChanged},
+		{"new entry", nil, entry(preAuth), ""},
+		{"no longer OAuth", entry(preAuth), json.RawMessage(`{"url":"https://mcp.example.com/mcp"}`), ""},
 	} {
-		if got := ClientChanged(c.before, c.after); got != c.want {
-			t.Errorf("%s: ClientChanged = %v, want %v", c.name, got, c.want)
+		if got := AuthorizationChange(c.before, c.after); got != c.want {
+			t.Errorf("%s: AuthorizationChange = %q, want %q", c.name, got, c.want)
 		}
 	}
 }

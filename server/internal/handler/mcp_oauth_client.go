@@ -1,4 +1,5 @@
 // Added by the mouse9527/multica fork: pre-registered OAuth clients for MCP entries (M-295).
+// Modified for the mouse9527/multica fork: manual endpoints, resource and audience (M-295 stage 2).
 
 package handler
 
@@ -36,10 +37,19 @@ type mcpOAuthClientResponse struct {
 	Preregistered bool `json:"preregistered"`
 	// ClientSecretSet: a client secret is stored for the entry.
 	ClientSecretSet bool `json:"client_secret_set"`
+	// AuthorizationHost and TokenHost are the hosts of the entry's manual
+	// endpoints, shown before connecting; absent without them. Host names
+	// only, never the entry's URLs.
+	AuthorizationHost string `json:"authorization_host,omitempty"`
+	TokenHost         string `json:"token_host,omitempty"`
 }
 
 func mcpOAuthClientJSON(entry mcpoauth.Entry, secretSet bool) mcpOAuthClientResponse {
-	return mcpOAuthClientResponse{Preregistered: entry.Client.Preregistered(), ClientSecretSet: secretSet}
+	authorizationHost, tokenHost := entry.Server.Hosts()
+	return mcpOAuthClientResponse{
+		Preregistered: entry.Client.Preregistered(), ClientSecretSet: secretSet,
+		AuthorizationHost: authorizationHost, TokenHost: tokenHost,
+	}
 }
 
 // mcpOAuthClientSecretsSet reports which of the entries have a client secret
@@ -72,6 +82,9 @@ func writeMCPOAuthClientError(w http.ResponseWriter, serverRef string, err error
 		writeErrorCode(w, http.StatusBadRequest, "mcp_oauth_client_secret_missing", mcpoauth.ErrClientSecretMissing.Error())
 	case errors.Is(err, mcpoauth.ErrClientSecretStale):
 		writeErrorCode(w, http.StatusBadRequest, "mcp_oauth_client_secret_stale", mcpoauth.ErrClientSecretStale.Error())
+	case errors.Is(err, mcpoauth.ErrEndpointNotAllowed):
+		slog.Warn("mcp oauth: connect step failed", "server_ref", serverRef, "error", err)
+		writeErrorCode(w, http.StatusBadRequest, "mcp_oauth_endpoint_not_allowed", mcpoauth.ErrEndpointNotAllowed.Error())
 	case errors.Is(err, mcpoauth.ErrIssuerMismatch):
 		slog.Warn("mcp oauth: connect step failed", "server_ref", serverRef, "error", err)
 		writeErrorCode(w, http.StatusBadRequest, "mcp_oauth_issuer_mismatch", mcpoauth.ErrIssuerMismatch.Error())
@@ -204,14 +217,14 @@ func (h *Handler) deleteMCPOAuthClientSecret(w http.ResponseWriter, r *http.Requ
 }
 
 // settleChangedMCPOAuthClient runs after an OAuth entry was saved over its
-// previous config. Connections made with another client than the entry names
-// now need a reconnect. The client secret belongs to the client it was set
+// previous config. Connections made with another client, endpoints, issuer,
+// resource or audience than the entry names now need a reconnect. The client secret belongs to the client it was set
 // for: an entry that names another client id or issuer, no longer names a
 // pre-registered client, or no longer uses OAuth keeps none. It never fails
 // the write; a failure is logged.
 func (h *Handler) settleChangedMCPOAuthClient(ctx context.Context, workspaceID, ref string, before, after json.RawMessage) {
-	if mcpoauth.ClientChanged(before, after) {
-		if err := mcpoauth.MarkEntryNeedsReconnect(ctx, h.DB, workspaceID, ref, mcpoauth.ReasonClientChanged, time.Now()); err != nil {
+	if reason := mcpoauth.AuthorizationChange(before, after); reason != "" {
+		if err := mcpoauth.MarkEntryNeedsReconnect(ctx, h.DB, workspaceID, ref, reason, time.Now()); err != nil {
 			slog.Warn("mcp oauth: mark changed client failed", "server_ref", ref, "error", err)
 		}
 	}

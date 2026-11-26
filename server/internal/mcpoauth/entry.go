@@ -1,5 +1,6 @@
 // Added by the mouse9527/multica fork: OAuth as an auth mode of MCP entries (M-269).
 // Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
+// Modified for the mouse9527/multica fork: manual endpoints, resource and audience (M-295 stage 2).
 
 package mcpoauth
 
@@ -119,6 +120,9 @@ type Entry struct {
 	Scope string
 	// Client is how the connect obtains its OAuth client.
 	Client ClientConfig
+	// Server overrides what the connect discovers about the authorization
+	// server.
+	Server ServerConfig
 	// Disabled is an entry switched off with "enabled": false or
 	// "disabled": true; it is not mounted, so it needs no token.
 	Disabled bool
@@ -186,6 +190,9 @@ func ParseEntry(raw json.RawMessage) (Entry, error) {
 			}
 		default:
 			known, err := parseClientField(key, value, &out.Client)
+			if err == nil && !known {
+				known, err = parseServerField(key, value, &out.Server)
+			}
 			if err != nil {
 				return Entry{}, err
 			}
@@ -194,7 +201,7 @@ func ParseEntry(raw json.RawMessage) (Entry, error) {
 			}
 		}
 	}
-	if err := out.Client.validate(); err != nil {
+	if err := validateAuthorization(out.Client, out.Server); err != nil {
 		return Entry{}, err
 	}
 	if _, ok := fields["command"]; ok {
@@ -259,7 +266,15 @@ func ValidateEntryForSave(ctx context.Context, raw json.RawMessage) error {
 		return err
 	}
 	if entry.Client.Issuer != "" {
-		return issuerAllowed(ctx, entry.Client.Issuer)
+		if err := issuerAllowed(ctx, entry.Client.Issuer); err != nil {
+			return err
+		}
+	}
+	if entry.Server.ManualEndpoints() {
+		if err := endpointAllowed(ctx, "authorization_endpoint", entry.Server.AuthorizationEndpoint); err != nil {
+			return err
+		}
+		return endpointAllowed(ctx, "token_endpoint", entry.Server.TokenEndpoint)
 	}
 	return nil
 }

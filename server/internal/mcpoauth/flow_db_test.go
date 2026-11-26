@@ -2,6 +2,7 @@
 // Modified for the mouse9527/multica fork: connect an MCP entry by ref (M-269).
 // Modified for the mouse9527/multica fork: token endpoint errors with an OAuth error body (M-277).
 // Modified for the mouse9527/multica fork: a fake server that also takes pre-registered clients (M-295).
+// Modified for the mouse9527/multica fork: resource indicator and protected resource metadata configurable (M-295 stage 2).
 
 package mcpoauth
 
@@ -56,6 +57,21 @@ type fakeOAuthServer struct {
 	authMethods    []string
 	// statedIssuer, when set, is the issuer its metadata claims.
 	statedIssuer string
+	// resource, when set, is the resource indicator it expects instead of
+	// its own /mcp URL.
+	resource string
+	// noResourceMetadata: it publishes no RFC 9728 document.
+	noResourceMetadata bool
+	// issSupported: its metadata advertises RFC 9207's iss parameter.
+	issSupported bool
+}
+
+// expectedResource is the resource indicator requests must carry.
+func (f *fakeOAuthServer) expectedResource(base string) string {
+	if f.resource != "" {
+		return f.resource
+	}
+	return base + "/mcp"
 }
 
 const fakeAccessLifetime = 3600
@@ -69,6 +85,13 @@ func newFakeOAuthServer(t *testing.T) *fakeOAuthServer {
 		w.WriteHeader(http.StatusUnauthorized)
 	})
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource/mcp", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		missing := f.noResourceMetadata
+		f.mu.Unlock()
+		if missing {
+			http.NotFound(w, r)
+			return
+		}
 		writeTestJSON(w, map[string]any{
 			"resource":              baseURL(r) + "/mcp",
 			"authorization_servers": []string{baseURL(r) + "/mcp"},
@@ -93,6 +116,9 @@ func newFakeOAuthServer(t *testing.T) *fakeOAuthServer {
 		}
 		if f.authMethods != nil {
 			metadata["token_endpoint_auth_methods_supported"] = f.authMethods
+		}
+		if f.issSupported {
+			metadata["authorization_response_iss_parameter_supported"] = true
 		}
 		writeTestJSON(w, metadata)
 	})
@@ -142,10 +168,10 @@ func (f *fakeOAuthServer) authorize(t *testing.T, authorizationURL string) (code
 	}
 	q := u.Query()
 	f.mu.Lock()
-	clientID := f.clientID
+	clientID, resource := f.clientID, f.expectedResource(f.srv.URL)
 	f.mu.Unlock()
 	for key, want := range map[string]string{
-		"response_type": "code", "client_id": clientID, "code_challenge_method": "S256", "resource": f.srv.URL + "/mcp",
+		"response_type": "code", "client_id": clientID, "code_challenge_method": "S256", "resource": resource,
 	} {
 		if got := q.Get(key); got != want {
 			t.Fatalf("authorization URL %s = %q, want %q", key, got, want)
@@ -169,7 +195,7 @@ func (f *fakeOAuthServer) token(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.tokenRequests = append(f.tokenRequests, r.PostForm)
-	if r.PostForm.Get("resource") != baseURL(r)+"/mcp" || r.PostForm.Get("client_id") != f.clientID {
+	if r.PostForm.Get("resource") != f.expectedResource(baseURL(r)) || r.PostForm.Get("client_id") != f.clientID {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -293,7 +319,7 @@ func TestConnectFlowEndToEnd(t *testing.T) {
 	}
 	code, state := fake.authorize(t, authorizationURL)
 
-	pending, err := flow.Complete(ctx, state, code, f.ownerID, func(p PendingAuthorization) error {
+	pending, err := flow.Complete(ctx, state, code, "", f.ownerID, func(p PendingAuthorization) error {
 		if p.ServerRef != target.Ref || p.ServerURL != target.URL || p.ReturnTo != "/ws/agents/x" {
 			t.Errorf("pending = %+v", p)
 		}
@@ -311,7 +337,7 @@ func TestConnectFlowEndToEnd(t *testing.T) {
 	}
 
 	// The state worked once.
-	if _, err := flow.Complete(ctx, state, code, f.ownerID, nil); !errors.Is(err, ErrStateInvalid) {
+	if _, err := flow.Complete(ctx, state, code, "", f.ownerID, nil); !errors.Is(err, ErrStateInvalid) {
 		t.Fatalf("replayed state: err = %v", err)
 	}
 
@@ -385,7 +411,7 @@ func TestTokenEndpointRejectionNeedsReconnect(t *testing.T) {
 				t.Fatalf("start: %v", err)
 			}
 			code, state := fake.authorize(t, authorizationURL)
-			if _, err := flow.Complete(ctx, state, code, f.ownerID, nil); err != nil {
+			if _, err := flow.Complete(ctx, state, code, "", f.ownerID, nil); err != nil {
 				t.Fatalf("complete: %v", err)
 			}
 
@@ -416,7 +442,7 @@ func TestCompleteRefusesBeforeExchanging(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, state := fake.authorize(t, authorizationURL)
-	if _, err := flow.Complete(ctx, state, code, newFixture().ownerID, nil); !errors.Is(err, ErrStateInvalid) {
+	if _, err := flow.Complete(ctx, state, code, "", newFixture().ownerID, nil); !errors.Is(err, ErrStateInvalid) {
 		t.Fatalf("another user: err = %v", err)
 	}
 
@@ -426,7 +452,7 @@ func TestCompleteRefusesBeforeExchanging(t *testing.T) {
 	}
 	code, state = fake.authorize(t, authorizationURL)
 	refused := errors.New("no longer the owner")
-	if _, err := flow.Complete(ctx, state, code, f.ownerID, func(PendingAuthorization) error { return refused }); !errors.Is(err, refused) {
+	if _, err := flow.Complete(ctx, state, code, "", f.ownerID, func(PendingAuthorization) error { return refused }); !errors.Is(err, refused) {
 		t.Fatalf("refused check: err = %v", err)
 	}
 
@@ -435,7 +461,7 @@ func TestCompleteRefusesBeforeExchanging(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, state = fake.authorize(t, authorizationURL)
-	if _, err := flow.Complete(ctx, state, "", f.ownerID, nil); !errors.Is(err, ErrAuthorizationDenied) {
+	if _, err := flow.Complete(ctx, state, "", "", f.ownerID, nil); !errors.Is(err, ErrAuthorizationDenied) {
 		t.Fatalf("no code: err = %v", err)
 	}
 

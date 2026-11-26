@@ -17,6 +17,14 @@
   "action_failed": "문제가 발생했습니다. 다시 시도하세요.",
   "connect_continue": "브라우저에서 연결을 완료하세요.",
   "disconnected_toast": "{{name}} 연결을 해제했습니다",
+  "endpoints_confirm": {
+    "title": "{{name}}에 연결할까요?",
+    "description": "이 서버의 OAuth 엔드포인트는 직접 설정되었습니다. 아래 호스트를 신뢰할 때만 계속하세요.",
+    "authorization": "로그인하는 곳",
+    "token": "토큰을 받는 곳",
+    "cancel": "취소",
+    "continue": "계속"
+  },
   "auth": {
     "label": "인증 방식",
     "none": "없음",
@@ -51,6 +59,21 @@
       "client_secret_post": "client_secret_post",
       "none": "none(공개 클라이언트)"
     }
+  },
+  "advanced": {
+    "label": "고급",
+    "issuer_label": "Issuer(선택)",
+    "issuer_hint": "MCP 서버가 지정한 서버 대신 이 인가 서버를 사용합니다.",
+    "authorization_endpoint_label": "인가 엔드포인트",
+    "token_endpoint_label": "토큰 엔드포인트",
+    "endpoints_hint": "둘 다 설정하면 자동 탐색을 건너뜁니다. 사전 등록 클라이언트가 필요합니다.",
+    "endpoints_pair": "엔드포인트는 둘 다 설정하거나 둘 다 비워 두세요.",
+    "endpoints_need_client": "직접 설정한 엔드포인트에는 사전 등록 클라이언트가 필요합니다.",
+    "https_required": "HTTPS URL을 입력하세요.",
+    "resource_label": "Resource(선택)",
+    "resource_hint": "서버 URL 대신 리소스 표시자로 보냅니다.",
+    "audience_label": "Audience(선택)",
+    "audience_hint": "인가 요청과 함께 보냅니다. 이를 요구하는 서버용입니다."
   },
   "callback": {
     "working": "MCP 서버에 연결하는 중…",

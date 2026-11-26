@@ -2,6 +2,7 @@
 // Modified for the mouse9527/multica fork: connect an MCP entry by ref (M-269).
 // Modified for the mouse9527/multica fork: rejected refreshes via remotemcp.OAuthError (M-277).
 // Modified for the mouse9527/multica fork: pre-registered OAuth clients (M-295).
+// Modified for the mouse9527/multica fork: manual endpoints, resource and audience (M-295 stage 2).
 
 package mcpoauth
 
@@ -65,30 +66,30 @@ type Flow struct {
 	Store *Store
 }
 
-// Start begins connecting userID to the target entry: discovery (RFC 9728,
-// then RFC 8414 or OIDC), the client — the entry's pre-registered one, or
-// else dynamic client registration (RFC 7591) —, a PKCE verifier and a
+// Start begins connecting userID to the target entry: the authorization
+// server (the entry's manual endpoints, else its issuer, else discovery: RFC
+// 9728, then RFC 8414 or OIDC), the client — the entry's pre-registered one,
+// or else dynamic client registration (RFC 7591) —, a PKCE verifier and a
 // one-time state. It returns the URL to send the browser to. The pending
 // authorization records target.URL, and the grant it ends in is bound to it.
 func (f Flow) Start(ctx context.Context, target Target, userID, redirectURI, returnTo string) (string, error) {
 	ctx = withAllowedOrigins(ctx)
 	var (
-		metadata     remotemcp.OAuthMetadata
 		registration remotemcp.OAuthClientRegistration
 		method       string
-		err          error
 	)
+	server, err := discover(ctx, target)
+	if err != nil {
+		return "", err
+	}
+	metadata := server.OAuthMetadata
 	if target.Client.Preregistered() {
-		metadata, registration, err = f.preregisteredClient(ctx, target)
+		registration, err = f.preregisteredClient(ctx, target, metadata)
 		if err != nil {
 			return "", err
 		}
 		method = registration.TokenEndpointAuthMethod
 	} else {
-		metadata, err = remotemcp.DiscoverOAuth(ctx, target.URL, nil)
-		if err != nil {
-			return "", fmt.Errorf("%w: %w", ErrDiscovery, err)
-		}
 		if metadata.RegistrationEndpoint == "" {
 			return "", ErrNeedsPreregistered
 		}
@@ -116,49 +117,54 @@ func (f Flow) Start(ctx context.Context, target Target, userID, redirectURI, ret
 		RedirectURI:   redirectURI,
 		Verifier:      verifier,
 		ReturnTo:      returnTo,
+		Issuer:        server.Issuer,
+		ISSRequired:   server.ISSParameterSupported,
 	})
 	if err != nil {
 		return "", err
 	}
-	return remotemcp.BuildAuthorizationURL(metadata, registration, redirectURI, state, verifier.Reveal(), target.Scope)
+	authorizationURL, err := remotemcp.BuildAuthorizationURL(metadata, registration, redirectURI, state, verifier.Reveal(), target.Scope)
+	if err != nil {
+		return "", err
+	}
+	return withAudience(authorizationURL, target.Server.Audience)
 }
 
-// preregisteredClient discovers the target's authorization server, which
-// must be the issuer the entry's client is registered with, and returns the
-// client: its id, its secret (opened only for a method that sends it) and
-// the token endpoint auth method it uses.
-func (f Flow) preregisteredClient(ctx context.Context, target Target) (remotemcp.OAuthMetadata, remotemcp.OAuthClientRegistration, error) {
-	metadata, err := remotemcp.DiscoverOAuthForIssuer(ctx, target.URL, target.Client.Issuer)
-	if errors.Is(err, remotemcp.ErrAuthorizationServerMismatch) {
-		return remotemcp.OAuthMetadata{}, remotemcp.OAuthClientRegistration{}, fmt.Errorf("%w: %w", ErrIssuerMismatch, err)
-	}
-	if err != nil {
-		return remotemcp.OAuthMetadata{}, remotemcp.OAuthClientRegistration{}, fmt.Errorf("%w: %w", ErrDiscovery, err)
-	}
+// preregisteredClient returns the entry's pre-registered client for the
+// authorization server discover found (which, for an entry with an issuer,
+// is that issuer): its id, its secret (opened only for a method that sends
+// it) and the token endpoint auth method it uses.
+func (f Flow) preregisteredClient(ctx context.Context, target Target, metadata remotemcp.OAuthMetadata) (remotemcp.OAuthClientRegistration, error) {
 	// A public client by choice sends no secret, so none is read.
-	var secret Secret
+	var (
+		secret Secret
+		err    error
+	)
 	if target.Client.TokenEndpointAuthMethod != AuthMethodNone {
 		secret, err = f.Store.clientSecret(ctx, target.WorkspaceID, target.Ref, target.Client)
 		if err != nil {
-			return remotemcp.OAuthMetadata{}, remotemcp.OAuthClientRegistration{}, err
+			return remotemcp.OAuthClientRegistration{}, err
 		}
 	}
 	method, err := preregisteredAuthMethod(target.Client.TokenEndpointAuthMethod, !secret.Empty(), metadata.TokenAuthMethods)
 	if err != nil {
-		return remotemcp.OAuthMetadata{}, remotemcp.OAuthClientRegistration{}, err
+		return remotemcp.OAuthClientRegistration{}, err
 	}
 	registration := remotemcp.OAuthClientRegistration{ClientID: target.Client.ID, TokenEndpointAuthMethod: method}
 	if method != AuthMethodNone {
 		registration.ClientSecret = secret.Reveal()
 	}
-	return metadata, registration, nil
+	return registration, nil
 }
 
 // Complete finishes a connect: it takes the pending authorization the state
-// belongs to (only userID's, only once), lets check refuse it, exchanges the
-// code with the PKCE verifier and stores the grant. check runs before the
-// code is exchanged, so a refused completion never obtains a token.
-func (f Flow) Complete(ctx context.Context, state, code, userID string, check func(PendingAuthorization) error) (PendingAuthorization, error) {
+// belongs to (only userID's, only once), lets check refuse it, checks the
+// authorization response's iss (RFC 9207; empty when the response had none),
+// exchanges the code with the PKCE verifier and stores the grant. check and
+// the iss check run before the code is exchanged, so a refused completion
+// never obtains a token; an iss mismatch is reported even for an error
+// response, whose error is then not acted on.
+func (f Flow) Complete(ctx context.Context, state, code, iss, userID string, check func(PendingAuthorization) error) (PendingAuthorization, error) {
 	pending, err := f.Store.ConsumePendingAuthorization(ctx, state, userID)
 	if err != nil {
 		return PendingAuthorization{}, err
@@ -167,6 +173,9 @@ func (f Flow) Complete(ctx context.Context, state, code, userID string, check fu
 		if err := check(pending); err != nil {
 			return pending, err
 		}
+	}
+	if err := checkResponseIssuer(pending, iss); err != nil {
+		return pending, err
 	}
 	if strings.TrimSpace(code) == "" {
 		return pending, ErrAuthorizationDenied

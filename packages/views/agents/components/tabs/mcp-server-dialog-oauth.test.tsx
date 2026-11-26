@@ -309,6 +309,64 @@ describe("McpServerDialog pre-registered OAuth client", () => {
     expect(onSave).toHaveBeenCalledTimes(1);
   });
 
+  // Stage 2 (M-295): the advanced settings round-trip and are checked.
+  it("opens advanced settings that are set and saves them back", async () => {
+    const user = userEvent.setup();
+    const entry = {
+      type: "http",
+      url: "https://mcp.example.com/mcp",
+      auth: {
+        type: "oauth",
+        client_id: "pre-1",
+        issuer: "https://auth.example.com",
+        authorization_endpoint: "https://auth.example.com/authorize?tenant=t",
+        token_endpoint: "https://auth.example.com/token",
+        resource: "https://api.example.com",
+        audience: "my-api",
+      },
+    };
+    const { onSave } = renderDialog({ server: httpServer(entry), hideNameWhenEditing: true, oauthAvailable: true });
+
+    expect(screen.getByLabelText("Authorization endpoint")).toHaveValue("https://auth.example.com/authorize?tenant=t");
+    expect(screen.getByLabelText("Token endpoint")).toHaveValue("https://auth.example.com/token");
+    expect(screen.getByLabelText("Resource (optional)")).toHaveValue("https://api.example.com");
+    expect(screen.getByLabelText("Audience (optional)")).toHaveValue("my-api");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith("gateway", entry));
+  });
+
+  it("sets a named issuer and an audience for automatic registration", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderDialog({ server: httpServer(OAUTH_ENTRY), hideNameWhenEditing: true, oauthAvailable: true });
+
+    expect(screen.queryByLabelText("Issuer (optional)")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Advanced" }));
+    await user.type(await screen.findByLabelText("Issuer (optional)"), "https://auth.example.com");
+    await user.type(screen.getByLabelText("Audience (optional)"), "my-api");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(onSave).toHaveBeenCalledWith("gateway", {
+        ...OAUTH_ENTRY,
+        auth: { type: "oauth", scope: "mcp read", issuer: "https://auth.example.com", audience: "my-api" },
+      }),
+    );
+  });
+
+  it("asks for both manual endpoints and a pre-registered client with them", async () => {
+    const user = userEvent.setup();
+    const { onSave } = renderDialog({ server: httpServer(OAUTH_ENTRY), hideNameWhenEditing: true, oauthAvailable: true });
+
+    await user.click(screen.getByRole("button", { name: "Advanced" }));
+    await user.type(await screen.findByLabelText("Authorization endpoint"), "https://auth.example.com/authorize");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Set both endpoints, or neither.")).toBeTruthy();
+
+    await user.type(screen.getByLabelText("Token endpoint"), "https://auth.example.com/token");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Endpoints set by hand need a pre-registered client.")).toBeTruthy();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it("asks for the client ID and an HTTPS issuer", async () => {
     const user = userEvent.setup();
     const { onSave } = renderDialog({ oauthAvailable: true, onSaveOAuthClientSecret: vi.fn() });
@@ -328,6 +386,9 @@ describe("McpServerDialog pre-registered OAuth client", () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
+  // Since stage 2 an issuer alone is a valid setting for automatic
+  // registration: switching back keeps it, shown under Advanced, where it
+  // can be cleared to return to plain discovery.
   it("offers no secret field when the page cannot save one, and switches back to automatic registration", async () => {
     const user = userEvent.setup();
     const { onSave } = renderDialog({ server: httpServer(PREREGISTERED_ENTRY), hideNameWhenEditing: true, oauthAvailable: true });
@@ -336,9 +397,21 @@ describe("McpServerDialog pre-registered OAuth client", () => {
 
     await user.click(screen.getByRole("button", { name: "Register automatically" }));
     expect(screen.queryByLabelText("Client ID")).toBeNull();
+    const issuer = await screen.findByLabelText("Issuer (optional)");
+    expect(issuer).toHaveValue("https://auth.example.com");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
-      expect(onSave).toHaveBeenCalledWith("gateway", { type: "http", url: "https://mcp.example.com/mcp", auth: { type: "oauth" } }),
+      expect(onSave).toHaveBeenCalledWith("gateway", {
+        type: "http",
+        url: "https://mcp.example.com/mcp",
+        auth: { type: "oauth", issuer: "https://auth.example.com" },
+      }),
+    );
+
+    await user.clear(issuer);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(onSave).toHaveBeenLastCalledWith("gateway", { type: "http", url: "https://mcp.example.com/mcp", auth: { type: "oauth" } }),
     );
   });
 });
