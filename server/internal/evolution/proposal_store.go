@@ -1,6 +1,6 @@
 // Added by the mouse9527/multica fork: Evolution P3, filing proposals (M-137);
 // P4 stores what a proposal changes (M-138); P6 files condense and team
-// proposals (M-140).
+// proposals (M-140); M-296 resolves metric evidence.
 
 package evolution
 
@@ -143,7 +143,7 @@ func (s *Proposals) File(ctx context.Context, req FileRequest) (FileResult, erro
 		return FileResult{}, reject(RejectNotShorter, "the change leaves the instructions %d characters long, not shorter than the current %d",
 			utf8.RuneCountInString(proposed), utf8.RuneCountInString(snap.Fields[p.Field]))
 	}
-	evidence, err := s.resolveEvidence(ctx, req)
+	evidence, err := s.resolveEvidence(ctx, req, run)
 	if err != nil {
 		return FileResult{}, err
 	}
@@ -496,10 +496,50 @@ func refuseTarget(targetType, targetID string, st TargetState) error {
 // rules: what Evolution may not read (private and excluded projects, private
 // and excluded agents, its own comments and chats) cannot be cited. Content
 // is redacted as the channel serves it.
-func (s *Proposals) resolveEvidence(ctx context.Context, req FileRequest) ([]ResolvedEvidence, error) {
+//
+// A metric item is recomputed from the metrics source over the structural
+// review's window, as the run read it, and must match the cited value on a
+// sample of at least min_effect_sample. Only the week's structural review,
+// with the metrics source on, cites metrics.
+func (s *Proposals) resolveEvidence(ctx context.Context, req FileRequest, run Run) ([]ResolvedEvidence, error) {
 	excludedAgents := append([]string{req.AgentID}, req.Config.ExcludeAgents...)
 	out := make([]ResolvedEvidence, 0, len(req.Proposal.Evidence))
+	var summary *MetricsSummary
 	for i, e := range req.Proposal.Evidence {
+		if e.Type == EvidenceMetric {
+			if summary == nil {
+				structure := false
+				if req.Config.MetricsWanted() {
+					var err error
+					if structure, err = isStructureRun(ctx, s.DB, run); err != nil {
+						return nil, err
+					}
+				}
+				if !structure {
+					return nil, reject(RejectEvidence, "evidence[%d]: metrics are cited only from the week's structural review, with the metrics source on", i)
+				}
+				sum, err := BuildMetrics(ctx, s.DB, MetricsRequest{
+					WorkspaceID: req.WorkspaceID, Days: StructureReviewDays, Config: req.Config,
+					HiddenProjects: req.HiddenProjects, SelfAgentID: req.AgentID,
+				}, run.WindowUntil)
+				if err != nil {
+					return nil, err
+				}
+				summary = &sum
+			}
+			ref, err := ParseMetricRef(e.ID)
+			if err != nil {
+				return nil, reject(RejectInvalid, "evidence[%d].id: %s", i, err.Error())
+			}
+			reading, err := CheckMetric(i, *summary, ref, *e.Value, req.Config.MinEffectSample)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, ResolvedEvidence{
+				ProposalEvidence: e, CreatedAt: reading.WindowUntil, Context: ref.subject(), Metric: &reading,
+			})
+			continue
+		}
 		if e.Type == EvidenceChat && !req.ChatActive {
 			return nil, reject(RejectEvidence, "evidence[%d]: chats are not being read in this workspace and cannot be cited", i)
 		}
