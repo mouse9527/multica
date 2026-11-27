@@ -5,6 +5,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/featureflags"
@@ -483,5 +484,137 @@ func TestForkRunDedup_RunCarryingItsOwnInputIsNotSuperseded(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// M-325 regression: the tests above hand dispatchIssueRun a trigger built by
+// hand, so they passed while WillEnqueueRun never marked an agent handoff and
+// the handoff path never ran in production. The tests below take every step
+// through the real write paths (CreateComment, UpdateIssue) and simulate only
+// the daemon's claim.
+
+// forkDedupHandoffIssue is an unassigned todo issue in a project whose
+// workflow hands in_review to agentID.
+func forkDedupHandoffIssue(t *testing.T, title, agentID string) string {
+	t.Helper()
+	seedTestCatalog(t)
+	wf := createTestWorkflow(t, "run dedup handoff "+workflowTestSuffix(), "todo", "in_review")
+	projectID := createWorkflowTestProject(t, "run dedup handoff project")
+	setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
+	setWorkflowHandoff(t, wf.ID, "in_review", handToAgent(agentID, "")).Want(http.StatusOK)
+	issueID := dbfx.Issue(t, title, testutil.Cols{"project_id": projectID, "status": "todo"})
+	dbfx.Cleanup(t, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+	dbfx.Cleanup(t, `DELETE FROM comment WHERE issue_id = $1`, issueID)
+	dbfx.Cleanup(t, `DELETE FROM activity_log WHERE issue_id = $1`, issueID)
+	return issueID
+}
+
+// forkDedupMention posts a member comment mentioning agentID through
+// CreateComment.
+func forkDedupMention(t *testing.T, issueID, agentID string) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	req := withURLParam(newRequest("POST", "/api/issues/"+issueID+"/comments", map[string]any{
+		"content": "[@Agent](mention://agent/" + agentID + ") please take this",
+	}), "id", issueID)
+	testHandler.CreateComment(w, req)
+	if w.Code != http.StatusCreated && w.Code != http.StatusOK {
+		t.Fatalf("CreateComment: expected 200/201, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// forkDedupClaimQueuedRun claims agentID's only queued run on the issue as
+// the daemon would have one second ago, and returns it.
+func forkDedupClaimQueuedRun(t *testing.T, issueID, agentID string) string {
+	t.Helper()
+	if n := queuedTaskCountForAgentIssue(t, issueID, agentID); n != 1 {
+		t.Fatalf("expected the first operation to queue one run, got %d", n)
+	}
+	var taskID string
+	dbfx.QueryRow(t, `
+		UPDATE agent_task_queue
+		SET status = 'running', dispatched_at = now() - interval '1 second', started_at = now() - interval '1 second'
+		WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
+		RETURNING id
+	`, issueID, agentID).Scan(&taskID)
+	return taskID
+}
+
+// forkDedupUpdateIssueScenarios are the two operations M-320 found still
+// starting a second run: each queues one run of agentID bound to todo, which
+// is claimed before the issue moves into in_review.
+var forkDedupUpdateIssueScenarios = map[string]func(t *testing.T, issueID, agentID string){
+	"mention then move": forkDedupMention,
+	"assign then move": func(t *testing.T, issueID, agentID string) {
+		t.Helper()
+		updateIssueForTest(t, issueID, map[string]any{"assignee_type": "agent", "assignee_id": agentID}).Want(http.StatusOK)
+	},
+}
+
+// forkDedupRunFirstThenHandoff runs a scenario, claims its run, then moves
+// the issue into the agent's in_review step through UpdateIssue. Returns the
+// claimed run.
+func forkDedupRunFirstThenHandoff(t *testing.T, scenario func(t *testing.T, issueID, agentID string), issueID, agentID string) string {
+	t.Helper()
+	scenario(t, issueID, agentID)
+	first := forkDedupClaimQueuedRun(t, issueID, agentID)
+	updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
+	if status, assigneeType, assigneeID := issueStatusAndAssignee(t, issueID); status != "in_review" || assigneeType != "agent" || assigneeID != agentID {
+		t.Fatalf("handoff: issue is %q assigned to %s %s, want in_review assigned to agent %s", status, assigneeType, assigneeID, agentID)
+	}
+	return first
+}
+
+func TestForkRunDedup_UpdateIssueHandoffSupersedesJustClaimedRun(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, true)
+	agentID, _ := forkDedupAgent(t)
+
+	for name, scenario := range forkDedupUpdateIssueScenarios {
+		t.Run(name, func(t *testing.T) {
+			issueID := forkDedupHandoffIssue(t, "run dedup: "+name, agentID)
+			first := forkDedupRunFirstThenHandoff(t, scenario, issueID, agentID)
+
+			if status, reason := forkDedupTaskState(t, first); status != "cancelled" || reason != service.ForkSupersedeFailureReason {
+				t.Fatalf("first run: got status %q reason %q, want cancelled %q", status, reason, service.ForkSupersedeFailureReason)
+			}
+			if n := dbfx.Count(t,
+				`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched', 'running')`,
+				issueID, agentID); n != 1 {
+				t.Fatalf("expected exactly one live run, got %d", n)
+			}
+			if n := dbfx.Count(t,
+				`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued' AND workflow_step = 'in_review'`,
+				issueID, agentID); n != 1 {
+				t.Fatalf("expected one queued run bound to in_review, got %d", n)
+			}
+		})
+	}
+}
+
+// With the flag off both runs stay, as upstream.
+func TestForkRunDedup_UpdateIssueHandoffFlagOffKeepsRun(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withFeatureFlag(t, testHandler, featureflags.RunDedupV1, false)
+	agentID, _ := forkDedupAgent(t)
+
+	for name, scenario := range forkDedupUpdateIssueScenarios {
+		t.Run(name, func(t *testing.T) {
+			issueID := forkDedupHandoffIssue(t, "run dedup: flag off, "+name, agentID)
+			first := forkDedupRunFirstThenHandoff(t, scenario, issueID, agentID)
+
+			if status, _ := forkDedupTaskState(t, first); status != "running" {
+				t.Fatalf("flag off: first run got status %q, want running", status)
+			}
+			if n := dbfx.Count(t,
+				`SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued' AND workflow_step = 'in_review'`,
+				issueID, agentID); n != 1 {
+				t.Fatalf("flag off: expected the handoff to queue its own run, got %d", n)
+			}
+		})
 	}
 }
