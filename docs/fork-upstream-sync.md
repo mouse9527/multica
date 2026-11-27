@@ -63,6 +63,7 @@
 逻辑在 fork 自己的文件里（见 `docs/fork-run-dedup.md`），上游文件只各加一行钩子，同步时确认它们还在原位、上下文语义没变：
 
 - `server/internal/handler/issue_trigger.go`：`dispatchIssueRun` 的 `case "agent":` 第一行调用 `h.forkPrepareHandoffRun`。它必须在智能体运行入队**之前**，因为要先腾出被取代运行占的槽位。上游如果把入队挪出 `dispatchIssueRun`，钩子跟着挪到新的入队点前面。
+- `server/internal/service/issue_trigger.go`（M-325）：`WillEnqueueRun` 的 `case "agent":` 返回的 `IssueRunTrigger` 加了 `WorkflowHandoff: in.EnteredHandoffStep`。上游只在 squad 分支设这个字段（给 `enqueueSquadLeaderTask` 用），agent 分支的这个字段只有 `forkPrepareHandoffRun` 读，开关关闭时没有读者。同步时这行如果丢了，交接取代会静默失效，`TestForkRunDedup_UpdateIssueHandoff*` 会先失败；上游如果给 agent 分支也加了这个字段，删掉 fork 的这一行即可。
 - `server/internal/handler/comment.go`：`triggerTasksForComment` 里 `steerCommentAgentTriggers` 之后、`enqueueCommentAgentTriggers` 之前调用 `h.forkSupersedeForComment`。必须在入队之前（先取消被取代的运行），在转向之后（已经转给运行中回合的触发不算）。
 - `server/internal/handler/daemon.go`：`CompleteTask` 里 `reconcileCommentsOnCompletion` 之后、`NotifyTaskFinished` 之前调用 `h.forkFoldCoveredRuns`。必须在补发之后（补发出来的运行也按同样条件判断），在唤醒 daemon 之前（否则排队运行可能先被领取）。
 

@@ -189,10 +189,11 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 			return declineRun(dispatch.ReasonCoalesced)
 		}
 		return IssueRunTrigger{
-			IssueID:      issue.ID,
-			AgentID:      issue.AssigneeID,
-			AssigneeType: "agent",
-			Source:       source,
+			IssueID:         issue.ID,
+			AgentID:         issue.AssigneeID,
+			AssigneeType:    "agent",
+			Source:          source,
+			WorkflowHandoff: in.EnteredHandoffStep, // mouse9527/multica fork (M-325): read only by forkPrepareHandoffRun
 		}, true
 
 	case "squad":
